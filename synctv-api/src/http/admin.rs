@@ -4,7 +4,7 @@
 //! Thin handlers that delegate to `AdminApiImpl`.
 
 use axum::{
-    extract::{FromRef, FromRequestParts, Path, Query, State},
+    extract::{FromRef, FromRequestParts, Path, State},
     http::request::Parts,
     routing::{get, post, put},
     Json, Router,
@@ -13,7 +13,10 @@ use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
 
-use super::{AppError, AppResult, AppState};
+use super::{
+    validation::ValidatedQuery, AppError, AppResult, AppState, WithProviderInstanceName,
+    WithRoomId, WithUserId,
+};
 use crate::proto::admin;
 
 // ------------------------------------------------------------------
@@ -188,17 +191,15 @@ fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
 }
 
 // ------------------------------------------------------------------
-// ID validation helper
+// Path validation helpers
 // ------------------------------------------------------------------
 
-/// Validate a path-parameter ID (`user_id`, `room_id`, `media_id`, etc.).
-///
-/// Returns `Err(AppError)` with a 400 status when the ID is empty, too long,
-/// or contains characters outside `[a-zA-Z0-9_-]`.
-fn validate_path_id(id: &str, field: &'static str) -> Result<(), AppError> {
-    super::validation::validate_id(id, field)
-        .map(|_| ())
-        .map_err(|e| AppError::bad_request(format!("Invalid {field}: {e}")))
+fn validate_admin_proto_path<T>(path: T) -> Result<T, AppError>
+where
+    T: prost_reflect::ReflectMessage,
+{
+    crate::impls::validate_proto_request(&path).map_err(admin_err_to_app_error)?;
+    Ok(path)
 }
 
 // ------------------------------------------------------------------
@@ -337,15 +338,12 @@ pub(crate) async fn get_settings_group(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(group): Path<String>,
+    Path(path): Path<admin::GetSettingsGroupRequest>,
 ) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
+    let req = validate_admin_proto_path(path)?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_settings_group(
-            admin::GetSettingsGroupRequest { group },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .get_settings_group(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -416,25 +414,13 @@ pub(crate) async fn send_test_email(
 // User Management
 // ------------------------------------------------------------------
 
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListUsersQuery {
-    pub page: Option<i32>,
-    pub page_size: Option<i32>,
-    pub status: Option<String>,
-    pub role: Option<String>,
-    pub search: Option<String>,
-    pub sort_by: Option<String>,
-    pub sort_direction: Option<String>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
         path = "/api/admin/users",
         tag = "Admin",
-        params(ListUsersQuery),
+        params(admin::ListUsersRequest),
         responses(
             (status = 200, description = "Users list", body = admin::ListUsersResponse),
             (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
@@ -445,46 +431,10 @@ pub struct ListUsersQuery {
 pub(crate) async fn list_users(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Query(q): Query<ListUsersQuery>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListUsersRequest>,
 ) -> AppResult<Json<admin::ListUsersResponse>> {
     let api = require_admin_api(&state)?;
-    // Convert string status/role filters to proto enum values
-    let status_i32 = match q.status.as_deref() {
-        Some("active") => synctv_proto::common::UserStatus::Active as i32,
-        Some("pending") => synctv_proto::common::UserStatus::Pending as i32,
-        Some("banned") => synctv_proto::common::UserStatus::Banned as i32,
-        _ => synctv_proto::common::UserStatus::Unspecified as i32,
-    };
-    let role_i32 = match q.role.as_deref() {
-        Some("root") => synctv_proto::common::UserRole::Root as i32,
-        Some("admin") => synctv_proto::common::UserRole::Admin as i32,
-        Some("user") => synctv_proto::common::UserRole::User as i32,
-        _ => synctv_proto::common::UserRole::Unspecified as i32,
-    };
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
-
-    let resp = api
-        .list_users(admin::ListUsersRequest {
-            page,
-            page_size,
-            status: status_i32,
-            role: role_i32,
-            search: q.search.unwrap_or_default(),
-            sort_by: match q.sort_by.as_deref() {
-                Some("username") => admin::UserListSortBy::Username as i32,
-                Some("email") => admin::UserListSortBy::Email as i32,
-                Some("status") => admin::UserListSortBy::Status as i32,
-                Some("role") => admin::UserListSortBy::Role as i32,
-                Some("updated_at") => admin::UserListSortBy::UpdatedAt as i32,
-                _ => admin::UserListSortBy::CreatedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = api.list_users(req).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -506,14 +456,10 @@ pub(crate) async fn list_users(
 pub(crate) async fn get_user(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::GetUserRequest>,
 ) -> AppResult<Json<admin::GetUserResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
-    let resp = api
-        .get_user(admin::GetUserRequest { user_id })
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = api.get_user(req).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -564,12 +510,11 @@ pub(crate) async fn delete_user(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::DeleteUserRequest>,
 ) -> AppResult<Json<admin::DeleteUserResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_user(admin::DeleteUserRequest { user_id }, &auth.user_id, &rctx.0)
+        .delete_user(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -595,12 +540,11 @@ pub(crate) async fn set_user_role(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
-    Json(mut req): Json<admin::UpdateUserRoleRequest>,
+    Path(path): Path<admin::UserPathRequest>,
+    Json(req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
-    validate_path_id(&user_id, "user_id")?;
+    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let api = require_admin_api(&state)?;
-    req.user_id = user_id;
     let resp = api
         .update_user_role(req, &auth.user_id, auth.role, &rctx.0)
         .await
@@ -628,12 +572,11 @@ pub(crate) async fn set_user_password(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
-    validate_path_id(&user_id, "user_id")?;
+    req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let api = require_admin_api(&state)?;
-    req.user_id = user_id;
     if req.reason.is_empty() {
         req.reason = "Admin forced password reset".to_string();
     }
@@ -664,12 +607,11 @@ pub(crate) async fn set_user_username(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
-    Json(mut req): Json<admin::UpdateUserUsernameRequest>,
+    Path(path): Path<admin::UserPathRequest>,
+    Json(req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
-    validate_path_id(&user_id, "user_id")?;
+    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let api = require_admin_api(&state)?;
-    req.user_id = user_id;
     let resp = api
         .update_user_username(req, &auth.user_id, &rctx.0)
         .await
@@ -697,18 +639,11 @@ pub(crate) async fn ban_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
-    Json(mut req): Json<admin::BanUserRequest>,
+    Path(path): Path<admin::UserPathRequest>,
+    Json(req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
-    validate_path_id(&user_id, "user_id")?;
-    if req.reason.len() > 500 {
-        return Err(AppError::bad_request(
-            "Reason too long (max 500 characters)",
-        ));
-    }
-
+    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let api = require_admin_api(&state)?;
-    req.user_id = user_id;
     let resp = api
         .ban_user(req, &auth.user_id, auth.role, &rctx.0)
         .await
@@ -734,12 +669,11 @@ pub(crate) async fn unban_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::UnbanUserRequest>,
 ) -> AppResult<Json<admin::UnbanUserResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_user(admin::UnbanUserRequest { user_id }, &auth.user_id, &rctx.0)
+        .unban_user(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -763,16 +697,11 @@ pub(crate) async fn approve_user(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::ApproveUserRequest>,
 ) -> AppResult<Json<admin::ApproveUserResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_user(
-            admin::ApproveUserRequest { user_id },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .approve_user(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -786,7 +715,7 @@ pub(crate) async fn approve_user(
         tag = "Admin",
         params(
             ("user_id" = String, Path, description = "User ID"),
-            UserRoomsQuery
+            admin::GetUserRoomsRequest
         ),
         responses(
             (status = 200, description = "Rooms belonging to user", body = admin::GetUserRoomsResponse),
@@ -798,37 +727,14 @@ pub(crate) async fn approve_user(
 pub(crate) async fn get_user_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
-    Query(q): Query<UserRoomsQuery>,
+    Path(path): Path<admin::UserPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
-    validate_path_id(&user_id, "user_id")?;
+    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
 
     let resp = api
-        .get_user_rooms(admin::GetUserRoomsRequest {
-            user_id,
-            page,
-            page_size,
-            status: match q.status.as_deref() {
-                Some("active") => synctv_proto::common::RoomStatus::Active as i32,
-                Some("pending") => synctv_proto::common::RoomStatus::Pending as i32,
-                Some("closed") => synctv_proto::common::RoomStatus::Closed as i32,
-                _ => synctv_proto::common::RoomStatus::Unspecified as i32,
-            },
-            search: q.search.unwrap_or_default(),
-            is_banned: q.is_banned,
-            sort_by: match q.sort_by.as_deref() {
-                Some("name") => admin::RoomListSortBy::Name as i32,
-                Some("updated_at") => admin::RoomListSortBy::UpdatedAt as i32,
-                Some("last_activity_at") => admin::RoomListSortBy::LastActivityAt as i32,
-                _ => admin::RoomListSortBy::CreatedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
+        .get_user_rooms(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -924,73 +830,13 @@ pub(crate) async fn batch_delete_users(
 // Room Management
 // ------------------------------------------------------------------
 
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct UserRoomsQuery {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    status: Option<String>,
-    search: Option<String>,
-    is_banned: Option<bool>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListProvidersQuery {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    provider_type: Option<String>,
-    search: Option<String>,
-    enabled: Option<bool>,
-    tls: Option<bool>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListAdminsQuery {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    search: Option<String>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct RoomMembersQuery {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    search: Option<String>,
-    role: Option<String>,
-    status: Option<String>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListRoomsQuery {
-    pub page: Option<i32>,
-    pub page_size: Option<i32>,
-    pub status: Option<i32>,
-    pub search: Option<String>,
-    pub creator_id: Option<String>,
-    pub is_banned: Option<bool>,
-    pub sort_by: Option<String>,
-    pub sort_direction: Option<String>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
         path = "/api/admin/rooms",
         tag = "Admin",
-        params(ListRoomsQuery),
+        params(admin::ListRoomsRequest),
         responses(
             (status = 200, description = "Admin room list", body = admin::ListRoomsResponse),
             (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
@@ -1001,32 +847,10 @@ pub struct ListRoomsQuery {
 pub(crate) async fn list_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Query(q): Query<ListRoomsQuery>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListRoomsRequest>,
 ) -> AppResult<Json<admin::ListRoomsResponse>> {
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
-
-    let resp = api
-        .list_rooms(admin::ListRoomsRequest {
-            page,
-            page_size,
-            status: q.status.unwrap_or(0),
-            search: q.search.unwrap_or_default(),
-            creator_id: q.creator_id.unwrap_or_default(),
-            is_banned: q.is_banned,
-            sort_by: match q.sort_by.as_deref() {
-                Some("name") => admin::RoomListSortBy::Name as i32,
-                Some("updated_at") => admin::RoomListSortBy::UpdatedAt as i32,
-                Some("last_activity_at") => admin::RoomListSortBy::LastActivityAt as i32,
-                _ => admin::RoomListSortBy::CreatedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = api.list_rooms(req).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -1047,14 +871,10 @@ pub(crate) async fn list_rooms(
 pub(crate) async fn get_room(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::GetRoomRequest>,
 ) -> AppResult<Json<admin::GetRoomResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
-    let resp = api
-        .get_room(admin::GetRoomRequest { room_id })
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = api.get_room(req).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -1076,12 +896,11 @@ pub(crate) async fn delete_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::DeleteRoomRequest>,
 ) -> AppResult<Json<admin::DeleteRoomResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_room(admin::DeleteRoomRequest { room_id }, &auth.user_id, &rctx.0)
+        .delete_room(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1107,12 +926,11 @@ pub(crate) async fn set_room_password(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(mut req): Json<admin::UpdateRoomPasswordRequest>,
+    Path(path): Path<admin::RoomPathRequest>,
+    Json(req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
-    validate_path_id(&room_id, "room_id")?;
+    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
     let api = require_admin_api(&state)?;
-    req.room_id = room_id;
     let resp = api
         .update_room_password(req, &auth.user_id, &rctx.0)
         .await
@@ -1128,7 +946,7 @@ pub(crate) async fn set_room_password(
         tag = "Admin",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            RoomMembersQuery
+            admin::GetRoomMembersRequest
         ),
         responses(
             (status = 200, description = "Room members", body = admin::GetRoomMembersResponse),
@@ -1140,44 +958,14 @@ pub(crate) async fn set_room_password(
 pub(crate) async fn get_room_members(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Query(q): Query<RoomMembersQuery>,
+    Path(path): Path<admin::RoomPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
-    validate_path_id(&room_id, "room_id")?;
+    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
 
     let resp = api
-        .get_room_members(admin::GetRoomMembersRequest {
-            room_id,
-            page,
-            page_size,
-            search: q.search.unwrap_or_default(),
-            role: match q.role.as_deref() {
-                Some("guest") => synctv_proto::common::RoomMemberRole::Guest as i32,
-                Some("member") => synctv_proto::common::RoomMemberRole::Member as i32,
-                Some("admin") => synctv_proto::common::RoomMemberRole::Admin as i32,
-                Some("creator") => synctv_proto::common::RoomMemberRole::Creator as i32,
-                _ => synctv_proto::common::RoomMemberRole::Unspecified as i32,
-            },
-            status: match q.status.as_deref() {
-                Some("active") => synctv_proto::common::MemberStatus::Active as i32,
-                Some("pending") => synctv_proto::common::MemberStatus::Pending as i32,
-                Some("banned") => synctv_proto::common::MemberStatus::Banned as i32,
-                Some("left") => synctv_proto::common::MemberStatus::Left as i32,
-                _ => synctv_proto::common::MemberStatus::Unspecified as i32,
-            },
-            sort_by: match q.sort_by.as_deref() {
-                Some("username") => admin::RoomMemberListSortBy::Username as i32,
-                Some("role") => admin::RoomMemberListSortBy::Role as i32,
-                Some("status") => admin::RoomMemberListSortBy::Status as i32,
-                _ => admin::RoomMemberListSortBy::JoinedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("desc") => admin::SortDirection::Desc as i32,
-                _ => admin::SortDirection::Asc as i32,
-            },
-        })
+        .get_room_members(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1203,18 +991,11 @@ pub(crate) async fn ban_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(mut req): Json<admin::BanRoomRequest>,
+    Path(path): Path<admin::RoomPathRequest>,
+    Json(req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
-    validate_path_id(&room_id, "room_id")?;
-    if req.reason.len() > 500 {
-        return Err(AppError::bad_request(
-            "Reason too long (max 500 characters)",
-        ));
-    }
-
+    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
     let api = require_admin_api(&state)?;
-    req.room_id = room_id;
     let resp = api
         .ban_room(req, &auth.user_id, &rctx.0)
         .await
@@ -1240,12 +1021,11 @@ pub(crate) async fn unban_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::UnbanRoomRequest>,
 ) -> AppResult<Json<admin::UnbanRoomResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_room(admin::UnbanRoomRequest { room_id }, &auth.user_id, &rctx.0)
+        .unban_room(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1269,16 +1049,11 @@ pub(crate) async fn approve_room(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::ApproveRoomRequest>,
 ) -> AppResult<Json<admin::ApproveRoomResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_room(
-            admin::ApproveRoomRequest { room_id },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .approve_room(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1301,12 +1076,11 @@ pub(crate) async fn approve_room(
 pub(crate) async fn get_room_settings(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::GetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::GetRoomSettingsResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_room_settings(admin::GetRoomSettingsRequest { room_id })
+        .get_room_settings(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1331,11 +1105,10 @@ pub(crate) async fn get_room_settings(
 pub(crate) async fn set_room_settings(
     auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
+    Path(path): Path<admin::RoomPathRequest>,
+    Json(req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
-    validate_path_id(&room_id, "room_id")?;
-    req.room_id = room_id;
+    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
     let api = require_admin_api(&state)?;
     let resp = api
         .update_room_settings(req, &auth.user_id)
@@ -1361,12 +1134,11 @@ pub(crate) async fn set_room_settings(
 pub(crate) async fn reset_room_settings(
     auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<admin::ResetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::ResetRoomSettingsResponse>> {
-    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .reset_room_settings(admin::ResetRoomSettingsRequest { room_id }, &auth.user_id)
+        .reset_room_settings(req, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1473,29 +1245,11 @@ pub(crate) async fn batch_delete_rooms(
 pub(crate) async fn list_providers(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Query(q): Query<ListProvidersQuery>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListProviderInstancesRequest>,
 ) -> AppResult<Json<admin::ListProviderInstancesResponse>> {
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let resp = api
-        .list_provider_instances(admin::ListProviderInstancesRequest {
-            page,
-            page_size,
-            provider_type: q.provider_type.unwrap_or_default(),
-            search: q.search.unwrap_or_default(),
-            enabled: q.enabled,
-            tls: q.tls,
-            sort_by: match q.sort_by.as_deref() {
-                Some("name") => admin::ProviderInstanceListSortBy::Name as i32,
-                Some("endpoint") => admin::ProviderInstanceListSortBy::Endpoint as i32,
-                Some("updated_at") => admin::ProviderInstanceListSortBy::UpdatedAt as i32,
-                _ => admin::ProviderInstanceListSortBy::CreatedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
+        .list_provider_instances(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1522,7 +1276,6 @@ pub(crate) async fn add_provider(
     State(state): State<AppState>,
     Json(req): Json<admin::AddProviderInstanceRequest>,
 ) -> AppResult<Json<admin::AddProviderInstanceResponse>> {
-    validate_path_id(&req.name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .add_provider_instance(req, &auth.user_id, &rctx.0)
@@ -1551,11 +1304,10 @@ pub(crate) async fn update_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(mut req): Json<admin::UpdateProviderInstanceRequest>,
+    Path(path): Path<admin::ProviderInstancePathRequest>,
+    Json(req): Json<admin::UpdateProviderInstanceRequest>,
 ) -> AppResult<Json<admin::UpdateProviderInstanceResponse>> {
-    validate_path_id(&name, "name")?;
-    req.name = name;
+    let req = req.with_provider_instance_name(validate_admin_proto_path(path)?.name);
     let api = require_admin_api(&state)?;
     let resp = api
         .update_provider_instance(req, &auth.user_id, &rctx.0)
@@ -1582,16 +1334,11 @@ pub(crate) async fn delete_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(req): Path<admin::DeleteProviderInstanceRequest>,
 ) -> AppResult<Json<admin::DeleteProviderInstanceResponse>> {
-    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_provider_instance(
-            admin::DeleteProviderInstanceRequest { name },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .delete_provider_instance(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1615,16 +1362,11 @@ pub(crate) async fn reconnect_provider(
     auth: AuthAdmin,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(req): Path<admin::ReconnectProviderInstanceRequest>,
 ) -> AppResult<Json<admin::ReconnectProviderInstanceResponse>> {
-    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .reconnect_provider_instance(
-            admin::ReconnectProviderInstanceRequest { name },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .reconnect_provider_instance(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1647,12 +1389,11 @@ pub(crate) async fn reconnect_provider(
 pub(crate) async fn enable_provider(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(req): Path<admin::EnableProviderInstanceRequest>,
 ) -> AppResult<Json<admin::EnableProviderInstanceResponse>> {
-    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .enable_provider_instance(admin::EnableProviderInstanceRequest { name })
+        .enable_provider_instance(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1675,12 +1416,11 @@ pub(crate) async fn enable_provider(
 pub(crate) async fn disable_provider(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(req): Path<admin::DisableProviderInstanceRequest>,
 ) -> AppResult<Json<admin::DisableProviderInstanceResponse>> {
-    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .disable_provider_instance(admin::DisableProviderInstanceRequest { name })
+        .disable_provider_instance(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1690,26 +1430,13 @@ pub(crate) async fn disable_provider(
 // Stream Management
 // ------------------------------------------------------------------
 
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListStreamsQuery {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    room_id: Option<String>,
-    user_id: Option<String>,
-    node_id: Option<String>,
-    search: Option<String>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
         path = "/api/admin/streams",
         tag = "Admin",
-        params(ListStreamsQuery),
+        params(admin::ListActiveStreamsRequest),
         responses(
             (status = 200, description = "Active streams", body = admin::ListActiveStreamsResponse),
             (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
@@ -1720,30 +1447,11 @@ pub struct ListStreamsQuery {
 pub(crate) async fn list_streams(
     _auth: AuthAdmin,
     State(state): State<AppState>,
-    Query(q): Query<ListStreamsQuery>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListActiveStreamsRequest>,
 ) -> AppResult<Json<admin::ListActiveStreamsResponse>> {
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let response = api
-        .list_active_streams(admin::ListActiveStreamsRequest {
-            page,
-            page_size,
-            room_id: q.room_id.unwrap_or_default(),
-            user_id: q.user_id.unwrap_or_default(),
-            node_id: q.node_id.unwrap_or_default(),
-            search: q.search.unwrap_or_default(),
-            sort_by: match q.sort_by.as_deref() {
-                Some("room_id") => admin::ActiveStreamListSortBy::RoomId as i32,
-                Some("media_id") => admin::ActiveStreamListSortBy::MediaId as i32,
-                Some("user_id") => admin::ActiveStreamListSortBy::UserId as i32,
-                Some("node_id") => admin::ActiveStreamListSortBy::NodeId as i32,
-                _ => admin::ActiveStreamListSortBy::StartedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
+        .list_active_streams(req)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(response))
@@ -1770,20 +1478,10 @@ pub(crate) async fn kick_stream(
     State(state): State<AppState>,
     Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
-    if req.room_id.is_empty() || req.media_id.is_empty() {
-        return Err(AppError::bad_request("room_id and media_id are required"));
-    }
-
     let api = require_admin_api(&state)?;
-    api.kick_stream(
-        &req.room_id,
-        &req.media_id,
-        &req.reason,
-        &auth.user_id,
-        &rctx.0,
-    )
-    .await
-    .map_err(admin_err_to_app_error)?;
+    api.kick_stream(req, &auth.user_id, &rctx.0)
+        .await
+        .map_err(admin_err_to_app_error)?;
     Ok(Json(admin::KickStreamResponse {}))
 }
 
@@ -1807,30 +1505,10 @@ pub(crate) async fn kick_stream(
 pub(crate) async fn list_admins(
     _auth: AuthRoot,
     State(state): State<AppState>,
-    Query(q): Query<ListAdminsQuery>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListAdminsRequest>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
     let api = require_admin_api(&state)?;
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
-    let resp = api
-        .list_admins(admin::ListAdminsRequest {
-            page,
-            page_size,
-            search: q.search.unwrap_or_default(),
-            sort_by: match q.sort_by.as_deref() {
-                Some("username") => admin::UserListSortBy::Username as i32,
-                Some("email") => admin::UserListSortBy::Email as i32,
-                Some("status") => admin::UserListSortBy::Status as i32,
-                Some("role") => admin::UserListSortBy::Role as i32,
-                Some("updated_at") => admin::UserListSortBy::UpdatedAt as i32,
-                _ => admin::UserListSortBy::CreatedAt as i32,
-            },
-            sort_direction: match q.sort_direction.as_deref() {
-                Some("asc") => admin::SortDirection::Asc as i32,
-                _ => admin::SortDirection::Desc as i32,
-            },
-        })
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = api.list_admins(req).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -1852,12 +1530,11 @@ pub(crate) async fn add_admin(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::AddAdminRequest>,
 ) -> AppResult<Json<admin::AddAdminResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .add_admin(admin::AddAdminRequest { user_id }, &auth.user_id, &rctx.0)
+        .add_admin(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1881,16 +1558,11 @@ pub(crate) async fn remove_admin(
     auth: AuthRoot,
     rctx: ReqCtx,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path(req): Path<admin::RemoveAdminRequest>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
-    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .remove_admin(
-            admin::RemoveAdminRequest { user_id },
-            &auth.user_id,
-            &rctx.0,
-        )
+        .remove_admin(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1955,45 +1627,89 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_update_provider_instance_request_deserializes_without_path_name() {
+        let req: admin::UpdateProviderInstanceRequest =
+            serde_json::from_str(r#"{"endpoint":"https://provider.internal"}"#)
+                .expect("deserialize");
+
+        assert!(req.name.is_empty());
+        assert_eq!(req.endpoint.as_deref(), Some("https://provider.internal"));
+    }
+
+    #[test]
+    fn test_admin_user_path_request_deserializes_proto_field_name() {
+        let req: admin::UserPathRequest =
+            serde_json::from_str(r#"{"user_id":"AbC123xYz890"}"#).expect("deserialize");
+
+        assert_eq!(req.user_id, "AbC123xYz890");
+    }
+
+    #[test]
+    fn test_admin_room_path_request_deserializes_proto_field_name() {
+        let req: admin::RoomPathRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).expect("deserialize");
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+    }
+
+    #[test]
+    fn test_provider_instance_path_request_deserializes_proto_field_name() {
+        let req: admin::ProviderInstancePathRequest =
+            serde_json::from_str(r#"{"name":"alist_main"}"#).expect("deserialize");
+
+        assert_eq!(req.name, "alist_main");
+    }
+
     // ========== Query Struct Tests ==========
 
     #[test]
     fn test_list_users_query_deserialization() {
-        let json = r#"{"page":2,"page_size":50,"status":"active","role":"admin","search":"test","sort_by":"username","sort_direction":"asc"}"#;
-        let query: ListUsersQuery = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.page, Some(2));
-        assert_eq!(query.page_size, Some(50));
-        assert_eq!(query.status.as_deref(), Some("active"));
-        assert_eq!(query.role.as_deref(), Some("admin"));
-        assert_eq!(query.search.as_deref(), Some("test"));
-        assert_eq!(query.sort_by.as_deref(), Some("username"));
-        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
+        let json = r#"{"page":2,"page_size":50,"status":1,"role":2,"search":"test","sort_by":3,"sort_direction":1}"#;
+        let query: admin::ListUsersRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 50);
+        assert_eq!(
+            query.status,
+            synctv_proto::common::UserStatus::Active as i32
+        );
+        assert_eq!(query.role, synctv_proto::common::UserRole::Admin as i32);
+        assert_eq!(query.search, "test");
+        assert_eq!(query.sort_by, admin::UserListSortBy::Username as i32);
+        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
     }
 
     #[test]
     fn test_list_rooms_query_deserialization() {
-        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false,"sort_by":"last_activity_at","sort_direction":"desc"}"#;
-        let query: ListRoomsQuery = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.page, Some(1));
-        assert_eq!(query.page_size, Some(10));
-        assert_eq!(query.status, Some(1));
-        assert_eq!(query.search.as_deref(), Some("room"));
-        assert_eq!(query.creator_id.as_deref(), Some("user1"));
+        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false,"sort_by":3,"sort_direction":2}"#;
+        let query: admin::ListRoomsRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, 1);
+        assert_eq!(query.page_size, 10);
+        assert_eq!(
+            query.status,
+            synctv_proto::common::RoomStatus::Active as i32
+        );
+        assert_eq!(query.search, "room");
+        assert_eq!(query.creator_id, "user1");
         assert_eq!(query.is_banned, Some(false));
-        assert_eq!(query.sort_by.as_deref(), Some("last_activity_at"));
-        assert_eq!(query.sort_direction.as_deref(), Some("desc"));
+        assert_eq!(query.sort_by, admin::RoomListSortBy::LastActivityAt as i32);
+        assert_eq!(query.sort_direction, admin::SortDirection::Desc as i32);
     }
 
     #[test]
     fn test_room_members_query_deserialization() {
-        let json = r#"{"page":2,"page_size":25,"search":"alice","role":"admin","sort_by":"username","sort_direction":"asc"}"#;
-        let query: RoomMembersQuery = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.page, Some(2));
-        assert_eq!(query.page_size, Some(25));
-        assert_eq!(query.search.as_deref(), Some("alice"));
-        assert_eq!(query.role.as_deref(), Some("admin"));
-        assert_eq!(query.sort_by.as_deref(), Some("username"));
-        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
+        let json =
+            r#"{"page":2,"page_size":25,"search":"alice","role":3,"sort_by":2,"sort_direction":1}"#;
+        let query: admin::GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(query.search, "alice");
+        assert_eq!(
+            query.role,
+            synctv_proto::common::RoomMemberRole::Admin as i32
+        );
+        assert_eq!(query.sort_by, admin::RoomMemberListSortBy::Username as i32);
+        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
     }
 
     #[tokio::test]
@@ -2075,35 +1791,60 @@ mod tests {
         assert!(long_reason.len() > 500);
     }
 
-    // ========== Status Conversion Tests ==========
-
     #[test]
-    fn test_status_string_to_proto_mapping() {
-        let mappings = vec![
-            ("active", synctv_proto::common::UserStatus::Active as i32),
-            ("pending", synctv_proto::common::UserStatus::Pending as i32),
-            ("banned", synctv_proto::common::UserStatus::Banned as i32),
-        ];
-        for (status_str, expected) in mappings {
-            let actual = match status_str {
-                "active" => synctv_proto::common::UserStatus::Active as i32,
-                "pending" => synctv_proto::common::UserStatus::Pending as i32,
-                "banned" => synctv_proto::common::UserStatus::Banned as i32,
-                _ => synctv_proto::common::UserStatus::Unspecified as i32,
-            };
-            assert_eq!(actual, expected, "Status '{status_str}' mismatch");
-        }
+    fn test_get_user_rooms_query_defaults_to_proto_zero_values() {
+        let query: admin::GetUserRoomsRequest = serde_urlencoded::from_str("").unwrap();
+
+        assert!(query.user_id.is_empty());
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
+        assert_eq!(query.status, 0);
+        assert!(query.search.is_empty());
+        assert_eq!(query.is_banned, None);
+        assert_eq!(query.sort_by, 0);
+        assert_eq!(query.sort_direction, 0);
     }
 
     #[test]
-    fn test_unknown_status_maps_to_unspecified() {
-        let actual = match "invalid" {
-            "active" => synctv_proto::common::UserStatus::Active as i32,
-            "pending" => synctv_proto::common::UserStatus::Pending as i32,
-            "banned" => synctv_proto::common::UserStatus::Banned as i32,
-            _ => synctv_proto::common::UserStatus::Unspecified as i32,
-        };
-        assert_eq!(actual, synctv_proto::common::UserStatus::Unspecified as i32);
+    fn test_list_provider_instances_query_defaults_to_proto_zero_values() {
+        let query: admin::ListProviderInstancesRequest = serde_urlencoded::from_str("").unwrap();
+
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
+        assert!(query.provider_type.is_empty());
+        assert!(query.search.is_empty());
+        assert_eq!(query.enabled, None);
+        assert_eq!(query.tls, None);
+        assert_eq!(query.sort_by, 0);
+        assert_eq!(query.sort_direction, 0);
+    }
+
+    #[test]
+    fn test_list_active_streams_query_deserializes_explicit_values() {
+        let query: admin::ListActiveStreamsRequest = serde_urlencoded::from_str(
+            "page=2&page_size=25&room_id=room123&user_id=user123&node_id=node-a&search=live&sort_by=5&sort_direction=1",
+        )
+        .unwrap();
+
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(query.room_id, "room123");
+        assert_eq!(query.user_id, "user123");
+        assert_eq!(query.node_id, "node-a");
+        assert_eq!(query.search, "live");
+        assert_eq!(query.sort_by, admin::ActiveStreamListSortBy::NodeId as i32);
+        assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
+    }
+
+    #[test]
+    fn test_list_admins_query_defaults_to_proto_zero_values() {
+        let query: admin::ListAdminsRequest = serde_urlencoded::from_str("").unwrap();
+
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
+        assert!(query.search.is_empty());
+        assert_eq!(query.sort_by, 0);
+        assert_eq!(query.sort_direction, 0);
     }
 
     // ========== Router Structure Tests ==========
@@ -2137,49 +1878,44 @@ mod tests {
     // ========== Provider Name Validation Tests ==========
 
     #[test]
-    fn test_provider_name_validation_empty() {
-        // Empty name should fail validation
-        let result = validate_path_id("", "name");
+    fn test_provider_instance_path_request_validation_empty() {
+        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
+            name: String::new(),
+        });
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("Invalid name"));
     }
 
     #[test]
-    fn test_provider_name_validation_too_long() {
-        // Name exceeding ID_MAX (128) should fail
-        let long_name = "a".repeat(129);
-        let result = validate_path_id(&long_name, "name");
+    fn test_provider_instance_path_request_validation_too_long() {
+        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
+            name: "a".repeat(65),
+        });
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("Invalid name"));
     }
 
     #[test]
-    fn test_provider_name_validation_special_characters() {
-        // Name with special characters should fail
+    fn test_provider_instance_path_request_validation_special_characters() {
         let invalid_names = vec![
-            "test<script>",    // HTML tags
-            "test>alert",      // > character
-            "test\"quote",     // Quote character
-            "test'apostrophe", // Apostrophe
-            "test space",      // Space
-            "test/slash",      // Slash
-            "test\\backslash", // Backslash
-            "test;drop",       // Semicolon
-            "test& amp",       // Ampersand
+            "test<script>",
+            "test>alert",
+            "test\"quote",
+            "test'apostrophe",
+            "test space",
+            "test/slash",
+            "test\\backslash",
+            "test;drop",
+            "test& amp",
         ];
         for invalid_name in invalid_names {
-            let result = validate_path_id(invalid_name, "name");
+            let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
+                name: invalid_name.to_string(),
+            });
             assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");
         }
     }
 
     #[test]
-    fn test_provider_name_validation_valid() {
-        // Valid names should pass
+    fn test_provider_instance_path_request_validation_valid() {
         let valid_names = vec![
             "provider1",
             "my-provider",
@@ -2189,16 +1925,18 @@ mod tests {
             "test_provider-123",
         ];
         for valid_name in valid_names {
-            let result = validate_path_id(valid_name, "name");
+            let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
+                name: valid_name.to_string(),
+            });
             assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
         }
     }
 
     #[test]
-    fn test_provider_name_max_length_valid() {
-        // Name at exactly ID_MAX (64) should be valid
-        let max_length_name = "a".repeat(64);
-        let result = validate_path_id(&max_length_name, "name");
+    fn test_provider_instance_path_request_max_length_valid() {
+        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
+            name: "a".repeat(64),
+        });
         assert!(result.is_ok());
     }
 
@@ -2233,7 +1971,6 @@ mod tests {
 
     #[test]
     fn test_add_provider_name_validation_empty_in_body() {
-        // Empty name in request body should fail validation
         let req = admin::AddProviderInstanceRequest {
             name: String::new(),
             endpoint: "http://localhost:50051".to_string(),
@@ -2244,26 +1981,28 @@ mod tests {
             providers: vec![],
             config: vec![],
         };
-        // Validation is done by validate_path_id in the handler
-        let result = validate_path_id(&req.name, "name");
+        let result = crate::impls::validate_proto_request(&req);
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("Invalid name"));
     }
 
     #[test]
     fn test_add_provider_name_validation_malicious_in_body() {
-        // Malicious name in request body should fail validation
-        // Note: control chars like \x00 are sanitized away by sanitize_string,
-        // so "test\x00null" becomes "testnull" which is valid - not tested here.
         let malicious_names = vec![
             "<script>alert(1)</script>",
             "test; DROP TABLE providers;",
             "../../../etc/passwd",
         ];
         for malicious_name in malicious_names {
-            let result = validate_path_id(malicious_name, "name");
+            let result = crate::impls::validate_proto_request(&admin::AddProviderInstanceRequest {
+                name: malicious_name.to_string(),
+                endpoint: "http://localhost:50051".to_string(),
+                comment: String::new(),
+                timeout_seconds: 10,
+                tls: false,
+                insecure_tls: false,
+                providers: vec![],
+                config: vec![],
+            });
             assert!(
                 result.is_err(),
                 "Expected '{malicious_name}' to be rejected"
@@ -2273,7 +2012,6 @@ mod tests {
 
     #[test]
     fn test_add_provider_name_validation_valid_in_body() {
-        // Valid name in request body should pass validation
         let valid_names = vec![
             "alist_main",
             "bilibili-prod",
@@ -2281,7 +2019,16 @@ mod tests {
             "provider123",
         ];
         for valid_name in valid_names {
-            let result = validate_path_id(valid_name, "name");
+            let result = crate::impls::validate_proto_request(&admin::AddProviderInstanceRequest {
+                name: valid_name.to_string(),
+                endpoint: "http://localhost:50051".to_string(),
+                comment: String::new(),
+                timeout_seconds: 10,
+                tls: false,
+                insecure_tls: false,
+                providers: vec![],
+                config: vec![],
+            });
             assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
         }
     }

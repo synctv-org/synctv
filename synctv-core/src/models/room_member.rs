@@ -17,6 +17,8 @@ pub enum MemberStatus {
     Active,
     /// Pending approval (if room requires approval)
     Pending,
+    /// Join request or invitation was explicitly rejected
+    Rejected,
     /// Banned from room
     Banned,
     /// Left the room (soft-deleted membership)
@@ -29,6 +31,7 @@ impl MemberStatus {
         match self {
             Self::Active => "active",
             Self::Pending => "pending",
+            Self::Rejected => "rejected",
             Self::Banned => "banned",
             Self::Left => "left",
         }
@@ -42,6 +45,11 @@ impl MemberStatus {
     #[must_use]
     pub const fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
+    }
+
+    #[must_use]
+    pub const fn is_rejected(&self) -> bool {
+        matches!(self, Self::Rejected)
     }
 
     #[must_use]
@@ -62,6 +70,7 @@ impl FromStr for MemberStatus {
         match s.to_lowercase().as_str() {
             "active" => Ok(Self::Active),
             "pending" => Ok(Self::Pending),
+            "rejected" => Ok(Self::Rejected),
             "banned" => Ok(Self::Banned),
             "left" => Ok(Self::Left),
             _ => Err(format!("Unknown member status: {s}")),
@@ -75,7 +84,7 @@ impl std::fmt::Display for MemberStatus {
     }
 }
 
-// Database mapping: MemberStatus -> SMALLINT (1=active, 2=pending, 3=banned)
+// Database mapping: MemberStatus -> SMALLINT (1=active, 2=pending, 3=rejected, 4=banned, 5=left)
 impl sqlx::Type<sqlx::Postgres> for MemberStatus {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
@@ -90,8 +99,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for MemberStatus {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
-            Self::Banned => 3,
-            Self::Left => 4,
+            Self::Rejected => 3,
+            Self::Banned => 4,
+            Self::Left => 5,
         };
         <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
     }
@@ -105,8 +115,9 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MemberStatus {
         match val {
             1 => Ok(Self::Active),
             2 => Ok(Self::Pending),
-            3 => Ok(Self::Banned),
-            4 => Ok(Self::Left),
+            3 => Ok(Self::Rejected),
+            4 => Ok(Self::Banned),
+            5 => Ok(Self::Left),
             _ => Err(format!("Invalid MemberStatus value: {val}").into()),
         }
     }
@@ -189,7 +200,7 @@ impl Default for RoomMemberListQuery {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum RelatedRoomListSortBy {
+pub enum MyRoomListSortBy {
     Name,
     CreatedAt,
     UpdatedAt,
@@ -198,7 +209,7 @@ pub enum RelatedRoomListSortBy {
     JoinedAt,
 }
 
-impl RelatedRoomListSortBy {
+impl MyRoomListSortBy {
     #[must_use]
     pub const fn as_sql(self) -> &'static str {
         match self {
@@ -211,7 +222,7 @@ impl RelatedRoomListSortBy {
     }
 }
 
-impl std::str::FromStr for RelatedRoomListSortBy {
+impl std::str::FromStr for MyRoomListSortBy {
     type Err = String;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
@@ -226,7 +237,7 @@ impl std::str::FromStr for RelatedRoomListSortBy {
     }
 }
 
-impl std::fmt::Display for RelatedRoomListSortBy {
+impl std::fmt::Display for MyRoomListSortBy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
             Self::Name => "name",
@@ -239,27 +250,39 @@ impl std::fmt::Display for RelatedRoomListSortBy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MyRoomRelation {
+    #[default]
+    All,
+    Created,
+    Participating,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelatedRoomListQuery {
+pub struct MyRoomListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
     pub status: Option<RoomStatus>,
     #[serde(default)]
     pub is_banned: Option<bool>,
     #[serde(default)]
-    pub sort_by: RelatedRoomListSortBy,
+    pub relation: MyRoomRelation,
+    #[serde(default)]
+    pub sort_by: MyRoomListSortBy,
     #[serde(default)]
     pub sort_direction: SortDirection,
 }
 
-impl Default for RelatedRoomListQuery {
+impl Default for MyRoomListQuery {
     fn default() -> Self {
         Self {
             pagination: super::pagination::PageParams::default(),
             search: None,
             status: None,
             is_banned: None,
-            sort_by: RelatedRoomListSortBy::JoinedAt,
+            relation: MyRoomRelation::All,
+            sort_by: MyRoomListSortBy::JoinedAt,
             sort_direction: SortDirection::Desc,
         }
     }
@@ -406,6 +429,14 @@ impl RoomMember {
         self.left_at = Some(Utc::now());
     }
 
+    pub fn reject(&mut self) {
+        self.status = MemberStatus::Rejected;
+        self.left_at = Some(Utc::now());
+        self.banned_at = None;
+        self.banned_by = None;
+        self.banned_reason = None;
+    }
+
     /// Ban this member from the room
     ///
     /// Sets `left_at` to satisfy the DB constraint requiring `left_at IS NOT NULL`
@@ -535,17 +566,17 @@ mod tests {
         let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let result = member.effective_permissions(default);
         assert!(!result.has(PermissionBits::SEND_CHAT));
-        assert!(result.has(PermissionBits::ADD_MOVIE)); // other permissions intact
+        assert!(result.has(PermissionBits::ADD_MEDIA)); // other permissions intact
     }
 
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = test_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::EXPORT_DATA;
+        member.admin_added_permissions = PermissionBits::USE_WEBRTC;
         member.admin_removed_permissions = PermissionBits::BAN_MEMBER;
         let default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::EXPORT_DATA));
+        assert!(result.has(PermissionBits::USE_WEBRTC));
         assert!(!result.has(PermissionBits::BAN_MEMBER));
     }
 
@@ -565,6 +596,7 @@ mod tests {
         assert!(!MemberStatus::Active.is_banned());
         assert!(MemberStatus::Banned.is_banned());
         assert!(MemberStatus::Pending.is_pending());
+        assert!(MemberStatus::Rejected.is_rejected());
     }
 
     #[test]
@@ -579,6 +611,10 @@ mod tests {
         let mut banned_member = test_member(RoomRole::Member);
         banned_member.status = MemberStatus::Banned;
         assert!(!banned_member.is_active());
+
+        let mut rejected_member = test_member(RoomRole::Member);
+        rejected_member.reject();
+        assert!(!rejected_member.is_active());
     }
 
     // ─── C1: ban() must set left_at ──────────────────────────────────
@@ -649,6 +685,21 @@ mod tests {
             member.left_at.is_some(),
             "leave() must set left_at timestamp"
         );
+    }
+
+    #[test]
+    fn test_reject_sets_status_and_left_at_without_ban_metadata() {
+        let mut member = test_member(RoomRole::Member);
+        let banner = UserId("banner".to_string());
+        member.ban(banner, Some("bad behavior".to_string()));
+
+        member.reject();
+
+        assert_eq!(member.status, MemberStatus::Rejected);
+        assert!(member.left_at.is_some());
+        assert!(member.banned_at.is_none());
+        assert!(member.banned_by.is_none());
+        assert!(member.banned_reason.is_none());
     }
 
     #[test]

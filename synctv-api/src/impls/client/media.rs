@@ -1,12 +1,14 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use crate::impls::ApiError;
-use std::str::FromStr;
 use synctv_core::models::{
     MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy, Playlist,
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
-    ProviderType, SortDirection as CoreSortDirection, UserId,
+    SortDirection as CoreSortDirection, UserId,
 };
+use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
+use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
+use synctv_core::service::room::DeleteEntriesRequest as CoreDeleteEntriesRequest;
 
 use super::convert::{
     media_to_proto, media_to_proto_with_availability, playlist_path_node_to_proto,
@@ -14,55 +16,18 @@ use super::convert::{
 };
 use super::ClientApiImpl;
 
-/// Sanitize and truncate a title extracted from a URL path segment.
-///
-/// Unlike user-provided titles (which are validated and rejected if invalid),
-/// URL-derived titles are best-effort: we sanitize control characters and
-/// truncate to [`MEDIA_TITLE_MAX`] to ensure they fit in the database.
-pub(crate) fn sanitize_url_derived_title(raw: &str) -> String {
-    use crate::http::validation::limits::MEDIA_TITLE_MAX;
-
-    // URL-decode percent-encoded characters (e.g., "my%20video.mp4" -> "my video.mp4")
-    let decoded = percent_encoding::percent_decode_str(raw)
-        .decode_utf8()
-        .unwrap_or(std::borrow::Cow::Borrowed(raw));
-    // Sanitize control characters and trim whitespace
-    let sanitized = crate::http::validation::sanitize_string(&decoded);
-
-    // Truncate to max allowed character count
-    if sanitized.chars().count() > MEDIA_TITLE_MAX {
-        sanitized.chars().take(MEDIA_TITLE_MAX).collect()
-    } else {
-        sanitized.into_owned()
-    }
+#[derive(Debug)]
+struct AddMediaBatchBuildResult {
+    items: Vec<synctv_core::service::media::AddMediaRequest>,
+    playlist_id: Option<synctv_core::models::PlaylistId>,
 }
+const DEFAULT_MEDIA_TITLE: &str = "Unknown";
 
 pub(crate) fn resolve_add_media_provider_instance(
-    provider: ProviderType,
-    provider_name: &str,
     provider_instance_name: String,
 ) -> Result<String, ApiError> {
-    if provider == ProviderType::DirectUrl {
-        return Ok("direct_url".to_string());
-    }
-
     let trimmed = provider_instance_name.trim();
-    if !trimmed.is_empty() {
-        return Ok(trimmed.to_string());
-    }
-
-    Err(ApiError::InvalidInput(format!(
-        "provider_instance_name is required for provider '{provider_name}'"
-    )))
-}
-
-pub(crate) fn parse_add_media_provider(provider_name: &str) -> Result<ProviderType, ApiError> {
-    if provider_name.is_empty() {
-        return Ok(ProviderType::DirectUrl);
-    }
-
-    ProviderType::from_str(provider_name)
-        .map_err(|_| ApiError::InvalidInput(format!("Unknown provider type: '{provider_name}'")))
+    Ok(trimmed.to_string())
 }
 
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
@@ -95,7 +60,9 @@ fn map_media_sort(sort_by: i32) -> CoreMediaListSortBy {
         crate::proto::client::MediaListSortBy::Name => CoreMediaListSortBy::Name,
         crate::proto::client::MediaListSortBy::AddedAt => CoreMediaListSortBy::AddedAt,
         crate::proto::client::MediaListSortBy::UpdatedAt => CoreMediaListSortBy::UpdatedAt,
-        crate::proto::client::MediaListSortBy::SourceProvider => CoreMediaListSortBy::SourceProvider,
+        crate::proto::client::MediaListSortBy::SourceProvider => {
+            CoreMediaListSortBy::SourceProvider
+        }
         crate::proto::client::MediaListSortBy::ProviderInstanceName => {
             CoreMediaListSortBy::ProviderInstanceName
         }
@@ -155,6 +122,154 @@ pub(crate) fn validate_dynamic_playlist_query_support(
     Ok(true)
 }
 
+pub(crate) fn build_move_media_request(
+    req: crate::proto::client::MoveMediaRequest,
+) -> Result<CoreMoveMediaRequest, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let crate::proto::client::MoveMediaRequest {
+        media_ids,
+        source_playlist_id,
+        target_playlist_id,
+        all_from_scope,
+        before_media_id,
+        after_media_id,
+    } = req;
+
+    Ok(CoreMoveMediaRequest {
+        media_ids: crate::impls::proto_validated_media_ids(media_ids),
+        source_playlist_id: source_playlist_id.map(crate::impls::proto_validated_playlist_id),
+        target_playlist_id: target_playlist_id.map(crate::impls::proto_validated_playlist_id),
+        all_from_scope,
+        before_media_id: before_media_id.map(crate::impls::proto_validated_media_id),
+        after_media_id: after_media_id.map(crate::impls::proto_validated_media_id),
+    })
+}
+
+pub(crate) fn build_add_media_request(
+    req: crate::proto::client::AddMediaRequest,
+) -> Result<CoreAddMediaRequest, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let crate::proto::client::AddMediaRequest {
+        playlist_id,
+        provider,
+        provider_instance_name,
+        source_config,
+        title,
+    } = req;
+
+    let playlist_id = playlist_id.map(crate::impls::proto_validated_playlist_id);
+
+    let source_config: serde_json::Value = if source_config.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(&source_config)
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
+    };
+
+    let title = if title.is_empty() {
+        DEFAULT_MEDIA_TITLE.to_string()
+    } else {
+        crate::http::validation::validate_media_title(&title)
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
+    };
+
+    let provider_instance_name = resolve_add_media_provider_instance(provider_instance_name)?;
+
+    Ok(CoreAddMediaRequest {
+        playlist_id,
+        name: title,
+        source_provider: provider,
+        provider_instance_name,
+        source_config,
+    })
+}
+
+pub(crate) fn build_delete_entries_request(
+    req: crate::proto::client::DeleteEntriesRequest,
+) -> Result<(CoreDeleteEntriesRequest, Vec<String>), ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let crate::proto::client::DeleteEntriesRequest {
+        playlist_ids,
+        media_ids,
+        force,
+    } = req;
+    let media_id_strings = media_ids.clone();
+    Ok((
+        CoreDeleteEntriesRequest {
+            playlist_ids: crate::impls::proto_validated_playlist_ids(playlist_ids),
+            media_ids: crate::impls::proto_validated_media_ids(media_ids),
+            force,
+        },
+        media_id_strings,
+    ))
+}
+
+fn build_add_media_batch_request(
+    req: crate::proto::client::AddMediaBatchRequest,
+) -> Result<AddMediaBatchBuildResult, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    if req.items.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "items array cannot be empty".to_string(),
+        ));
+    }
+
+    let mut playlist_targets = std::collections::HashSet::new();
+    let mut items = Vec::with_capacity(req.items.len());
+
+    for item in req.items {
+        playlist_targets.insert(item.playlist_id.clone());
+        items.push(build_add_media_request(item)?);
+    }
+
+    if playlist_targets.len() != 1 {
+        return Err(ApiError::InvalidInput(
+            "Batch add must target exactly one location".to_string(),
+        ));
+    }
+
+    let playlist_id = playlist_targets
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::InvalidInput("Batch add must target one location".to_string()))?
+        .map(crate::impls::proto_validated_playlist_id);
+
+    Ok(AddMediaBatchBuildResult { items, playlist_id })
+}
+
+pub(crate) fn build_delete_media_request(
+    req: crate::proto::client::DeleteMediaRequest,
+) -> Result<crate::proto::client::DeleteEntriesRequest, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    Ok(crate::proto::client::DeleteEntriesRequest {
+        playlist_ids: Vec::new(),
+        media_ids: vec![req.media_id],
+        force: req.force,
+    })
+}
+
+pub(crate) fn build_edit_media_request(
+    req: crate::proto::client::EditMediaRequest,
+) -> Result<synctv_core::service::media::EditMediaRequest, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    let title = if req.title.is_empty() {
+        None
+    } else {
+        Some(
+            crate::http::validation::validate_media_title(&req.title)
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?,
+        )
+    };
+
+    Ok(synctv_core::service::media::EditMediaRequest {
+        media_id: crate::impls::proto_validated_media_id(req.media_id),
+        name: title,
+    })
+}
+
 impl ClientApiImpl {
     pub async fn add_media(
         &self,
@@ -164,39 +279,8 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let playlist_id = if let Some(playlist_id) = req.playlist_id.as_ref() {
-            crate::http::validation::validate_id(playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-            Some(synctv_core::models::PlaylistId::from_string(
-                playlist_id.clone(),
-            ))
-        } else {
-            None
-        };
-
-        let provider = parse_add_media_provider(&req.provider)?;
-
-        // Parse source config from request bytes
-        let source_config: serde_json::Value = if req.source_config.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&req.source_config)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
-        };
-
-        // Use provided title or extract from URL (with validation/truncation)
-        let title = if req.title.is_empty() {
-            let raw = source_config
-                .get("url")
-                .and_then(|u| u.as_str())
-                .and_then(|u| u.split('/').next_back())
-                .unwrap_or("Unknown");
-            sanitize_url_derived_title(raw)
-        } else {
-            // Validate user-provided title for length and security
-            crate::http::validation::validate_media_title(&req.title)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
-        };
+        let service_req = build_add_media_request(req)?;
+        let playlist_id = service_req.playlist_id.clone();
 
         // Check total playlist size limit before adding
         let existing_count = if let Some(ref playlist_id) = playlist_id {
@@ -219,28 +303,10 @@ impl ClientApiImpl {
             )));
         }
 
-        // Normalize the request into the concrete provider instance name used by the registry.
-        // DirectUrl maps to the built-in "direct_url" instance; other providers must bind
-        // explicitly to a configured provider instance.
-        let provider_instance_name = resolve_add_media_provider_instance(
-            provider,
-            &req.provider,
-            req.provider_instance_name,
-        )?;
-
         let media = self
             .room_service
             .media_service()
-            .add_media(
-                rid.clone(),
-                uid.clone(),
-                synctv_core::service::media::AddMediaRequest {
-                    playlist_id,
-                    name: title,
-                    provider_instance_name,
-                    source_config,
-                },
-            )
+            .add_media(rid.clone(), uid.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -280,16 +346,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaRequest,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
-        self.delete_entries(
-            user_id,
-            room_id,
-            crate::proto::client::DeleteEntriesRequest {
-                playlist_ids: Vec::new(),
-                media_ids: vec![req.media_id],
-                force: req.force,
-            },
-        )
-        .await?;
+        self.delete_entries(user_id, room_id, build_delete_media_request(req)?)
+            .await?;
 
         Ok(crate::proto::client::DeleteMediaResponse { success: true })
     }
@@ -301,55 +359,14 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteEntriesRequest,
     ) -> Result<crate::proto::client::DeleteEntriesResponse, ApiError> {
-        let total_targets = req.playlist_ids.len() + req.media_ids.len();
-        if total_targets == 0 {
-            return Err(ApiError::InvalidInput(
-                "delete request cannot be empty".to_string(),
-            ));
-        }
-        if total_targets > 100 {
-            return Err(ApiError::InvalidInput(
-                "Too many items (max 100 per delete request)".to_string(),
-            ));
-        }
-
-        for playlist_id in &req.playlist_ids {
-            crate::http::validation::validate_id(playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-        }
-        for media_id in &req.media_ids {
-            crate::http::validation::validate_id(media_id, "media_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-        }
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let playlist_ids = req
-            .playlist_ids
-            .iter()
-            .cloned()
-            .map(synctv_core::models::PlaylistId::from_string)
-            .collect();
-        let media_id_strings = req.media_ids.clone();
-        let media_ids = req
-            .media_ids
-            .iter()
-            .cloned()
-            .map(synctv_core::models::MediaId::from_string)
-            .collect();
+        let (service_req, media_id_strings) = build_delete_entries_request(req)?;
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let result = self
             .room_service
-            .delete_entries(
-                rid.clone(),
-                uid.clone(),
-                synctv_core::service::room::DeleteEntriesRequest {
-                    playlist_ids,
-                    media_ids,
-                    force: req.force,
-                },
-            )
+            .delete_entries(rid.clone(), uid.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -370,7 +387,7 @@ impl ClientApiImpl {
                             room_id: rid.clone(),
                             user_id: uid.clone(),
                             username: username.clone(),
-                            media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+                            media_id: crate::impls::proto_validated_media_id(media_id.clone()),
                             timestamp: chrono::Utc::now(),
                         },
                     },
@@ -401,26 +418,19 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::EditMediaRequest,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let mid = synctv_core::models::MediaId::from_string(req.media_id);
-
-        let title = if req.title.is_empty() {
-            None
-        } else {
-            // Validate user-provided title for length and security
-            let validated = crate::http::validation::validate_media_title(&req.title)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?;
-            Some(validated)
-        };
+        let service_req = build_edit_media_request(req)?;
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let media = self
             .room_service
-            .edit_media(rid.clone(), uid.clone(), mid, title)
+            .edit_media(
+                rid.clone(),
+                uid.clone(),
+                service_req.media_id,
+                service_req.name,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -534,81 +544,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::AddMediaBatchRequest,
     ) -> Result<crate::proto::client::AddMediaBatchResponse, ApiError> {
-        if req.items.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "items array cannot be empty".to_string(),
-            ));
-        }
-        if req.items.len() > 100 {
-            return Err(ApiError::InvalidInput(
-                "Too many items (max 100 per batch)".to_string(),
-            ));
-        }
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let mut playlist_targets = std::collections::HashSet::new();
-
-        // Build batch items for the atomic service call
-        let mut items: Vec<synctv_core::service::media::AddMediaRequest> =
-            Vec::with_capacity(req.items.len());
-        for item in &req.items {
-            let playlist_id = if let Some(playlist_id) = item.playlist_id.as_ref() {
-                crate::http::validation::validate_id(playlist_id, "playlist_id")
-                    .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-                Some(synctv_core::models::PlaylistId::from_string(
-                    playlist_id.clone(),
-                ))
-            } else {
-                None
-            };
-            playlist_targets.insert(item.playlist_id.clone());
-            let source_config: serde_json::Value = if item.source_config.is_empty() {
-                serde_json::json!({})
-            } else {
-                serde_json::from_slice(&item.source_config).map_err(|e| {
-                    ApiError::InvalidInput(format!("Invalid source_config JSON: {e}"))
-                })?
-            };
-            let title = if item.title.is_empty() {
-                let raw = source_config
-                    .get("url")
-                    .and_then(|u| u.as_str())
-                    .and_then(|u| u.split('/').next_back())
-                    .unwrap_or("Unknown");
-                sanitize_url_derived_title(raw)
-            } else {
-                // Validate user-provided title for length and security
-                crate::http::validation::validate_media_title(&item.title)
-                    .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
-            };
-            let provider = parse_add_media_provider(&item.provider)?;
-            let provider_instance_name = resolve_add_media_provider_instance(
-                provider,
-                &item.provider,
-                item.provider_instance_name.clone(),
-            )?;
-            items.push(synctv_core::service::media::AddMediaRequest {
-                playlist_id,
-                name: title,
-                provider_instance_name,
-                source_config,
-            });
-        }
-
-        if playlist_targets.len() != 1 {
-            return Err(ApiError::InvalidInput(
-                "Batch add must target exactly one location".to_string(),
-            ));
-        }
-
-        let playlist_id = playlist_targets
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                ApiError::InvalidInput("Batch add must target one location".to_string())
-            })?
-            .map(synctv_core::models::PlaylistId::from_string);
+        let AddMediaBatchBuildResult { items, playlist_id } = build_add_media_batch_request(req)?;
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
@@ -691,6 +629,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
+        let service_req = build_move_media_request(req)?;
 
         self.room_service
             .check_permission(
@@ -700,62 +639,12 @@ impl ClientApiImpl {
             )
             .await
             .map_err(Self::map_room_access_error)?;
-
-        for media_id in &req.media_ids {
-            crate::http::validation::validate_id(media_id, "media_ids")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_ids: {e}")))?;
-        }
-        if let Some(ref playlist_id) = req.source_playlist_id {
-            crate::http::validation::validate_id(playlist_id, "source_playlist_id").map_err(
-                |e| ApiError::InvalidInput(format!("Invalid source_playlist_id: {e}")),
-            )?;
-        }
-        if let Some(ref playlist_id) = req.target_playlist_id {
-            crate::http::validation::validate_id(playlist_id, "target_playlist_id").map_err(
-                |e| ApiError::InvalidInput(format!("Invalid target_playlist_id: {e}")),
-            )?;
-        }
-
-        let (before_media_id, after_media_id) = match req.anchor {
-            Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id)) => {
-                crate::http::validation::validate_id(&anchor_id, "before_media_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid before_media_id: {e}")),
-                )?;
-                (Some(synctv_core::models::MediaId::from_string(anchor_id)), None)
-            }
-            Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id)) => {
-                crate::http::validation::validate_id(&anchor_id, "after_media_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid after_media_id: {e}")),
-                )?;
-                (None, Some(synctv_core::models::MediaId::from_string(anchor_id)))
-            }
-            None => (None, None),
-        };
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
 
         let media = self
             .room_service
             .media_service()
-            .move_media(
-                rid.clone(),
-                uid,
-                synctv_core::service::media::MoveMediaRequest {
-                    media_ids: req
-                        .media_ids
-                        .into_iter()
-                        .map(synctv_core::models::MediaId::from_string)
-                        .collect(),
-                    source_playlist_id: req
-                        .source_playlist_id
-                        .map(synctv_core::models::PlaylistId::from_string),
-                    target_playlist_id: req
-                        .target_playlist_id
-                        .map(synctv_core::models::PlaylistId::from_string),
-                    all_from_scope: req.all_from_scope,
-                    before_media_id,
-                    after_media_id,
-                },
-            )
+            .move_media(rid.clone(), uid, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -781,10 +670,7 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
-        if !req.playlist_id.is_empty() {
-            crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-        }
+        crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
@@ -796,7 +682,7 @@ impl ClientApiImpl {
             .map_err(Self::map_room_access_error)?;
 
         let Some(playlist_id) = (!req.playlist_id.is_empty())
-            .then(|| synctv_core::models::PlaylistId::from_string(req.playlist_id.clone()))
+            .then(|| crate::impls::proto_validated_playlist_id(req.playlist_id.clone()))
         else {
             if !req.target.is_empty() {
                 return Err(ApiError::InvalidInput(
@@ -878,7 +764,8 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
             };
-            let folder_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
+            let folder_ids: Vec<&str> =
+                playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
             let counts = self
                 .room_service
                 .media_service()
@@ -888,10 +775,8 @@ impl ClientApiImpl {
             let proto_playlists = playlists
                 .iter()
                 .map(|entry| {
-                    let item_count = counts
-                        .get(entry.playlist.id.as_str())
-                        .copied()
-                        .unwrap_or(0) as i32;
+                    let item_count =
+                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
                     playlist_to_proto_with_availability(
                         &entry.playlist,
                         item_count,
@@ -901,9 +786,7 @@ impl ClientApiImpl {
                 .collect();
             let proto_media = media
                 .iter()
-                .map(|entry| {
-                    media_to_proto_with_availability(&entry.media, entry.is_available)
-                })
+                .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
                 .collect();
 
             return Ok(crate::proto::client::ListPlaylistItemsResponse {
@@ -1116,22 +999,14 @@ impl ClientApiImpl {
         let proto_playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count = counts
-                    .get(entry.playlist.id.as_str())
-                    .copied()
-                    .unwrap_or(0) as i32;
-                playlist_to_proto_with_availability(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                )
+                let item_count =
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
         let proto_media = media
             .iter()
-            .map(|entry| {
-                media_to_proto_with_availability(&entry.media, entry.is_available)
-            })
+            .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
             .collect();
 
         Ok(crate::proto::client::ListPlaylistItemsResponse {
@@ -1152,12 +1027,9 @@ impl ClientApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::Media, ApiError> {
-        crate::http::validation::validate_id(media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let mid = synctv_core::models::MediaId::from_string(media_id.to_string());
+        let mid = crate::impls::parse_media_id_param(media_id, "media_id")?;
 
         // Check VIEW_PLAYLIST permission
         self.room_service
@@ -1193,12 +1065,14 @@ impl ClientApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_add_media_provider, resolve_add_media_provider_instance,
-        validate_dynamic_playlist_query_support,
+        build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
+        build_delete_media_request, build_edit_media_request, build_move_media_request,
+        resolve_add_media_provider_instance, validate_dynamic_playlist_query_support,
+        DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
     use serde_json::json;
-    use synctv_core::models::{Playlist, PlaylistId, ProviderType, RoomId, UserId};
+    use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
 
     fn make_playlist(
         name: &str,
@@ -1222,44 +1096,203 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_add_media_provider_instance_maps_direct_to_builtin_instance() {
-        let resolved =
-            resolve_add_media_provider_instance(ProviderType::DirectUrl, "", String::new())
-                .unwrap();
-        assert_eq!(resolved, "direct_url");
+    fn test_resolve_add_media_provider_instance_preserves_empty_binding_for_default_provider() {
+        let resolved = resolve_add_media_provider_instance(String::new()).unwrap();
+        assert_eq!(resolved, "");
     }
 
     #[test]
     fn test_resolve_add_media_provider_instance_uses_explicit_binding() {
-        let resolved = resolve_add_media_provider_instance(
-            ProviderType::Alist,
-            "alist",
-            "alist_main".to_string(),
-        )
-        .unwrap();
+        let resolved = resolve_add_media_provider_instance("alist_main".to_string()).unwrap();
         assert_eq!(resolved, "alist_main");
     }
 
     #[test]
-    fn test_resolve_add_media_provider_instance_rejects_missing_binding_for_remote_provider() {
-        let err = resolve_add_media_provider_instance(ProviderType::Alist, "alist", String::new())
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("provider_instance_name"),
-            "non-direct providers must require explicit provider_instance_name"
+    fn test_build_add_media_request_requires_source_provider() {
+        let err = build_add_media_request(crate::proto::client::AddMediaRequest {
+            playlist_id: None,
+            provider: String::new(),
+            provider_instance_name: String::new(),
+            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            title: String::new(),
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("provider"));
+    }
+
+    #[test]
+    fn test_build_add_media_request_parses_dynamic_payload() {
+        let playlist_id = synctv_common::snanoid!(12);
+        let request = build_add_media_request(crate::proto::client::AddMediaRequest {
+            playlist_id: Some(playlist_id.clone()),
+            provider: "alist".into(),
+            provider_instance_name: "alist-main".into(),
+            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            title: "Episode 1".into(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            request.playlist_id.as_ref().map(|id| id.as_str()),
+            Some(playlist_id.as_str())
+        );
+        assert_eq!(request.name, "Episode 1");
+        assert_eq!(request.source_provider, "alist");
+        assert_eq!(request.provider_instance_name, "alist-main");
+        assert_eq!(request.source_config, serde_json::json!({"path":"/tv"}));
+    }
+
+    #[test]
+    fn test_build_add_media_request_preserves_empty_provider_instance_for_default_resolution() {
+        let request = build_add_media_request(crate::proto::client::AddMediaRequest {
+            playlist_id: None,
+            provider: "direct_url".into(),
+            provider_instance_name: String::new(),
+            source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+            title: "Example".into(),
+        })
+        .unwrap();
+
+        assert_eq!(request.source_provider, "direct_url");
+        assert!(request.provider_instance_name.is_empty());
+    }
+
+    #[test]
+    fn test_build_add_media_request_does_not_infer_title_from_source_config() {
+        let request = build_add_media_request(crate::proto::client::AddMediaRequest {
+            playlist_id: None,
+            provider: "alist".into(),
+            provider_instance_name: "alist-main".into(),
+            source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#.to_vec(),
+            title: String::new(),
+        })
+        .unwrap();
+
+        assert_eq!(request.name, DEFAULT_MEDIA_TITLE);
+    }
+
+    #[test]
+    fn test_build_add_media_batch_request_rejects_invalid_nested_playlist_id() {
+        let err = build_add_media_batch_request(crate::proto::client::AddMediaBatchRequest {
+            items: vec![crate::proto::client::AddMediaRequest {
+                playlist_id: Some("bad-playlist".into()),
+                provider: "alist".into(),
+                provider_instance_name: "alist-main".into(),
+                source_config: br#"{"path":"/tv"}"#.to_vec(),
+                title: "Episode 1".into(),
+            }],
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("playlist_id"));
+    }
+
+    #[test]
+    fn test_build_add_media_batch_request_reuses_single_item_builder_semantics() {
+        let playlist_id = synctv_common::snanoid!(12);
+        let result = build_add_media_batch_request(crate::proto::client::AddMediaBatchRequest {
+            items: vec![crate::proto::client::AddMediaRequest {
+                playlist_id: Some(playlist_id.clone()),
+                provider: "alist".into(),
+                provider_instance_name: "alist-main".into(),
+                source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#.to_vec(),
+                title: String::new(),
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(
+            result.playlist_id.as_ref().map(|id| id.as_str()),
+            Some(playlist_id.as_str())
+        );
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].name, DEFAULT_MEDIA_TITLE);
+        assert_eq!(
+            result.items[0].source_config,
+            serde_json::json!({"url":"https://example.com/video.mp4","path":"/tv"})
         );
     }
 
     #[test]
-    fn test_parse_add_media_provider_defaults_empty_to_direct_url() {
-        let provider = parse_add_media_provider("").unwrap();
-        assert_eq!(provider, ProviderType::DirectUrl);
+    fn test_build_delete_entries_request_rejects_empty_target_set() {
+        let err = build_delete_entries_request(crate::proto::client::DeleteEntriesRequest {
+            playlist_ids: Vec::new(),
+            media_ids: Vec::new(),
+            force: false,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("delete_entries"));
     }
 
     #[test]
-    fn test_parse_add_media_provider_rejects_unknown_type() {
-        let err = parse_add_media_provider("unknown-provider").unwrap_err();
-        assert!(err.to_string().contains("Unknown provider type"));
+    fn test_build_delete_entries_request_parses_ids() {
+        let playlist_id = synctv_common::snanoid!(12);
+        let media_id = synctv_common::snanoid!(12);
+        let (request, media_id_strings) =
+            build_delete_entries_request(crate::proto::client::DeleteEntriesRequest {
+                playlist_ids: vec![playlist_id.clone()],
+                media_ids: vec![media_id.clone()],
+                force: true,
+            })
+            .unwrap();
+
+        assert_eq!(request.playlist_ids.len(), 1);
+        assert_eq!(request.playlist_ids[0].as_str(), playlist_id);
+        assert_eq!(request.media_ids.len(), 1);
+        assert_eq!(request.media_ids[0].as_str(), media_id);
+        assert!(request.force);
+        assert_eq!(media_id_strings, vec![media_id]);
+    }
+
+    #[test]
+    fn test_build_delete_media_request_rejects_invalid_media_id() {
+        let err = build_delete_media_request(crate::proto::client::DeleteMediaRequest {
+            media_id: "bad-media".to_string(),
+            force: false,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("media_id"));
+    }
+
+    #[test]
+    fn test_build_delete_media_request_maps_to_delete_entries_request() {
+        let media_id = synctv_common::snanoid!(12);
+        let request = build_delete_media_request(crate::proto::client::DeleteMediaRequest {
+            media_id: media_id.clone(),
+            force: true,
+        })
+        .unwrap();
+
+        assert!(request.playlist_ids.is_empty());
+        assert_eq!(request.media_ids, vec![media_id]);
+        assert!(request.force);
+    }
+
+    #[test]
+    fn test_build_edit_media_request_rejects_invalid_media_id() {
+        let err = build_edit_media_request(crate::proto::client::EditMediaRequest {
+            media_id: "bad-media".to_string(),
+            title: "Episode 1".to_string(),
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("media_id"));
+    }
+
+    #[test]
+    fn test_build_edit_media_request_parses_title_and_id() {
+        let media_id = synctv_common::snanoid!(12);
+        let request = build_edit_media_request(crate::proto::client::EditMediaRequest {
+            media_id: media_id.clone(),
+            title: "Episode 1".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(request.media_id.as_str(), media_id);
+        assert_eq!(request.name.as_deref(), Some("Episode 1"));
     }
 
     #[test]
@@ -1283,5 +1316,50 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("does not support search"));
+    }
+
+    #[test]
+    fn test_build_move_media_request_rejects_invalid_proto_payload() {
+        let err = build_move_media_request(crate::proto::client::MoveMediaRequest {
+            media_ids: Vec::new(),
+            source_playlist_id: Some("playlist-1".into()),
+            target_playlist_id: None,
+            all_from_scope: false,
+            before_media_id: Some("media-before".into()),
+            after_media_id: Some("media-after".into()),
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_playlist_id")
+                || err.to_string().contains("before_media_id")
+        );
+    }
+
+    #[test]
+    fn test_build_move_media_request_parses_ids() {
+        let media_id = synctv_common::snanoid!(12);
+        let playlist_id = synctv_common::snanoid!(12);
+        let before_media_id = synctv_common::snanoid!(12);
+        let request = build_move_media_request(crate::proto::client::MoveMediaRequest {
+            media_ids: vec![media_id.clone()],
+            source_playlist_id: None,
+            target_playlist_id: Some(playlist_id.clone()),
+            all_from_scope: false,
+            before_media_id: None,
+            after_media_id: Some(before_media_id.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(request.media_ids.len(), 1);
+        assert_eq!(request.media_ids[0].as_str(), media_id);
+        assert_eq!(
+            request.target_playlist_id.as_ref().map(|id| id.as_str()),
+            Some(playlist_id.as_str())
+        );
+        assert_eq!(
+            request.after_media_id.as_ref().map(|id| id.as_str()),
+            Some(before_media_id.as_str())
+        );
     }
 }

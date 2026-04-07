@@ -65,6 +65,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
     let room_service = Arc::new(room_service);
 
     let owner = user_repo.create(&make_user("room_owner")).await.unwrap();
+    let member = user_repo.create(&make_user("room_member")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
             "Protected Room".to_string(),
@@ -81,7 +82,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
 
     let client_api = synctv_api::impls::ClientApiImpl::new(
         user_service,
-        room_service,
+        room_service.clone(),
         connection_manager,
         Arc::new(Config::default()),
         None,
@@ -96,44 +97,57 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         ),
     );
 
-    for attempt in 0..4 {
-        let resp = client_api
-            .check_room_password(
+    for _attempt in 0..4 {
+        let err = client_api
+            .join_room(
+                member.id.as_str(),
                 room.id.as_str(),
-                synctv_api::proto::client::CheckRoomPasswordRequest {
-                    room_id: room.id.to_string(),
+                synctv_api::proto::client::JoinRoomRequest {
                     password: "WrongPassword".to_string(),
+                    room_id: room.id.to_string(),
                 },
-                "192.168.1.100",
+                Some("192.168.1.100"),
             )
             .await
-            .unwrap_or_else(|_| panic!("failed attempt {} should not be blocked", attempt + 1));
-        assert!(!resp.valid);
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid password"),
+            "wrong password should stay user-readable: {err}"
+        );
     }
 
-    let success = client_api
-        .check_room_password(
+    client_api
+        .join_room(
+            member.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::CheckRoomPasswordRequest {
-                room_id: room.id.to_string(),
+            synctv_api::proto::client::JoinRoomRequest {
                 password: "CorrectPassword123".to_string(),
+                room_id: room.id.to_string(),
             },
-            "192.168.1.100",
+            Some("192.168.1.100"),
         )
         .await
         .expect("successful password check should pass");
-    assert!(success.valid);
 
-    let after_reset = client_api
-        .check_room_password(
+    room_service
+        .leave_room(room.id.clone(), member.id.clone())
+        .await
+        .expect("member should be able to leave after successful join");
+
+    let err = client_api
+        .join_room(
+            member.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::CheckRoomPasswordRequest {
-                room_id: room.id.to_string(),
+            synctv_api::proto::client::JoinRoomRequest {
                 password: "WrongPassword".to_string(),
+                room_id: room.id.to_string(),
             },
-            "192.168.1.100",
+            Some("192.168.1.100"),
         )
         .await
-        .expect("successful check must reset room password brute-force counter");
-    assert!(!after_reset.valid);
+        .expect_err("successful join must reset room password brute-force counter");
+    assert!(
+        err.to_string().contains("Invalid password"),
+        "counter should be reset so next wrong password attempt is checked normally: {err}"
+    );
 }

@@ -7,22 +7,13 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Deserialize;
 
 use super::middleware::AuthUser;
 use super::AppState;
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct ProviderInstancesResponseDoc {
-    instances: Vec<String>,
-}
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct ProviderBackendsResponseDoc {
-    backends: Vec<String>,
-}
+use crate::proto::client::{
+    ListProviderBackendsRequest, ProviderBackendsResponse, ProviderInstanceQuery,
+    ProviderInstancesResponse,
+};
 
 fn provider_registry_unavailable_error(
     context: &str,
@@ -51,7 +42,7 @@ pub fn register_common_routes() -> Router<AppState> {
         path = "/api/provider/instances",
         tag = "Provider",
         responses(
-            (status = 200, description = "Available provider instances", body = ProviderInstancesResponseDoc),
+            (status = 200, description = "Available provider instances", body = ProviderInstancesResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -63,14 +54,14 @@ pub fn register_common_routes() -> Router<AppState> {
 pub(crate) async fn list_instances(
     _auth: AuthUser,
     State(state): State<AppState>,
-) -> Result<Json<ProviderInstancesResponseDoc>, super::AppError> {
+) -> Result<Json<ProviderInstancesResponse>, super::AppError> {
     let instances = state
         .provider_instance_manager
         .list()
         .await
         .map_err(|e| provider_registry_unavailable_error("list_instances", &e))?;
 
-    Ok(Json(ProviderInstancesResponseDoc { instances }))
+    Ok(Json(ProviderInstancesResponse { instances }))
 }
 
 /// List available backends for a given provider type (bilibili/alist/emby)
@@ -84,7 +75,7 @@ pub(crate) async fn list_instances(
             ("provider_type" = String, Path, description = "Provider type, such as bilibili, alist, or emby")
         ),
         responses(
-            (status = 200, description = "Enabled backends for the provider type", body = ProviderBackendsResponseDoc),
+            (status = 200, description = "Enabled backends for the provider type", body = ProviderBackendsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -96,11 +87,12 @@ pub(crate) async fn list_instances(
 pub(crate) async fn list_backends(
     _auth: AuthUser,
     State(state): State<AppState>,
-    Path(provider_type): Path<String>,
-) -> Result<Json<ProviderBackendsResponseDoc>, super::AppError> {
+    Path(req): Path<ListProviderBackendsRequest>,
+) -> Result<Json<ProviderBackendsResponse>, super::AppError> {
+    let provider_type = provider_type(&req)?;
     let instances = state
         .provider_instance_manager
-        .find_instances_by_provider(&provider_type)
+        .find_instances_by_provider(provider_type)
         .await
         .map_err(|e| {
             tracing::error!(provider_type = %provider_type, error = %e, "Failed to list provider backends");
@@ -110,24 +102,23 @@ pub(crate) async fn list_backends(
         .map(|i| i.name)
         .collect::<Vec<_>>();
 
-    Ok(Json(ProviderBackendsResponseDoc {
+    Ok(Json(ProviderBackendsResponse {
         backends: instances,
     }))
 }
 
-/// Extract `instance_name` from query parameter
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams, utoipa::ToSchema))]
-pub struct InstanceQuery {
-    #[serde(default)]
-    pub instance_name: Option<String>,
+pub(crate) fn provider_instance_name(
+    query: &ProviderInstanceQuery,
+) -> Result<Option<&str>, super::AppError> {
+    crate::impls::validate_proto_request(query).map_err(super::error::map_api_error)?;
+    Ok((!query.instance_name.is_empty()).then_some(query.instance_name.as_str()))
 }
 
-impl InstanceQuery {
-    #[must_use]
-    pub fn as_deref(&self) -> Option<&str> {
-        self.instance_name.as_deref()
-    }
+pub(crate) fn provider_type(
+    request: &ListProviderBackendsRequest,
+) -> Result<&str, super::AppError> {
+    crate::impls::validate_proto_request(request).map_err(super::error::map_api_error)?;
+    Ok(request.provider_type.as_str())
 }
 
 #[cfg(test)]
@@ -140,5 +131,45 @@ mod tests {
         let err = synctv_core::Error::Internal("db unavailable".to_string());
         let mapped = provider_registry_unavailable_error("list_backends", &err);
         assert_eq!(mapped.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn provider_instance_name_allows_empty_query() {
+        let query = ProviderInstanceQuery {
+            instance_name: String::new(),
+        };
+
+        assert_eq!(provider_instance_name(&query).unwrap(), None);
+    }
+
+    #[test]
+    fn provider_instance_name_rejects_invalid_query_contract() {
+        let query = ProviderInstanceQuery {
+            instance_name: "bad name".to_string(),
+        };
+
+        let err = provider_instance_name(&query).expect_err("query should be invalid");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("instance_name"));
+    }
+
+    #[test]
+    fn provider_type_accepts_valid_proto_contract() {
+        let request = ListProviderBackendsRequest {
+            provider_type: "fake_dynamic".to_string(),
+        };
+
+        assert_eq!(provider_type(&request).unwrap(), "fake_dynamic");
+    }
+
+    #[test]
+    fn provider_type_rejects_invalid_proto_contract() {
+        let request = ListProviderBackendsRequest {
+            provider_type: "bad-name".to_string(),
+        };
+
+        let err = provider_type(&request).expect_err("request should be invalid");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("provider_type"));
     }
 }

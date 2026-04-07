@@ -8,7 +8,8 @@
 //! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (`TestInfra`)
 
 #![allow(clippy::unwrap_used)]
-use synctv_api::http::websocket::{AuthMethod, WsQuery};
+use synctv_api::http::websocket::AuthMethod;
+use synctv_proto::client::WebSocketConnectRequest;
 
 async fn wait_for_condition<F>(timeout: std::time::Duration, mut check: F)
 where
@@ -42,30 +43,40 @@ mod ws_query {
     #[test]
     fn test_deserialize_with_ticket() {
         let params = "ticket=abc123def456";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.ticket.as_deref(), Some("abc123def456"));
+        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
+        assert_eq!(query.ticket, "abc123def456");
     }
 
     #[test]
     fn test_deserialize_empty() {
         let params = "";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert!(query.ticket.is_none());
+        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
+        assert!(query.ticket.is_empty());
+        synctv_proto::validate(&query).expect("empty ticket should be allowed for header auth");
     }
 
     #[test]
     fn test_deserialize_ignores_unknown_params() {
         let params = "ticket=tix&unknown=value";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.ticket.as_deref(), Some("tix"));
+        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
+        assert_eq!(query.ticket, "tix");
+    }
+
+    #[test]
+    fn test_deserialize_invalid_ticket_still_needs_proto_validation() {
+        let params = "ticket=bad%20ticket";
+        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
+        assert_eq!(query.ticket, "bad ticket");
+        let error = synctv_proto::validate(&query).expect_err("ticket format must be invalid");
+        assert!(error.to_string().contains("ticket"));
     }
 
     #[test]
     fn test_deserialize_ignores_removed_token_param() {
         let params = "token=removed_jwt_value";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
+        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
         assert!(
-            query.ticket.is_none(),
+            query.ticket.is_empty(),
             "removed ?token= must not be treated as a valid websocket credential"
         );
     }
@@ -151,18 +162,18 @@ mod proto_codec {
 // ============================================================================
 
 mod ticket_types {
-    use synctv_api::http::ticket::{CreateTicketRequest, TicketResponse};
+    use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
 
     #[test]
     fn test_create_ticket_request_deserialize() {
         let json = r#"{"room_id": "room_abc"}"#;
-        let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
+        let req: CreateWebSocketTicketRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.room_id.as_str(), "room_abc");
     }
 
     #[test]
     fn test_ticket_response_serializes() {
-        let resp = TicketResponse {
+        let resp = CreateWebSocketTicketResponse {
             ticket: "ticket_abc123".to_string(),
             room_id: "room_abc".to_string(),
             expires_in_secs: 30,
@@ -177,7 +188,7 @@ mod ticket_types {
 
     #[test]
     fn test_ticket_response_fields_present() {
-        let resp = TicketResponse {
+        let resp = CreateWebSocketTicketResponse {
             ticket: "t".to_string(),
             room_id: "r".to_string(),
             expires_in_secs: 30,
@@ -194,7 +205,7 @@ mod ticket_types {
     #[test]
     fn test_ticket_response_usage_points_to_registered_websocket_route() {
         let room_id = "room_abc";
-        let resp = TicketResponse {
+        let resp = CreateWebSocketTicketResponse {
             ticket: "ticket_abc123".to_string(),
             room_id: room_id.to_string(),
             expires_in_secs: 30,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        MemberStatus, PageParams, PermissionBits, RelatedRoomListQuery, Room, RoomId, RoomMember,
+        MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Room, RoomId, RoomMember,
         RoomMemberWithUser, RoomRole, RoomSettings, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
@@ -63,6 +63,8 @@ pub struct AddMemberOptions {
     pub check_max_members: bool,
     /// Maximum number of members allowed (0 = no limit)
     pub max_members: u64,
+    /// Initial lifecycle status for the membership row
+    pub initial_status: MemberStatus,
     /// Invalidate permission cache after adding
     pub invalidate_cache: bool,
 }
@@ -76,6 +78,7 @@ impl AddMemberOptions {
             check_duplicate: true,
             check_max_members: false, // disabled by default
             max_members: 0,           // 0 means no limit
+            initial_status: MemberStatus::Active,
             invalidate_cache: true,
         }
     }
@@ -106,6 +109,13 @@ impl AddMemberOptions {
     #[must_use]
     pub const fn skip_duplicate_check(mut self) -> Self {
         self.check_duplicate = false;
+        self
+    }
+
+    /// Set the initial lifecycle status for the membership row.
+    #[must_use]
+    pub const fn with_initial_status(mut self, status: MemberStatus) -> Self {
+        self.initial_status = status;
         self
     }
 
@@ -141,6 +151,17 @@ impl std::fmt::Debug for MemberService {
 impl MemberService {
     fn uses_admin_overrides(role: RoomRole) -> bool {
         matches!(role, RoomRole::Admin)
+    }
+
+    fn validate_assignable_permissions(permissions: u64) -> Result<()> {
+        if PermissionBits::includes_only_assignable_in_room(permissions) {
+            return Ok(());
+        }
+
+        Err(Error::InvalidInput(
+            "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+                .to_string(),
+        ))
     }
 
     /// Create a new member service
@@ -263,7 +284,8 @@ impl MemberService {
         }
 
         // Create member object
-        let member = RoomMember::new(room_id.clone(), user_id.clone(), role);
+        let mut member = RoomMember::new(room_id.clone(), user_id.clone(), role);
+        member.status = options.initial_status;
 
         // Add member with options (transaction happens in repository)
         let created_member = self.member_repo.add_with_options(&member, &options).await?;
@@ -324,7 +346,7 @@ impl MemberService {
     ) -> Result<()> {
         // Check if kicker has permission to kick (no cache - security-critical)
         self.permission_service
-            .check_permission_no_cache(&room_id, &kicker_id, PermissionBits::KICK_USER)
+            .check_permission_no_cache(&room_id, &kicker_id, PermissionBits::KICK_MEMBER)
             .await?;
 
         // Can't kick yourself
@@ -460,6 +482,9 @@ impl MemberService {
         added_permissions: u64,
         removed_permissions: u64,
     ) -> Result<RoomMember> {
+        Self::validate_assignable_permissions(added_permissions)?;
+        Self::validate_assignable_permissions(removed_permissions)?;
+
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
@@ -548,6 +573,11 @@ impl MemberService {
         admin_added_permissions: u64,
         admin_removed_permissions: u64,
     ) -> Result<RoomMember> {
+        Self::validate_assignable_permissions(added_permissions)?;
+        Self::validate_assignable_permissions(removed_permissions)?;
+        Self::validate_assignable_permissions(admin_added_permissions)?;
+        Self::validate_assignable_permissions(admin_removed_permissions)?;
+
         let has_permission_changes = added_permissions > 0
             || removed_permissions > 0
             || admin_added_permissions > 0
@@ -720,6 +750,8 @@ impl MemberService {
         target_user_id: UserId,
         permission: u64,
     ) -> Result<RoomMember> {
+        Self::validate_assignable_permissions(permission)?;
+
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
@@ -787,6 +819,8 @@ impl MemberService {
         target_user_id: UserId,
         permission: u64,
     ) -> Result<RoomMember> {
+        Self::validate_assignable_permissions(permission)?;
+
         // Check if granter has permission to modify permissions without cache
         // Critical operation requires fresh permissions
         self.permission_service
@@ -983,7 +1017,7 @@ impl MemberService {
     pub async fn list_user_rooms_with_details_query(
         &self,
         user_id: &UserId,
-        query: &RelatedRoomListQuery,
+        query: &MyRoomListQuery,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         query.pagination.validate()?;
         self.member_repo
@@ -1286,7 +1320,7 @@ impl MemberService {
         Ok(updated_member)
     }
 
-    /// Set member status (active/pending/banned)
+    /// Set member status (active/pending/rejected/banned)
     pub async fn set_member_status(
         &self,
         room_id: RoomId,
@@ -1337,12 +1371,17 @@ impl MemberService {
                         .to_string(),
                 ));
             }
+            MemberStatus::Rejected => {
+                return Err(Error::InvalidInput(
+                    "Use reject_member for rejected join requests".to_string(),
+                ));
+            }
             MemberStatus::Pending => {}
         }
 
-        // Check admin permission without cache - security-critical status change
+        // Pending/active transitions stay on the approval permission path.
         self.permission_service
-            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::BAN_MEMBER)
+            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::APPROVE_MEMBER)
             .await?;
 
         // Get current member and update status with optimistic lock retry
@@ -1401,7 +1440,7 @@ impl MemberService {
     ) -> Result<Vec<RoomMemberWithUser>> {
         // Check admin permission without cache - security-critical operation
         self.permission_service
-            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::KICK_USER)
+            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::KICK_MEMBER)
             .await?;
 
         // Get all members regardless of left_at status

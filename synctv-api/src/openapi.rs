@@ -9,22 +9,16 @@ use crate::http::{
 };
 use crate::proto::client;
 
-#[derive(utoipa::ToSchema)]
-pub struct ErrorResponseDoc {
-    pub error: String,
-    pub status: u16,
-    pub code: Option<i32>,
-    pub request_id: Option<String>,
-}
+pub type ErrorResponseDoc = client::ApiErrorResponse;
 
 #[allow(dead_code)]
 #[utoipa::path(
     get,
-    path = "/api/providers/live_proxy/info/{media_id}",
+    path = "/api/providers/live_proxy/rooms/{room_id}/info/{media_id}",
     tag = "Provider",
     params(
+        ("room_id" = String, Path, description = "Room ID"),
         ("media_id" = String, Path, description = "Media ID"),
-        live::RoomQuery
     ),
     responses(
         (status = 200, description = "Live stream information", body = client::GetStreamInfoResponse),
@@ -41,9 +35,12 @@ fn live_proxy_stream_info_doc() {}
 #[allow(dead_code)]
 #[utoipa::path(
     get,
-    path = "/api/providers/live_proxy/streams",
+    path = "/api/providers/live_proxy/rooms/{room_id}/streams",
     tag = "Provider",
-    params(live::RoomQuery),
+    params(
+        ("room_id" = String, Path, description = "Room ID"),
+        client::ListRoomStreamsRequest
+    ),
     responses(
         (status = 200, description = "Room live streams", body = client::ListRoomStreamsResponse),
         (status = 400, description = "Invalid request", body = ErrorResponseDoc),
@@ -69,9 +66,7 @@ fn live_proxy_room_streams_doc() {}
         webrtc::get_ice_servers,
         user::get_me,
         user::update_user,
-        user::get_joined_rooms,
-        user::list_created_rooms,
-        user::delete_my_room,
+        user::list_my_rooms,
         user::delete_me,
         publish_key::generate_publish_key,
         email_verification::send_verification_email,
@@ -125,6 +120,7 @@ fn live_proxy_room_streams_doc() {}
         room::get_playback,
         room::get_room_settings,
         room::update_room_settings,
+        room::transfer_room_ownership,
         room::list_playlists,
         room::create_playlist,
         room::get_playlist,
@@ -134,14 +130,12 @@ fn live_proxy_room_streams_doc() {}
         room::delete_media,
         room::edit_media,
         room::delete_entries,
-        room::update_media_batch,
         room::push_media_batch,
         room::move_media,
         room::start_playback,
         room::stop_playback,
         room::update_playback,
         room::set_room_password,
-        room::check_password,
         room::get_chat_history,
         room::list_playlist_items,
         room::delete_playlist,
@@ -202,10 +196,10 @@ fn live_proxy_room_streams_doc() {}
             health::HealthResponse,
             health::HealthDetails,
             health::MemoryHealth,
-            ticket::CreateTicketRequest,
-            ticket::TicketResponse,
-            user::UpdateUserRequest,
-            user::UpdateUserResponseDoc,
+            client::CreateWebSocketTicketRequest,
+            client::CreateWebSocketTicketResponse,
+            client::UpdateUserRequest,
+            client::UpdateUserResponse,
             client::RegisterRequest,
             client::RegisterResponse,
             client::LoginRequest,
@@ -225,8 +219,7 @@ fn live_proxy_room_streams_doc() {}
             client::GetPublicSettingsResponse,
             client::GetProfileResponse,
             client::GetIceServersResponse,
-            client::ListParticipatedRoomsResponse,
-            client::ListCreatedRoomsResponse,
+            client::ListMyRoomsResponse,
             client::DeleteRoomResponse,
             client::CreateRoomRequest,
             client::CreateRoomResponse,
@@ -255,8 +248,6 @@ fn live_proxy_room_streams_doc() {}
             client::EditMediaResponse,
             client::DeleteEntriesRequest,
             client::DeleteEntriesResponse,
-            room::UpdateMediaBatchRequest,
-            room::BatchOperationResponse,
             client::AddMediaBatchRequest,
             client::AddMediaBatchResponse,
             client::MoveMediaRequest,
@@ -265,11 +256,9 @@ fn live_proxy_room_streams_doc() {}
             client::StartPlaybackResponse,
             client::StopPlaybackRequest,
             client::StopPlaybackResponse,
-            room::UpdatePlaybackRequest,
+            client::UpdatePlaybackRequest,
             client::SetRoomPasswordRequest,
             client::SetRoomPasswordResponse,
-            client::CheckRoomPasswordRequest,
-            client::CheckRoomPasswordResponse,
             client::GetChatHistoryResponse,
             client::ListPlaylistItemsRequest,
             client::ListPlaylistItemsResponse,
@@ -299,14 +288,11 @@ fn live_proxy_room_streams_doc() {}
             client::UnlinkProviderResponse,
             client::GetLinkedProvidersResponse,
             client::LinkedProvider,
-            provider_common::ProviderInstancesResponseDoc,
-            provider_common::ProviderBackendsResponseDoc,
-            alist::AlistBindInfoDoc,
-            alist::AlistBindsResponseDoc,
-            emby::EmbyBindInfoDoc,
-            emby::EmbyBindsResponseDoc,
+            client::ProviderInstancesResponse,
+            client::ProviderBackendsResponse,
             crate::proto::providers::alist::LoginRequest,
             crate::proto::providers::alist::LoginResponse,
+            crate::proto::providers::alist::GetBindsResponse,
             crate::proto::providers::alist::ListRequest,
             crate::proto::providers::alist::ListResponse,
             crate::proto::providers::alist::FileItem,
@@ -316,6 +302,7 @@ fn live_proxy_room_streams_doc() {}
             crate::proto::providers::alist::LogoutResponse,
             crate::proto::providers::emby::LoginRequest,
             crate::proto::providers::emby::LoginResponse,
+            crate::proto::providers::emby::GetBindsResponse,
             crate::proto::providers::emby::ListRequest,
             crate::proto::providers::emby::ListResponse,
             crate::proto::providers::emby::MediaItem,

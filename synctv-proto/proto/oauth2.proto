@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package synctv.client;
 
+import "proto/buf/validate/validate.proto";
 import "proto/common.proto";
 
 // ==================== OAuth2 Service ====================
@@ -48,14 +49,38 @@ service OAuth2Service {
 
 // ==================== Get Authorization URL ====================
 
+message OAuth2ProviderInstancePathRequest {
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
+}
+
+message OAuth2ProviderTypePathRequest {
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 32,
+        pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+    }];
+}
+
 message GetAuthorizationUrlRequest {
     // OAuth2 provider instance name (e.g., "github", "google", "logto1")
-    string provider = 1; // Validation: required, max 64 chars
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
 
     // Optional redirect URL for frontend after OAuth2 flow completes
     // This is stored in state and returned after successful authentication
     // If not provided, frontend should handle redirect itself
-    string redirect_url = 2; // Validation: max 2048 chars, must be valid URL when non-empty
+    string redirect_url = 2 [(buf.validate.field).cel = {
+        id: "oauth2.get_authorization_url.redirect_url"
+        message: "redirect_url must be empty or a valid http/https or native-app callback URL"
+        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https?://[^\\\\s]+$') || this.matches('^[A-Za-z][A-Za-z0-9+.-]+://[^\\\\s]+$')) && !this.matches('(?i)^(javascript|data|vbscript|file|ftp|mailto):.*$'))"
+    }];
 }
 
 message GetAuthorizationUrlResponse {
@@ -73,10 +98,18 @@ message GetAuthorizationUrlResponse {
 
 message GetAuthorizationUrlForBindRequest {
     // OAuth2 provider instance name (e.g., "github", "google", "logto1")
-    string provider = 1;
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
 
     // Optional redirect URL for frontend after bind flow completes
-    string redirect_url = 2;
+    string redirect_url = 2 [(buf.validate.field).cel = {
+        id: "oauth2.get_authorization_url_for_bind.redirect_url"
+        message: "redirect_url must be empty or a valid http/https or native-app callback URL"
+        expression: "this == '' || (size(this) <= 2048 && (this.matches('^https?://[^\\\\s]+$') || this.matches('^[A-Za-z][A-Za-z0-9+.-]+://[^\\\\s]+$')) && !this.matches('(?i)^(javascript|data|vbscript|file|ftp|mailto):.*$'))"
+    }];
 }
 
 message GetAuthorizationUrlForBindResponse {
@@ -91,15 +124,26 @@ message GetAuthorizationUrlForBindResponse {
 
 message ExchangeAuthorizationCodeRequest {
     // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
-    string provider = 1; // Validation: required, max 64 chars
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
 
     // Authorization code received from OAuth2 provider redirect
     // Frontend extracts this from the callback URL query parameter
-    string code = 2; // Validation: required, max 2048 chars
+    string code = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 256,
+        pattern: "^[A-Za-z0-9._+-]+$"
+    }];
 
     // State token received from OAuth2 provider redirect
     // Must match the state returned by GetAuthorizationUrl
-    string state = 3; // Validation: required, max 512 chars
+    string state = 3 [(buf.validate.field).string = {
+        len: 32,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
 }
 
 message ExchangeAuthorizationCodeResponse {
@@ -147,11 +191,19 @@ message OAuth2ProviderInstance {
 
 message UnlinkProviderRequest {
     // Provider type to unlink (e.g., "github", "google")
-    string provider = 1;
+    string provider = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 32,
+        pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+    }];
 
     // Optional: specific provider user ID to unlink
     // If not provided, unlinks all bindings for this provider type
-    string provider_user_id = 2;
+    string provider_user_id = 2 [(buf.validate.field).cel = {
+        id: "oauth2.unlink_provider.provider_user_id"
+        message: "provider_user_id must be empty or at most 256 visible characters"
+        expression: "this == '' || (size(this) <= 256 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*'))"
+    }];
 }
 
 message UnlinkProviderResponse {

@@ -225,14 +225,9 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 /// (mutations) default to Write tier.
 fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
-        Some(
-            "GetProfile"
-            | "GetUser"
-            | "GetRoom"
-            | "ListCreatedRooms"
-            | "ListParticipatedRooms"
-            | "GetSettings",
-        ) => GrpcRateLimitTier::Read,
+        Some("GetProfile" | "GetUser" | "GetRoom" | "ListMyRooms" | "GetSettings") => {
+            GrpcRateLimitTier::Read
+        }
         _ => GrpcRateLimitTier::Write,
     }
 }
@@ -649,11 +644,7 @@ mod tests {
             Some(GrpcRateLimitTier::Read)
         );
         assert_eq!(
-            tier_from_path("/synctv.client.v1.UserService/ListCreatedRooms"),
-            Some(GrpcRateLimitTier::Read)
-        );
-        assert_eq!(
-            tier_from_path("/synctv.client.v1.UserService/ListParticipatedRooms"),
+            tier_from_path("/synctv.client.v1.UserService/ListMyRooms"),
             Some(GrpcRateLimitTier::Read)
         );
     }

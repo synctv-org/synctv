@@ -110,5 +110,5 @@ async fn test_deny_override_role_default() {
         .await
         .unwrap();
     assert!(!perms_after.has(PermissionBits::SEND_CHAT));
-    assert!(perms_after.has(PermissionBits::ADD_MOVIE));
+    assert!(perms_after.has(PermissionBits::ADD_MEDIA));
 }

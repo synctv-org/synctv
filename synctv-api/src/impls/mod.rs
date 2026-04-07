@@ -95,6 +95,13 @@ const LIVESTREAM_REQUEST_FAILED_MESSAGE: &str = "Live streaming request failed";
 const UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE: &str =
     "Upstream provider service is temporarily unavailable.";
 
+pub fn validate_proto_request<M>(message: &M) -> Result<(), ApiError>
+where
+    M: prost_reflect::ReflectMessage,
+{
+    synctv_proto::validate(message).map_err(|error| ApiError::InvalidInput(error.to_string()))
+}
+
 #[derive(Debug)]
 pub struct ClusterEventPublishReservation {
     permit: tokio::sync::mpsc::OwnedPermit<synctv_cluster::sync::PublishRequest>,
@@ -236,6 +243,87 @@ pub async fn active_room_stream_media_ids(
     }
 
     media_ids.into_iter().collect()
+}
+
+fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiError {
+    ApiError::InvalidInput(format!("Invalid {field}: {err}"))
+}
+
+macro_rules! define_typed_id_parser {
+    ($fn_name:ident, $ty:path) => {
+        pub fn $fn_name(value: &str, field: &'static str) -> Result<$ty, ApiError> {
+            <$ty>::from_string_validated(value.trim().to_string())
+                .map_err(|err| invalid_id_input(field, err))
+        }
+    };
+}
+
+define_typed_id_parser!(parse_user_id_param, synctv_core::models::UserId);
+define_typed_id_parser!(parse_room_id_param, synctv_core::models::RoomId);
+define_typed_id_parser!(parse_media_id_param, synctv_core::models::MediaId);
+define_typed_id_parser!(parse_playlist_id_param, synctv_core::models::PlaylistId);
+
+pub fn proto_validated_user_id(value: String) -> synctv_core::models::UserId {
+    synctv_core::models::UserId::from_string(value)
+}
+
+pub fn proto_validated_room_id(value: String) -> synctv_core::models::RoomId {
+    synctv_core::models::RoomId::from_string(value)
+}
+
+pub fn proto_validated_media_id(value: String) -> synctv_core::models::MediaId {
+    synctv_core::models::MediaId::from_string(value)
+}
+
+pub fn proto_validated_playlist_id(value: String) -> synctv_core::models::PlaylistId {
+    synctv_core::models::PlaylistId::from_string(value)
+}
+
+pub fn proto_validated_optional_media_id(value: String) -> Option<synctv_core::models::MediaId> {
+    (!value.is_empty()).then(|| proto_validated_media_id(value))
+}
+
+pub fn proto_validated_optional_playlist_id(
+    value: String,
+) -> Option<synctv_core::models::PlaylistId> {
+    (!value.is_empty()).then(|| proto_validated_playlist_id(value))
+}
+
+pub fn proto_validated_optional_room_id(value: String) -> Option<synctv_core::models::RoomId> {
+    (!value.is_empty()).then(|| proto_validated_room_id(value))
+}
+
+pub fn proto_validated_media_ids(values: Vec<String>) -> Vec<synctv_core::models::MediaId> {
+    values.into_iter().map(proto_validated_media_id).collect()
+}
+
+pub fn proto_validated_playlist_ids(values: Vec<String>) -> Vec<synctv_core::models::PlaylistId> {
+    values
+        .into_iter()
+        .map(proto_validated_playlist_id)
+        .collect()
+}
+
+pub fn parse_optional_media_id_param(
+    value: &str,
+    field: &'static str,
+) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
+    if value.trim().is_empty() {
+        Ok(None)
+    } else {
+        parse_media_id_param(value, field).map(Some)
+    }
+}
+
+pub fn parse_optional_playlist_id_param(
+    value: &str,
+    field: &'static str,
+) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
+    if value.trim().is_empty() {
+        Ok(None)
+    } else {
+        parse_playlist_id_param(value, field).map(Some)
+    }
 }
 
 pub async fn disconnect_deleted_user(
@@ -842,6 +930,26 @@ pub fn parse_api_error_string(err: &str) -> (ErrorKind, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
+        let request = crate::proto::client::RegisterRequest {
+            username: "ab".to_string(),
+            password: "short".to_string(),
+            email: "not-an-email".to_string(),
+        };
+
+        let error = validate_proto_request(&request).unwrap_err();
+
+        match error {
+            ApiError::InvalidInput(message) => {
+                assert!(message.contains("username"), "{message}");
+                assert!(message.contains("password"), "{message}");
+                assert!(message.contains("email"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_classify_error_not_found() {

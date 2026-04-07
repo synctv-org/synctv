@@ -296,17 +296,6 @@ if [ -n "$ROOM_ID" ] && [ "$ROOM_ID" != "null" ]; then
         log_test "PATCH /api/rooms/:room_id/password" "FAIL" "HTTP $http_code"
     fi
 
-    # Test: Verify room password
-    response=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/rooms/$ROOM_ID/password/verify" \
-        -H "Authorization: Bearer $USER1_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"password":"test123"}')
-    http_code=$(echo "$response" | tail -1)
-    if [ "$http_code" = "200" ] || [ "$http_code" = "400" ]; then
-        log_test "POST /api/rooms/:room_id/password/verify" "PASS" "Verification endpoint accessible (HTTP $http_code)"
-    else
-        log_test "POST /api/rooms/:room_id/password/verify" "FAIL" "HTTP $http_code"
-    fi
 else
     log_test "Room settings tests" "SKIP" "No room ID available"
 fi

@@ -6,36 +6,23 @@
 //! Uses proto-generated types for request/response to ensure type consistency
 //! with gRPC handlers.
 
+use crate::http::error::AppResult;
+use crate::http::middleware::AuthUser;
+use crate::http::validation::ValidatedQuery;
+use crate::http::AppState;
+use crate::impls::notification::{
+    build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
+    notification_to_proto,
+};
+use crate::proto::client::{
+    DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
+    ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
+};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     Json,
 };
-use serde::Deserialize;
-use uuid::Uuid;
-
-use crate::http::error::AppResult;
-use crate::http::middleware::AuthUser;
-use crate::http::AppState;
-use crate::impls::notification::{
-    notification_to_proto, proto_notification_type_to_core, NotificationTypeParseError,
-};
-use crate::proto::client::{
-    GetNotificationResponse, ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
-};
-
-/// Query parameters for listing notifications (HTTP-specific, not in proto)
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListNotificationsQuery {
-    pub page: Option<i32>,
-    pub page_size: Option<i32>,
-    pub is_read: Option<bool>,
-    pub notification_type: Option<String>,
-    pub search: Option<String>,
-    pub sort_by: Option<String>,
-    pub sort_direction: Option<String>,
-}
 
 fn get_notification_api(
     state: &AppState,
@@ -59,7 +46,7 @@ fn get_notification_api(
         get,
         path = "/api/notifications",
         tag = "Notification",
-        params(ListNotificationsQuery),
+        params(crate::proto::client::ListNotificationsRequest),
         responses(
             (status = 200, description = "Notifications list", body = ListNotificationsResponse),
             (status = 400, description = "Invalid notification filter", body = crate::openapi::ErrorResponseDoc),
@@ -73,43 +60,13 @@ fn get_notification_api(
 )]
 pub async fn list_notifications(
     auth: AuthUser,
-    Query(query): Query<ListNotificationsQuery>,
+    ValidatedQuery(query): ValidatedQuery<crate::proto::client::ListNotificationsRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<ListNotificationsResponse>> {
     let api = get_notification_api(&state)?;
 
-    let notification_type = query
-        .notification_type
-        .as_deref()
-        .map(str::parse::<i32>)
-        .transpose()
-        .map_err(|_| crate::http::AppError::bad_request("Invalid notification_type format"))?
-        .map(proto_notification_type_to_core)
-        .transpose()
-        .map_err(|e: NotificationTypeParseError| {
-            crate::http::AppError::bad_request(e.to_string())
-        })?;
-
-    let (page, page_size) = super::validation::validate_pagination(query.page, query.page_size);
-
     let result = api
-        .list_notifications(
-            &auth.user_id,
-            Some(page),
-            Some(page_size),
-            query.is_read,
-            notification_type,
-            query.search.clone(),
-            match query.sort_by.as_deref() {
-                Some("title") => synctv_core::models::NotificationListSortBy::Title,
-                Some("updated_at") => synctv_core::models::NotificationListSortBy::UpdatedAt,
-                _ => synctv_core::models::NotificationListSortBy::CreatedAt,
-            },
-            match query.sort_direction.as_deref() {
-                Some("asc") => synctv_core::models::SortDirection::Asc,
-                _ => synctv_core::models::SortDirection::Desc,
-            },
-        )
+        .list_notifications(&auth.user_id, query)
         .await
         .map_err(crate::http::error::map_api_error)?;
 
@@ -129,10 +86,10 @@ pub async fn list_notifications(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/notifications/{id}",
+        path = "/api/notifications/{notification_id}",
         tag = "Notification",
         params(
-            ("id" = String, Path, description = "Notification ID as UUID")
+            ("notification_id" = String, Path, description = "Notification ID as UUID")
         ),
         responses(
             (status = 200, description = "Notification details", body = GetNotificationResponse),
@@ -147,10 +104,12 @@ pub async fn list_notifications(
 )]
 pub async fn get_notification(
     auth: AuthUser,
-    Path(notification_id): Path<Uuid>,
+    Path(req): Path<GetNotificationRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetNotificationResponse>> {
     let api = get_notification_api(&state)?;
+    let notification_id =
+        build_get_notification_request(req).map_err(crate::http::error::map_api_error)?;
 
     let notification = api
         .get_notification(&auth.user_id, notification_id)
@@ -188,15 +147,8 @@ pub async fn mark_as_read(
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
 
-    let notification_ids: Vec<Uuid> = req
-        .notification_ids
-        .iter()
-        .map(|id| {
-            Uuid::parse_str(id).map_err(|_| {
-                crate::http::AppError::bad_request(format!("Invalid notification_id: {id}"))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let notification_ids =
+        build_mark_as_read_request(req).map_err(crate::http::error::map_api_error)?;
 
     api.mark_as_read(&auth.user_id, notification_ids)
         .await
@@ -251,10 +203,10 @@ pub async fn mark_all_as_read(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/notifications/{id}",
+        path = "/api/notifications/{notification_id}",
         tag = "Notification",
         params(
-            ("id" = String, Path, description = "Notification ID as UUID")
+            ("notification_id" = String, Path, description = "Notification ID as UUID")
         ),
         responses(
             (status = 204, description = "Notification deleted"),
@@ -269,10 +221,12 @@ pub async fn mark_all_as_read(
 )]
 pub async fn delete_notification(
     auth: AuthUser,
-    Path(notification_id): Path<Uuid>,
+    Path(req): Path<DeleteNotificationRequest>,
     State(state): State<AppState>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
+    let notification_id =
+        build_delete_notification_request(req).map_err(crate::http::error::map_api_error)?;
 
     api.delete_notification(&auth.user_id, notification_id)
         .await
@@ -283,16 +237,38 @@ pub async fn delete_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::ListNotificationsQuery;
+    #[test]
+    fn test_list_notifications_request_deserializes_search_and_sort() {
+        let query: crate::proto::client::ListNotificationsRequest =
+            serde_json::from_str(r#"{"search":"alert","sort_by":3,"sort_direction":1}"#).unwrap();
+        assert_eq!(query.search, "alert");
+        assert_eq!(
+            query.sort_by,
+            crate::proto::client::NotificationListSortBy::Title as i32
+        );
+        assert_eq!(
+            query.sort_direction,
+            crate::proto::client::SortDirection::Asc as i32
+        );
+    }
 
     #[test]
-    fn test_list_notifications_query_deserializes_search_and_sort() {
-        let query: ListNotificationsQuery =
-            serde_json::from_str(r#"{"search":"alert","sort_by":"title","sort_direction":"asc"}"#)
+    fn test_notification_path_requests_deserialize_proto_field_names() {
+        let get_request: crate::proto::client::GetNotificationRequest =
+            serde_json::from_str(r#"{"notification_id":"550e8400-e29b-41d4-a716-446655440000"}"#)
                 .unwrap();
-        assert_eq!(query.search.as_deref(), Some("alert"));
-        assert_eq!(query.sort_by.as_deref(), Some("title"));
-        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
+        assert_eq!(
+            get_request.notification_id,
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+
+        let delete_request: crate::proto::client::DeleteNotificationRequest =
+            serde_json::from_str(r#"{"notification_id":"550e8400-e29b-41d4-a716-446655440000"}"#)
+                .unwrap();
+        assert_eq!(
+            delete_request.notification_id,
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 }
 
@@ -301,7 +277,7 @@ mod tests {
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/notifications/actions/mark-read",
+        path = "/api/notifications/read",
         tag = "Notification",
         responses(
             (status = 204, description = "All read notifications deleted"),
@@ -331,7 +307,7 @@ pub fn create_notification_read_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/notifications", axum::routing::get(list_notifications))
         .route(
-            "/api/notifications/{id}",
+            "/api/notifications/{notification_id}",
             axum::routing::get(get_notification),
         )
 }
@@ -340,12 +316,16 @@ pub fn create_notification_read_router() -> axum::Router<AppState> {
 pub fn create_notification_write_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route(
-            "/api/notifications/{id}",
+            "/api/notifications/{notification_id}",
             axum::routing::delete(delete_notification),
         )
         .route(
             "/api/notifications/actions/mark-read",
-            axum::routing::post(mark_as_read).delete(delete_all_read),
+            axum::routing::post(mark_as_read),
+        )
+        .route(
+            "/api/notifications/read",
+            axum::routing::delete(delete_all_read),
         )
         .route(
             "/api/notifications/read-all",

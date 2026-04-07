@@ -1,11 +1,11 @@
 //! Room operations: list, create, get, join, leave, delete, settings, chat, hot rooms, public settings
 
 use crate::impls::ApiError;
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::UserId;
 
 use super::convert::{
-    hot_room_to_proto, media_to_proto, members_to_proto, playback_state_to_proto,
-    room_role_to_proto, room_to_proto_basic,
+    hot_room_to_proto, media_to_proto, member_status_to_proto, members_to_proto,
+    playback_state_to_proto, room_role_to_proto, room_to_proto_basic,
 };
 use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
@@ -16,7 +16,9 @@ fn settings_registry_unavailable_error() -> ApiError {
 
 fn build_public_room_list_query(
     req: crate::proto::client::ListRoomsRequest,
-) -> synctv_core::models::RoomListQuery {
+) -> Result<synctv_core::models::RoomListQuery, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
     let page = if req.page > 0 { req.page as u32 } else { 1 };
     let page_size = if req.page_size > 0 {
         (req.page_size as u32).min(100)
@@ -24,7 +26,7 @@ fn build_public_room_list_query(
         20
     };
 
-    synctv_core::models::RoomListQuery {
+    Ok(synctv_core::models::RoomListQuery {
         pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
         search: (!req.search.is_empty()).then_some(req.search),
         status: Some(synctv_core::models::RoomStatus::Active),
@@ -46,12 +48,14 @@ fn build_public_room_list_query(
             _ => synctv_core::models::SortDirection::Desc,
         },
         ..Default::default()
-    }
+    })
 }
 
-fn build_participated_room_list_query(
-    req: crate::proto::client::ListParticipatedRoomsRequest,
-) -> synctv_core::models::RelatedRoomListQuery {
+fn build_my_room_list_query(
+    req: crate::proto::client::ListMyRoomsRequest,
+) -> Result<synctv_core::models::MyRoomListQuery, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
     let page = if req.page > 0 { req.page as u32 } else { 1 };
     let page_size = if req.page_size > 0 {
         (req.page_size as u32).min(100)
@@ -59,7 +63,7 @@ fn build_participated_room_list_query(
         20
     };
 
-    synctv_core::models::RelatedRoomListQuery {
+    Ok(synctv_core::models::MyRoomListQuery {
         pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
         search: (!req.search.is_empty()).then_some(req.search),
         status: match synctv_proto::common::RoomStatus::try_from(req.status) {
@@ -69,32 +73,86 @@ fn build_participated_room_list_query(
             Ok(synctv_proto::common::RoomStatus::Pending) => {
                 Some(synctv_core::models::RoomStatus::Pending)
             }
+            Ok(synctv_proto::common::RoomStatus::Rejected) => {
+                Some(synctv_core::models::RoomStatus::Rejected)
+            }
             Ok(synctv_proto::common::RoomStatus::Closed) => {
                 Some(synctv_core::models::RoomStatus::Closed)
             }
             _ => None,
         },
         is_banned: req.is_banned,
-        sort_by: match crate::proto::client::RelatedRoomListSortBy::try_from(req.sort_by) {
-            Ok(crate::proto::client::RelatedRoomListSortBy::Name) => {
-                synctv_core::models::RelatedRoomListSortBy::Name
+        relation: match crate::proto::client::MyRoomRelation::try_from(req.relation) {
+            Ok(crate::proto::client::MyRoomRelation::Created) => {
+                synctv_core::models::MyRoomRelation::Created
             }
-            Ok(crate::proto::client::RelatedRoomListSortBy::CreatedAt) => {
-                synctv_core::models::RelatedRoomListSortBy::CreatedAt
+            Ok(crate::proto::client::MyRoomRelation::Participating) => {
+                synctv_core::models::MyRoomRelation::Participating
             }
-            Ok(crate::proto::client::RelatedRoomListSortBy::UpdatedAt) => {
-                synctv_core::models::RelatedRoomListSortBy::UpdatedAt
+            _ => synctv_core::models::MyRoomRelation::All,
+        },
+        sort_by: match crate::proto::client::MyRoomListSortBy::try_from(req.sort_by) {
+            Ok(crate::proto::client::MyRoomListSortBy::Name) => {
+                synctv_core::models::MyRoomListSortBy::Name
             }
-            Ok(crate::proto::client::RelatedRoomListSortBy::LastActivityAt) => {
-                synctv_core::models::RelatedRoomListSortBy::LastActivityAt
+            Ok(crate::proto::client::MyRoomListSortBy::CreatedAt) => {
+                synctv_core::models::MyRoomListSortBy::CreatedAt
             }
-            _ => synctv_core::models::RelatedRoomListSortBy::JoinedAt,
+            Ok(crate::proto::client::MyRoomListSortBy::UpdatedAt) => {
+                synctv_core::models::MyRoomListSortBy::UpdatedAt
+            }
+            Ok(crate::proto::client::MyRoomListSortBy::LastActivityAt) => {
+                synctv_core::models::MyRoomListSortBy::LastActivityAt
+            }
+            _ => synctv_core::models::MyRoomListSortBy::JoinedAt,
         },
         sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction) {
             Ok(crate::proto::client::SortDirection::Asc) => synctv_core::models::SortDirection::Asc,
             _ => synctv_core::models::SortDirection::Desc,
         },
-    }
+    })
+}
+
+fn build_transfer_room_ownership_request(
+    req: crate::proto::client::TransferRoomOwnershipRequest,
+) -> Result<UserId, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    Ok(crate::impls::proto_validated_user_id(req.new_owner_user_id))
+}
+
+fn build_check_room_request(
+    req: crate::proto::client::CheckRoomRequest,
+) -> Result<synctv_core::models::RoomId, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    Ok(crate::impls::proto_validated_room_id(req.room_id))
+}
+
+pub(crate) fn build_create_websocket_ticket_request(
+    req: &crate::proto::client::CreateWebSocketTicketRequest,
+) -> Result<synctv_core::models::RoomId, ApiError> {
+    crate::impls::validate_proto_request(req)?;
+    Ok(crate::impls::proto_validated_room_id(req.room_id.clone()))
+}
+
+type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, String);
+
+fn build_get_chat_history_request(
+    req: crate::proto::client::GetChatHistoryRequest,
+) -> Result<(i32, Option<ChatHistoryCursor>), ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    let limit = if req.limit > 0 { req.limit } else { 50 };
+    let cursor = if req.cursor.is_empty() {
+        None
+    } else if let Some((ts_str, id)) = req.cursor.split_once('|') {
+        let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
+            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+        Some((ts, id.to_string()))
+    } else {
+        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
+    };
+
+    Ok((limit, cursor))
 }
 
 impl ClientApiImpl {
@@ -127,7 +185,7 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::ListRoomsRequest,
     ) -> Result<crate::proto::client::ListRoomsResponse, ApiError> {
-        let query = build_public_room_list_query(req);
+        let query = build_public_room_list_query(req)?;
         let (rooms, total) = self
             .room_service
             .list_accessible_rooms(&query)
@@ -154,13 +212,13 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn get_joined_rooms(
+    pub async fn list_my_rooms(
         &self,
         user_id: &str,
-        req: crate::proto::client::ListParticipatedRoomsRequest,
-    ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, ApiError> {
+        req: crate::proto::client::ListMyRoomsRequest,
+    ) -> Result<crate::proto::client::ListMyRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let query = build_participated_room_list_query(req);
+        let query = build_my_room_list_query(req)?;
         let (rooms, total) = self
             .room_service
             .list_accessible_joined_rooms_with_query(&uid, &query)
@@ -201,14 +259,20 @@ impl ClientApiImpl {
                 .calculate_role_default_permissions(role, &settings)
                 .0;
             let member_count: Option<i32> = count.try_into().ok();
-            room_list.push(crate::proto::client::RoomWithRole {
+            let relation = if room.created_by == uid {
+                crate::proto::client::MyRoomRelation::Created as i32
+            } else {
+                crate::proto::client::MyRoomRelation::Participating as i32
+            };
+            room_list.push(crate::proto::client::MyRoom {
                 room: Some(room_to_proto_basic(room, None, member_count)),
                 permissions,
                 role: room_role_to_proto(*role),
+                relation,
             });
         }
 
-        Ok(crate::proto::client::ListParticipatedRoomsResponse {
+        Ok(crate::proto::client::ListMyRoomsResponse {
             rooms: room_list,
             total: i32::try_from(total).unwrap_or(i32::MAX),
         })
@@ -228,6 +292,8 @@ impl ClientApiImpl {
             req.description = crate::http::validation::validate_room_description(&req.description)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         }
+
+        crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
 
@@ -327,7 +393,10 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
+        client_ip: Option<&str>,
     ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
@@ -338,7 +407,36 @@ impl ClientApiImpl {
             Some(req.password)
         };
 
-        let (_room, _member, members) = self
+        if let Some(password) = password.as_ref() {
+            let start = std::time::Instant::now();
+            let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
+
+            let valid = self
+                .room_service
+                .check_room_password_with_rate_limit(&rid, password, parsed_client_ip)
+                .await
+                .map_err(ApiError::from)?;
+
+            const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
+            let elapsed = start.elapsed();
+            let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
+            if elapsed < min_delay {
+                tokio::time::sleep(
+                    min_delay
+                        .checked_sub(elapsed)
+                        .expect("elapsed < min_delay guaranteed by if-check above"),
+                )
+                .await;
+            }
+
+            if !valid {
+                return Err(ApiError::Authorization(
+                    "Forbidden: Invalid password".to_string(),
+                ));
+            }
+        }
+
+        let (_room, member, members) = self
             .room_service
             .join_room(rid.clone(), uid, password)
             .await
@@ -380,6 +478,8 @@ impl ClientApiImpl {
             room: Some(room_to_proto_basic(&room, None, member_count)),
             members: proto_members,
             playback_state,
+            membership_status: member_status_to_proto(member.status),
+            requires_approval: member.status.is_pending(),
         })
     }
 
@@ -588,75 +688,6 @@ impl ClientApiImpl {
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
 
-    /// Check room password validity
-    ///
-    /// Enforces per-IP per-room rate limiting to prevent brute-force attacks.
-    /// After 5 failed attempts within a 5-minute window, further attempts are
-    /// temporarily blocked.
-    ///
-    /// # Timing Attack Protection
-    ///
-    /// This method includes a fixed delay to prevent timing attacks that could
-    /// leak information about password validity through response time differences.
-    /// The delay ensures that both successful and failed password checks take
-    /// approximately the same amount of time.
-    pub async fn check_room_password(
-        &self,
-        room_id: &str,
-        req: crate::proto::client::CheckRoomPasswordRequest,
-        client_ip: &str,
-    ) -> Result<crate::proto::client::CheckRoomPasswordResponse, ApiError> {
-        let rid = self.parse_room_id(room_id)?;
-
-        // Validate password length
-        validate_password_for_verify(&req.password)?;
-
-        // Verify room exists
-        self.room_service
-            .get_room(&rid)
-            .await
-            .map_err(Self::map_room_lookup_error)?;
-
-        // Record start time for timing attack protection
-        let start = std::time::Instant::now();
-
-        let parsed_client_ip = client_ip.parse().ok();
-
-        let valid = self
-            .room_service
-            .check_room_password_with_rate_limit(&rid, &req.password, parsed_client_ip)
-            .await
-            .map_err(ApiError::from)?;
-
-        if !valid {
-            tracing::info!(
-                client_ip = %client_ip,
-                room_id = %room_id,
-                "Failed room password check attempt"
-            );
-        }
-
-        // --- Timing attack protection: fixed minimum delay ---
-        // Ensure the total time is at least MIN_PASSWORD_CHECK_DELAY_MS regardless of
-        // whether the password was correct or not. This prevents attackers from
-        // distinguishing between valid and invalid passwords based on response time.
-        // Using 250ms to provide robust protection against network-based timing attacks
-        // while keeping response times acceptable for legitimate users.
-        const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
-        let elapsed = start.elapsed();
-        let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
-        if elapsed < min_delay {
-            tokio::time::sleep(
-                min_delay
-                    .checked_sub(elapsed)
-                    .expect("elapsed < min_delay guaranteed by if-check above"),
-            )
-            .await;
-        }
-
-        Ok(crate::proto::client::CheckRoomPasswordResponse { valid })
-    }
-
     // === Room Settings Operations ===
 
     /// Get room settings
@@ -735,82 +766,32 @@ impl ClientApiImpl {
         })
     }
 
-    /// List rooms created by a user
-    pub async fn list_created_rooms(
+    pub async fn transfer_room_ownership(
         &self,
         user_id: &str,
-        req: crate::proto::client::ListCreatedRoomsRequest,
-    ) -> Result<crate::proto::client::ListCreatedRoomsResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(u32::try_from(req.page).unwrap_or(1).max(1)),
-                Some(u32::try_from(req.page_size).unwrap_or(20).clamp(1, 100)),
-            ),
-            status: match synctv_proto::common::RoomStatus::try_from(req.status) {
-                Ok(synctv_proto::common::RoomStatus::Active) => {
-                    Some(synctv_core::models::RoomStatus::Active)
-                }
-                Ok(synctv_proto::common::RoomStatus::Pending) => {
-                    Some(synctv_core::models::RoomStatus::Pending)
-                }
-                Ok(synctv_proto::common::RoomStatus::Closed) => {
-                    Some(synctv_core::models::RoomStatus::Closed)
-                }
-                _ => None,
-            },
-            search: (!req.search.is_empty()).then_some(req.search),
-            is_banned: req.is_banned,
-            creator_id: Some(uid.as_str().to_string()),
-            sort_by: match crate::proto::client::RoomListSortBy::try_from(req.sort_by) {
-                Ok(crate::proto::client::RoomListSortBy::Name) => {
-                    synctv_core::models::RoomListSortBy::Name
-                }
-                Ok(crate::proto::client::RoomListSortBy::UpdatedAt) => {
-                    synctv_core::models::RoomListSortBy::UpdatedAt
-                }
-                Ok(crate::proto::client::RoomListSortBy::LastActivityAt) => {
-                    synctv_core::models::RoomListSortBy::LastActivityAt
-                }
-                _ => synctv_core::models::RoomListSortBy::CreatedAt,
-            },
-            sort_direction: match crate::proto::client::SortDirection::try_from(req.sort_direction)
-            {
-                Ok(crate::proto::client::SortDirection::Asc) => {
-                    synctv_core::models::SortDirection::Asc
-                }
-                _ => synctv_core::models::SortDirection::Desc,
-            },
-        };
+        room_id: &str,
+        req: crate::proto::client::TransferRoomOwnershipRequest,
+    ) -> Result<crate::proto::client::TransferRoomOwnershipResponse, ApiError> {
+        let current_owner_id = UserId::from_string(user_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
+        let new_owner_id = build_transfer_room_ownership_request(req)?;
 
-        let (rooms_with_count, total) = self
+        let room = self
             .room_service
-            .list_rooms_with_count(&query)
+            .transfer_room_ownership(rid.clone(), current_owner_id, new_owner_id)
             .await
-            .map_err(ApiError::from)?;
+            .map_err(Self::map_room_access_error)?;
 
-        // Batch-fetch settings for all rooms
-        let room_ids: Vec<&str> = rooms_with_count
-            .iter()
-            .map(|rwc| rwc.room.id.as_str())
-            .collect();
-        let settings_map = self
-            .room_service
-            .get_room_settings_batch(&room_ids)
+        let member_count = self
+            .connection_manager
+            .room_online_user_count_distributed(&rid)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::Internal)?
+            .try_into()
+            .ok();
 
-        let rooms = rooms_with_count
-            .into_iter()
-            .map(|rwc| {
-                let settings = settings_map.get(rwc.room.id.as_str()).cloned();
-                room_to_proto_basic(&rwc.room, settings.as_ref(), Some(rwc.member_count))
-            })
-            .collect();
-
-        Ok(crate::proto::client::ListCreatedRoomsResponse {
-            rooms,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+        Ok(crate::proto::client::TransferRoomOwnershipResponse {
+            room: Some(room_to_proto_basic(&room, None, member_count)),
         })
     }
 
@@ -853,9 +834,7 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::CheckRoomRequest,
     ) -> Result<crate::proto::client::CheckRoomResponse, ApiError> {
-        crate::http::validation::validate_id(&req.room_id, "room_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-        let rid = RoomId::from_string(req.room_id);
+        let rid = build_check_room_request(req)?;
 
         match self.room_service.get_room(&rid).await {
             Ok(_room) => {
@@ -882,6 +861,8 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::GetHotRoomsRequest,
     ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let limit = if req.limit <= 0 || req.limit > 50 {
             10
         } else {
@@ -972,21 +953,14 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        // Enforce a hard max page size of 100 to prevent OOM on large rooms
-        let limit = req.limit.clamp(1, 100);
-
-        // Cursor-based keyset pagination using (created_at, id) composite key.
-        // Cursor format: "<rfc3339_created_at>|<id>"
-        let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
-            let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
-                .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-            Some((ts, id))
-        } else {
-            None
-        };
+        let (limit, cursor) = build_get_chat_history_request(req)?;
         let (messages, next) = self
             .room_service
-            .get_chat_history_cursor(&rid, cursor.as_ref().map(|(ts, id)| (*ts, *id)), limit)
+            .get_chat_history_cursor(
+                &rid,
+                cursor.as_ref().map(|(ts, id)| (*ts, id.as_str())),
+                limit,
+            )
             .await
             .map_err(ApiError::from)?;
         let next_cursor_str = next.map(|(ts, id)| {
@@ -1054,8 +1028,9 @@ impl ClientApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_participated_room_list_query, build_public_room_list_query,
-        settings_registry_unavailable_error,
+        build_check_room_request, build_create_websocket_ticket_request,
+        build_get_chat_history_request, build_my_room_list_query, build_public_room_list_query,
+        build_transfer_room_ownership_request, settings_registry_unavailable_error,
     };
     use crate::impls::ErrorKind;
 
@@ -1067,7 +1042,8 @@ mod tests {
             search: "alpha".to_string(),
             sort_by: crate::proto::client::RoomListSortBy::Name as i32,
             sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        });
+        })
+        .unwrap();
 
         assert_eq!(query.pagination.page, 1);
         assert_eq!(query.pagination.page_size, 20);
@@ -1082,18 +1058,18 @@ mod tests {
     }
 
     #[test]
-    fn build_participated_room_list_query_maps_filters_sorting_and_defaults() {
-        let query = build_participated_room_list_query(
-            crate::proto::client::ListParticipatedRoomsRequest {
-                page: 0,
-                page_size: 0,
-                search: "alpha".to_string(),
-                status: synctv_proto::common::RoomStatus::Closed as i32,
-                is_banned: Some(false),
-                sort_by: crate::proto::client::RelatedRoomListSortBy::Name as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
-            },
-        );
+    fn build_my_room_list_query_maps_filters_sorting_and_defaults() {
+        let query = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            page: 0,
+            page_size: 0,
+            search: "alpha".to_string(),
+            status: synctv_proto::common::RoomStatus::Closed as i32,
+            is_banned: Some(false),
+            relation: crate::proto::client::MyRoomRelation::Participating as i32,
+            sort_by: crate::proto::client::MyRoomListSortBy::Name as i32,
+            sort_direction: crate::proto::client::SortDirection::Asc as i32,
+        })
+        .unwrap();
 
         assert_eq!(query.pagination.page, 1);
         assert_eq!(query.pagination.page_size, 20);
@@ -1101,13 +1077,178 @@ mod tests {
         assert_eq!(query.status, Some(synctv_core::models::RoomStatus::Closed));
         assert_eq!(query.is_banned, Some(false));
         assert_eq!(
-            query.sort_by,
-            synctv_core::models::RelatedRoomListSortBy::Name
+            query.relation,
+            synctv_core::models::MyRoomRelation::Participating
         );
+        assert_eq!(query.sort_by, synctv_core::models::MyRoomListSortBy::Name);
         assert_eq!(
             query.sort_direction,
             synctv_core::models::SortDirection::Asc
         );
+    }
+
+    #[test]
+    fn build_my_room_list_query_defaults_relation_to_all() {
+        let query = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: String::new(),
+            status: synctv_proto::common::RoomStatus::Unspecified as i32,
+            is_banned: None,
+            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        assert_eq!(query.relation, synctv_core::models::MyRoomRelation::All);
+        assert_eq!(
+            query.sort_by,
+            synctv_core::models::MyRoomListSortBy::JoinedAt
+        );
+        assert_eq!(
+            query.sort_direction,
+            synctv_core::models::SortDirection::Desc
+        );
+    }
+
+    #[test]
+    fn build_my_room_list_query_rejects_too_long_search() {
+        let error = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: "a".repeat(101),
+            status: synctv_proto::common::RoomStatus::Unspecified as i32,
+            is_banned: None,
+            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("search"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_public_room_list_query_rejects_invalid_proto_request() {
+        let error = build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+            page: -1,
+            page_size: 101,
+            search: "a".repeat(101),
+            sort_by: 99,
+            sort_direction: 99,
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("page"), "{message}");
+                assert!(message.contains("page_size"), "{message}");
+                assert!(message.contains("search"), "{message}");
+                assert!(message.contains("sort_by"), "{message}");
+                assert!(message.contains("sort_direction"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
+        let error = build_transfer_room_ownership_request(
+            crate::proto::client::TransferRoomOwnershipRequest {
+                new_owner_user_id: "bad-id".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("new_owner_user_id"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_check_room_request_rejects_invalid_room_id() {
+        let error = build_check_room_request(crate::proto::client::CheckRoomRequest {
+            room_id: "bad-room".to_string(),
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("room_id"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_create_websocket_ticket_request_rejects_invalid_room_id() {
+        let error = build_create_websocket_ticket_request(
+            &crate::proto::client::CreateWebSocketTicketRequest {
+                room_id: "bad-room".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("room_id"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_create_websocket_ticket_request_parses_proto_validated_room_id() {
+        let room_id = synctv_common::snanoid!(12);
+        let parsed = build_create_websocket_ticket_request(
+            &crate::proto::client::CreateWebSocketTicketRequest {
+                room_id: room_id.clone(),
+            },
+        )
+        .expect("valid room id");
+
+        assert_eq!(parsed.as_str(), room_id);
+    }
+
+    #[test]
+    fn build_get_chat_history_request_rejects_invalid_limit() {
+        let error = build_get_chat_history_request(crate::proto::client::GetChatHistoryRequest {
+            limit: 101,
+            cursor: String::new(),
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("limit"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_get_chat_history_request_rejects_invalid_cursor() {
+        let error = build_get_chat_history_request(crate::proto::client::GetChatHistoryRequest {
+            limit: 50,
+            cursor: "not-a-cursor".to_string(),
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("Invalid cursor format"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
     }
 
     #[test]

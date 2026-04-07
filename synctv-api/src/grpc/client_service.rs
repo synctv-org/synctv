@@ -18,32 +18,33 @@ use crate::proto::client::{
     auth_service_server::AuthService, email_service_server::EmailService,
     public_service_server::PublicService, room_service_server::RoomService,
     user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
-    AddMediaResponse, BanMemberRequest, BanMemberResponse, CheckRoomPasswordRequest,
-    CheckRoomPasswordResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
-    ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
-    ConfirmPasswordResetRequest, ConfirmPasswordResetResponse, CreatePlaylistRequest,
-    CreatePlaylistResponse, CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest,
-    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
-    DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
-    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
-    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
-    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveMemberRequest,
+    ApproveMemberResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
+    CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
+    ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse,
+    CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest, CreateRoomResponse,
+    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
+    DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse,
+    EditMediaRequest, EditMediaResponse, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
+    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
+    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
+    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, GetStreamInfoRequest, GetStreamInfoResponse, JoinRoomRequest,
     JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse,
-    ListCreatedRoomsRequest, ListCreatedRoomsResponse, ListParticipatedRoomsRequest,
-    ListParticipatedRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
+    ListMyRoomsRequest, ListMyRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
     ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
     ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest,
-    LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
-    MovePlaylistResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
-    RegisterResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
-    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
-    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
+    RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
+    RejectMemberRequest, RejectMemberResponse, RequestPasswordResetRequest,
+    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
+    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage, SetPasswordRequest,
+    SetPasswordResponse, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
+    SetUsernameResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
+    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
     UnbanMemberRequest, UnbanMemberResponse, UpdateMemberPermissionsRequest,
     UpdateMemberPermissionsResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
@@ -452,11 +453,9 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<GetRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
         let response = self
             .client_api
-            .get_room(user_id.as_str(), room_id.as_str())
+            .get_room(user_id.as_str(), &req.room_id)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -467,90 +466,26 @@ impl UserService for ClientServiceImpl {
         request: Request<JoinRoomRequest>,
     ) -> Result<Response<JoinRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
+        let client_ip = super::extract_client_ip(&request, &self.config).map(|ip| ip.to_string());
         let req = request.into_inner();
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
+        let room_id = req.room_id.clone();
         let response = self
             .client_api
-            .join_room(user_id.as_str(), room_id.as_str(), req)
+            .join_room(user_id.as_str(), &room_id, req, client_ip.as_deref())
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
-    async fn leave_room(
+    async fn list_my_rooms(
         &self,
-        request: Request<LeaveRoomRequest>,
-    ) -> Result<Response<LeaveRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let req = request.into_inner();
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
-        let response = self
-            .client_api
-            .leave_room(user_id.as_str(), room_id.as_str())
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn delete_room(
-        &self,
-        request: Request<DeleteRoomRequest>,
-    ) -> Result<Response<DeleteRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let req = request.into_inner();
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
-        let response = self
-            .client_api
-            .delete_room(user_id.as_str(), room_id.as_str())
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn check_room_password(
-        &self,
-        request: Request<CheckRoomPasswordRequest>,
-    ) -> Result<Response<CheckRoomPasswordResponse>, Status> {
-        let _user_id = self.get_user_id(&request).await?;
-        let client_ip = super::extract_client_ip(&request, &self.config)
-            .map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
-        let req = request.into_inner();
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
-        let response = self
-            .client_api
-            .check_room_password(room_id.as_str(), req, &client_ip)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn list_created_rooms(
-        &self,
-        request: Request<ListCreatedRoomsRequest>,
-    ) -> Result<Response<ListCreatedRoomsResponse>, Status> {
+        request: Request<ListMyRoomsRequest>,
+    ) -> Result<Response<ListMyRoomsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
         let response = self
             .client_api
-            .list_created_rooms(user_id.as_str(), req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn list_participated_rooms(
-        &self,
-        request: Request<ListParticipatedRoomsRequest>,
-    ) -> Result<Response<ListParticipatedRoomsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let req = request.into_inner();
-        let response = self
-            .client_api
-            .get_joined_rooms(user_id.as_str(), req)
+            .list_my_rooms(user_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -586,6 +521,51 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .get_room_members(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn add_member(
+        &self,
+        request: Request<AddMemberRequest>,
+    ) -> Result<Response<AddMemberResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .add_member(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn approve_member(
+        &self,
+        request: Request<ApproveMemberRequest>,
+    ) -> Result<Response<ApproveMemberResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .approve_member(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn reject_member(
+        &self,
+        request: Request<RejectMemberRequest>,
+    ) -> Result<Response<RejectMemberResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .reject_member(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -679,6 +659,21 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn transfer_room_ownership(
+        &self,
+        request: Request<TransferRoomOwnershipRequest>,
+    ) -> Result<Response<TransferRoomOwnershipResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .transfer_room_ownership(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn set_room_password(
         &self,
         request: Request<SetRoomPasswordRequest>,
@@ -689,6 +684,34 @@ impl RoomService for ClientServiceImpl {
         let response = self
             .client_api
             .set_room_password(user_id.as_str(), room_id.as_str(), req)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn leave_room(
+        &self,
+        request: Request<LeaveRoomRequest>,
+    ) -> Result<Response<LeaveRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let response = self
+            .client_api
+            .leave_room(user_id.as_str(), room_id.as_str())
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn delete_room(
+        &self,
+        request: Request<DeleteRoomRequest>,
+    ) -> Result<Response<DeleteRoomResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let response = self
+            .client_api
+            .delete_room(user_id.as_str(), room_id.as_str())
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -1064,7 +1087,7 @@ impl RoomService for ClientServiceImpl {
         let req = request.into_inner();
 
         self.client_api
-            .list_room_streams(user_id.as_str(), room_id.as_str(), req.page, req.page_size)
+            .list_room_streams(user_id.as_str(), room_id.as_str(), req)
             .await
             .map(Response::new)
             .map_err(map_api_error)

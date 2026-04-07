@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use crate::{
     models::{PermissionBits, Playlist, PlaylistId, RoomId, UserId},
+    provider::ProviderContext,
     repository::PlaylistRepository,
-    service::permission::PermissionService,
+    repository::UserProviderCredentialRepository,
+    service::{permission::PermissionService, ProvidersManager},
     Error, Result,
 };
 use serde_json::Value as JsonValue;
@@ -69,17 +71,8 @@ fn normalize_dynamic_playlist_fields(
             let source_config = source_config.ok_or_else(|| {
                 Error::InvalidInput("source_config is required for dynamic folders".to_string())
             })?;
-            let provider_instance_name = normalized_instance.ok_or_else(|| {
-                Error::InvalidInput(
-                    "provider_instance_name is required for dynamic folders".to_string(),
-                )
-            })?;
 
-            Ok((
-                Some(provider),
-                Some(source_config),
-                Some(provider_instance_name),
-            ))
+            Ok((Some(provider), Some(source_config), normalized_instance))
         }
         None => {
             if source_config.is_some() || normalized_instance.is_some() {
@@ -130,6 +123,9 @@ pub struct MovePlaylistRequest {
 pub struct PlaylistService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
+    providers_manager: Arc<ProvidersManager>,
+    credential_encryption: Option<crate::service::CredentialEncryption>,
+    credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
     cluster_broadcaster: Option<Arc<dyn PlaylistBroadcaster>>,
 }
@@ -143,10 +139,17 @@ impl std::fmt::Debug for PlaylistService {
 impl PlaylistService {
     /// Create a new playlist service
     #[must_use]
-    pub fn new(playlist_repo: PlaylistRepository, permission_service: PermissionService) -> Self {
+    pub fn new(
+        playlist_repo: PlaylistRepository,
+        permission_service: PermissionService,
+        providers_manager: Arc<ProvidersManager>,
+    ) -> Self {
         Self {
             playlist_repo,
             permission_service,
+            providers_manager,
+            credential_encryption: None,
+            credential_repo: None,
             cluster_broadcaster: None,
         }
     }
@@ -154,6 +157,91 @@ impl PlaylistService {
     /// Set the cluster broadcaster for cross-replica playlist sync
     pub fn set_cluster_broadcaster(&mut self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
         self.cluster_broadcaster = Some(broadcaster);
+    }
+
+    /// Get a reference to the providers manager.
+    #[must_use]
+    pub const fn providers_manager(&self) -> &Arc<ProvidersManager> {
+        &self.providers_manager
+    }
+
+    /// Inject credential encryption into provider validation/preparation.
+    pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
+        self.credential_encryption = Some(encryption);
+    }
+
+    /// Inject credential repository into provider validation/preparation.
+    pub fn set_credential_repo(&mut self, repo: Arc<UserProviderCredentialRepository>) {
+        self.credential_repo = Some(repo);
+    }
+
+    async fn validate_dynamic_playlist_source(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        source_provider: String,
+        source_config: JsonValue,
+        provider_instance_name: Option<String>,
+    ) -> Result<(String, JsonValue, Option<String>)> {
+        let trimmed_provider = source_provider.trim().to_string();
+        let trimmed_instance = provider_instance_name.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        });
+
+        let provider = if let Some(ref provider_instance_name) = trimmed_instance {
+            let provider = self
+                .providers_manager
+                .get(provider_instance_name)
+                .await
+                .ok_or_else(|| {
+                    Error::NotFound(format!(
+                        "Provider instance not found: {provider_instance_name}"
+                    ))
+                })?;
+
+            if provider.name() != trimmed_provider {
+                return Err(Error::InvalidInput(format!(
+                    "Provider instance '{provider_instance_name}' is type '{}' but dynamic playlist requested '{trimmed_provider}'",
+                    provider.name()
+                )));
+            }
+
+            provider
+        } else {
+            self.providers_manager
+                .get_by_type(&trimmed_provider)
+                .await
+                .ok_or_else(|| Error::NotFound(format!("Provider not found: {trimmed_provider}")))?
+        };
+
+        if provider.as_dynamic_folder().is_none() {
+            return Err(Error::InvalidInput(format!(
+                "Provider {trimmed_provider} does not support dynamic folders"
+            )));
+        }
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        provider
+            .validate_source_config(&ctx, &source_config)
+            .await
+            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+
+        let prepared_source_config = provider
+            .prepare_source_config(&ctx, source_config)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
+
+        Ok((trimmed_provider, prepared_source_config, trimmed_instance))
     }
 
     /// Create a new playlist/folder
@@ -193,7 +281,7 @@ impl PlaylistService {
 
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
+                .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
                 .await?;
         }
 
@@ -227,6 +315,31 @@ impl PlaylistService {
                 request.source_config,
                 request.provider_instance_name,
             )?;
+
+        let (source_provider, source_config, provider_instance_name) = if let (
+            Some(source_provider),
+            Some(source_config),
+        ) =
+            (source_provider, source_config)
+        {
+            let (source_provider, source_config, provider_instance_name) = self
+                .validate_dynamic_playlist_source(
+                    &room_id,
+                    &user_id,
+                    source_provider,
+                    source_config,
+                    provider_instance_name,
+                )
+                .await?;
+
+            (
+                Some(source_provider),
+                Some(source_config),
+                provider_instance_name,
+            )
+        } else {
+            (None, None, None)
+        };
 
         let mut tx = self.playlist_repo.pool().begin().await?;
         let position = self
@@ -465,7 +578,8 @@ impl PlaylistService {
         user_id: UserId,
         request: MovePlaylistRequest,
     ) -> Result<Playlist> {
-        self.move_playlist_internal(room_id, user_id, request, false).await
+        self.move_playlist_internal(room_id, user_id, request, false)
+            .await
     }
 
     pub async fn admin_move_playlist(
@@ -604,6 +718,12 @@ impl PlaylistService {
 mod tests {
     use super::*;
     use crate::models::PlaylistId;
+    use crate::repository::{
+        PlaylistRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
+    };
+    use crate::service::{PermissionService, RemoteProviderManager};
+    use sqlx::PgPool;
+    use std::sync::Arc;
 
     // ========== CreatePlaylistRequest Validation ==========
 
@@ -845,19 +965,17 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_folder_requires_provider_instance_name() {
-        let err = normalize_dynamic_playlist_fields(
-            Some("alist".to_string()),
-            Some(serde_json::json!({"path": "/movies"})),
-            None,
-        )
-        .unwrap_err();
-        match err {
-            Error::InvalidInput(message) => {
-                assert!(message.contains("provider_instance_name"));
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
+    fn test_dynamic_folder_allows_empty_provider_instance_name() {
+        let (source_provider, source_config, provider_instance_name) =
+            normalize_dynamic_playlist_fields(
+                Some("alist".to_string()),
+                Some(serde_json::json!({"path": "/movies"})),
+                None,
+            )
+            .expect("dynamic folder should allow default provider instance");
+        assert_eq!(source_provider.as_deref(), Some("alist"));
+        assert_eq!(source_config, Some(serde_json::json!({"path": "/movies"})));
+        assert!(provider_instance_name.is_none());
     }
 
     #[test]
@@ -903,6 +1021,124 @@ mod tests {
 
         assert!(request.source_provider.is_some());
         assert!(request.source_config.is_some());
+    }
+
+    fn test_permission_service(pool: &PgPool) -> PermissionService {
+        PermissionService::new(
+            RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        )
+    }
+
+    async fn test_playlist_service_with_builtin_providers() -> PlaylistService {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let providers_manager = Arc::new({
+            let manager = crate::service::ProvidersManager::new(provider_instance_manager);
+            manager
+        });
+        providers_manager
+            .create_builtin_defaults()
+            .await
+            .expect("builtin providers should initialize");
+
+        PlaylistService::new(
+            PlaylistRepository::new(pool.clone()),
+            test_permission_service(&pool),
+            providers_manager,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_rejects_unknown_provider_instance() {
+        let service = test_playlist_service_with_builtin_providers().await;
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "alist".to_string(),
+                serde_json::json!({"path": "/movies", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                Some("alist-main".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::NotFound(message) => assert!(message.contains("Provider instance not found")),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_rejects_provider_type_mismatch() {
+        let service = test_playlist_service_with_builtin_providers().await;
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "alist".to_string(),
+                serde_json::json!({"url": "https://example.com/video.mp4"}),
+                Some("direct_url".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::InvalidInput(message) => assert!(message.contains("is type 'direct_url'")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_rejects_non_dynamic_provider() {
+        let service = test_playlist_service_with_builtin_providers().await;
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "direct_url".to_string(),
+                serde_json::json!({"url": "https://example.com/video.mp4"}),
+                Some("direct_url".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("does not support dynamic folders"))
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_runs_provider_validation() {
+        let service = test_playlist_service_with_builtin_providers().await;
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "alist".to_string(),
+                serde_json::json!({"path": "", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                Some("alist".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("Invalid source_config"));
+                assert!(message.contains("must not be empty"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
     }
 
     // ========== Nesting Depth Validation ==========

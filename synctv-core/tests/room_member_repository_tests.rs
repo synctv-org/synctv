@@ -10,8 +10,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        MemberStatus, PageParams, RelatedRoomListQuery, RelatedRoomListSortBy, Room, RoomId,
-        RoomMember, RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
+        MemberStatus, MyRoomListQuery, MyRoomListSortBy, PageParams, Room, RoomId, RoomMember,
+        RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::AddMemberOptions,
@@ -120,6 +120,48 @@ async fn test_add_with_options_capacity_at_max_members() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::InvalidInput(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_with_options_pending_members_do_not_consume_capacity() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_pending_capacity"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Pending Capacity", &owner.id))
+        .await
+        .unwrap();
+
+    let pending_user = user_repo
+        .create(&make_user("user_pending_capacity"))
+        .await
+        .unwrap();
+    let pending_member = RoomMember {
+        status: MemberStatus::Pending,
+        ..make_member(room.id.clone(), pending_user.id.clone(), RoomRole::Member)
+    };
+    member_repo
+        .add_with_options(&pending_member, &AddMemberOptions::new())
+        .await
+        .unwrap();
+
+    let active_user = user_repo
+        .create(&make_user("user_active_capacity"))
+        .await
+        .unwrap();
+    let active_member = make_member(room.id.clone(), active_user.id.clone(), RoomRole::Member);
+
+    member_repo
+        .add_with_options(&active_member, &AddMemberOptions::new().with_max_members(1))
+        .await
+        .expect("pending members must not count against max_members");
 }
 
 #[tokio::test]
@@ -947,12 +989,13 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
             .unwrap();
     }
 
-    let query = RelatedRoomListQuery {
+    let query = MyRoomListQuery {
         pagination: PageParams::new(Some(1), Some(1)),
         search: Some("room".to_string()),
         status: Some(RoomStatus::Active),
         is_banned: Some(false),
-        sort_by: RelatedRoomListSortBy::Name,
+        relation: synctv_core::models::MyRoomRelation::All,
+        sort_by: MyRoomListSortBy::Name,
         sort_direction: SortDirection::Asc,
     };
 
@@ -967,7 +1010,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     let (page2, total_page2) = member_repo
         .list_by_user_with_query(
             &user.id,
-            &RelatedRoomListQuery {
+            &MyRoomListQuery {
                 pagination: PageParams::new(Some(2), Some(1)),
                 ..query
             },
@@ -977,6 +1020,93 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     assert_eq!(total_page2, 2);
     assert_eq!(page2.len(), 1);
     assert_eq!(page2[0].0.name, "Beta Room");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_member_count_filters"))
+        .await
+        .unwrap();
+    let viewer = user_repo
+        .create(&make_user("viewer_member_count_filters"))
+        .await
+        .unwrap();
+    let banned = user_repo
+        .create(&make_user("banned_member_count_filters"))
+        .await
+        .unwrap();
+    let rejected = user_repo
+        .create(&make_user("rejected_member_count_filters"))
+        .await
+        .unwrap();
+
+    let room = room_repo
+        .create(&make_room("Count Filter Room", &owner.id))
+        .await
+        .unwrap();
+
+    member_repo
+        .add(&make_member(room.id.clone(), viewer.id.clone(), RoomRole::Member))
+        .await
+        .unwrap();
+
+    let banned_member = RoomMember {
+        status: MemberStatus::Banned,
+        ..make_member(room.id.clone(), banned.id.clone(), RoomRole::Member)
+    };
+    member_repo.add(&banned_member).await.unwrap();
+
+    let mut rejected_member = RoomMember {
+        status: MemberStatus::Rejected,
+        ..make_member(room.id.clone(), rejected.id.clone(), RoomRole::Member)
+    };
+    rejected_member.left_at = Some(Utc::now());
+    sqlx::query(
+        "INSERT INTO room_members (
+            room_id, user_id, role, status,
+            added_permissions, removed_permissions,
+            admin_added_permissions, admin_removed_permissions,
+            joined_at, left_at, version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(room.id.as_str())
+    .bind(rejected_member.user_id.as_str())
+    .bind(rejected_member.role)
+    .bind(rejected_member.status)
+    .bind(rejected_member.added_permissions as i64)
+    .bind(rejected_member.removed_permissions as i64)
+    .bind(rejected_member.admin_added_permissions as i64)
+    .bind(rejected_member.admin_removed_permissions as i64)
+    .bind(rejected_member.joined_at)
+    .bind(rejected_member.left_at)
+    .bind(rejected_member.version)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (rows, total) = member_repo
+        .list_by_user_with_query(
+            &viewer.id,
+            &MyRoomListQuery {
+                pagination: PageParams::new(Some(1), Some(10)),
+                relation: synctv_core::models::MyRoomRelation::All,
+                ..MyRoomListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0.id, room.id);
+    assert_eq!(rows[0].3, 2, "only owner + active viewer should count");
 }
 
 // ========== diagnose_add_conflict tests ==========

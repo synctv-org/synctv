@@ -523,11 +523,21 @@ async fn test_get_next_append_position_with_tx_existing_items() {
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 2048))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "b.mp4",
+            2048,
+        ))
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 4096))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "c.mp4",
+            4096,
+        ))
         .await
         .unwrap();
 
@@ -919,7 +929,9 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
 
     assert_eq!(
         sorted_positions,
-        (1..=num_concurrent).map(|n| (n as f64) * 1024.0).collect::<Vec<_>>(),
+        (1..=num_concurrent)
+            .map(|n| (n as f64) * 1024.0)
+            .collect::<Vec<_>>(),
         "Positions should follow sparse append ordering"
     );
 }

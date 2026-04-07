@@ -8,25 +8,29 @@ use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{
-    AddAdminRequest, AddAdminResponse, AddProviderInstanceRequest, AddProviderInstanceResponse,
-    ApproveRoomRequest, ApproveRoomResponse, ApproveUserRequest, ApproveUserResponse,
-    BanRoomRequest, BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest,
-    BatchBanRoomsResponse, BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest,
-    BatchDeleteRoomsResponse, BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest,
-    CreateUserResponse, DeleteProviderInstanceRequest, DeleteProviderInstanceResponse,
-    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
-    DisableProviderInstanceRequest, DisableProviderInstanceResponse, EnableProviderInstanceRequest,
-    EnableProviderInstanceResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
-    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
+    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
+    AddProviderInstanceRequest, AddProviderInstanceResponse, ApproveMemberRequest,
+    ApproveMemberResponse, ApproveRoomRequest, ApproveRoomResponse, ApproveUserRequest,
+    ApproveUserResponse, BanMemberRequest, BanMemberResponse, BanRoomRequest, BanRoomResponse,
+    BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
+    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
+    BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
+    DeleteProviderInstanceRequest, DeleteProviderInstanceResponse, DeleteRoomRequest,
+    DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse, DisableProviderInstanceRequest,
+    DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
+    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
     GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
     GetSystemStatsResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
-    GetUserRoomsResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListProviderInstancesRequest,
-    ListProviderInstancesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
-    ListUsersResponse, ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse,
-    RemoveAdminRequest, RemoveAdminResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendTestEmailRequest, SendTestEmailResponse, UnbanRoomRequest, UnbanRoomResponse,
-    UnbanUserRequest, UnbanUserResponse, UpdateProviderInstanceRequest,
+    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
+    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
+    ListAdminsResponse, ListProviderInstancesRequest, ListProviderInstancesResponse,
+    ListRoomsRequest, ListRoomsResponse, ListUsersRequest, ListUsersResponse,
+    ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse, RejectMemberRequest,
+    RejectMemberResponse, RemoveAdminRequest, RemoveAdminResponse, ResetRoomSettingsRequest,
+    ResetRoomSettingsResponse, SendTestEmailRequest, SendTestEmailResponse, UnbanMemberRequest,
+    UnbanMemberResponse, UnbanRoomRequest, UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse,
+    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdateProviderInstanceRequest,
     UpdateProviderInstanceResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
     UpdateSettingsResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
@@ -749,6 +753,111 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
+    async fn add_member(
+        &self,
+        request: Request<AddMemberRequest>,
+    ) -> Result<Response<AddMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .add_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn approve_member(
+        &self,
+        request: Request<ApproveMemberRequest>,
+    ) -> Result<Response<ApproveMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .approve_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn reject_member(
+        &self,
+        request: Request<RejectMemberRequest>,
+    ) -> Result<Response<RejectMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .reject_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn update_member_permissions(
+        &self,
+        request: Request<UpdateMemberPermissionsRequest>,
+    ) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .update_member_permissions(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn kick_member(
+        &self,
+        request: Request<KickMemberRequest>,
+    ) -> Result<Response<KickMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .kick_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn ban_member(
+        &self,
+        request: Request<BanMemberRequest>,
+    ) -> Result<Response<BanMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .ban_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn unban_member(
+        &self,
+        request: Request<UnbanMemberRequest>,
+    ) -> Result<Response<UnbanMemberResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request, &self.config);
+        let req = request.into_inner();
+        let resp = self
+            .admin_api
+            .unban_member(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
     // =========================
     // Admin Management (Root Only)
     // =========================
@@ -891,20 +1000,8 @@ impl AdminService for AdminServiceImpl {
         let ctx = grpc_request_context(&request, &self.config);
         let req = request.into_inner();
 
-        if req.room_id.is_empty() || req.media_id.is_empty() {
-            return Err(Status::invalid_argument(
-                "room_id and media_id are required",
-            ));
-        }
-
         self.admin_api
-            .kick_stream(
-                &req.room_id,
-                &req.media_id,
-                &req.reason,
-                &validated.user_id,
-                &ctx,
-            )
+            .kick_stream(req, &validated.user_id, &ctx)
             .await
             .map_err(map_api_error)?;
 

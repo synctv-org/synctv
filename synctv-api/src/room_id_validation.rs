@@ -8,10 +8,11 @@ use synctv_core::models::RoomId;
 
 /// Validate and parse a room ID string
 ///
-/// This function validates the room ID format according to the rules:
+/// This function validates the room ID format according to the shared internal
+/// entity ID rules:
 /// - Must not be empty
 /// - Must be exactly 12 characters long
-/// - Must contain only alphanumeric characters, underscores, and hyphens
+/// - Must contain only ASCII alphanumeric base62 characters
 ///
 /// # Arguments
 /// * `id` - The room ID string to validate
@@ -25,12 +26,11 @@ use synctv_core::models::RoomId;
 /// use synctv_api::room_id_validation::parse_room_id;
 ///
 /// // Valid room IDs
-/// assert!(parse_room_id("room1234_abx").is_ok());
-/// assert!(parse_room_id("room_123-xyz").is_ok());
-/// assert!(parse_room_id("ROOM-123_abC").is_ok());
+/// assert!(parse_room_id("AbC123xYz890").is_ok());
+/// assert!(parse_room_id("1234567890Ab").is_ok());
 ///
 /// // Invalid room IDs
-/// assert!(parse_room_id("room@123").is_err());
+/// assert!(parse_room_id("room_1234567").is_err());
 /// assert!(parse_room_id("").is_err());
 /// ```
 pub fn parse_room_id(id: &str) -> Result<RoomId, ValidationError> {
@@ -45,16 +45,17 @@ mod tests {
 
     #[test]
     fn test_parse_room_id_valid_formats() {
-        assert!(parse_room_id("room1234_abx").is_ok());
-        assert!(parse_room_id("room_123-xyz").is_ok());
-        assert!(parse_room_id("Room1234_Abc").is_ok());
-        assert!(parse_room_id("ROOM1234-XYZ").is_ok());
+        assert!(parse_room_id("AbC123xYz890").is_ok());
         assert!(parse_room_id("123456789012").is_ok());
+        assert!(parse_room_id("ABCDEFGHIJKL").is_ok());
+        assert!(parse_room_id("abcdefghijkl").is_ok());
     }
 
     #[test]
     fn test_parse_room_id_invalid_formats() {
         // Invalid characters
+        assert!(parse_room_id("room1234_abx").is_err());
+        assert!(parse_room_id("room1234-abx").is_err());
         assert!(parse_room_id("room@123").is_err());
         assert!(parse_room_id("room#123").is_err());
         assert!(parse_room_id("room$123").is_err());
@@ -73,7 +74,7 @@ mod tests {
         assert!(parse_room_id("room\n123").is_err());
         assert!(parse_room_id("room\t123").is_err());
 
-        // Unicode characters (ROOM_ID regex is ASCII-only)
+        // Unicode characters (shared nanoid alphabet is ASCII-only)
         assert!(parse_room_id("房间123").is_err());
         assert!(parse_room_id("roomééé").is_err());
     }
@@ -91,8 +92,8 @@ mod tests {
 
     #[test]
     fn test_parse_room_id_returns_valid_roomid() {
-        let room_id = parse_room_id("test-room_12").unwrap();
-        assert_eq!(room_id.as_str(), "test-room_12");
+        let room_id = parse_room_id("AbC123xYz890").unwrap();
+        assert_eq!(room_id.as_str(), "AbC123xYz890");
     }
 
     #[test]

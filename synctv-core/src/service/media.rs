@@ -37,8 +37,10 @@ const MAX_BATCH_SIZE: usize = 100;
 pub struct AddMediaRequest {
     pub playlist_id: Option<PlaylistId>,
     pub name: String,
+    /// Declared provider type name (e.g. "direct_url", "bilibili", "alist").
+    pub source_provider: String,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
-    /// The provider will be looked up from the provider registry
+    /// Empty means use the default local instance for `source_provider`.
     pub provider_instance_name: String,
     pub source_config: JsonValue,
 }
@@ -88,6 +90,44 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
+    async fn resolve_media_provider(
+        &self,
+        source_provider: &str,
+        provider_instance_name: &str,
+    ) -> Result<Arc<dyn crate::provider::MediaProvider>> {
+        let trimmed_provider = source_provider.trim();
+        if trimmed_provider.is_empty() {
+            return Err(Error::InvalidInput(
+                "source_provider is required".to_string(),
+            ));
+        }
+
+        let trimmed_instance = provider_instance_name.trim();
+        let provider = if trimmed_instance.is_empty() {
+            self.providers_manager
+                .get_by_type(trimmed_provider)
+                .await
+                .ok_or_else(|| Error::NotFound(format!("Provider not found: {trimmed_provider}")))?
+        } else {
+            let provider = self
+                .providers_manager
+                .get(trimmed_instance)
+                .await
+                .ok_or_else(|| {
+                    Error::NotFound(format!("Provider instance not found: {trimmed_instance}"))
+                })?;
+            if provider.name() != trimmed_provider {
+                return Err(Error::InvalidInput(format!(
+                    "Provider instance '{trimmed_instance}' is type '{}' but request declared '{trimmed_provider}'",
+                    provider.name()
+                )));
+            }
+            provider
+        };
+
+        Ok(provider)
+    }
+
     fn dedup_media_ids(media_ids: Vec<MediaId>) -> Vec<MediaId> {
         let mut seen = std::collections::HashSet::new();
         let mut deduped = Vec::with_capacity(media_ids.len());
@@ -201,7 +241,7 @@ impl MediaService {
     ) -> Result<Media> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
+            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
             .await?;
 
         if let Some(ref playlist_id) = request.playlist_id {
@@ -221,15 +261,8 @@ impl MediaService {
         // Get provider from registry by instance name
         // The registry stores actual Arc<dyn MediaProvider> instances
         let provider = self
-            .providers_manager
-            .get(&request.provider_instance_name)
-            .await
-            .ok_or_else(|| {
-                Error::NotFound(format!(
-                    "Provider instance not found: {}",
-                    request.provider_instance_name
-                ))
-            })?;
+            .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
+            .await?;
 
         // Validate source_config using provider trait method
         let mut ctx = ProviderContext::new("synctv")
@@ -282,7 +315,7 @@ impl MediaService {
             request.name.clone(),
             prepared_source_config,
             provider.name(), // Provider type name (e.g., "bilibili")
-            request.provider_instance_name.clone(), // Instance name (e.g., "bilibili_main")
+            request.provider_instance_name.clone(), // Bound instance name, empty means default local provider
             position,
         );
 
@@ -349,15 +382,8 @@ impl MediaService {
         }
 
         let provider = self
-            .providers_manager
-            .get(&request.provider_instance_name)
-            .await
-            .ok_or_else(|| {
-                Error::NotFound(format!(
-                    "Provider instance not found: {}",
-                    request.provider_instance_name
-                ))
-            })?;
+            .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
+            .await?;
 
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(admin_user_id.as_str())
@@ -452,7 +478,7 @@ impl MediaService {
     ) -> Result<Vec<Media>> {
         // Check permission
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MOVIE)
+            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
             .await?;
 
         if let Some(ref playlist_id) = playlist_id {
@@ -495,15 +521,8 @@ impl MediaService {
         for item in items {
             // Get provider from registry by instance name
             let provider = self
-                .providers_manager
-                .get(&item.provider_instance_name)
-                .await
-                .ok_or_else(|| {
-                    Error::NotFound(format!(
-                        "Provider instance not found: {}",
-                        item.provider_instance_name
-                    ))
-                })?;
+                .resolve_media_provider(&item.source_provider, &item.provider_instance_name)
+                .await?;
 
             // Validate source_config using provider trait method
             provider
@@ -622,7 +641,7 @@ impl MediaService {
                 ));
             }
 
-            // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
+            // Check permission: EDIT_MEDIA_SELF if user owns the media, EDIT_MEDIA_ANY otherwise
             //
             // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
             // This prevents a race condition where:
@@ -632,9 +651,9 @@ impl MediaService {
             //
             // By bypassing cache, we ensure each retry checks current permission state.
             let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
-                PermissionBits::EDIT_MOVIE_SELF
+                PermissionBits::EDIT_MEDIA_SELF
             } else {
-                PermissionBits::EDIT_MOVIE_ANY
+                PermissionBits::EDIT_MEDIA_ANY
             };
             self.permission_service
                 .check_permission_no_cache(&room_id, &user_id, required_permission)
@@ -811,12 +830,12 @@ impl MediaService {
             ));
         }
 
-        // Check permission: DELETE_MOVIE_SELF if user owns the media, DELETE_MOVIE_ANY otherwise
+        // Check permission: DELETE_MEDIA_SELF if user owns the media, DELETE_MEDIA_ANY otherwise
         // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
         let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
-            PermissionBits::DELETE_MOVIE_SELF
+            PermissionBits::DELETE_MEDIA_SELF
         } else {
-            PermissionBits::DELETE_MOVIE_ANY
+            PermissionBits::DELETE_MEDIA_ANY
         };
         self.permission_service
             .check_permission_no_cache(&room_id, &user_id, required_permission)
@@ -992,18 +1011,18 @@ impl MediaService {
             }
         }
 
-        // Check per-group permissions: user needs DELETE_MOVIE_SELF for their own
-        // items and DELETE_MOVIE_ANY for others' items. Only fail if the user
+        // Check per-group permissions: user needs DELETE_MEDIA_SELF for their own
+        // items and DELETE_MEDIA_ANY for others' items. Only fail if the user
         // lacks the permission for a group that actually has items.
         // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
         if has_owned {
             self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MOVIE_SELF)
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MEDIA_SELF)
                 .await?;
         }
         if has_non_owned {
             self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MOVIE_ANY)
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MEDIA_ANY)
                 .await?;
         }
 
@@ -1066,7 +1085,8 @@ impl MediaService {
         user_id: UserId,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(room_id, user_id, request, false).await
+        self.move_media_internal(room_id, user_id, request, false)
+            .await
     }
 
     pub async fn admin_move_media(
@@ -1201,9 +1221,7 @@ impl MediaService {
             ));
         }
 
-        if request.all_from_scope
-            && original_media.is_empty()
-        {
+        if request.all_from_scope && original_media.is_empty() {
             tx.commit().await?;
             return Ok(Vec::new());
         }
@@ -1212,7 +1230,10 @@ impl MediaService {
             .iter()
             .map(|media| (media.id.clone(), media.playlist_id.clone()))
             .collect();
-        let media_ids: Vec<MediaId> = original_media.iter().map(|media| media.id.clone()).collect();
+        let media_ids: Vec<MediaId> = original_media
+            .iter()
+            .map(|media| media.id.clone())
+            .collect();
 
         let moved = self
             .media_repo
@@ -1245,7 +1266,12 @@ impl MediaService {
                 if moved.len() == 1 {
                     let media = &moved[0];
                     if let Err(e) = ns
-                        .notify_media_updated(&room_id, media.id.as_str(), &media.name, media.position)
+                        .notify_media_updated(
+                            &room_id,
+                            media.id.as_str(),
+                            &media.name,
+                            media.position,
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -1256,8 +1282,10 @@ impl MediaService {
                         );
                     }
                 } else {
-                    let moved_ids: Vec<String> =
-                        moved.iter().map(|media| media.id.as_str().to_string()).collect();
+                    let moved_ids: Vec<String> = moved
+                        .iter()
+                        .map(|media| media.id.as_str().to_string())
+                        .collect();
                     if let Err(e) = ns.notify_playlist_reordered(&room_id, &moved_ids).await {
                         tracing::warn!(
                             error = %e,
@@ -1270,7 +1298,8 @@ impl MediaService {
                 for media in &moved {
                     if let Some(original_scope) = original_scope_by_id.get(&media.id) {
                         if *original_scope != media.playlist_id {
-                            if let Err(e) = ns.notify_media_removed(&room_id, media.id.as_str()).await
+                            if let Err(e) =
+                                ns.notify_media_removed(&room_id, media.id.as_str()).await
                             {
                                 tracing::warn!(
                                     error = %e,
@@ -1297,7 +1326,12 @@ impl MediaService {
                                 );
                             }
                         } else if let Err(e) = ns
-                            .notify_media_updated(&room_id, media.id.as_str(), &media.name, media.position)
+                            .notify_media_updated(
+                                &room_id,
+                                media.id.as_str(),
+                                &media.name,
+                                media.position,
+                            )
                             .await
                         {
                             tracing::warn!(
@@ -1425,7 +1459,9 @@ impl MediaService {
     }
 
     pub async fn count_playlist_media_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
-        self.media_repo.count_by_playlist_accessible(playlist_id).await
+        self.media_repo
+            .count_by_playlist_accessible(playlist_id)
+            .await
     }
 
     pub async fn count_room_root_media(&self, room_id: &RoomId) -> Result<i64> {
@@ -1518,6 +1554,9 @@ impl MediaService {
             .with_room_id(room_id.as_str());
         if let Some(ref repo) = self.credential_repo {
             ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
         }
 
         // List items
@@ -1667,12 +1706,7 @@ impl MediaService {
                 "Provider {provider_name} does not support dynamic folders"
             ))
         })?;
-        let provider_instance_name = playlist.provider_instance_name.clone().ok_or_else(|| {
-            Error::Internal(format!(
-                "Dynamic playlist '{}' is missing provider_instance_name",
-                playlist.id
-            ))
-        })?;
+        let provider_instance_name = playlist.provider_instance_name.clone().unwrap_or_default();
 
         let current_dynamic_media = crate::models::Media {
             id: MediaId::new(),
@@ -1715,11 +1749,13 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Test Video".to_string(),
+            source_provider: "bilibili".to_string(),
             provider_instance_name: "bilibili_main".to_string(),
             source_config: serde_json::json!({"bvid": "BV1234567890"}),
         };
 
         assert_eq!(request.name, "Test Video");
+        assert_eq!(request.source_provider, "bilibili");
         assert_eq!(request.provider_instance_name, "bilibili_main");
         assert!(request.source_config.get("bvid").is_some());
     }
@@ -1735,6 +1771,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Complex Video".to_string(),
+            source_provider: "alist".to_string(),
             provider_instance_name: "alist_home".to_string(),
             source_config: config.clone(),
         };
@@ -1798,6 +1835,7 @@ mod tests {
             .map(|i| AddMediaRequest {
                 playlist_id: Some(PlaylistId::new()),
                 name: format!("Video {i}"),
+                source_provider: "direct_url".to_string(),
                 provider_instance_name: "test".to_string(),
                 source_config: serde_json::json!({}),
             })
@@ -1819,6 +1857,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Null Config".to_string(),
+            source_provider: "direct_url".to_string(),
             provider_instance_name: "test".to_string(),
             source_config: serde_json::Value::Null,
         };
@@ -1843,6 +1882,7 @@ mod tests {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Nested Config".to_string(),
+            source_provider: "alist".to_string(),
             provider_instance_name: "alist_home".to_string(),
             source_config: config,
         };

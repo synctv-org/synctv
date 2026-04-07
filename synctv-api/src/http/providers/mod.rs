@@ -159,11 +159,16 @@ pub(crate) async fn proxy_options_preflight(
 /// 3. Revalidate current user/room/member access
 /// 4. Resolve provider and execute proxy action
 pub(crate) async fn unified_proxy_handler(
-    Path((provider_name, sub_path)): Path<(String, String)>,
+    Path(path): Path<crate::proto::client::ProviderProxyPathRequest>,
     State(state): State<AppState>,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
+    crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
+    let crate::proto::client::ProviderProxyPathRequest {
+        provider_name,
+        sub_path,
+    } = path;
     let query_str = raw_query.0.as_deref().unwrap_or("");
 
     // 1. Extract version from sub_path (first segment)
@@ -275,6 +280,17 @@ mod tests {
     use synctv_proxy::slice_cache::SliceCacheConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn test_provider_proxy_path_request_deserializes_proto_field_names() {
+        let req: crate::proto::client::ProviderProxyPathRequest = serde_json::from_str(
+            r#"{"provider_name":"test_provider","sub_path":"v1/media/stream.m3u8"}"#,
+        )
+        .expect("deserialize path request");
+
+        assert_eq!(req.provider_name, "test_provider");
+        assert_eq!(req.sub_path, "v1/media/stream.m3u8");
+    }
 
     async fn start_mock_server_or_skip() -> Option<MockServer> {
         match std::net::TcpListener::bind("127.0.0.1:0") {
@@ -630,7 +646,7 @@ mod tests {
             .1;
 
         let registry = ProxyProviderRegistry::new();
-        registry.register("test-provider", Arc::new(TestProxyProvider));
+        registry.register("test_provider", Arc::new(TestProxyProvider));
         state.proxy_provider_registry = Arc::new(registry);
         state.proxy_services = Arc::new(synctv_core::provider::proxy::ProxyServices {
             room_service,
@@ -654,7 +670,7 @@ mod tests {
         version: &str,
     ) -> String {
         signing_key.build_signed_query(&ProxyUrlClaims {
-            provider: "test-provider".to_string(),
+            provider: "test_provider".to_string(),
             version: version.to_string(),
             room_id: room_id.to_string(),
             user_id: user_id.to_string(),
@@ -711,7 +727,10 @@ mod tests {
             .expect("ban user");
 
         let err = unified_proxy_handler(
-            Path(("test-provider".to_string(), "v1/media".to_string())),
+            Path(crate::proto::client::ProviderProxyPathRequest {
+                provider_name: "test_provider".to_string(),
+                sub_path: "v1/media".to_string(),
+            }),
             State(state),
             HeaderMap::new(),
             RawQuery(Some(raw_query)),
@@ -772,7 +791,10 @@ mod tests {
             .expect("close room");
 
         let err = unified_proxy_handler(
-            Path(("test-provider".to_string(), "v1/media".to_string())),
+            Path(crate::proto::client::ProviderProxyPathRequest {
+                provider_name: "test_provider".to_string(),
+                sub_path: "v1/media".to_string(),
+            }),
             State(state),
             HeaderMap::new(),
             RawQuery(Some(raw_query)),

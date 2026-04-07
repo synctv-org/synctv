@@ -13,8 +13,8 @@ use axum::{
     Router,
 };
 
-use crate::http::{middleware::AuthUser, AppResult, AppState};
-use crate::proto::client::CreatePublishKeyResponse;
+use crate::http::{middleware::AuthUser, AppResult, AppState, WithId};
+use crate::proto::client::{CreatePublishKeyResponse, RoomMediaTargetPathRequest};
 
 /// Create publish key routes
 pub fn create_publish_key_router() -> Router<AppState> {
@@ -60,13 +60,15 @@ pub fn create_publish_key_router() -> Router<AppState> {
 )]
 pub async fn generate_publish_key(
     State(state): State<AppState>,
-    Path((room_id, media_id)): Path<(String, String)>,
+    Path(path): Path<RoomMediaTargetPathRequest>,
     auth_user: AuthUser,
 ) -> AppResult<Json<CreatePublishKeyResponse>> {
     let user_id_str = auth_user.user_id.to_string();
+    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
+    let RoomMediaTargetPathRequest { room_id, media_id } = path;
 
     // Delegate to shared ClientApiImpl (handles permission check, key generation, RTMP URL)
-    let req = crate::proto::client::CreatePublishKeyRequest { id: media_id };
+    let req = crate::proto::client::CreatePublishKeyRequest::default().with_id(media_id);
     let resp = state
         .client_api
         .create_publish_key(&user_id_str, &room_id, req)
@@ -74,4 +76,17 @@ pub async fn generate_publish_key(
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_room_media_target_path_request_deserializes_proto_field_names() {
+        let req: crate::proto::client::RoomMediaTargetPathRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890","media_id":"ZyX098wVu765"}"#)
+                .expect("deserialize path request");
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.media_id, "ZyX098wVu765");
+    }
 }

@@ -1160,7 +1160,8 @@ mod tests {
             "test postgres should disable statement logging overhead: {cmd:?}"
         );
         assert!(
-            cmd.windows(2).any(|pair| pair == ["-c", "log_duration=off"]),
+            cmd.windows(2)
+                .any(|pair| pair == ["-c", "log_duration=off"]),
             "test postgres should disable query duration logging overhead: {cmd:?}"
         );
         assert!(

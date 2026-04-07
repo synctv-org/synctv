@@ -15,36 +15,11 @@
 //! - Does not expose the actual JWT token
 
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
 
 use super::middleware::AuthUser;
 use super::{AppError, AppResult, AppState};
-
-/// Request to create a WebSocket ticket (Issue #65: now room-scoped)
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct CreateTicketRequest {
-    /// The room ID the ticket is bound to.
-    ///
-    /// The returned ticket can only be used to authenticate a WebSocket
-    /// connection to this exact room. Attempting to use it for a different
-    /// room will result in an authentication error.
-    pub room_id: String,
-}
-
-/// Response containing the WebSocket ticket
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct TicketResponse {
-    /// The ticket string to use in WebSocket URL
-    pub ticket: String,
-    /// Room ID the ticket is bound to
-    pub room_id: String,
-    /// Ticket expiration time in seconds
-    pub expires_in_secs: u64,
-    /// Usage instructions
-    pub usage: String,
-}
+use crate::impls::client::build_create_websocket_ticket_request;
+pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
 
 fn map_room_lookup_error(room_id: &str, err: synctv_core::Error) -> AppError {
     match err {
@@ -92,9 +67,9 @@ fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
         post,
         path = "/api/tickets",
         tag = "WebSocket",
-        request_body = CreateTicketRequest,
+        request_body = CreateWebSocketTicketRequest,
         responses(
-            (status = 200, description = "WebSocket ticket created", body = TicketResponse),
+            (status = 200, description = "WebSocket ticket created", body = CreateWebSocketTicketResponse),
             (status = 400, description = "Invalid room_id", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 403, description = "Caller cannot create a ticket for this room", body = crate::openapi::ErrorResponseDoc),
@@ -109,17 +84,11 @@ fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
 pub async fn create_ticket(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateTicketRequest>,
-) -> AppResult<Json<TicketResponse>> {
+    Json(req): Json<CreateWebSocketTicketRequest>,
+) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
-
-    // Validate room_id is non-empty
-    if req.room_id.trim().is_empty() {
-        return Err(AppError::bad_request("room_id is required"));
-    }
-
-    let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    let room_id =
+        build_create_websocket_ticket_request(&req).map_err(super::error::map_api_error)?;
 
     // Verify room exists and is accessible
     let room = state
@@ -155,7 +124,7 @@ pub async fn create_ticket(
         .await
         .map_err(map_ticket_creation_error)?;
 
-    let response = TicketResponse {
+    let response = CreateWebSocketTicketResponse {
         ticket,
         room_id: room_id.as_str().to_string(),
         expires_in_secs: state.ws_ticket_service.ticket_ttl_secs(),

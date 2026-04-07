@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     signup_method SMALLINT NOT NULL DEFAULT 0,  -- 0=unknown, 1=email, 2=password, 3=oauth2, 4=admin_created
     role SMALLINT NOT NULL DEFAULT 3,  -- 1=root, 2=admin, 3=user
-    status SMALLINT NOT NULL DEFAULT 2,  -- 1=active, 2=pending, 3=banned
+    status SMALLINT NOT NULL DEFAULT 2,  -- 1=active, 2=pending, 3=rejected, 4=banned
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT users_email_not_empty CHECK (email IS NULL OR length(trim(email)) > 0),
     -- Role constraint: 1=root, 2=admin, 3=user
     CONSTRAINT users_role_check CHECK (role BETWEEN 1 AND 3),
-    -- Status constraint: 1=active, 2=pending, 3=banned
-    CONSTRAINT users_status_check CHECK (status BETWEEN 1 AND 3)
+    -- Status constraint: 1=active, 2=pending, 3=rejected, 4=banned
+    CONSTRAINT users_status_check CHECK (status BETWEEN 1 AND 4)
 );
 
 -- Create indexes
@@ -63,7 +63,7 @@ COMMENT ON COLUMN users.username IS 'Unique username among active (non-deleted) 
 COMMENT ON COLUMN users.email IS 'User email (NULL allowed for OAuth2 users, unique among active users)';
 COMMENT ON COLUMN users.signup_method IS 'Registration method: 0=unknown, 1=email, 2=password, 3=oauth2, 4=admin_created';
 COMMENT ON COLUMN users.role IS 'User RBAC role: 1=root, 2=admin, 3=user (global access level)';
-COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (email verification), 3=banned';
+COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (awaiting approval/verification), 3=rejected, 4=banned';
 COMMENT ON COLUMN users.email_verified IS 'Whether the user email has been verified';
 COMMENT ON COLUMN users.password_changed_at IS 'Timestamp of last password change. Tokens issued before this timestamp are invalid.';
 COMMENT ON COLUMN users.password_version IS 'Monotonically increasing counter, incremented on each password change. Used to invalidate JWTs via the pv claim.';

@@ -2,9 +2,9 @@ use sqlx::{postgres::PgRow, PgPool, Row};
 
 use crate::{
     models::{
-        MemberStatus, PageParams, RelatedRoomListQuery, RelatedRoomListSortBy, RoomId, RoomMember,
-        RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser, RoomRole, RoomStatus,
-        UserId,
+        MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, PageParams, RoomId,
+        RoomMember, RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser, RoomRole,
+        RoomStatus, UserId,
     },
     service::AddMemberOptions,
     Error, Result,
@@ -43,7 +43,7 @@ impl RoomMemberRepository {
         }
     }
 
-    fn build_related_room_list_conditions(query: &RelatedRoomListQuery) -> WhereClauseBuilder {
+    fn build_my_room_list_conditions(query: &MyRoomListQuery) -> WhereClauseBuilder {
         let mut wb = WhereClauseBuilder::new();
         wb.push_literal("rm.left_at IS NULL");
         wb.push_literal("r.deleted_at IS NULL");
@@ -51,7 +51,8 @@ impl RoomMemberRepository {
         match query.status {
             Some(RoomStatus::Active) => wb.push_literal("r.status = 1"),
             Some(RoomStatus::Pending) => wb.push_literal("r.status = 2"),
-            Some(RoomStatus::Closed) => wb.push_literal("r.status = 3"),
+            Some(RoomStatus::Rejected) => wb.push_literal("r.status = 3"),
+            Some(RoomStatus::Closed) => wb.push_literal("r.status = 4"),
             None => {}
         }
 
@@ -67,10 +68,16 @@ impl RoomMemberRepository {
             );
         }
 
+        match query.relation {
+            MyRoomRelation::All => {}
+            MyRoomRelation::Created => wb.push_literal("r.created_by = $1"),
+            MyRoomRelation::Participating => wb.push_literal("r.created_by != $1"),
+        }
+
         wb
     }
 
-    fn bind_related_room_filters<'q>(
+    fn bind_my_room_filters<'q>(
         qb: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
         search_pattern: &'q Option<String>,
     ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
@@ -80,20 +87,20 @@ impl RoomMemberRepository {
         }
     }
 
-    fn build_related_room_order_by(query: &RelatedRoomListQuery) -> String {
+    fn build_my_room_order_by(query: &MyRoomListQuery) -> String {
         let direction = query.sort_direction.as_sql();
         match query.sort_by {
-            RelatedRoomListSortBy::JoinedAt => {
+            MyRoomListSortBy::JoinedAt => {
                 format!("rm.joined_at {direction}, r.id {direction}")
             }
-            RelatedRoomListSortBy::Name => format!("r.name {direction}, r.id {direction}"),
-            RelatedRoomListSortBy::CreatedAt => {
+            MyRoomListSortBy::Name => format!("r.name {direction}, r.id {direction}"),
+            MyRoomListSortBy::CreatedAt => {
                 format!("r.created_at {direction}, r.id {direction}")
             }
-            RelatedRoomListSortBy::UpdatedAt => {
+            MyRoomListSortBy::UpdatedAt => {
                 format!("r.updated_at {direction}, r.id {direction}")
             }
-            RelatedRoomListSortBy::LastActivityAt => {
+            MyRoomListSortBy::LastActivityAt => {
                 format!("r.last_activity_at {direction} NULLS LAST, r.id {direction}")
             }
         }
@@ -316,12 +323,12 @@ impl RoomMemberRepository {
                 let count_row = sqlx::query(
                     "SELECT COUNT(*) as count FROM (
                         SELECT 1 FROM room_members
-                        WHERE room_id = $1 AND left_at IS NULL AND status != $2
+                        WHERE room_id = $1 AND left_at IS NULL AND status = $2
                         FOR UPDATE
                     ) sub",
                 )
                 .bind(member.room_id.as_str())
-                .bind(MemberStatus::Banned)
+                .bind(MemberStatus::Active)
                 .fetch_one(&mut **tx)
                 .await?;
 
@@ -548,7 +555,9 @@ impl RoomMemberRepository {
         );
         count_builder.push_bind(room_id.as_str());
         match query.status {
-            Some(MemberStatus::Banned) | Some(MemberStatus::Left) => {
+            Some(MemberStatus::Banned)
+            | Some(MemberStatus::Rejected)
+            | Some(MemberStatus::Left) => {
                 count_builder.push(" AND rm.status = ");
                 count_builder.push_bind(query.status.expect("status checked above"));
             }
@@ -592,7 +601,9 @@ impl RoomMemberRepository {
         );
         list_builder.push_bind(room_id.as_str());
         match query.status {
-            Some(MemberStatus::Banned) | Some(MemberStatus::Left) => {
+            Some(MemberStatus::Banned)
+            | Some(MemberStatus::Rejected)
+            | Some(MemberStatus::Left) => {
                 list_builder.push(" AND rm.status = ");
                 list_builder.push_bind(query.status.expect("status checked above"));
             }
@@ -706,6 +717,41 @@ impl RoomMemberRepository {
         }
     }
 
+    /// Update member role inside an existing transaction.
+    pub async fn update_role_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        role: RoomRole,
+        executor: impl sqlx::PgExecutor<'_>,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                role = $3,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(role)
+        .fetch_optional(executor)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::NotFound(
+                "User is not an active member of this room".to_string(),
+            )),
+        }
+    }
+
     /// Update member status with optimistic locking
     ///
     /// Only updates members that are still active (`left_at IS NULL`). Members
@@ -734,6 +780,43 @@ impl RoomMemberRepository {
         .bind(room_id.as_str())
         .bind(user_id.as_str())
         .bind(status)
+        .bind(current_version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match member {
+            Some(m) => Ok(m),
+            None => Err(Error::OptimisticLockConflict),
+        }
+    }
+
+    /// Reject a pending member or invitation while preserving an auditable row.
+    pub async fn reject_member(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        current_version: i64,
+    ) -> Result<RoomMember> {
+        let member = sqlx::query_as::<_, RoomMember>(
+            "UPDATE room_members
+             SET
+                status = $3,
+                left_at = CURRENT_TIMESTAMP,
+                banned_at = NULL,
+                banned_by = NULL,
+                banned_reason = NULL,
+                version = version + 1
+             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
+             RETURNING
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(MemberStatus::Rejected)
         .bind(current_version)
         .fetch_optional(&self.pool)
         .await?;
@@ -1257,10 +1340,10 @@ impl RoomMemberRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL AND status != $2",
+             WHERE room_id = $1 AND left_at IS NULL AND status = $2",
         )
         .bind(room_id.as_str())
-        .bind(MemberStatus::Banned)
+        .bind(MemberStatus::Active)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1283,11 +1366,11 @@ impl RoomMemberRepository {
         let rows = sqlx::query(
             "SELECT room_id, COUNT(*)::int as member_count
              FROM room_members
-             WHERE room_id = ANY($1) AND left_at IS NULL AND status != $2
+             WHERE room_id = ANY($1) AND left_at IS NULL AND status = $2
              GROUP BY room_id",
         )
         .bind(&ids)
-        .bind(MemberStatus::Banned)
+        .bind(MemberStatus::Active)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1346,7 +1429,7 @@ impl RoomMemberRepository {
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         self.list_by_user_with_query(
             user_id,
-            &RelatedRoomListQuery {
+            &MyRoomListQuery {
                 pagination,
                 ..Default::default()
             },
@@ -1358,14 +1441,14 @@ impl RoomMemberRepository {
     pub async fn list_by_user_with_query(
         &self,
         user_id: &UserId,
-        query: &RelatedRoomListQuery,
+        query: &MyRoomListQuery,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
-        let wb = Self::build_related_room_list_conditions(query);
+        let wb = Self::build_my_room_list_conditions(query);
         let (where_sql, _) = wb.build(4);
-        let order_by = Self::build_related_room_order_by(query);
+        let order_by = Self::build_my_room_order_by(query);
         let sql = format!(
             r"
             SELECT
@@ -1387,7 +1470,7 @@ impl RoomMemberRepository {
             "
         );
 
-        let rows = Self::bind_related_room_filters(
+        let rows = Self::bind_my_room_filters(
             sqlx::query(&sql)
                 .bind(user_id.as_str())
                 .bind(limit)
@@ -1434,14 +1517,14 @@ impl RoomMemberRepository {
     pub async fn list_accessible_by_user_with_query(
         &self,
         user_id: &UserId,
-        query: &RelatedRoomListQuery,
+        query: &MyRoomListQuery,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
-        let wb = Self::build_related_room_list_conditions(query);
+        let wb = Self::build_my_room_list_conditions(query);
         let (where_sql, _) = wb.build(4);
-        let order_by = Self::build_related_room_order_by(query);
+        let order_by = Self::build_my_room_order_by(query);
         let sql = format!(
             r"
             SELECT
@@ -1463,7 +1546,7 @@ impl RoomMemberRepository {
             "
         );
 
-        let rows = Self::bind_related_room_filters(
+        let rows = Self::bind_my_room_filters(
             sqlx::query(&sql)
                 .bind(user_id.as_str())
                 .bind(limit)

@@ -23,13 +23,13 @@ CREATE TABLE IF NOT EXISTS media (
     position DOUBLE PRECISION NOT NULL,
 
     -- ========== Video source type (string for flexibility) ==========
-    source_provider VARCHAR(64) NOT NULL DEFAULT 'direct_url',
+    source_provider VARCHAR(64) NOT NULL,
 
     -- ========== Video source configuration (persistent storage) ==========
     source_config JSONB NOT NULL,
 
     -- Provider instance name (for registry lookup)
-    provider_instance_name VARCHAR(64) NOT NULL,
+    provider_instance_name VARCHAR(64),
 
     -- Timestamps
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -70,7 +70,7 @@ COMMENT ON COLUMN media.name IS 'Media display name. It is not a routing key or 
 COMMENT ON COLUMN media.position IS 'Floating-point order position within the playlist scope';
 COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bilibili", "alist", "emby", "direct_url")';
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
-COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main"). Always required.';
+COMMENT ON COLUMN media.provider_instance_name IS 'Optional media provider instance name for registry lookup (e.g., "bilibili_main"). NULL or empty means use the default local instance for source_provider.';
 COMMENT ON COLUMN media.version IS 'Optimistic locking version, incremented on each update';
 COMMENT ON COLUMN media.updated_at IS 'Timestamp of last update (auto-maintained by trigger)';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'Media display name must fit within the database column limit.';

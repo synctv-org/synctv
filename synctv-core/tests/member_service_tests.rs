@@ -509,6 +509,128 @@ async fn test_set_member_status_banned_preserves_ban_semantics() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_status_can_set_member_pending_and_approve_back_to_active() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("status_pending_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("status_pending_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Status Pending Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let pending = room_service
+        .member_service()
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Pending,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(pending.status, MemberStatus::Pending);
+
+    let active = room_service
+        .member_service()
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Active,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(active.status, MemberStatus::Active);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_status_rejects_specialized_left_and_rejected_transitions() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("status_special_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("status_special_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Status Specialized Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let member_service = room_service.member_service();
+
+    let reject_err = member_service
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Rejected,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(reject_err, Error::InvalidInput(ref msg) if msg.contains("Use reject_member")),
+        "Rejected must stay on the dedicated approval path, got: {reject_err}"
+    );
+
+    let left_err = member_service
+        .set_member_status(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            MemberStatus::Left,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(left_err, Error::InvalidInput(ref msg) if msg.contains("Use remove_member or kick_member")),
+        "Left must stay on the dedicated removal path, got: {left_err}"
+    );
+}
+
 // ========== Permission Grant/Revoke Tests ==========
 
 #[tokio::test]
@@ -555,13 +677,13 @@ async fn test_grant_permission_bitwise_or() {
         "BAN_MEMBER should be in added_permissions"
     );
 
-    // Grant another permission (KICK_USER) - should be bitwise OR'd
+    // Grant another permission (KICK_MEMBER) - should be bitwise OR'd
     let updated = member_service
         .grant_permission(
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            PermissionBits::KICK_USER,
+            PermissionBits::KICK_MEMBER,
         )
         .await
         .unwrap();
@@ -571,8 +693,8 @@ async fn test_grant_permission_bitwise_or() {
         "BAN_MEMBER should still be set"
     );
     assert!(
-        updated.added_permissions & PermissionBits::KICK_USER != 0,
-        "KICK_USER should now also be set"
+        updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
+        "KICK_MEMBER should now also be set"
     );
 }
 

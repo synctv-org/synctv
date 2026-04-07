@@ -28,7 +28,7 @@ use synctv_core::{
     repository::{MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        CredentialEncryption, InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     service::{ProvidersManager, RemoteProviderManager},
 };
@@ -193,12 +193,21 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
 #[derive(Debug)]
 struct FakeDynamicProvider {
     instance_id: String,
+    require_credential_encryption: bool,
 }
 
 impl FakeDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
         Self {
             instance_id: instance_id.into(),
+            require_credential_encryption: false,
+        }
+    }
+
+    fn requiring_credential_encryption(instance_id: impl Into<String>) -> Self {
+        Self {
+            instance_id: instance_id.into(),
+            require_credential_encryption: true,
         }
     }
 
@@ -282,12 +291,15 @@ impl MediaProvider for FakeDynamicProvider {
 impl DynamicFolder for FakeDynamicProvider {
     async fn list_playlist(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
         target: Option<&[u8]>,
         _page: usize,
         _page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
+        if self.require_credential_encryption && ctx.credential_encryption.is_none() {
+            return Err(ProviderError::EncryptionRequired("fake_dynamic"));
+        }
         let items = match target
             .map(decode_dynamic_target)
             .as_deref()
@@ -378,6 +390,22 @@ async fn register_fake_dynamic_provider_instance(room_service: &RoomService, ins
         .expect("Failed to register fake dynamic provider");
 }
 
+async fn register_fake_dynamic_provider_instance_requiring_encryption(
+    room_service: &RoomService,
+    instance_id: &str,
+) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider(
+            "fake_dynamic_sensitive",
+            instance_id,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("Failed to register fake dynamic provider requiring encryption");
+}
+
 async fn create_dynamic_playlist(
     pool: &PgPool,
     room_id: &RoomId,
@@ -402,6 +430,32 @@ async fn create_dynamic_playlist(
         .create(&playlist)
         .await
         .expect("Dynamic playlist should be created")
+}
+
+async fn create_dynamic_sensitive_playlist(
+    pool: &PgPool,
+    room_id: &RoomId,
+    owner_id: &UserId,
+    provider_instance_name: &str,
+) -> Playlist {
+    let playlist = Playlist {
+        id: PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: Some(owner_id.clone()),
+        name: "Dynamic Sensitive Playlist".to_string(),
+        parent_id: None,
+        position: 0.0,
+        source_provider: Some("fake_dynamic_sensitive".to_string()),
+        source_config: Some(serde_json::json!({})),
+        provider_instance_name: Some(provider_instance_name.to_string()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
+        .await
+        .expect("Dynamic sensitive playlist should be created")
 }
 
 // ========== Sequential Mode Tests ==========
@@ -1399,4 +1453,64 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         target,
         serde_json::json!({"relative_path":"/bound-episode-2.mp4"})
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provider_context() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager = ProvidersManager::new(provider_instance_manager);
+    providers_manager.register_factory(
+        "fake_dynamic_sensitive",
+        Box::new(|instance_id, _config, _instance_manager| {
+            Ok(Arc::new(FakeDynamicProvider::requiring_credential_encryption(
+                instance_id,
+            )))
+        }),
+    );
+    let providers_manager = Arc::new(providers_manager);
+    let mut room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    room_service.set_media_credential_encryption(
+        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid"),
+    );
+
+    let owner = user_repo
+        .create(&make_user("dynamic_sensitive_list_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Sensitive List".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_fake_dynamic_provider_instance_requiring_encryption(
+        &room_service,
+        "fake_dynamic_sensitive_default",
+    )
+    .await;
+    let playlist = create_dynamic_sensitive_playlist(
+        &pool,
+        &room.id,
+        &owner.id,
+        "fake_dynamic_sensitive_default",
+    )
+    .await;
+
+    let items = room_service
+        .media_service()
+        .list_dynamic_playlist_items(room.id.clone(), owner.id.clone(), &playlist.id, None, 0, 20)
+        .await
+        .expect("dynamic playlist listing should receive credential encryption");
+
+    assert_eq!(items.len(), 2);
 }

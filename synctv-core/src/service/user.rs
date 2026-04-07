@@ -680,9 +680,10 @@ impl UserService {
     /// This is shared between `login()`, `refresh_token()`, and other
     /// authentication flows to avoid duplicating the same checks.
     fn validate_user_access(&self, user: &User) -> Result<()> {
-        // Reject banned, pending, or soft-deleted users (generic message to prevent enumeration)
+        // Reject inactive or soft-deleted users with a generic message to prevent enumeration.
         if user.status == UserStatus::Banned
             || user.status == UserStatus::Pending
+            || user.status == UserStatus::Rejected
             || user.deleted_at.is_some()
         {
             return Err(Error::Authentication("Authentication failed".to_string()));
@@ -1145,6 +1146,7 @@ impl UserService {
         if user.is_deleted()
             || user.status == crate::models::UserStatus::Banned
             || user.status == crate::models::UserStatus::Pending
+            || user.status == crate::models::UserStatus::Rejected
         {
             // Record failure so repeated attempts against locked accounts are throttled
             if let Err(e) = self
@@ -1765,7 +1767,7 @@ impl crate::service::ws_ticket::UserValidator for UserService {
     ///
     /// This implementation checks:
     /// - User exists and is not soft-deleted
-    /// - User status is Active (not Banned or Pending)
+    /// - User status is Active (not Pending, Rejected, or Banned)
     ///
     /// Returns the current password version for ticket validation.
     async fn validate_for_ticket(
@@ -1790,7 +1792,9 @@ impl crate::service::ws_ticket::UserValidator for UserService {
             crate::models::UserStatus::Active => {
                 // User is active, continue
             }
-            crate::models::UserStatus::Banned | crate::models::UserStatus::Pending => {
+            crate::models::UserStatus::Banned
+            | crate::models::UserStatus::Pending
+            | crate::models::UserStatus::Rejected => {
                 return Err(crate::Error::Authorization(
                     "Authentication failed".to_string(),
                 ));

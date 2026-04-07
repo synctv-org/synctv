@@ -11,7 +11,7 @@ use synctv_core::models::{
 
 // === Timing Attack Protection Tests ===
 
-/// Minimum delay constant used in `check_room_password` for timing attack protection.
+/// Minimum delay constant used in password verification during `join_room`.
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
@@ -62,7 +62,7 @@ fn test_timing_delay_calculation() {
     assert!(sleep.is_none(), "Long operation should not require sleep");
 }
 
-/// Test that simulates the exact timing protection logic used in `check_room_password`.
+/// Test that simulates the exact timing protection logic used in password verification during `join_room`.
 /// This verifies that both password success and failure scenarios result in
 /// approximately the same total execution time.
 #[test]
@@ -158,30 +158,6 @@ fn test_validate_password_for_verify_rejects_too_long() {
     let long = "a".repeat(129);
     let err = validate_password_for_verify(&long).unwrap_err();
     assert!(err.to_string().contains("too long"));
-}
-
-#[test]
-fn test_check_room_password_room_lookup_backend_failure_must_not_map_to_not_found() {
-    let mapped = super::ClientApiImpl::map_room_lookup_error(
-        synctv_core::Error::ServiceUnavailable("room lookup unavailable".to_string()),
-    );
-
-    assert!(
-        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "room lookup unavailable"),
-        "room lookup backend failures must remain service unavailable, got: {mapped:?}"
-    );
-}
-
-#[test]
-fn test_check_room_password_room_lookup_not_found_stays_not_found() {
-    let mapped = super::ClientApiImpl::map_room_lookup_error(synctv_core::Error::NotFound(
-        "db row missing".to_string(),
-    ));
-
-    assert!(
-        matches!(mapped, ApiError::NotFound(ref msg) if msg == "Room not found"),
-        "true room misses must remain not found, got: {mapped:?}"
-    );
 }
 
 #[test]
@@ -808,77 +784,6 @@ fn test_playlist_to_proto_dynamic() {
     assert!(proto.is_dynamic);
 }
 
-// === URL-Derived Title Sanitization Tests (Issue 3) ===
-
-#[test]
-fn test_sanitize_url_derived_title_normal() {
-    let title = super::media::sanitize_url_derived_title("my_video.mp4");
-    assert_eq!(title, "my_video.mp4");
-}
-
-#[test]
-fn test_sanitize_url_derived_title_percent_encoded() {
-    let title = super::media::sanitize_url_derived_title("my%20video.mp4");
-    assert_eq!(title, "my video.mp4");
-}
-
-#[test]
-fn test_sanitize_url_derived_title_control_chars_stripped() {
-    let title = super::media::sanitize_url_derived_title("bad\x00name.mp4");
-    assert_eq!(title, "badname.mp4");
-}
-
-#[test]
-fn test_sanitize_url_derived_title_empty_becomes_empty() {
-    let title = super::media::sanitize_url_derived_title("");
-    assert_eq!(title, "");
-}
-
-#[test]
-fn test_sanitize_url_derived_title_truncates_long_names() {
-    use crate::http::validation::limits::MEDIA_TITLE_MAX;
-
-    // Create a title that exceeds MEDIA_TITLE_MAX (500 chars)
-    let long_name = "a".repeat(MEDIA_TITLE_MAX + 100);
-    let title = super::media::sanitize_url_derived_title(&long_name);
-    assert!(
-        title.len() <= MEDIA_TITLE_MAX,
-        "URL-derived title should be truncated to MEDIA_TITLE_MAX ({MEDIA_TITLE_MAX}), got {}",
-        title.len()
-    );
-    assert_eq!(title.len(), MEDIA_TITLE_MAX);
-}
-
-#[test]
-fn test_sanitize_url_derived_title_truncates_at_char_boundary() {
-    use crate::http::validation::limits::MEDIA_TITLE_MAX;
-
-    // Create a string with multi-byte UTF-8 characters that exceeds the limit.
-    // Each CJK character is 3 bytes. Use more than MEDIA_TITLE_MAX characters.
-    let num_chars = MEDIA_TITLE_MAX + 10;
-    let long_cjk: String = std::iter::repeat_n('\u{4e00}', num_chars).collect();
-    assert!(long_cjk.chars().count() > MEDIA_TITLE_MAX);
-
-    let title = super::media::sanitize_url_derived_title(&long_cjk);
-    assert!(
-        title.chars().count() <= MEDIA_TITLE_MAX,
-        "Truncated title should not exceed MEDIA_TITLE_MAX characters"
-    );
-    assert_eq!(title.chars().count(), MEDIA_TITLE_MAX);
-    // Verify it's valid UTF-8 (would panic on invalid boundary)
-    assert!(title.is_char_boundary(title.len()));
-}
-
-#[test]
-fn test_sanitize_url_derived_title_exactly_at_max() {
-    use crate::http::validation::limits::MEDIA_TITLE_MAX;
-
-    let exact = "b".repeat(MEDIA_TITLE_MAX);
-    let title = super::media::sanitize_url_derived_title(&exact);
-    assert_eq!(title.len(), MEDIA_TITLE_MAX);
-    assert_eq!(title, exact);
-}
-
 // === Pagination Normalization Tests (Issue 2) ===
 
 #[test]
@@ -1017,7 +922,7 @@ fn test_build_room_cache_invalidation_event_produces_correct_target() {
     }
 }
 
-// === A6: Permission calculation in get_joined_rooms tests ===
+// === A6: Permission calculation in list_my_rooms tests ===
 
 #[test]
 fn test_joined_rooms_permission_needs_three_layer_calculation() {

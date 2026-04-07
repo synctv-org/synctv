@@ -15,7 +15,12 @@ use uuid::Uuid;
 
 use crate::impls::ApiError;
 use crate::proto::client::SortDirection as ProtoSortDirection;
-use crate::proto::client::{NotificationProto, NotificationType as ProtoNotificationType};
+use crate::proto::client::{
+    DeleteNotificationRequest, GetNotificationRequest, ListNotificationsRequest,
+    MarkAsReadRequest as ProtoMarkAsReadRequest,
+    NotificationListSortBy as ProtoNotificationListSortBy, NotificationProto,
+    NotificationType as ProtoNotificationType,
+};
 
 /// Convert a domain Notification to a proto `NotificationProto`.
 ///
@@ -115,15 +120,80 @@ fn normalize_notification_pagination(
     page: Option<i32>,
     page_size: Option<i32>,
 ) -> Result<PageParams, ApiError> {
-    let page = page
-        .unwrap_or(DEFAULT_NOTIFICATION_PAGE)
-        .max(DEFAULT_NOTIFICATION_PAGE) as u32;
-    let page_size = page_size
-        .unwrap_or(DEFAULT_NOTIFICATION_PAGE_SIZE)
-        .clamp(1, MAX_PAGE_SIZE as i32) as u32;
+    let page = match page {
+        Some(value) if value > 0 => value,
+        _ => DEFAULT_NOTIFICATION_PAGE,
+    } as u32;
+    let page_size = match page_size {
+        Some(value) if value > 0 => value.clamp(1, MAX_PAGE_SIZE as i32),
+        _ => DEFAULT_NOTIFICATION_PAGE_SIZE,
+    } as u32;
     let pagination = PageParams::new(Some(page), Some(page_size));
     pagination.validate().map_err(ApiError::from)?;
     Ok(pagination)
+}
+
+fn proto_notification_sort_by_to_core(sort_by: i32) -> NotificationListSortBy {
+    match ProtoNotificationListSortBy::try_from(sort_by) {
+        Ok(ProtoNotificationListSortBy::Title) => NotificationListSortBy::Title,
+        Ok(ProtoNotificationListSortBy::UpdatedAt) => NotificationListSortBy::UpdatedAt,
+        _ => NotificationListSortBy::CreatedAt,
+    }
+}
+
+fn build_notification_list_query(
+    req: ListNotificationsRequest,
+) -> Result<NotificationListQuery, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    let pagination = normalize_notification_pagination(Some(req.page), Some(req.page_size))?;
+    let notification_type = req
+        .notification_type
+        .map(proto_notification_type_to_core)
+        .transpose()
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+
+    Ok(NotificationListQuery {
+        pagination,
+        is_read: req.is_read,
+        notification_type,
+        search: {
+            let trimmed = req.search.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        },
+        sort_by: proto_notification_sort_by_to_core(req.sort_by),
+        sort_direction: proto_sort_direction_to_core(req.sort_direction),
+        ..Default::default()
+    })
+}
+
+pub(crate) fn build_get_notification_request(
+    req: GetNotificationRequest,
+) -> Result<Uuid, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    Uuid::parse_str(&req.notification_id)
+        .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
+}
+
+pub(crate) fn build_mark_as_read_request(
+    req: ProtoMarkAsReadRequest,
+) -> Result<Vec<Uuid>, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    req.notification_ids
+        .iter()
+        .map(|id| {
+            Uuid::parse_str(id)
+                .map_err(|_| ApiError::InvalidInput(format!("Invalid notification_id: {id}")))
+        })
+        .collect()
+}
+
+pub(crate) fn build_delete_notification_request(
+    req: DeleteNotificationRequest,
+) -> Result<Uuid, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    Uuid::parse_str(&req.notification_id)
+        .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
 }
 
 fn map_notification_lookup_error(err: synctv_core::Error) -> ApiError {
@@ -149,27 +219,9 @@ impl NotificationApiImpl {
     pub async fn list_notifications(
         &self,
         user_id: &UserId,
-        page: Option<i32>,
-        page_size: Option<i32>,
-        is_read: Option<bool>,
-        notification_type: Option<CoreNotificationType>,
-        search: Option<String>,
-        sort_by: NotificationListSortBy,
-        sort_direction: CoreSortDirection,
+        req: ListNotificationsRequest,
     ) -> Result<ListNotificationsResult, ApiError> {
-        let pagination = normalize_notification_pagination(page, page_size)?;
-        let query = NotificationListQuery {
-            pagination,
-            is_read,
-            notification_type,
-            search: search.and_then(|value| {
-                let trimmed = value.trim().to_string();
-                (!trimmed.is_empty()).then_some(trimmed)
-            }),
-            sort_by,
-            sort_direction,
-            ..Default::default()
-        };
+        let query = build_notification_list_query(req)?;
 
         let (notifications, total) = self
             .notification_service
@@ -262,11 +314,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_notification_pagination_clamps_negative_inputs() {
+    fn test_normalize_notification_pagination_defaults_negative_inputs() {
         let pagination =
             normalize_notification_pagination(Some(-5), Some(-100)).expect("pagination");
         assert_eq!(pagination.page, 1);
-        assert_eq!(pagination.page_size, 1);
+        assert_eq!(
+            pagination.page_size,
+            synctv_core::models::DEFAULT_PAGE_SIZE as u32
+        );
     }
 
     #[test]
@@ -389,5 +444,89 @@ mod tests {
             matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Service temporarily unavailable. Please try again later."),
             "notification mutation backend failures must remain service unavailable, got: {mapped:?}"
         );
+    }
+
+    #[test]
+    fn test_build_notification_list_query_normalizes_defaults() {
+        let query = build_notification_list_query(ListNotificationsRequest {
+            page: 0,
+            page_size: 0,
+            is_read: Some(true),
+            notification_type: Some(ProtoNotificationType::RoomInvitation as i32),
+            search: "  alert  ".to_string(),
+            sort_by: ProtoNotificationListSortBy::Unspecified as i32,
+            sort_direction: ProtoSortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        assert_eq!(query.pagination.page, 1);
+        assert_eq!(
+            query.pagination.page_size,
+            synctv_core::models::DEFAULT_PAGE_SIZE as u32
+        );
+        assert_eq!(query.is_read, Some(true));
+        assert_eq!(
+            query.notification_type,
+            Some(CoreNotificationType::RoomInvitation)
+        );
+        assert_eq!(query.search.as_deref(), Some("alert"));
+        assert_eq!(query.sort_by, NotificationListSortBy::CreatedAt);
+        assert_eq!(query.sort_direction, CoreSortDirection::Desc);
+    }
+
+    #[test]
+    fn test_build_notification_list_query_rejects_invalid_proto_request() {
+        let error = build_notification_list_query(ListNotificationsRequest {
+            page: -1,
+            page_size: 101,
+            is_read: None,
+            notification_type: Some(ProtoNotificationType::Unspecified as i32),
+            search: "a".repeat(101),
+            sort_by: 99,
+            sort_direction: 99,
+        })
+        .unwrap_err();
+
+        match error {
+            ApiError::InvalidInput(message) => {
+                assert!(message.contains("page"), "{message}");
+                assert!(message.contains("page_size"), "{message}");
+                assert!(message.contains("search"), "{message}");
+                assert!(message.contains("notification_type"), "{message}");
+                assert!(message.contains("sort_by"), "{message}");
+                assert!(message.contains("sort_direction"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_get_notification_request_rejects_invalid_uuid() {
+        let error = build_get_notification_request(GetNotificationRequest {
+            notification_id: "bad-id".to_string(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_build_mark_as_read_request_rejects_invalid_uuid() {
+        let error = build_mark_as_read_request(ProtoMarkAsReadRequest {
+            notification_ids: vec!["bad-id".to_string()],
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_build_delete_notification_request_rejects_invalid_uuid() {
+        let error = build_delete_notification_request(DeleteNotificationRequest {
+            notification_id: "bad-id".to_string(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::InvalidInput(_)));
     }
 }

@@ -14,7 +14,28 @@ pub(super) const fn user_status_to_proto(status: synctv_core::models::UserStatus
         synctv_core::models::UserStatus::Pending => {
             synctv_proto::common::UserStatus::Pending as i32
         }
+        synctv_core::models::UserStatus::Rejected => {
+            synctv_proto::common::UserStatus::Rejected as i32
+        }
         synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
+    }
+}
+
+pub(crate) const fn member_status_to_proto(status: synctv_core::models::MemberStatus) -> i32 {
+    match status {
+        synctv_core::models::MemberStatus::Active => {
+            synctv_proto::common::MemberStatus::Active as i32
+        }
+        synctv_core::models::MemberStatus::Pending => {
+            synctv_proto::common::MemberStatus::Pending as i32
+        }
+        synctv_core::models::MemberStatus::Rejected => {
+            synctv_proto::common::MemberStatus::Rejected as i32
+        }
+        synctv_core::models::MemberStatus::Banned => {
+            synctv_proto::common::MemberStatus::Banned as i32
+        }
+        synctv_core::models::MemberStatus::Left => synctv_proto::common::MemberStatus::Left as i32,
     }
 }
 
@@ -229,6 +250,7 @@ pub(super) fn room_member_to_proto(
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
         permissions: member.effective_permissions(role_default).0,
+        status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,

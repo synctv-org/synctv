@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     -- ON DELETE RESTRICT: prevent deleting a user who still owns rooms.
     -- Rooms should be explicitly transferred or deleted before removing the user.
     created_by CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=closed
+    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=rejected, 4=closed
     is_banned BOOLEAN NOT NULL DEFAULT FALSE,  -- Independent ban flag, set by global admin only
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -41,15 +41,15 @@ CREATE INDEX idx_rooms_creator_status ON rooms(created_by, status, created_at DE
 CREATE TRIGGER update_rooms_updated_at BEFORE UPDATE ON rooms
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Add check constraint for status: 1=active, 2=pending, 3=closed
+-- Add check constraint for status: 1=active, 2=pending, 3=rejected, 4=closed
 ALTER TABLE rooms ADD CONSTRAINT rooms_status_check
-    CHECK (status BETWEEN 1 AND 3);
+    CHECK (status BETWEEN 1 AND 4);
 
 -- Comments
 COMMENT ON TABLE rooms IS 'Video watching rooms - all settings stored in room_settings table';
 COMMENT ON COLUMN rooms.id IS '12-character base62 ID';
 COMMENT ON COLUMN rooms.name IS 'Room display name, unique per creator among active (non-deleted) rooms';
 COMMENT ON COLUMN rooms.description IS 'Room description, max 500 characters';
-COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=closed';
+COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=rejected, 4=closed';
 COMMENT ON COLUMN rooms.is_banned IS 'Ban flag set by global admin. Room retains its status when banned/unbanned.';
 COMMENT ON COLUMN rooms.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE.';

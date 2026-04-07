@@ -197,6 +197,7 @@ impl SecurityPipeline {
             if let Ok(Some(cached)) = cache.get(&user_id).await {
                 if cached.status() == UserStatus::Banned
                     || cached.status() == UserStatus::Pending
+                    || cached.status() == UserStatus::Rejected
                     || cached.is_deleted()
                     || claims.pv < cached.password_version()
                 {
@@ -237,6 +238,7 @@ impl SecurityPipeline {
         if user.is_deleted()
             || user.status == UserStatus::Banned
             || user.status == UserStatus::Pending
+            || user.status == UserStatus::Rejected
         {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }

@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use uuid::Uuid;
 
 use synctv_core::models::id::UserId;
 
 use crate::impls::notification::{
-    notification_to_proto, proto_notification_type_to_core, proto_sort_direction_to_core,
-    NotificationTypeParseError,
+    build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
+    notification_to_proto,
 };
 use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
@@ -19,7 +18,6 @@ use crate::proto::client::{
     DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
     GetNotificationResponse, ListNotificationsRequest, ListNotificationsResponse,
     MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
-    NotificationListSortBy,
 };
 
 /// gRPC `NotificationService` implementation
@@ -53,32 +51,9 @@ impl NotificationService for NotificationServiceImpl {
         let user_id = self.get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_type = req
-            .notification_type
-            .map(proto_notification_type_to_core)
-            .transpose()
-            .map_err(|e: NotificationTypeParseError| Status::invalid_argument(e.to_string()))?;
-
         let result = self
             .notification_api
-            .list_notifications(
-                &user_id,
-                Some(req.page),
-                Some(req.page_size),
-                req.is_read,
-                notification_type,
-                (!req.search.is_empty()).then_some(req.search),
-                match NotificationListSortBy::try_from(req.sort_by) {
-                    Ok(NotificationListSortBy::Title) => {
-                        synctv_core::models::NotificationListSortBy::Title
-                    }
-                    Ok(NotificationListSortBy::UpdatedAt) => {
-                        synctv_core::models::NotificationListSortBy::UpdatedAt
-                    }
-                    _ => synctv_core::models::NotificationListSortBy::CreatedAt,
-                },
-                proto_sort_direction_to_core(req.sort_direction),
-            )
+            .list_notifications(&user_id, req)
             .await
             .map_err(map_api_error)?;
 
@@ -100,8 +75,7 @@ impl NotificationService for NotificationServiceImpl {
         let user_id = self.get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_id = Uuid::parse_str(&req.notification_id)
-            .map_err(|_| Status::invalid_argument("Invalid notification_id format"))?;
+        let notification_id = build_get_notification_request(req).map_err(map_api_error)?;
 
         let notification = self
             .notification_api
@@ -121,14 +95,7 @@ impl NotificationService for NotificationServiceImpl {
         let user_id = self.get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_ids: Vec<Uuid> = req
-            .notification_ids
-            .iter()
-            .map(|id| {
-                Uuid::parse_str(id)
-                    .map_err(|_| Status::invalid_argument(format!("Invalid notification_id: {id}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let notification_ids = build_mark_as_read_request(req).map_err(map_api_error)?;
 
         self.notification_api
             .mark_as_read(&user_id, notification_ids)
@@ -168,8 +135,7 @@ impl NotificationService for NotificationServiceImpl {
         let user_id = self.get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_id = Uuid::parse_str(&req.notification_id)
-            .map_err(|_| Status::invalid_argument("Invalid notification_id format"))?;
+        let notification_id = build_delete_notification_request(req).map_err(map_api_error)?;
 
         self.notification_api
             .delete_notification(&user_id, notification_id)

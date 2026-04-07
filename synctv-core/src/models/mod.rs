@@ -37,8 +37,8 @@ pub use playlist::{
     UpdatePlaylistRequest,
 };
 pub use provider_instance::{
-    ProviderCredential, ProviderInstance, ProviderInstanceListQuery,
-    ProviderInstanceListSortBy, UserProviderCredential,
+    ProviderCredential, ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    UserProviderCredential,
 };
 pub use query::SortDirection;
 pub use room::{
@@ -46,8 +46,8 @@ pub use room::{
     RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,
 };
 pub use room_member::{
-    MemberStatus, RelatedRoomListQuery, RelatedRoomListSortBy, RoomMember, RoomMemberListQuery,
-    RoomMemberListSortBy, RoomMemberWithUser,
+    MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, RoomMember,
+    RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser,
 };
 pub use room_settings::RoomSettings;
 pub use settings::{

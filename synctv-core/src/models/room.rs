@@ -23,6 +23,7 @@ pub enum RoomStatus {
     #[default]
     Active,
     Pending,
+    Rejected,
     Closed,
 }
 
@@ -32,6 +33,7 @@ impl RoomStatus {
         match self {
             Self::Active => "active",
             Self::Pending => "pending",
+            Self::Rejected => "rejected",
             Self::Closed => "closed",
         }
     }
@@ -47,6 +49,11 @@ impl RoomStatus {
     }
 
     #[must_use]
+    pub const fn is_rejected(&self) -> bool {
+        matches!(self, Self::Rejected)
+    }
+
+    #[must_use]
     pub const fn is_closed(&self) -> bool {
         matches!(self, Self::Closed)
     }
@@ -55,7 +62,8 @@ impl RoomStatus {
     ///
     /// Valid transitions:
     /// - `Pending -> Active` (review approved)
-    /// - `Pending -> Closed` (review rejected)
+    /// - `Pending -> Rejected` (review rejected)
+    /// - `Rejected -> Active` (review reversed / approved later)
     /// - `Active -> Closed` (room closed)
     /// - `Closed -> Active` (room reopened)
     /// - Same status (no change) is always allowed
@@ -69,9 +77,12 @@ impl RoomStatus {
             // Same status (no change) is always allowed
             (a, b) if *a == *b => true,
 
-            // Pending can transition to Active (approved) or Closed (rejected)
+            // Pending can transition to Active (approved) or Rejected.
             (Self::Pending, Self::Active) => true,
-            (Self::Pending, Self::Closed) => true,
+            (Self::Pending, Self::Rejected) => true,
+
+            // Rejected rooms may be approved later.
+            (Self::Rejected, Self::Active) => true,
 
             // Active can transition to Closed (room closed)
             (Self::Active, Self::Closed) => true,
@@ -86,7 +97,7 @@ impl RoomStatus {
 }
 
 // Database mapping: RoomStatus -> SMALLINT
-// Values: 1=active, 2=pending, 3=closed
+// Values: 1=active, 2=pending, 3=rejected, 4=closed
 impl sqlx::Type<sqlx::Postgres> for RoomStatus {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
@@ -101,7 +112,8 @@ impl sqlx::Encode<'_, sqlx::Postgres> for RoomStatus {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
-            Self::Closed => 3,
+            Self::Rejected => 3,
+            Self::Closed => 4,
         };
         <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
     }
@@ -115,7 +127,8 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomStatus {
         match val {
             1 => Ok(Self::Active),
             2 => Ok(Self::Pending),
-            3 => Ok(Self::Closed),
+            3 => Ok(Self::Rejected),
+            4 => Ok(Self::Closed),
             _ => Err(format!("Invalid RoomStatus value: {val}").into()),
         }
     }
@@ -127,6 +140,7 @@ impl From<synctv_proto::common::RoomStatus> for RoomStatus {
         match value {
             synctv_proto::common::RoomStatus::Active => Self::Active,
             synctv_proto::common::RoomStatus::Pending => Self::Pending,
+            synctv_proto::common::RoomStatus::Rejected => Self::Rejected,
             synctv_proto::common::RoomStatus::Closed => Self::Closed,
             synctv_proto::common::RoomStatus::Unspecified => Self::Active,
         }
@@ -139,6 +153,7 @@ impl From<RoomStatus> for synctv_proto::common::RoomStatus {
         match value {
             RoomStatus::Active => Self::Active,
             RoomStatus::Pending => Self::Pending,
+            RoomStatus::Rejected => Self::Rejected,
             RoomStatus::Closed => Self::Closed,
         }
     }
@@ -618,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_status_transition_pending_to_closed_is_valid() {
-        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Closed));
+        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Rejected));
     }
 
     #[test]
@@ -632,9 +647,15 @@ mod tests {
     }
 
     #[test]
+    fn test_status_transition_rejected_to_active_is_valid() {
+        assert!(RoomStatus::Rejected.can_transition_to(&RoomStatus::Active));
+    }
+
+    #[test]
     fn test_status_transition_same_status_is_valid() {
         assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Pending));
         assert!(RoomStatus::Active.can_transition_to(&RoomStatus::Active));
+        assert!(RoomStatus::Rejected.can_transition_to(&RoomStatus::Rejected));
         assert!(RoomStatus::Closed.can_transition_to(&RoomStatus::Closed));
     }
 
@@ -653,12 +674,18 @@ mod tests {
         // Define all valid transitions
         let valid_transitions = [
             (RoomStatus::Pending, RoomStatus::Active),
-            (RoomStatus::Pending, RoomStatus::Closed),
+            (RoomStatus::Pending, RoomStatus::Rejected),
+            (RoomStatus::Rejected, RoomStatus::Active),
             (RoomStatus::Active, RoomStatus::Closed),
             (RoomStatus::Closed, RoomStatus::Active),
         ];
 
-        let all_statuses = [RoomStatus::Pending, RoomStatus::Active, RoomStatus::Closed];
+        let all_statuses = [
+            RoomStatus::Pending,
+            RoomStatus::Active,
+            RoomStatus::Rejected,
+            RoomStatus::Closed,
+        ];
 
         for &from in &all_statuses {
             for &to in &all_statuses {

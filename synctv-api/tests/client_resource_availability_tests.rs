@@ -60,12 +60,7 @@ fn make_user_service(pool: sqlx::PgPool) -> UserService {
     svc
 }
 
-fn make_playlist(
-    room_id: &RoomId,
-    creator_id: &UserId,
-    name: &str,
-    position: i32,
-) -> Playlist {
+fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) -> Playlist {
     let now = Utc::now();
     Playlist {
         id: PlaylistId::new(),
@@ -121,7 +116,10 @@ async fn create_client_api_fixture() -> (
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let room_service = Arc::new(room_service);
 
-    let owner = user_repo.create(&make_user("availability_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("availability_owner"))
+        .await
+        .unwrap();
     let creator = user_repo
         .create(&make_user("availability_creator"))
         .await
@@ -149,7 +147,16 @@ async fn create_client_api_fixture() -> (
         None,
     );
 
-    (postgres, client_api, user_repo, playlist_repo, media_repo, owner, creator, room)
+    (
+        postgres,
+        client_api,
+        user_repo,
+        playlist_repo,
+        media_repo,
+        owner,
+        creator,
+        room,
+    )
 }
 
 #[tokio::test]
@@ -163,7 +170,12 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(&room.id, &creator.id, "unavailable-folder", 2))
+        .create(&make_playlist(
+            &room.id,
+            &creator.id,
+            "unavailable-folder",
+            2,
+        ))
         .await
         .unwrap();
     let available_media = media_repo
@@ -257,7 +269,12 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(&room.id, &creator.id, "unavailable-folder", 0))
+        .create(&make_playlist(
+            &room.id,
+            &creator.id,
+            "unavailable-folder",
+            0,
+        ))
         .await
         .unwrap();
     media_repo
@@ -341,7 +358,12 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(&room.id, &creator.id, "unavailable-folder", 0))
+        .create(&make_playlist(
+            &room.id,
+            &creator.id,
+            "unavailable-folder",
+            0,
+        ))
         .await
         .unwrap();
     user_repo

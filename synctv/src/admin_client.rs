@@ -203,10 +203,11 @@ mod tests {
         ListRoomStreamsRequest, ListRoomsRequest, ListUsersRequest, MoveMediaRequest,
         MovePlaylistRequest, ReconnectProviderInstanceRequest, RemoveAdminRequest,
         ResetRoomSettingsRequest, SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest,
-        StopServerEvent, StopServerRequest, UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest,
-        UpdateMemberPermissionsRequest, UpdatePlaylistRequest, UpdateProviderInstanceRequest,
-        UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-        UpdateUserPasswordRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest,
+        StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
+        UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaylistRequest,
+        UpdateProviderInstanceRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
+        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
+        UpdateUserUsernameRequest,
     };
     use synctv_proto::{admin as admin_proto, client as client_proto};
     use tonic::transport::Server;
@@ -441,6 +442,13 @@ mod tests {
             &self,
             _: Request<ResetRoomSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::ResetRoomSettingsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn transfer_room_ownership(
+            &self,
+            _: Request<TransferRoomOwnershipRequest>,
+        ) -> std::result::Result<Response<client_proto::TransferRoomOwnershipResponse>, Status>
+        {
             Err(Status::unimplemented("test stub"))
         }
         async fn update_room_password(

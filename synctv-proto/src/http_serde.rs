@@ -72,3 +72,39 @@ impl From<AdminUpdateRoomSettingsRequestDef> for crate::admin::UpdateRoomSetting
         }
     }
 }
+
+#[derive(serde::Deserialize)]
+pub struct MovePlaylistRequestDef {
+    #[serde(default)]
+    playlist_id: String,
+    #[serde(default, alias = "beforePlaylistId")]
+    before_playlist_id: Option<String>,
+    #[serde(default, alias = "afterPlaylistId")]
+    after_playlist_id: Option<String>,
+}
+
+impl TryFrom<MovePlaylistRequestDef> for crate::client::MovePlaylistRequest {
+    type Error = String;
+
+    fn try_from(value: MovePlaylistRequestDef) -> Result<Self, Self::Error> {
+        let anchor = match (value.before_playlist_id, value.after_playlist_id) {
+            (Some(before_playlist_id), None) => Some(
+                crate::client::move_playlist_request::Anchor::BeforePlaylistId(before_playlist_id),
+            ),
+            (None, Some(after_playlist_id)) => Some(
+                crate::client::move_playlist_request::Anchor::AfterPlaylistId(after_playlist_id),
+            ),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                return Err(
+                    "before_playlist_id and after_playlist_id are mutually exclusive".to_string(),
+                );
+            }
+        };
+
+        Ok(Self {
+            playlist_id: value.playlist_id,
+            anchor,
+        })
+    }
+}

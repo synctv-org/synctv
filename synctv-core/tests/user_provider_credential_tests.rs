@@ -409,6 +409,45 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_blank_provider_instance_name_is_normalized_to_null() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let cred_repo =
+        UserProviderCredentialRepository::new_with_encryption(pool.clone(), test_encryption());
+
+    let user = user_repo
+        .create(&make_user("blank_instance_user"))
+        .await
+        .unwrap();
+
+    let server_id = UserProviderCredential::generate_server_id_for_instance(
+        "https://alist.example.com",
+        None,
+    );
+    let credential =
+        make_credential_with_instance(user.id.as_str(), "alist", &server_id, Some("   "));
+
+    cred_repo.create(&credential).await.unwrap();
+
+    let stored: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT provider_instance_name FROM user_media_provider_credentials WHERE id = $1",
+    )
+    .bind(&credential.id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, Some(None));
+
+    let found = cred_repo
+        .get_by_provider_and_server(user.id.as_str(), "alist", &server_id)
+        .await
+        .unwrap()
+        .expect("credential should exist");
+    assert_eq!(found.provider_instance_name, None);
+}
+
 // ========== Cascade Delete Tests ==========
 
 #[tokio::test]

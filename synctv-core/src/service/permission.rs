@@ -1046,17 +1046,17 @@ mod tests {
         settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::SEND_CHAT);
         let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
     fn test_room_level_add_and_remove_for_admin() {
         let service = make_service();
         let mut settings = RoomSettings::default();
-        settings.admin_added_permissions = AdminAddedPermissions(PermissionBits::DELETE_ROOM);
+        settings.admin_added_permissions = AdminAddedPermissions(PermissionBits::USE_WEBRTC);
         settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
         let perms = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
-        assert!(perms.has(PermissionBits::DELETE_ROOM));
+        assert!(perms.has(PermissionBits::USE_WEBRTC));
         assert!(!perms.has(PermissionBits::BAN_MEMBER));
     }
 
@@ -1088,21 +1088,20 @@ mod tests {
         let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let effective = member.effective_permissions(role_default);
         assert!(!effective.has(PermissionBits::SEND_CHAT));
-        assert!(effective.has(PermissionBits::ADD_MOVIE));
+        assert!(effective.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = make_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::DELETE_ROOM;
+        member.admin_added_permissions = PermissionBits::USE_WEBRTC;
         member.admin_removed_permissions = PermissionBits::BAN_MEMBER;
-        member.added_permissions = PermissionBits::EXPORT_DATA;
+        member.added_permissions = PermissionBits::USE_WEBRTC;
 
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::DELETE_ROOM));
+        assert!(effective.has(PermissionBits::USE_WEBRTC));
         assert!(!effective.has(PermissionBits::BAN_MEMBER));
-        assert!(!effective.has(PermissionBits::EXPORT_DATA));
     }
 
     #[test]
@@ -1139,14 +1138,14 @@ mod tests {
         assert!(role_default.has(PermissionBits::PLAY_CONTROL));
         assert!(!role_default.has(PermissionBits::SEND_CHAT));
 
-        // Layer 3: Member re-adds SEND_CHAT, removes ADD_MOVIE
+        // Layer 3: Member re-adds SEND_CHAT, removes ADD_MEDIA
         let mut member = make_member(RoomRole::Member);
         member.added_permissions = PermissionBits::SEND_CHAT;
-        member.removed_permissions = PermissionBits::ADD_MOVIE;
+        member.removed_permissions = PermissionBits::ADD_MEDIA;
 
         let effective = member.effective_permissions(role_default);
         assert!(effective.has(PermissionBits::SEND_CHAT));
-        assert!(!effective.has(PermissionBits::ADD_MOVIE));
+        assert!(!effective.has(PermissionBits::ADD_MEDIA));
         assert!(effective.has(PermissionBits::PLAY_CONTROL));
         assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
     }
@@ -1202,8 +1201,8 @@ mod tests {
 
     #[test]
     fn test_has_all_requires_all_bits() {
-        let perms = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE);
-        assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE));
+        let perms = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
+        assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
         assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::BAN_MEMBER));
     }
 
@@ -1278,14 +1277,14 @@ mod tests {
         settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
         let role_default = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
         assert!(!role_default.has(PermissionBits::BAN_MEMBER));
-        assert!(role_default.has(PermissionBits::KICK_USER));
+        assert!(role_default.has(PermissionBits::KICK_MEMBER));
 
         // Layer 3: Admin-level re-adds BAN_MEMBER (specific admin override)
         let mut member = make_member(RoomRole::Admin);
         member.admin_added_permissions = PermissionBits::BAN_MEMBER;
         let effective = member.effective_permissions(role_default);
         assert!(effective.has(PermissionBits::BAN_MEMBER));
-        assert!(effective.has(PermissionBits::KICK_USER));
+        assert!(effective.has(PermissionBits::KICK_MEMBER));
     }
 
     // ========== Creator Immunity ==========
@@ -1321,7 +1320,7 @@ mod tests {
     fn test_admin_ignores_member_level_added_permissions() {
         let mut member = make_member(RoomRole::Admin);
         // Set member-level overrides (should be ignored for Admin role)
-        member.added_permissions = PermissionBits::EXPORT_DATA;
+        member.added_permissions = PermissionBits::USE_WEBRTC;
         member.removed_permissions = PermissionBits::SEND_CHAT;
         // Admin-level overrides: these should apply
         member.admin_added_permissions = 0;
@@ -1329,8 +1328,8 @@ mod tests {
 
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         let effective = member.effective_permissions(role_default);
-        // member-level EXPORT_DATA grant should NOT apply to admin
-        assert!(!effective.has(PermissionBits::EXPORT_DATA));
+        // DEFAULT_ADMIN already includes USE_WEBRTC; member-level grant is ignored.
+        assert!(effective.has(PermissionBits::USE_WEBRTC));
         // member-level SEND_CHAT deny should NOT apply to admin
         assert!(effective.has(PermissionBits::SEND_CHAT));
     }
@@ -1419,26 +1418,25 @@ mod tests {
         perms.grant(PermissionBits::SEND_CHAT);
         assert!(perms.has(PermissionBits::SEND_CHAT));
 
-        perms.grant(PermissionBits::ADD_MOVIE);
+        perms.grant(PermissionBits::ADD_MEDIA);
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
 
         perms.revoke(PermissionBits::SEND_CHAT);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
     fn test_permission_bits_all_contains_every_named_permission() {
         let all = PermissionBits(PermissionBits::ALL);
         assert!(all.has(PermissionBits::SEND_CHAT));
-        assert!(all.has(PermissionBits::ADD_MOVIE));
+        assert!(all.has(PermissionBits::ADD_MEDIA));
         assert!(all.has(PermissionBits::BAN_MEMBER));
         assert!(all.has(PermissionBits::DELETE_ROOM));
-        assert!(all.has(PermissionBits::EXPORT_DATA));
+        assert!(all.has(PermissionBits::USE_WEBRTC));
         assert!(all.has(PermissionBits::VIEW_PLAYLIST));
         assert!(all.has(PermissionBits::PLAY_CONTROL));
-        assert!(all.has(PermissionBits::MANAGE_ADMIN));
     }
 
     // ========== Room Settings Repository Configuration Tests ==========

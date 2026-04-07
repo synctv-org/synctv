@@ -17,7 +17,8 @@ enum UserStatus {
     USER_STATUS_UNSPECIFIED = 0;
     USER_STATUS_ACTIVE = 1;
     USER_STATUS_PENDING = 2;
-    USER_STATUS_BANNED = 3;
+    USER_STATUS_REJECTED = 3;
+    USER_STATUS_BANNED = 4;
 }
 
 // Room member role
@@ -33,8 +34,9 @@ enum MemberStatus {
     MEMBER_STATUS_UNSPECIFIED = 0;
     MEMBER_STATUS_ACTIVE = 1;
     MEMBER_STATUS_PENDING = 2;
-    MEMBER_STATUS_BANNED = 3;
-    MEMBER_STATUS_LEFT = 4;
+    MEMBER_STATUS_REJECTED = 3;
+    MEMBER_STATUS_BANNED = 4;
+    MEMBER_STATUS_LEFT = 5;
 }
 
 // Room lifecycle status (independent of ban state)
@@ -43,7 +45,8 @@ enum RoomStatus {
     ROOM_STATUS_UNSPECIFIED = 0;
     ROOM_STATUS_ACTIVE = 1;
     ROOM_STATUS_PENDING = 2;
-    ROOM_STATUS_CLOSED = 3;
+    ROOM_STATUS_REJECTED = 3;
+    ROOM_STATUS_CLOSED = 4;
 }
 
 enum ListSortDirection {
@@ -74,6 +77,9 @@ message RoomMember {
 
     // Effective permissions (calculated from role + added/removed)
     uint64 permissions = 5;
+
+    // Membership lifecycle status
+    MemberStatus status = 12;
 
     // Allow/Deny permission pattern fields
     // For member role: uses added_permissions/removed_permissions

@@ -152,7 +152,7 @@ pub struct Media {
     pub source_config: JsonValue,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// Used to look up the provider from the registry at playback time.
-    /// Media must always bind to a concrete provider instance.
+    /// Empty means use the default local instance for `source_provider`.
     pub provider_instance_name: String,
     pub added_at: DateTime<Utc>,
     /// Timestamp of last update (auto-maintained by database trigger)
@@ -182,7 +182,8 @@ impl Media {
     ///
     /// # Arguments
     /// * `provider_name` - Provider type name from `provider.name()` (e.g., "bilibili")
-    /// * `provider_instance_name` - Instance name for lookup (e.g., "`bilibili_main`")
+    /// * `provider_instance_name` - Instance name for lookup (e.g., "`bilibili_main`").
+    ///   Empty means use the default local instance for `provider_name`.
     ///
     /// # Example
     /// ```text

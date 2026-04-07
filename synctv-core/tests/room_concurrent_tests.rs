@@ -502,7 +502,7 @@ async fn test_concurrent_permission_grant() {
         // Grant different permissions to each member
         let permission = match i {
             0 => PermissionBits::BAN_MEMBER,
-            1 => PermissionBits::KICK_USER,
+            1 => PermissionBits::KICK_MEMBER,
             2 => PermissionBits::CLEAR_PLAYLIST,
             3 => PermissionBits::SEND_CHAT,
             _ => PermissionBits::PLAY_CONTROL,

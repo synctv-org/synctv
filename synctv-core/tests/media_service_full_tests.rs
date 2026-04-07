@@ -137,14 +137,14 @@ async fn test_add_media_without_permission_denied() {
         .unwrap();
     register_direct_url_provider(&room_service).await;
 
-    // Revoke ADD_MOVIE from member
+    // Revoke ADD_MEDIA from member
     room_service
         .member_service()
         .revoke_permission(
             room.id.clone(),
             creator.id.clone(),
             member.id.clone(),
-            PermissionBits::ADD_MOVIE,
+            PermissionBits::ADD_MEDIA,
         )
         .await
         .unwrap();
@@ -155,6 +155,7 @@ async fn test_add_media_without_permission_denied() {
     let request = AddMediaRequest {
         playlist_id: Some(playlist.id.clone()),
         name: "Forbidden Video".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/vid.mp4"}),
     };
@@ -163,7 +164,7 @@ async fn test_add_media_without_permission_denied() {
         .add_media(room.id.clone(), member.id.clone(), request)
         .await;
 
-    assert!(result.is_err(), "Should fail without ADD_MOVIE permission");
+    assert!(result.is_err(), "Should fail without ADD_MEDIA permission");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),
@@ -197,6 +198,7 @@ async fn test_add_media_with_permission_succeeds() {
     let request = AddMediaRequest {
         playlist_id: Some(playlist.id.clone()),
         name: "Good Video".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/good.mp4"}),
     };
@@ -253,6 +255,7 @@ async fn test_add_media_cross_room_playlist_rejected() {
     let request = AddMediaRequest {
         playlist_id: Some(playlist_b.id.clone()),
         name: "Cross Room Video".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/cross.mp4"}),
     };
@@ -298,6 +301,7 @@ async fn test_add_media_batch_over_100_rejected() {
         .map(|i| AddMediaRequest {
             playlist_id: Some(playlist.id.clone()),
             name: format!("Batch Video {i}"),
+            source_provider: "direct_url".to_string(),
             provider_instance_name: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/batch{}.mp4", i)}),
         })
@@ -400,6 +404,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .map(|i| AddMediaRequest {
             playlist_id: Some(playlist.id.clone()),
             name: format!("Video {i}"),
+            source_provider: "direct_url".to_string(),
             provider_instance_name: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/v{}.mp4", i)}),
         })
@@ -459,6 +464,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let add_req = AddMediaRequest {
         playlist_id: Some(playlist.id.clone()),
         name: "Original Name".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/edit.mp4"}),
     };
@@ -705,10 +711,22 @@ async fn test_move_media_batch_preserves_request_order() {
         version: 0,
     };
 
-    let media1 = media_repo.create(&make_media("Media 1", 1024.0)).await.unwrap();
-    let media2 = media_repo.create(&make_media("Media 2", 2048.0)).await.unwrap();
-    let _media3 = media_repo.create(&make_media("Media 3", 3072.0)).await.unwrap();
-    let media4 = media_repo.create(&make_media("Media 4", 4096.0)).await.unwrap();
+    let media1 = media_repo
+        .create(&make_media("Media 1", 1024.0))
+        .await
+        .unwrap();
+    let media2 = media_repo
+        .create(&make_media("Media 2", 2048.0))
+        .await
+        .unwrap();
+    let _media3 = media_repo
+        .create(&make_media("Media 3", 3072.0))
+        .await
+        .unwrap();
+    let media4 = media_repo
+        .create(&make_media("Media 4", 4096.0))
+        .await
+        .unwrap();
 
     let moved = room_service
         .media_service()
@@ -840,7 +858,11 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let moved_item = &moved[0];
     assert_eq!(moved_item.playlist_id.as_ref(), Some(&dst.id));
     assert!(moved_item.position > existing.position);
-    assert!(media_repo.get_by_playlist(&src.id).await.unwrap().is_empty());
+    assert!(media_repo
+        .get_by_playlist(&src.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -947,5 +969,9 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
         .map(|item| item.name)
         .collect();
     assert_eq!(dst_names, vec!["A".to_string(), "B".to_string()]);
-    assert!(media_repo.get_by_playlist(&src.id).await.unwrap().is_empty());
+    assert!(media_repo
+        .get_by_playlist(&src.id)
+        .await
+        .unwrap()
+        .is_empty());
 }

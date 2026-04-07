@@ -21,15 +21,13 @@ use crate::proto::{
     ListRoomsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
     ReconnectProviderInstanceRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
     SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
-    StopPlaybackRequest, StopServerEvent, StopServerRequest, UnbanMemberRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
+    UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
     UpdatePlaylistRequest, UpdateProviderInstanceRequest, UpdateRoomPasswordRequest,
     UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
     UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRole, UserStatus,
 };
-use synctv_api::impls::admin::{
-    RequestContext, RoomStreamListQuery, LOCAL_MANAGEMENT_ACTOR_USER_ID,
-};
+use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{AdminApiImpl, ApiError, ClientApiImpl, ErrorKind};
 use synctv_core::models::{UserId, UserRole as CoreUserRole, UserStatus as CoreUserStatus};
 use synctv_core::service::UserService;
@@ -665,8 +663,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_member_permissions(
-                &req.room_id,
-                client_proto::UpdateMemberPermissionsRequest {
+                admin_proto::UpdateMemberPermissionsRequest {
+                    room_id: req.room_id,
                     user_id: req.user_id,
                     role: req.role,
                     added_permissions: req.added_permissions,
@@ -679,7 +677,9 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(map_api_error)?;
-        Self::proto_response(response)
+        Self::proto_response(client_proto::UpdateMemberPermissionsResponse {
+            member: response.member,
+        })
     }
 
     async fn kick_member(
@@ -692,8 +692,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .kick_member(
-                &req.room_id,
-                client_proto::KickMemberRequest {
+                admin_proto::KickMemberRequest {
+                    room_id: req.room_id,
                     user_id: req.user_id,
                 },
                 &validated.user_id,
@@ -701,7 +701,9 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(map_api_error)?;
-        Self::proto_response(response)
+        Self::proto_response(client_proto::KickMemberResponse {
+            success: response.success,
+        })
     }
 
     async fn ban_member(
@@ -714,8 +716,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .ban_member(
-                &req.room_id,
-                client_proto::BanMemberRequest {
+                admin_proto::BanMemberRequest {
+                    room_id: req.room_id,
                     user_id: req.user_id,
                     reason: req.reason,
                 },
@@ -724,7 +726,9 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(map_api_error)?;
-        Self::proto_response(response)
+        Self::proto_response(client_proto::BanMemberResponse {
+            success: response.success,
+        })
     }
 
     async fn unban_member(
@@ -737,8 +741,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .unban_member(
-                &req.room_id,
-                client_proto::UnbanMemberRequest {
+                admin_proto::UnbanMemberRequest {
+                    room_id: req.room_id,
                     user_id: req.user_id,
                 },
                 &validated.user_id,
@@ -746,7 +750,9 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(map_api_error)?;
-        Self::proto_response(response)
+        Self::proto_response(client_proto::UnbanMemberResponse {
+            success: response.success,
+        })
     }
 
     async fn get_room_settings(
@@ -798,6 +804,29 @@ impl ManagementService for ManagementServiceImpl {
                     room_id: req.room_id,
                 },
                 &validated.user_id,
+            )
+            .await
+            .map_err(map_api_error)?;
+        Self::proto_response(response)
+    }
+
+    async fn transfer_room_ownership(
+        &self,
+        request: Request<TransferRoomOwnershipRequest>,
+    ) -> Result<Response<client_proto::TransferRoomOwnershipResponse>, Status> {
+        self.check_admin_get_validated(&request).await?;
+        let req = request.into_inner();
+        let actor_user_id = self
+            .resolve_client_actor_user_id(&req.actor_user_id)
+            .await?;
+        let response = self
+            .client_api
+            .transfer_room_ownership(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::TransferRoomOwnershipRequest {
+                    new_owner_user_id: req.new_owner_user_id,
+                },
             )
             .await
             .map_err(map_api_error)?;
@@ -1056,16 +1085,25 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .list_room_streams(
                 &req.room_id,
-                &RoomStreamListQuery {
+                client_proto::ListRoomStreamsRequest {
                     page: req.page,
                     page_size: req.page_size,
-                    search: (!req.search.trim().is_empty()).then_some(req.search),
+                    search: req.search,
+                    sort_by: match crate::proto::RoomStreamListSortBy::try_from(req.sort_by) {
+                        Ok(crate::proto::RoomStreamListSortBy::MediaId) => {
+                            client_proto::RoomStreamListSortBy::MediaId as i32
+                        }
+                        _ => client_proto::RoomStreamListSortBy::Unspecified as i32,
+                    },
                     sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction)
                     {
                         Ok(crate::proto::SortDirection::Desc) => {
-                            synctv_core::models::SortDirection::Desc
+                            client_proto::SortDirection::Desc as i32
                         }
-                        _ => synctv_core::models::SortDirection::Asc,
+                        Ok(crate::proto::SortDirection::Asc) => {
+                            client_proto::SortDirection::Asc as i32
+                        }
+                        _ => client_proto::SortDirection::Unspecified as i32,
                     },
                 },
             )
@@ -1286,7 +1324,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: String::new(),
+                    provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
                     source_config: serde_json::to_vec(&serde_json::json!({ "url": req.url }))
                         .map_err(|error| {
@@ -1358,13 +1396,15 @@ impl ManagementService for ManagementServiceImpl {
                     source_playlist_id: req.source_playlist_id,
                     target_playlist_id: req.target_playlist_id,
                     all_from_scope: req.all_from_scope,
-                    anchor: req.anchor.map(|anchor| match anchor {
+                    before_media_id: req.anchor.as_ref().and_then(|anchor| match anchor {
                         crate::proto::move_media_request::Anchor::BeforeMediaId(id) => {
-                            client_proto::move_media_request::Anchor::BeforeMediaId(id)
+                            Some(id.clone())
                         }
-                        crate::proto::move_media_request::Anchor::AfterMediaId(id) => {
-                            client_proto::move_media_request::Anchor::AfterMediaId(id)
-                        }
+                        crate::proto::move_media_request::Anchor::AfterMediaId(_) => None,
+                    }),
+                    after_media_id: req.anchor.and_then(|anchor| match anchor {
+                        crate::proto::move_media_request::Anchor::BeforeMediaId(_) => None,
+                        crate::proto::move_media_request::Anchor::AfterMediaId(id) => Some(id),
                     }),
                 },
                 &validated.user_id,
@@ -1640,9 +1680,11 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         self.admin_api
             .kick_stream(
-                &req.room_id,
-                &req.media_id,
-                &req.reason,
+                admin_proto::KickStreamRequest {
+                    room_id: req.room_id,
+                    media_id: req.media_id,
+                    reason: req.reason,
+                },
                 &validated.user_id,
                 &ctx,
             )
@@ -1728,6 +1770,7 @@ fn map_user_status(status: i32) -> i32 {
     match UserStatus::try_from(status).unwrap_or(UserStatus::Unspecified) {
         UserStatus::Active => common_proto::UserStatus::Active as i32,
         UserStatus::Pending => common_proto::UserStatus::Pending as i32,
+        UserStatus::Rejected => common_proto::UserStatus::Rejected as i32,
         UserStatus::Banned => common_proto::UserStatus::Banned as i32,
         UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
     }
@@ -1737,6 +1780,7 @@ fn map_room_status(status: i32) -> i32 {
     match RoomStatus::try_from(status).unwrap_or(RoomStatus::Unspecified) {
         RoomStatus::Active => common_proto::RoomStatus::Active as i32,
         RoomStatus::Pending => common_proto::RoomStatus::Pending as i32,
+        RoomStatus::Rejected => common_proto::RoomStatus::Rejected as i32,
         RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
         RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
     }
@@ -1754,6 +1798,12 @@ fn validate_client_actor_user(user: &synctv_core::models::User) -> Result<(), St
         CoreUserStatus::Pending => {
             return Err(Status::permission_denied(format!(
                 "actor user '{}' is pending and cannot perform this operation",
+                user.username
+            )));
+        }
+        CoreUserStatus::Rejected => {
+            return Err(Status::permission_denied(format!(
+                "actor user '{}' is rejected and cannot perform this operation",
                 user.username
             )));
         }

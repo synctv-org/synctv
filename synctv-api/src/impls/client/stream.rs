@@ -1,7 +1,7 @@
 //! Live streaming operations: `publish_key`, `validate_live_token`, `stream_info`, live proxy
 
 use std::sync::Arc;
-use synctv_core::models::UserId;
+use synctv_core::models::{MediaId, UserId};
 
 use super::ClientApiImpl;
 use crate::impls::ApiError;
@@ -9,6 +9,8 @@ use crate::impls::ApiError;
 const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on this server.";
 const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
     "Publish key service is not available on this server.";
+const DEFAULT_ROOM_STREAMS_PAGE: i32 = 1;
+const DEFAULT_ROOM_STREAMS_PAGE_SIZE: i32 = 50;
 
 fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
     let rtmp_host = config.public_rtmp_host();
@@ -16,19 +18,46 @@ fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String
     format!("rtmp://{rtmp_host}:{rtmp_port}/live/{room_id}")
 }
 
+pub(crate) fn build_room_streams_request(
+    req: crate::proto::client::ListRoomStreamsRequest,
+) -> Result<crate::proto::client::ListRoomStreamsRequest, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+
+    Ok(crate::proto::client::ListRoomStreamsRequest {
+        page: if req.page > 0 {
+            req.page
+        } else {
+            DEFAULT_ROOM_STREAMS_PAGE
+        },
+        page_size: if req.page_size > 0 {
+            req.page_size
+        } else {
+            DEFAULT_ROOM_STREAMS_PAGE_SIZE
+        },
+        search: req.search,
+        sort_by: req.sort_by,
+        sort_direction: req.sort_direction,
+    })
+}
+
 fn paginate_room_stream_ids(
     mut media_ids: Vec<String>,
-    page: i32,
-    page_size: i32,
+    req: &crate::proto::client::ListRoomStreamsRequest,
 ) -> crate::proto::client::ListRoomStreamsResponse {
-    media_ids.sort_unstable();
+    if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
+        media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(&search));
+    }
 
-    let page = page.max(1) as usize;
-    let page_size = if page_size <= 0 {
-        50usize
-    } else {
-        page_size.min(100) as usize
-    };
+    media_ids.sort_unstable();
+    if matches!(
+        crate::proto::client::SortDirection::try_from(req.sort_direction),
+        Ok(crate::proto::client::SortDirection::Desc)
+    ) {
+        media_ids.reverse();
+    }
+
+    let page = req.page as usize;
+    let page_size = req.page_size as usize;
     let total = media_ids.len() as i32;
     let offset = (page - 1) * page_size;
     let streams = media_ids
@@ -52,6 +81,13 @@ fn publish_key_service_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE.to_string())
 }
 
+fn build_create_publish_key_request(
+    req: crate::proto::client::CreatePublishKeyRequest,
+) -> Result<MediaId, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    Ok(crate::impls::proto_validated_media_id(req.id))
+}
+
 impl ClientApiImpl {
     pub async fn create_publish_key(
         &self,
@@ -59,13 +95,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::CreatePublishKeyRequest,
     ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
-        // Validate media ID format
-        crate::http::validation::validate_id(&req.id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let media_id = synctv_core::models::MediaId::from_string(req.id.clone());
+        let media_id = build_create_publish_key_request(req.clone())?;
 
         // Verify media exists and belongs to this room
         let media = self
@@ -205,9 +237,9 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-        page: i32,
-        page_size: i32,
+        req: crate::proto::client::ListRoomStreamsRequest,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
+        let req = build_room_streams_request(req)?;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
@@ -228,7 +260,7 @@ impl ClientApiImpl {
             .await
             .map_err(|e| Self::map_livestream_backend_error(&*e))?;
 
-        Ok(paginate_room_stream_ids(media_ids, page, page_size))
+        Ok(paginate_room_stream_ids(media_ids, &req))
     }
 
     /// Get a reference to the live streaming infrastructure, if configured.
@@ -274,10 +306,11 @@ impl ClientApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
+        build_create_publish_key_request, build_room_streams_request,
         live_streaming_unavailable_error, paginate_room_stream_ids,
         publish_key_service_unavailable_error,
     };
-    use crate::impls::ErrorKind;
+    use crate::impls::{ApiError, ErrorKind};
 
     #[test]
     fn paginate_room_stream_ids_sorts_and_applies_defaults() {
@@ -287,8 +320,13 @@ mod tests {
                 "media-a".to_string(),
                 "media-b".to_string(),
             ],
-            0,
-            0,
+            &crate::proto::client::ListRoomStreamsRequest {
+                page: 1,
+                page_size: 50,
+                search: String::new(),
+                sort_by: 0,
+                sort_direction: 0,
+            },
         );
 
         assert_eq!(response.total, 3);
@@ -308,14 +346,84 @@ mod tests {
                 "media-b".to_string(),
                 "media-c".to_string(),
             ],
-            2,
-            1,
+            &crate::proto::client::ListRoomStreamsRequest {
+                page: 2,
+                page_size: 1,
+                search: String::new(),
+                sort_by: 0,
+                sort_direction: 0,
+            },
         );
 
         assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);
         assert_eq!(response.streams[0].media_id, "media-b");
         assert!(response.streams[0].active);
+    }
+
+    #[test]
+    fn build_room_streams_request_rejects_invalid_proto_request() {
+        let error = build_room_streams_request(crate::proto::client::ListRoomStreamsRequest {
+            page: -1,
+            page_size: 101,
+            search: "a".repeat(101),
+            sort_by: 0,
+            sort_direction: 0,
+        })
+        .expect_err("invalid proto request must be rejected");
+
+        match error {
+            ApiError::InvalidInput(message) => {
+                assert!(message.contains("page"), "{message}");
+                assert!(message.contains("page_size"), "{message}");
+                assert!(message.contains("search"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_room_streams_request_normalizes_defaults() {
+        let req = build_room_streams_request(crate::proto::client::ListRoomStreamsRequest {
+            page: 0,
+            page_size: 0,
+            search: " beta ".to_string(),
+            sort_by: 1,
+            sort_direction: 2,
+        })
+        .expect("defaultable request must be accepted");
+
+        assert_eq!(req.page, 1);
+        assert_eq!(req.page_size, 50);
+        assert_eq!(req.search, " beta ");
+        assert_eq!(req.sort_by, 1);
+        assert_eq!(req.sort_direction, 2);
+    }
+
+    #[test]
+    fn paginate_room_stream_ids_applies_search_and_desc_sort() {
+        let response = paginate_room_stream_ids(
+            vec![
+                "beta-02".to_string(),
+                "alpha-01".to_string(),
+                "beta-01".to_string(),
+            ],
+            &crate::proto::client::ListRoomStreamsRequest {
+                page: 1,
+                page_size: 10,
+                search: "beta".to_string(),
+                sort_by: 1,
+                sort_direction: 2,
+            },
+        );
+
+        let ids: Vec<_> = response
+            .streams
+            .into_iter()
+            .map(|stream| stream.media_id)
+            .collect();
+        assert_eq!(response.total, 2);
+        assert_eq!(ids, vec!["beta-02", "beta-01"]);
     }
 
     #[test]
@@ -336,6 +444,28 @@ mod tests {
             err.message(),
             "Publish key service is not available on this server."
         );
+    }
+
+    #[test]
+    fn build_create_publish_key_request_rejects_invalid_media_id() {
+        let error =
+            build_create_publish_key_request(crate::proto::client::CreatePublishKeyRequest {
+                id: "bad-media".to_string(),
+            })
+            .expect_err("invalid proto request must be rejected");
+
+        assert!(matches!(error, ApiError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn build_create_publish_key_request_parses_proto_validated_media_id() {
+        let media_id =
+            build_create_publish_key_request(crate::proto::client::CreatePublishKeyRequest {
+                id: "AbC123xYz890".to_string(),
+            })
+            .expect("valid proto media id");
+
+        assert_eq!(media_id.as_str(), "AbC123xYz890");
     }
 }
 

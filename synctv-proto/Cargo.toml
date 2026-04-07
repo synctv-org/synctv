@@ -18,6 +18,8 @@ tonic.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+prost-reflect.workspace = true
+prost-protovalidate.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -27,3 +29,4 @@ utoipa = { workspace = true, optional = true }
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 protoc-bin-vendored.workspace = true
+prost-reflect-build.workspace = true

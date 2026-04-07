@@ -363,6 +363,8 @@ pub enum RoomSubcommand {
     Get(RoomGetArgs),
     /// Manage room settings
     Settings(RoomSettingsCommand),
+    /// Transfer room ownership to another existing member
+    TransferOwner(RoomTransferOwnerArgs),
     /// Manage room members
     Member(RoomMemberCommand),
     /// Playback lifecycle operations
@@ -407,6 +409,50 @@ pub struct RoomCreateArgs {
 
     #[arg(long)]
     pub settings_json: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomTransferOwnerArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    pub room_id: String,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    #[command(flatten)]
+    pub new_owner: RoomTransferTargetUserArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(group(
+    ArgGroup::new("room_transfer_target_ref")
+        .args(["new_owner_username", "new_owner_user_id"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct RoomTransferTargetUserArgs {
+    /// Username of the member that will become the new room owner
+    #[arg(value_name = "USER", group = "room_transfer_target_ref")]
+    pub new_owner_username: Option<String>,
+
+    /// Explicit internal user ID of the member that will become the new room owner
+    #[arg(
+        long = "new-owner-id",
+        value_name = "USER_ID",
+        group = "room_transfer_target_ref"
+    )]
+    pub new_owner_user_id: Option<String>,
+}
+
+impl RoomTransferTargetUserArgs {
+    fn to_user_ref(&self) -> UserRefArgs {
+        UserRefArgs {
+            username: self.new_owner_username.clone(),
+            user_id: self.new_owner_user_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -622,6 +668,7 @@ impl CliUserRole {
 pub enum CliUserStatus {
     Active,
     Pending,
+    Rejected,
     Banned,
 }
 
@@ -630,6 +677,7 @@ impl CliUserStatus {
         match self {
             Self::Active => management_proto::UserStatus::Active as i32,
             Self::Pending => management_proto::UserStatus::Pending as i32,
+            Self::Rejected => management_proto::UserStatus::Rejected as i32,
             Self::Banned => management_proto::UserStatus::Banned as i32,
         }
     }
@@ -677,6 +725,7 @@ impl CliUserSortField {
 pub enum CliRoomStatus {
     Active,
     Pending,
+    Rejected,
     Closed,
 }
 
@@ -685,6 +734,7 @@ impl CliRoomStatus {
         match self {
             Self::Active => management_proto::RoomStatus::Active as i32,
             Self::Pending => management_proto::RoomStatus::Pending as i32,
+            Self::Rejected => management_proto::RoomStatus::Rejected as i32,
             Self::Closed => management_proto::RoomStatus::Closed as i32,
         }
     }
@@ -829,6 +879,7 @@ impl CliRoomStreamSortField {
 pub enum CliMemberStatus {
     Active,
     Pending,
+    Rejected,
     Banned,
     Left,
 }
@@ -838,6 +889,7 @@ impl CliMemberStatus {
         match self {
             Self::Active => synctv_proto::common::MemberStatus::Active as i32,
             Self::Pending => synctv_proto::common::MemberStatus::Pending as i32,
+            Self::Rejected => synctv_proto::common::MemberStatus::Rejected as i32,
             Self::Banned => synctv_proto::common::MemberStatus::Banned as i32,
             Self::Left => synctv_proto::common::MemberStatus::Left as i32,
         }
@@ -2120,6 +2172,7 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
+        RoomSubcommand::TransferOwner(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::SetPassword(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Unban(args) => merge_remote_access_args(&mut args.remote, root),
@@ -2877,6 +2930,23 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        RoomSubcommand::TransferOwner(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let new_owner_user_id =
+                resolve_user_ref(&session, &args.new_owner.to_user_ref()).await?;
+            let response = management_unary_call!(
+                session,
+                "transfer room ownership",
+                transfer_room_ownership,
+                management_proto::TransferRoomOwnershipRequest {
+                    room_id: args.room_id,
+                    actor_user_id,
+                    new_owner_user_id,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
         RoomSubcommand::Settings(settings_command) => match settings_command.command {
             RoomSettingsSubcommand::Get(args) => {
                 let session = connect_remote_access(&args.remote).await?;
@@ -3424,14 +3494,16 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
         MediaSubcommand::Move(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let anchor = match (args.before_media_id, args.after_media_id) {
-                (Some(id), None) => {
-                    Some(management_proto::move_media_request::Anchor::BeforeMediaId(id))
-                }
-                (None, Some(id)) => {
-                    Some(management_proto::move_media_request::Anchor::AfterMediaId(id))
-                }
+                (Some(id), None) => Some(
+                    management_proto::move_media_request::Anchor::BeforeMediaId(id),
+                ),
+                (None, Some(id)) => Some(
+                    management_proto::move_media_request::Anchor::AfterMediaId(id),
+                ),
                 (None, None) => None,
-                _ => bail!("media move accepts at most one of --before-media-id or --after-media-id"),
+                _ => {
+                    bail!("media move accepts at most one of --before-media-id or --after-media-id")
+                }
             };
             let response = management_unary_call!(
                 session,
@@ -3897,10 +3969,6 @@ fn validate_generic_media_add(args: &MediaAddArgs) -> Result<()> {
         bail!("--provider-instance-name requires --provider");
     }
 
-    if !provider.is_empty() && provider_instance_name.is_empty() {
-        bail!("--provider-instance-name is required when --provider is set");
-    }
-
     optional_json_bytes("source_config_json", Some(args.source_config_json.as_str()))?;
     Ok(())
 }
@@ -3933,10 +4001,6 @@ fn validate_playlist_create(args: &PlaylistCreateArgs) -> Result<()> {
 
     if source_config_json.is_empty() {
         bail!("--source-config-json is required when --source-provider is set");
-    }
-
-    if provider_instance_name.is_empty() {
-        bail!("--provider-instance-name is required when --source-provider is set");
     }
 
     optional_json_bytes("source_config_json", args.source_config_json.as_deref())?;
@@ -5001,6 +5065,16 @@ impl ToHuman for synctv_proto::client::UpdateRoomSettingsResponse {
     }
 }
 
+impl ToHuman for synctv_proto::client::TransferRoomOwnershipResponse {
+    type Human = HumanRoomResponse<HumanRoom>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomResponse {
+            room: self.room.to_human(),
+        }
+    }
+}
+
 impl ToHuman for synctv_proto::client::GetRoomMembersResponse {
     type Human = HumanRoomMembersResponse<HumanRoomMember>;
 
@@ -5190,7 +5264,6 @@ impl_identity_to_human!(
     synctv_proto::client::GetRoomSettingsResponse,
     synctv_proto::client::ResetRoomSettingsResponse,
     synctv_proto::client::SetRoomPasswordResponse,
-    synctv_proto::client::CheckRoomPasswordResponse,
     synctv_proto::client::KickMemberResponse,
     synctv_proto::client::BanMemberResponse,
     synctv_proto::client::UnbanMemberResponse,
@@ -5232,6 +5305,7 @@ fn humanize_user_status(raw: i64) -> Option<String> {
             UserStatus::Unspecified => "unspecified",
             UserStatus::Active => "active",
             UserStatus::Pending => "pending",
+            UserStatus::Rejected => "rejected",
             UserStatus::Banned => "banned",
         }
         .to_string(),
@@ -5246,6 +5320,7 @@ fn humanize_room_status(raw: i64) -> Option<String> {
             RoomStatus::Unspecified => "unspecified",
             RoomStatus::Active => "active",
             RoomStatus::Pending => "pending",
+            RoomStatus::Rejected => "rejected",
             RoomStatus::Closed => "closed",
         }
         .to_string(),
@@ -5943,6 +6018,60 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_room_transfer_owner() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "transfer-owner",
+            "room-123",
+            "--username",
+            "alice",
+            "bob",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command: RoomSubcommand::TransferOwner(args),
+                ..
+            }) => {
+                assert_eq!(args.room_id, "room-123");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.new_owner.new_owner_username.as_deref(), Some("bob"));
+                assert_eq!(args.new_owner.new_owner_user_id, None);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_room_transfer_owner_help_is_clear() {
+        let mut command = Cli::command();
+        let room = command
+            .find_subcommand_mut("room")
+            .expect("room subcommand should exist");
+        let transfer_owner = room
+            .find_subcommand_mut("transfer-owner")
+            .expect("room transfer-owner subcommand should exist");
+        let mut help = Vec::new();
+        transfer_owner
+            .write_long_help(&mut help)
+            .expect("room transfer-owner help should render");
+        let help = String::from_utf8(help).expect("room transfer-owner help should be utf-8");
+
+        assert!(
+            help.contains("--username <USERNAME>"),
+            "room transfer-owner help should expose current owner flag: {help}"
+        );
+        assert!(
+            help.contains("<USER|--new-owner-id <USER_ID>>"),
+            "room transfer-owner help should label the new owner target as USER: {help}"
+        );
+        assert!(
+            help.contains("<ROOM_ID>"),
+            "room transfer-owner help should expose the room id positional: {help}"
+        );
+    }
+
+    #[test]
     fn cli_parses_room_settings_get() {
         let cli = Cli::parse_from(["synctv", "room", "settings", "get", "room-123"]);
         match cli.command {
@@ -6522,7 +6651,7 @@ mod tests {
         };
 
         let error = validate_playlist_create(&args)
-            .expect_err("dynamic playlist create should require config and provider instance");
+            .expect_err("dynamic playlist create should require config");
         assert!(
             error
                 .to_string()
@@ -6555,6 +6684,32 @@ mod tests {
 
         validate_playlist_create(&args)
             .expect("static playlist create should not require dynamic fields");
+    }
+
+    #[test]
+    fn validate_playlist_create_allows_default_provider_instance() {
+        let args = PlaylistCreateArgs {
+            room: RoomScopedRemoteArgs {
+                remote: RemoteAccessArgs {
+                    global: GlobalConfigArgs::default(),
+                    endpoint: None,
+                    output: RemoteOutputFormat::Human,
+                },
+                room_id: "room-123".to_string(),
+            },
+            actor: ActorUserArgs {
+                username: Some("alice".to_string()),
+                user_id: None,
+            },
+            name: "Favorites".to_string(),
+            parent_id: None,
+            source_provider: Some("alist".to_string()),
+            source_config_json: Some("{\"path\":\"/movies\"}".to_string()),
+            provider_instance_name: None,
+        };
+
+        validate_playlist_create(&args)
+            .expect("dynamic playlist create should allow default provider instance");
     }
 
     #[test]
@@ -6973,7 +7128,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_generic_media_add_requires_provider_instance_for_remote_provider() {
+    fn validate_generic_media_add_allows_default_provider_instance() {
         let args = MediaAddArgs {
             room: RoomScopedRemoteArgs {
                 remote: RemoteAccessArgs {
@@ -6994,14 +7149,8 @@ mod tests {
             title: None,
         };
 
-        let error = validate_generic_media_add(&args)
-            .expect_err("provider-backed media add should require provider_instance_name");
-        assert!(
-            error
-                .to_string()
-                .contains("--provider-instance-name is required"),
-            "unexpected error: {error:#}"
-        );
+        validate_generic_media_add(&args)
+            .expect("provider-backed media add should allow default provider instance");
     }
 
     #[test]
@@ -7944,12 +8093,15 @@ mod tests {
                 is_banned: false,
             }),
             playback_state: None,
+            membership_status: synctv_proto::common::MemberStatus::Active as i32,
+            requires_approval: false,
             members: vec![synctv_proto::common::RoomMember {
                 room_id: "room-1".into(),
                 user_id: "user-1".into(),
                 username: "root".into(),
                 role: synctv_proto::common::RoomMemberRole::Creator as i32,
                 permissions: 0,
+                status: synctv_proto::common::MemberStatus::Active as i32,
                 added_permissions: 0,
                 removed_permissions: 0,
                 admin_added_permissions: 0,

@@ -39,6 +39,7 @@ service ManagementService {
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
     rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (synctv.admin.UpdateRoomSettingsResponse);
     rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.ResetRoomSettingsResponse);
+    rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.TransferRoomOwnershipResponse);
     rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
     rpc BanRoom(BanRoomRequest) returns (synctv.admin.BanRoomResponse);
     rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.UnbanRoomResponse);
@@ -100,14 +101,16 @@ enum UserStatus {
     USER_STATUS_UNSPECIFIED = 0;
     USER_STATUS_ACTIVE = 1;
     USER_STATUS_PENDING = 2;
-    USER_STATUS_BANNED = 3;
+    USER_STATUS_REJECTED = 3;
+    USER_STATUS_BANNED = 4;
 }
 
 enum RoomStatus {
     ROOM_STATUS_UNSPECIFIED = 0;
     ROOM_STATUS_ACTIVE = 1;
     ROOM_STATUS_PENDING = 2;
-    ROOM_STATUS_CLOSED = 3;
+    ROOM_STATUS_REJECTED = 3;
+    ROOM_STATUS_CLOSED = 4;
 }
 
 enum ShutdownMode {
@@ -336,6 +339,12 @@ message GetRoomMembersRequest {
     synctv.common.MemberStatus status = 6;
     RoomMemberListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
+}
+
+message TransferRoomOwnershipRequest {
+    string room_id = 1;
+    string actor_user_id = 2;
+    string new_owner_user_id = 3;
 }
 
 message UpdateMemberPermissionsRequest {

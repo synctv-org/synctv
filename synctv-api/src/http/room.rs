@@ -4,40 +4,72 @@
 // Request and response types are proto-generated structs.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     Json,
 };
 
-use super::validation::{
-    validate_id, validate_playback_position, validate_playback_speed, ValidationError,
-};
-use super::{middleware::AuthUser, AppResult, AppState};
+use super::validation::{validate_playback_position, ValidatedQuery, ValidationError};
+use super::{middleware::AuthUser, AppResult, AppState, WithMediaId, WithPlaylistId};
+use crate::impls::client::{build_update_playback_request, PlaybackUpdateCommand};
 use crate::proto::client::{
-    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomPasswordRequest,
-    CheckRoomPasswordResponse, CheckRoomResponse, ClearPlaylistResponse, CreatePlaylistRequest,
-    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteEntriesRequest,
-    DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistRequest,
+    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
+    ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
+    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
+    DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery, DeletePlaylistRequest,
     DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
-    GetChatHistoryResponse, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetRoomMembersResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
-    ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse, MoveMediaRequest,
-    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, ResetRoomSettingsResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse,
+    GetPlaybackRequest, GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse,
+    GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
+    ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse, ListRoomsRequest,
+    ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, ResetRoomSettingsResponse, SetRoomPasswordRequest,
+    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
+    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
+    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 pub type JoinRoomBody = JoinRoomRequest;
 pub type SetRoomPasswordBody = SetRoomPasswordRequest;
-pub type CheckRoomPasswordBody = CheckRoomPasswordRequest;
 pub type UpdateRoomSettingsBody = UpdateRoomSettingsRequest;
+pub type TransferRoomOwnershipBody = TransferRoomOwnershipRequest;
 pub type StartPlaybackBody = StartPlaybackRequest;
 pub type StopPlaybackBody = StopPlaybackRequest;
 pub type AddMediaBody = AddMediaRequest;
 pub type DeleteEntriesBody = DeleteEntriesRequest;
 
-fn parse_force_query(params: &std::collections::HashMap<String, String>) -> bool {
-    params.get("force").is_some_and(|value| value == "true")
+#[cfg(test)]
+fn parse_optional_query_i32(
+    params: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> AppResult<Option<i32>> {
+    params
+        .get(key)
+        .map(|value| {
+            value.parse::<i32>().map_err(|_| {
+                super::AppError::bad_request(format!(
+                    "Invalid {key} query parameter '{value}'. Expected an integer"
+                ))
+            })
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+fn parse_optional_query_bool(
+    params: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> AppResult<Option<bool>> {
+    params
+        .get(key)
+        .map(|value| {
+            value.parse::<bool>().map_err(|_| {
+                super::AppError::bad_request(format!(
+                    "Invalid {key} query parameter '{value}'. Expected true or false"
+                ))
+            })
+        })
+        .transpose()
 }
 
 pub type AddMediaBatchBody = AddMediaBatchRequest;
@@ -46,99 +78,11 @@ pub type CreatePlaylistBody = CreatePlaylistRequest;
 pub type UpdatePlaylistBody = UpdatePlaylistRequest;
 pub type MovePlaylistBody = MovePlaylistRequest;
 
-fn default_resource_availability_filter() -> i32 {
-    crate::proto::client::ResourceAvailabilityFilter::All as i32
-}
-
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ListPlaylistItemsBody {
-    #[serde(default)]
-    pub playlist_id: String,
-
-    #[serde(default)]
-    pub target: Option<serde_json::Value>,
-
-    #[serde(default)]
-    pub page: i32,
-
-    #[serde(default)]
-    pub page_size: i32,
-
-    #[serde(default = "default_resource_availability_filter")]
-    pub availability: i32,
-}
-
-impl From<ListPlaylistItemsBody> for crate::proto::client::ListPlaylistItemsRequest {
-    fn from(value: ListPlaylistItemsBody) -> Self {
-        Self {
-            playlist_id: value.playlist_id,
-            target: value
-                .target
-                .and_then(|target| serde_json::to_vec(&target).ok())
-                .unwrap_or_default(),
-            page: value.page,
-            page_size: value.page_size,
-            search: String::new(),
-            source_provider: String::new(),
-            provider_instance_name: String::new(),
-            sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-            sort_direction: crate::proto::client::SortDirection::Asc as i32,
-            availability: value.availability,
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct MoveMediaBody {
-    #[serde(default)]
-    pub media_ids: Vec<String>,
-
-    #[serde(default)]
-    pub source_playlist_id: Option<String>,
-
-    #[serde(default)]
-    pub target_playlist_id: Option<String>,
-
-    #[serde(default)]
-    pub all_from_scope: bool,
-
-    #[serde(default)]
-    pub before_media_id: Option<String>,
-
-    #[serde(default)]
-    pub after_media_id: Option<String>,
-}
-
-impl TryFrom<MoveMediaBody> for MoveMediaRequest {
-    type Error = super::AppError;
-
-    fn try_from(value: MoveMediaBody) -> Result<Self, Self::Error> {
-        let anchor = match (value.before_media_id, value.after_media_id) {
-            (Some(id), None) => {
-                Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(id))
-            }
-            (None, Some(id)) => {
-                Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(id))
-            }
-            (None, None) => None,
-            _ => {
-                return Err(super::AppError::validation_failed(
-                    "anchor",
-                    "at most one of before_media_id or after_media_id may be set",
-                ))
-            }
-        };
-
-        Ok(MoveMediaRequest {
-            media_ids: value.media_ids,
-            source_playlist_id: value.source_playlist_id,
-            target_playlist_id: value.target_playlist_id,
-            all_from_scope: value.all_from_scope,
-            anchor,
-        })
-    }
+fn validate_room_path(
+    path: crate::proto::client::RoomPathRequest,
+) -> Result<String, super::AppError> {
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    Ok(path.room_id)
 }
 
 fn map_validation_error(err: ValidationError) -> super::AppError {
@@ -227,8 +171,9 @@ pub async fn create_room(
 pub async fn get_room(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetRoomResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .get_room(&auth.user_id.to_string(), &room_id)
@@ -264,13 +209,18 @@ pub async fn get_room(
 pub async fn join_room(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(mut req): Json<JoinRoomBody>,
 ) -> AppResult<Json<JoinRoomResponse>> {
+    let room_id = validate_room_path(path)?;
     req.room_id = room_id.clone();
+    let client_ip =
+        super::auth::extract_client_ip(&state.config, connect_info.0, &headers).to_string();
     let response = state
         .client_api
-        .join_room(&auth.user_id.to_string(), &room_id, req)
+        .join_room(&auth.user_id.to_string(), &room_id, req, Some(&client_ip))
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -300,8 +250,9 @@ pub async fn join_room(
 pub async fn leave_room(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<LeaveRoomResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .leave_room(&auth.user_id.to_string(), &room_id)
@@ -332,12 +283,13 @@ pub async fn leave_room(
         )
     )
 )]
-#[tracing::instrument(name = "http_delete_room", skip(state), fields(user_id = %auth.user_id, room_id = %room_id))]
+#[tracing::instrument(name = "http_delete_room", skip(state), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn delete_room(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<DeleteRoomResponse>> {
+    let room_id = validate_room_path(path)?;
     tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Deleting room");
 
     let response = state
@@ -379,9 +331,10 @@ pub async fn delete_room(
 pub async fn add_media(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .add_media(&auth.user_id.to_string(), &room_id, req)
@@ -416,11 +369,15 @@ pub async fn add_media(
 pub async fn delete_media(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, media_id)): Path<(String, String)>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
+    ValidatedQuery(query): ValidatedQuery<DeleteMediaQuery>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
-    let force = parse_force_query(&params);
-    let proto_req = DeleteMediaRequest { media_id, force };
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let proto_req = DeleteMediaRequest {
+        media_id,
+        force: query.force,
+    };
     let response = state
         .client_api
         .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
@@ -451,13 +408,14 @@ pub async fn delete_media(
         )
     )
 )]
-#[tracing::instrument(name = "http_delete_entries", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+#[tracing::instrument(name = "http_delete_entries", skip(state, req), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn delete_entries(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<DeleteEntriesBody>,
 ) -> AppResult<Json<DeleteEntriesResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .delete_entries(&auth.user_id.to_string(), &room_id, req)
@@ -480,7 +438,7 @@ pub async fn delete_entries(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = MoveMediaBody,
+        request_body = MoveMediaRequest,
         responses(
             (status = 200, description = "Media moved", body = MoveMediaResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -491,14 +449,14 @@ pub async fn delete_entries(
         )
     )
 )]
-#[tracing::instrument(name = "http_move_media", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+#[tracing::instrument(name = "http_move_media", skip(state, req), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn move_media(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<MoveMediaBody>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(req): Json<MoveMediaRequest>,
 ) -> AppResult<Json<MoveMediaResponse>> {
-    let req = MoveMediaRequest::try_from(req)?;
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .move_media(&auth.user_id.to_string(), &room_id, req)
@@ -521,7 +479,7 @@ pub async fn move_media(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = ListPlaylistItemsBody,
+        request_body = ListPlaylistItemsRequest,
         responses(
             (status = 200, description = "Playlist items", body = crate::proto::client::ListPlaylistItemsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -535,14 +493,10 @@ pub async fn move_media(
 pub async fn list_playlist_items(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<ListPlaylistItemsBody>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(req): Json<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
-    let mut req = crate::proto::client::ListPlaylistItemsRequest::from(req);
-    req.page = super::validation::validate_page((req.page != 0).then_some(req.page));
-    req.page_size =
-        super::validation::validate_page_size((req.page_size != 0).then_some(req.page_size));
-
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .list_playlist_items(&auth.user_id.to_string(), &room_id, req)
@@ -579,9 +533,10 @@ pub async fn list_playlist_items(
 pub async fn start_playback(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .start_playback(&auth.user_id.to_string(), &room_id, req)
@@ -615,9 +570,10 @@ pub async fn start_playback(
 pub async fn stop_playback(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .stop_playback(&auth.user_id.to_string(), &room_id, req)
@@ -650,8 +606,9 @@ pub async fn stop_playback(
 pub async fn get_playback(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .get_playback(&auth.user_id.to_string(), &room_id, GetPlaybackRequest {})
@@ -663,19 +620,6 @@ pub async fn get_playback(
 
 // ==================== Room Members Endpoints ====================
 
-/// Pagination query for room members.
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct MembersQueryParams {
-    page: Option<i32>,
-    page_size: Option<i32>,
-    search: Option<String>,
-    role: Option<String>,
-    status: Option<String>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-}
-
 /// Get room members (E8: with pagination)
 #[cfg_attr(
     feature = "openapi",
@@ -685,7 +629,7 @@ pub struct MembersQueryParams {
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            MembersQueryParams
+            GetRoomMembersRequest
         ),
         responses(
             (status = 200, description = "Room members", body = GetRoomMembersResponse),
@@ -700,45 +644,13 @@ pub struct MembersQueryParams {
 pub async fn get_room_members(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Query(q): Query<MembersQueryParams>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<GetRoomMembersRequest>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
-    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
-        .get_room_members(
-            &auth.user_id.to_string(),
-            &room_id,
-            crate::proto::client::GetRoomMembersRequest {
-                page,
-                page_size,
-                search: q.search.unwrap_or_default(),
-                role: match q.role.as_deref() {
-                    Some("guest") => Some(synctv_proto::common::RoomMemberRole::Guest as i32),
-                    Some("member") => Some(synctv_proto::common::RoomMemberRole::Member as i32),
-                    Some("admin") => Some(synctv_proto::common::RoomMemberRole::Admin as i32),
-                    Some("creator") => Some(synctv_proto::common::RoomMemberRole::Creator as i32),
-                    _ => None,
-                },
-                status: match q.status.as_deref() {
-                    Some("active") => Some(synctv_proto::common::MemberStatus::Active as i32),
-                    Some("pending") => Some(synctv_proto::common::MemberStatus::Pending as i32),
-                    Some("banned") => Some(synctv_proto::common::MemberStatus::Banned as i32),
-                    Some("left") => Some(synctv_proto::common::MemberStatus::Left as i32),
-                    _ => None,
-                },
-                sort_by: match q.sort_by.as_deref() {
-                    Some("username") => crate::proto::client::RoomMemberListSortBy::Username as i32,
-                    Some("role") => crate::proto::client::RoomMemberListSortBy::Role as i32,
-                    Some("status") => crate::proto::client::RoomMemberListSortBy::Status as i32,
-                    _ => crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                },
-                sort_direction: match q.sort_direction.as_deref() {
-                    Some("desc") => crate::proto::client::SortDirection::Desc as i32,
-                    _ => crate::proto::client::SortDirection::Asc as i32,
-                },
-            },
-        )
+        .get_room_members(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -765,66 +677,11 @@ pub async fn get_room_members(
 )]
 pub async fn check_room(
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(req): Path<crate::proto::client::CheckRoomRequest>,
 ) -> AppResult<Json<CheckRoomResponse>> {
-    let req = crate::proto::client::CheckRoomRequest { room_id };
     let response = state
         .client_api
         .check_room(req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// Maximum allowed search query length to prevent abuse.
-const LIST_ROOMS_MAX_SEARCH_LENGTH: usize = 100;
-
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListRoomsQueryParams {
-    pub search: Option<String>,
-    pub limit: Option<i32>,
-    pub offset: Option<i32>,
-}
-
-/// List rooms (requires authentication to prevent anonymous enumeration)
-pub async fn list_rooms(
-    _auth: AuthUser,
-    State(state): State<AppState>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> AppResult<Json<ListRoomsResponse>> {
-    // Parse and validate page and page_size parameters using centralized validation
-    let page_opt = params.get("page").and_then(|v| v.parse().ok());
-    let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
-    let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
-
-    // Validate search parameter length
-    let search = params.get("search").cloned().unwrap_or_default();
-    if search.len() > LIST_ROOMS_MAX_SEARCH_LENGTH {
-        return Err(super::error::AppError::bad_request(format!(
-            "search query must not exceed {LIST_ROOMS_MAX_SEARCH_LENGTH} characters"
-        )));
-    }
-
-    let proto_req = ListRoomsRequest {
-        page,
-        page_size,
-        search,
-        sort_by: match params.get("sort_by").map(String::as_str) {
-            Some("name") => crate::proto::client::RoomListSortBy::Name as i32,
-            Some("updated_at") => crate::proto::client::RoomListSortBy::UpdatedAt as i32,
-            Some("last_activity_at") => crate::proto::client::RoomListSortBy::LastActivityAt as i32,
-            _ => crate::proto::client::RoomListSortBy::CreatedAt as i32,
-        },
-        sort_direction: match params.get("sort_direction").map(String::as_str) {
-            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
-            _ => crate::proto::client::SortDirection::Desc as i32,
-        },
-    };
-    let response = state
-        .client_api
-        .list_rooms(proto_req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -857,54 +714,13 @@ pub async fn list_rooms(
 pub async fn set_room_password(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .set_room_password(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// Check room password (requires authentication to prevent brute force)
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/rooms/{room_id}/password/verify",
-        tag = "Room",
-        params(
-            ("room_id" = String, Path, description = "Room ID")
-        ),
-        request_body = CheckRoomPasswordRequest,
-        responses(
-            (status = 200, description = "Password verification result", body = CheckRoomPasswordResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn check_password(
-    _auth: AuthUser,
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
-    Path(room_id): Path<String>,
-    Json(mut req): Json<CheckRoomPasswordBody>,
-) -> AppResult<Json<CheckRoomPasswordResponse>> {
-    let client_ip =
-        super::auth::extract_client_ip(&state.config, connect_info.0, &headers).to_string();
-    req.room_id = room_id.clone();
-
-    let response = state
-        .client_api
-        .check_room_password(&room_id, req, &client_ip)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -934,8 +750,9 @@ pub async fn check_password(
 pub async fn get_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetRoomSettingsResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .get_room_settings(&auth.user_id.to_string(), &room_id)
@@ -969,9 +786,10 @@ pub async fn get_room_settings(
 pub async fn push_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .add_media_batch(&auth.user_id.to_string(), &room_id, req)
@@ -1006,10 +824,12 @@ pub async fn push_media_batch(
 pub async fn edit_media(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, media_id)): Path<(String, String)>,
-    Json(mut req): Json<EditMediaBody>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
+    Json(req): Json<EditMediaBody>,
 ) -> AppResult<Json<EditMediaResponse>> {
-    req.media_id = media_id;
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let req = req.with_media_id(media_id);
     let response = state
         .client_api
         .edit_media(&auth.user_id.to_string(), &room_id, req)
@@ -1041,8 +861,9 @@ pub async fn edit_media(
 pub async fn clear_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ClearPlaylistResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .clear_playlist(&auth.user_id.to_string(), &room_id)
@@ -1076,8 +897,10 @@ pub async fn clear_playlist(
 pub async fn get_media(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, media_id)): Path<(String, String)>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::Media>> {
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let media = state
         .client_api
         .get_media(auth.user_id.as_str(), &room_id, &media_id)
@@ -1111,8 +934,13 @@ pub async fn get_media(
 pub async fn get_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, playlist_id)): Path<(String, String)>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetPlaylistResponse>> {
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
     let response = state
         .client_api
         .get_playlist(auth.user_id.as_str(), &room_id, &playlist_id)
@@ -1132,7 +960,7 @@ pub async fn get_playlist(
         get,
         path = "/api/rooms",
         tag = "Room",
-        params(ListRoomsQueryParams),
+        params(ListRoomsRequest),
         responses(
             (status = 200, description = "Rooms list", body = ListRoomsResponse),
             (status = 400, description = "Invalid query", body = crate::openapi::ErrorResponseDoc),
@@ -1144,51 +972,12 @@ pub async fn get_playlist(
     )
 )]
 pub async fn list_or_get_rooms(
-    _auth: AuthUser,
     State(state): State<AppState>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    ValidatedQuery(req): ValidatedQuery<ListRoomsRequest>,
 ) -> AppResult<Json<ListRoomsResponse>> {
-    // List rooms with optional filtering
-    let search = params.get("search").cloned().unwrap_or_default();
-    let limit: i32 = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(50)
-        .clamp(1, 100);
-    let offset: i32 = params
-        .get("offset")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
-        .max(0);
-
-    // R-8: Validate that offset is aligned to limit to prevent incorrect page
-    // calculations. Non-aligned offsets would silently round down and return
-    // the wrong page of results.
-    if offset % limit != 0 {
-        return Err(super::AppError::bad_request(format!(
-            "offset ({offset}) must be a multiple of limit ({limit})"
-        )));
-    }
-
-    let request = ListRoomsRequest {
-        page: (offset / limit) + 1,
-        page_size: limit,
-        search,
-        sort_by: match params.get("sort_by").map(String::as_str) {
-            Some("name") => crate::proto::client::RoomListSortBy::Name as i32,
-            Some("updated_at") => crate::proto::client::RoomListSortBy::UpdatedAt as i32,
-            Some("last_activity_at") => crate::proto::client::RoomListSortBy::LastActivityAt as i32,
-            _ => crate::proto::client::RoomListSortBy::CreatedAt as i32,
-        },
-        sort_direction: match params.get("sort_direction").map(String::as_str) {
-            Some("asc") => crate::proto::client::SortDirection::Asc as i32,
-            _ => crate::proto::client::SortDirection::Desc as i32,
-        },
-    };
-
     let response = state
         .client_api
-        .list_rooms(request)
+        .list_rooms(req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -1223,9 +1012,10 @@ pub async fn list_or_get_rooms(
 pub async fn update_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .update_room_settings(&auth.user_id.to_string(), &room_id, req)
@@ -1235,49 +1025,41 @@ pub async fn update_room_settings(
     Ok(Json(response))
 }
 
-/// HTTP-specific: Update playback request for PATCH endpoint
-/// Dispatches to individual proto operations (play/pause/seek/speed/switch)
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct UpdatePlaybackRequest {
-    /// "playing" or "paused"
-    #[serde(default)]
-    pub state: Option<String>,
-    /// Seek position in seconds
-    #[serde(default)]
-    pub position: Option<f64>,
-    /// Playback speed multiplier
-    #[serde(default)]
-    pub speed: Option<f64>,
-    /// Switch to media ID
-    #[serde(default)]
-    pub media_id: Option<String>,
-    /// Switch to dynamic playlist item
-    #[serde(default)]
-    pub playlist_id: Option<String>,
-    /// Provider-facing playback target payload
-    #[serde(default)]
-    pub target: Option<serde_json::Value>,
-    /// Expected version for optimistic locking (CAS).
-    /// If provided, the update will only succeed if the current playback state
-    /// version matches this value, preventing last-writer-wins conflicts.
-    #[serde(default)]
-    pub version: Option<i64>,
-}
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/owner",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID")
+        ),
+        request_body = TransferRoomOwnershipRequest,
+        responses(
+            (status = 200, description = "Room ownership transferred", body = TransferRoomOwnershipResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn transfer_room_ownership(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Json(req): Json<TransferRoomOwnershipBody>,
+) -> AppResult<Json<TransferRoomOwnershipResponse>> {
+    let room_id = validate_room_path(path)?;
+    let response = state
+        .client_api
+        .transfer_room_ownership(&auth.user_id.to_string(), &room_id, req)
+        .await
+        .map_err(super::error::map_api_error)?;
 
-fn is_switch_request(req: &UpdatePlaybackRequest) -> bool {
-    req.media_id.is_some() || req.playlist_id.is_some() || req.target.is_some()
-}
-
-fn normalize_switch_id(value: Option<&str>) -> Option<String> {
-    value.and_then(|raw| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
+    Ok(Json(response))
 }
 
 /// Unified handler for updating playback state via PATCH
@@ -1311,88 +1093,48 @@ fn normalize_switch_id(value: Option<&str>) -> Option<String> {
 pub async fn update_playback(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdatePlaybackRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
-    use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+    use synctv_core::models::{RoomId, UserId};
 
     let user_id = auth.user_id.to_string();
-
-    // Validate that at least one field is provided
-    let target_requested = is_switch_request(&req);
-
-    if req.state.is_none() && req.position.is_none() && req.speed.is_none() && !target_requested {
-        return Err(super::AppError::bad_request(
-            "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
-        ));
-    }
-
-    // Translate "playing"/"paused" to bool
-    let playing = match req.state.as_deref() {
-        Some("playing") => Some(true),
-        Some("paused") => Some(false),
-        Some(_) => {
-            return Err(super::AppError::bad_request(
-                "Invalid state value, use 'playing' or 'paused'",
-            ))
-        }
-        None => None,
-    };
-
-    if let Some(position) = req.position {
-        validate_playback_position(position).map_err(map_validation_error)?;
-    }
-    if let Some(speed) = req.speed {
-        validate_playback_speed(speed).map_err(map_validation_error)?;
-    }
-    if let Some(media_id) = normalize_switch_id(req.media_id.as_deref()) {
-        validate_id(&media_id, "media_id").map_err(map_validation_error)?;
-    }
-    if let Some(playlist_id) = normalize_switch_id(req.playlist_id.as_deref()) {
-        validate_id(&playlist_id, "playlist_id").map_err(map_validation_error)?;
-    }
+    let room_id = validate_room_path(path)?;
+    let command = build_update_playback_request(req).map_err(super::error::map_api_error)?;
 
     let rid = RoomId::from_string(room_id.clone());
     let uid = UserId::from_string(user_id.clone());
 
-    if target_requested {
-        if req.state.is_some()
-            || req.position.is_some()
-            || req.speed.is_some()
-            || req.version.is_some()
-        {
-            return Err(super::AppError::bad_request(
-                "Target switch requests cannot be combined with play/pause/seek/speed/version updates",
-            ));
+    match command {
+        PlaybackUpdateCommand::Switch {
+            media_id,
+            playlist_id,
+            target,
+        } => {
+            state
+                .room_service
+                .playback_service()
+                .switch(rid, uid, media_id, playlist_id, target)
+                .await?;
         }
-
-        let media_id = normalize_switch_id(req.media_id.as_deref()).map(MediaId::from_string);
-        let playlist_id =
-            normalize_switch_id(req.playlist_id.as_deref()).map(PlaylistId::from_string);
-        let target = req
-            .target
-            .map(|value| {
-                serde_json::to_vec(&value).map_err(|e| {
-                    super::AppError::bad_request(format!("Invalid target payload: {e}"))
-                })
-            })
-            .transpose()?
-            .unwrap_or_default();
-
-        state
-            .room_service
-            .playback_service()
-            .switch(rid, uid, media_id, playlist_id, target)
-            .await?;
-    } else {
-        // Apply all non-target fields atomically in a single DB update.
-        // When a version is provided, the update uses optimistic locking (CAS)
-        // to prevent concurrent modification conflicts.
-        state
-            .room_service
-            .playback_service()
-            .update_multiple_with_version(rid, uid, playing, req.position, req.speed, req.version)
-            .await?;
+        PlaybackUpdateCommand::Patch {
+            playing,
+            position,
+            speed,
+            version,
+        } => {
+            // Apply all non-target fields atomically in a single DB update.
+            // When a version is provided, the update uses optimistic locking (CAS)
+            // to prevent concurrent modification conflicts.
+            if let Some(position) = position {
+                validate_playback_position(position).map_err(map_validation_error)?;
+            }
+            state
+                .room_service
+                .playback_service()
+                .update_multiple_with_version(rid, uid, playing, position, speed, version)
+                .await?;
+        }
     }
 
     // Return final playback state and playback info
@@ -1402,64 +1144,6 @@ pub async fn update_playback(
         .await
         .map_err(super::error::map_api_error)?;
     Ok(Json(pb))
-}
-
-/// HTTP-specific: media move request for PATCH endpoint
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct UpdateMediaBatchRequest {
-    #[serde(default)]
-    pub move_media: Option<MoveMediaBody>,
-}
-
-/// HTTP-specific: batch operation response
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct BatchOperationResponse {
-    pub success: bool,
-}
-
-/// Unified handler for media move via PATCH
-/// PATCH /`api/rooms/:room_id/media`
-/// Supports: move operation
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        patch,
-        path = "/api/rooms/{room_id}/media",
-        tag = "Room",
-        params(
-            ("room_id" = String, Path, description = "Room ID")
-        ),
-        request_body = UpdateMediaBatchRequest,
-        responses(
-            (status = 200, description = "Batch media operation applied", body = BatchOperationResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn update_media_batch(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<UpdateMediaBatchRequest>,
-) -> AppResult<Json<BatchOperationResponse>> {
-    let Some(move_req) = req.move_media else {
-        return Err(super::AppError::bad_request("No media move operation provided"));
-    };
-    let move_req = MoveMediaRequest::try_from(move_req)?;
-
-    state
-        .client_api
-        .move_media(&auth.user_id.to_string(), &room_id, move_req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(BatchOperationResponse { success: true }))
 }
 
 // ==================== Room Settings Reset ====================
@@ -1487,8 +1171,9 @@ pub async fn update_media_batch(
 pub async fn reset_room_settings(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ResetRoomSettingsResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .reset_room_settings(&auth.user_id.to_string(), &room_id)
@@ -1500,13 +1185,6 @@ pub async fn reset_room_settings(
 
 // ==================== Chat History ====================
 
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ChatHistoryQueryParams {
-    pub limit: Option<i32>,
-    pub cursor: Option<String>,
-}
-
 /// Get chat history for a room
 /// GET /`api/rooms/:room_id/chat/history`
 #[cfg_attr(
@@ -1517,7 +1195,7 @@ pub struct ChatHistoryQueryParams {
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            ChatHistoryQueryParams
+            GetChatHistoryRequest
         ),
         responses(
             (status = 200, description = "Chat history", body = GetChatHistoryResponse),
@@ -1532,10 +1210,17 @@ pub struct ChatHistoryQueryParams {
 pub async fn get_chat_history(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    RawQuery(raw_query): RawQuery,
+    ValidatedQuery(mut req): ValidatedQuery<GetChatHistoryRequest>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
-    let req = parse_chat_history_request_params(&params)?;
+    let room_id = validate_room_path(path)?;
+    validate_chat_history_query(raw_query.as_deref())?;
+    req.limit = if req.limit == 0 {
+        50
+    } else {
+        req.limit.clamp(1, 100)
+    };
     let response = state
         .client_api
         .get_chat_history(&auth.user_id.to_string(), &room_id, req)
@@ -1545,25 +1230,18 @@ pub async fn get_chat_history(
     Ok(Json(response))
 }
 
-fn parse_chat_history_request_params(
-    params: &std::collections::HashMap<String, String>,
-) -> AppResult<crate::proto::client::GetChatHistoryRequest> {
-    if params.contains_key("before") {
+fn validate_chat_history_query(raw_query: Option<&str>) -> AppResult<()> {
+    let Some(raw_query) = raw_query else {
+        return Ok(());
+    };
+
+    if url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "before") {
         return Err(super::AppError::bad_request(
             "The 'before' query parameter is no longer supported; use 'cursor' instead",
         ));
     }
 
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50i32)
-        .clamp(1, 100);
-
-    Ok(crate::proto::client::GetChatHistoryRequest {
-        limit,
-        cursor: params.get("cursor").cloned().unwrap_or_default(),
-    })
+    Ok(())
 }
 
 // ==================== Playlist CRUD ====================
@@ -1593,9 +1271,10 @@ fn parse_chat_history_request_params(
 pub async fn create_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .create_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -1631,10 +1310,15 @@ pub async fn create_playlist(
 pub async fn update_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, playlist_id)): Path<(String, String)>,
-    Json(mut req): Json<UpdatePlaylistBody>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+    Json(req): Json<UpdatePlaylistBody>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
-    req.playlist_id = playlist_id;
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    let req = req.with_playlist_id(playlist_id);
     let response = state
         .client_api
         .update_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -1668,10 +1352,15 @@ pub async fn update_playlist(
 pub async fn move_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, playlist_id)): Path<(String, String)>,
-    Json(mut req): Json<MovePlaylistBody>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+    Json(req): Json<MovePlaylistBody>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
-    req.playlist_id = playlist_id;
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    let req = req.with_playlist_id(playlist_id);
     let response = state
         .client_api
         .move_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -1707,11 +1396,18 @@ pub async fn move_playlist(
 pub async fn delete_playlist(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((room_id, playlist_id)): Path<(String, String)>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
+    ValidatedQuery(query): ValidatedQuery<DeletePlaylistQuery>,
 ) -> AppResult<Json<DeletePlaylistResponse>> {
-    let force = parse_force_query(&params);
-    let req = DeletePlaylistRequest { playlist_id, force };
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
+    let crate::proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    let req = DeletePlaylistRequest {
+        playlist_id,
+        force: query.force,
+    };
     let response = state
         .client_api
         .delete_playlist(&auth.user_id.to_string(), &room_id, req)
@@ -1723,14 +1419,6 @@ pub async fn delete_playlist(
 
 /// List playlists in a room
 /// GET /`api/rooms/:room_id/playlists`
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct ListPlaylistsQueryParams {
-    pub parent_id: Option<String>,
-    pub page: Option<i32>,
-    pub page_size: Option<i32>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -1739,7 +1427,7 @@ pub struct ListPlaylistsQueryParams {
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            ListPlaylistsQueryParams
+            ListPlaylistsRequest
         ),
         responses(
             (status = 200, description = "Playlists in room", body = ListPlaylistsResponse),
@@ -1753,38 +1441,10 @@ pub struct ListPlaylistsQueryParams {
 pub async fn list_playlists(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<ListPlaylistsRequest>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
-    let parent_id = params.get("parent_id").cloned().unwrap_or_default();
-    let page_opt = params.get("page").and_then(|v| v.parse().ok());
-    let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
-    let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
-    let req = crate::proto::client::ListPlaylistsRequest {
-        parent_id,
-        page,
-        page_size,
-        search: params.get("search").cloned().unwrap_or_default(),
-        source_provider: params.get("source_provider").cloned().unwrap_or_default(),
-        provider_instance_name: params
-            .get("provider_instance_name")
-            .cloned()
-            .unwrap_or_default(),
-        dynamic_only: params
-            .get("dynamic_only")
-            .and_then(|value| value.parse::<bool>().ok()),
-        sort_by: match params.get("sort_by").map(String::as_str) {
-            Some("name") => crate::proto::client::PlaylistListSortBy::Name as i32,
-            Some("created_at") => crate::proto::client::PlaylistListSortBy::CreatedAt as i32,
-            Some("updated_at") => crate::proto::client::PlaylistListSortBy::UpdatedAt as i32,
-            _ => crate::proto::client::PlaylistListSortBy::Position as i32,
-        },
-        sort_direction: match params.get("sort_direction").map(String::as_str) {
-            Some("desc") => crate::proto::client::SortDirection::Desc as i32,
-            _ => crate::proto::client::SortDirection::Asc as i32,
-        },
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
-    };
+    let room_id = validate_room_path(path)?;
     let response = state
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)
@@ -1796,12 +1456,6 @@ pub async fn list_playlists(
 
 // ==================== Public: Hot Rooms ====================
 
-#[derive(serde::Deserialize, Default)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct HotRoomsQueryParams {
-    pub limit: Option<i32>,
-}
-
 /// Get hot rooms (sorted by online count)
 /// GET /api/rooms/hot
 #[cfg_attr(
@@ -1810,7 +1464,7 @@ pub struct HotRoomsQueryParams {
         get,
         path = "/api/rooms/hot",
         tag = "Room",
-        params(HotRoomsQueryParams),
+        params(GetHotRoomsRequest),
         responses(
             (status = 200, description = "Hot rooms", body = GetHotRoomsResponse)
         )
@@ -1818,14 +1472,13 @@ pub struct HotRoomsQueryParams {
 )]
 pub async fn get_hot_rooms(
     State(state): State<AppState>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    ValidatedQuery(mut req): ValidatedQuery<GetHotRoomsRequest>,
 ) -> AppResult<Json<GetHotRoomsResponse>> {
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10i32)
-        .min(50);
-    let req = crate::proto::client::GetHotRoomsRequest { limit };
+    req.limit = if req.limit == 0 {
+        10
+    } else {
+        req.limit.min(50)
+    };
     let response = state
         .client_api
         .get_hot_rooms(req)
@@ -1840,76 +1493,224 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        is_switch_request, normalize_switch_id, parse_chat_history_request_params,
-        parse_force_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
-        ListPlaylistItemsBody, MembersQueryParams, UpdateMediaBatchRequest, UpdatePlaybackRequest,
+        parse_optional_query_bool, parse_optional_query_i32, validate_chat_history_query,
+        AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody, UpdatePlaybackRequest,
+    };
+    use crate::proto::client::{
+        DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetRoomMembersRequest,
+        ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest,
     };
 
     #[test]
     fn test_update_playback_request_deserialize_state_only() {
-        let json = r#"{"state": "playing"}"#;
+        let json = r#"{"state":1}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state.as_deref(), Some("playing"));
+        assert_eq!(
+            req.state,
+            crate::proto::client::PlaybackPatchState::Playing as i32
+        );
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_none());
+        assert!(req.media_id.is_empty());
     }
 
     #[test]
     fn test_update_playback_request_deserialize_position_only() {
         let json = r#"{"position": 42.5}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.state.is_none());
+        assert_eq!(
+            req.state,
+            crate::proto::client::PlaybackPatchState::Unspecified as i32
+        );
         assert!((req.position.unwrap() - 42.5).abs() < f64::EPSILON);
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_none());
+        assert!(req.media_id.is_empty());
     }
 
     #[test]
     fn test_update_playback_request_deserialize_speed_only() {
         let json = r#"{"speed": 2.0}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.state.is_none());
+        assert_eq!(
+            req.state,
+            crate::proto::client::PlaybackPatchState::Unspecified as i32
+        );
         assert!(req.position.is_none());
         assert!((req.speed.unwrap() - 2.0).abs() < f64::EPSILON);
-        assert!(req.media_id.is_none());
+        assert!(req.media_id.is_empty());
     }
 
     #[test]
     fn test_update_playback_request_deserialize_media_id_only() {
         let json = r#"{"media_id": "media_abc123"}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.state.is_none());
+        assert_eq!(
+            req.state,
+            crate::proto::client::PlaybackPatchState::Unspecified as i32
+        );
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
-        assert_eq!(req.media_id.as_deref(), Some("media_abc123"));
-        assert!(req.playlist_id.is_none());
-        assert!(req.target.is_none());
+        assert_eq!(req.media_id, "media_abc123");
+        assert!(req.playlist_id.is_empty());
+        assert!(req.target.is_empty());
     }
 
     #[test]
     fn test_members_query_params_deserialize_sorting_and_filters() {
-        let json = r#"{"page":2,"page_size":25,"search":"alice","role":"admin","sort_by":"username","sort_direction":"asc"}"#;
-        let query: MembersQueryParams = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.page, Some(2));
-        assert_eq!(query.page_size, Some(25));
-        assert_eq!(query.search.as_deref(), Some("alice"));
-        assert_eq!(query.role.as_deref(), Some("admin"));
-        assert_eq!(query.sort_by.as_deref(), Some("username"));
-        assert_eq!(query.sort_direction.as_deref(), Some("asc"));
+        let json =
+            r#"{"page":2,"page_size":25,"search":"alice","role":3,"sort_by":2,"sort_direction":1}"#;
+        let query: GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(query.search, "alice");
+        assert_eq!(
+            query.role,
+            Some(synctv_proto::common::RoomMemberRole::Admin as i32)
+        );
+        assert_eq!(
+            query.sort_by,
+            crate::proto::client::RoomMemberListSortBy::Username as i32
+        );
+        assert_eq!(
+            query.sort_direction,
+            crate::proto::client::SortDirection::Asc as i32
+        );
+    }
+
+    #[test]
+    fn test_scalar_query_parsers_reject_invalid_values() {
+        let mut params = HashMap::new();
+        params.insert("page".to_string(), "abc".to_string());
+        assert!(parse_optional_query_i32(&params, "page").is_err());
+
+        let mut params = HashMap::new();
+        params.insert("dynamic_only".to_string(), "sometimes".to_string());
+        assert!(parse_optional_query_bool(&params, "dynamic_only").is_err());
+
+        assert!(serde_urlencoded::from_str::<DeleteMediaQuery>("force=definitely").is_err());
+        assert!(serde_urlencoded::from_str::<DeletePlaylistQuery>("force=definitely").is_err());
+    }
+
+    #[test]
+    fn test_list_rooms_query_deserializes_proto_defaults() {
+        let query: ListRoomsRequest = serde_urlencoded::from_str("").unwrap();
+
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
+        assert!(query.search.is_empty());
+        assert_eq!(query.sort_by, 0);
+        assert_eq!(query.sort_direction, 0);
+    }
+
+    #[test]
+    fn test_list_rooms_query_deserializes_explicit_values() {
+        let query: ListRoomsRequest = serde_urlencoded::from_str(
+            "page=2&page_size=25&search=room&sort_by=4&sort_direction=1",
+        )
+        .unwrap();
+
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(query.search, "room");
+        assert_eq!(
+            query.sort_by,
+            crate::proto::client::RoomListSortBy::Name as i32
+        );
+        assert_eq!(
+            query.sort_direction,
+            crate::proto::client::SortDirection::Asc as i32
+        );
+    }
+
+    #[test]
+    fn test_check_room_path_deserializes_proto_field_name() {
+        let req: crate::proto::client::CheckRoomRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).unwrap();
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+    }
+
+    #[test]
+    fn test_room_path_request_deserializes_proto_field_name() {
+        let req: crate::proto::client::RoomPathRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).unwrap();
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+    }
+
+    #[test]
+    fn test_room_media_target_path_request_deserializes_proto_field_names() {
+        let req: crate::proto::client::RoomMediaTargetPathRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890","media_id":"ZyX098wVu765"}"#)
+                .unwrap();
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.media_id, "ZyX098wVu765");
+    }
+
+    #[test]
+    fn test_room_playlist_target_path_request_deserializes_proto_field_names() {
+        let req: crate::proto::client::RoomPlaylistTargetPathRequest =
+            serde_json::from_str(r#"{"room_id":"AbC123xYz890","playlist_id":"ZyX098wVu765"}"#)
+                .unwrap();
+
+        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.playlist_id, "ZyX098wVu765");
+    }
+
+    #[test]
+    fn test_list_playlists_query_deserializes_proto_defaults() {
+        let query: ListPlaylistsRequest = serde_urlencoded::from_str("").unwrap();
+
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
+        assert_eq!(query.sort_by, 0);
+        assert_eq!(query.sort_direction, 0);
+        assert_eq!(query.availability, 0);
+    }
+
+    #[test]
+    fn test_list_playlists_query_deserializes_explicit_values() {
+        let query: ListPlaylistsRequest = serde_urlencoded::from_str(
+            "page=2&page_size=25&sort_by=4&sort_direction=2&availability=2",
+        )
+        .unwrap();
+
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(
+            query.sort_by,
+            crate::proto::client::PlaylistListSortBy::UpdatedAt as i32
+        );
+        assert_eq!(
+            query.sort_direction,
+            crate::proto::client::SortDirection::Desc as i32
+        );
+        assert_eq!(
+            query.availability,
+            crate::proto::client::ResourceAvailabilityFilter::Unavailable as i32
+        );
+    }
+
+    #[test]
+    fn test_chat_history_parser_rejects_invalid_limit() {
+        let mut params = HashMap::new();
+        params.insert("limit".to_string(), "many".to_string());
+        assert!(serde_urlencoded::from_str::<GetChatHistoryRequest>("limit=many").is_err());
     }
 
     #[test]
     fn test_update_playback_request_deserialize_dynamic_target() {
         let json = r#"{"playlist_id": "pl1", "target": {"item_id": "provider-item-123"}}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
+        assert_eq!(req.playlist_id, "pl1");
+        let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
+        assert_eq!(target, serde_json::json!({"item_id": "provider-item-123"}));
+        assert!(req.media_id.is_empty());
         assert_eq!(
-            req.target,
-            Some(serde_json::json!({"item_id": "provider-item-123"}))
+            req.state,
+            crate::proto::client::PlaybackPatchState::Unspecified as i32
         );
-        assert!(req.media_id.is_none());
-        assert!(req.state.is_none());
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
     }
@@ -1918,52 +1719,52 @@ mod tests {
     fn test_update_playback_empty_switch_ids_are_treated_as_clear_request() {
         let json = r#"{"media_id":"","playlist_id":""}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(is_switch_request(&req));
-        assert_eq!(normalize_switch_id(req.media_id.as_deref()), None);
-        assert_eq!(normalize_switch_id(req.playlist_id.as_deref()), None);
+        assert!(req.media_id.is_empty());
+        assert!(req.playlist_id.is_empty());
+        assert!(req.target.is_empty());
     }
 
     #[test]
     fn test_update_playback_omitted_switch_fields_are_not_switch_request() {
-        let json = r#"{"state":"paused"}"#;
+        let json = r#"{"state":2}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(!is_switch_request(&req));
+        assert!(req.media_id.is_empty());
+        assert!(req.playlist_id.is_empty());
+        assert!(req.target.is_empty());
     }
 
     #[test]
     fn test_list_playlist_items_body_deserialize_room_root() {
         let json = r#"{}"#;
-        let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
+        let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
         assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_none());
+        assert!(req.target.is_empty());
         assert_eq!(req.page, 0);
         assert_eq!(req.page_size, 0);
-        assert_eq!(
-            req.availability,
-            crate::proto::client::ResourceAvailabilityFilter::All as i32
-        );
+        assert_eq!(req.availability, 0);
     }
 
     #[test]
     fn test_list_playlist_items_body_deserialize_dynamic_target() {
         let json =
             r#"{"playlist_id":"pl1","target":{"cursor":"season-1"},"page":2,"page_size":25}"#;
-        let req: ListPlaylistItemsBody = serde_json::from_str(json).unwrap();
+        let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.playlist_id, "pl1");
-        assert_eq!(req.target, Some(serde_json::json!({"cursor":"season-1"})));
+        let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
+        assert_eq!(target, serde_json::json!({"cursor":"season-1"}));
         assert_eq!(req.page, 2);
         assert_eq!(req.page_size, 25);
-        assert_eq!(
-            req.availability,
-            crate::proto::client::ResourceAvailabilityFilter::All as i32
-        );
+        assert_eq!(req.availability, 0);
     }
 
     #[test]
     fn test_update_playback_request_deserialize_with_version() {
-        let json = r#"{"state": "playing", "version": 42}"#;
+        let json = r#"{"state": 1, "version": 42}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state.as_deref(), Some("playing"));
+        assert_eq!(
+            req.state,
+            crate::proto::client::PlaybackPatchState::Playing as i32
+        );
         assert_eq!(req.version, Some(42));
     }
 
@@ -1985,28 +1786,21 @@ mod tests {
     }
 
     #[test]
-    fn test_update_media_batch_request_deserializes_move_without_room_id() {
+    fn test_move_media_request_deserializes_anchor_fields_without_wrapper() {
         let json = r#"{
-            "move_media": {
-                "media_ids": ["media-1"],
-                "before_media_id": "media-2"
-            }
+            "media_ids": ["media-1"],
+            "before_media_id": "media-2"
         }"#;
-        let req: UpdateMediaBatchRequest = serde_json::from_str(json).unwrap();
-        let move_media = req.move_media.expect("move operation should deserialize");
-        assert_eq!(move_media.media_ids, vec!["media-1".to_string()]);
-        assert_eq!(move_media.before_media_id.as_deref(), Some("media-2"));
-        assert!(move_media.after_media_id.is_none());
+        let req: MoveMediaRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.media_ids, vec!["media-1".to_string()]);
+        assert_eq!(req.before_media_id.as_deref(), Some("media-2"));
+        assert!(req.after_media_id.is_none());
     }
 
     #[test]
     fn test_parse_chat_history_request_rejects_before_param() {
-        let params = HashMap::from([
-            ("limit".to_string(), "20".to_string()),
-            ("before".to_string(), "1710000000".to_string()),
-        ]);
-
-        let err = parse_chat_history_request_params(&params).expect_err("before must be rejected");
+        let err = validate_chat_history_query(Some("limit=20&before=1710000000"))
+            .expect_err("before must be rejected");
 
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
         assert!(
@@ -2018,30 +1812,28 @@ mod tests {
 
     #[test]
     fn test_parse_chat_history_request_accepts_cursor_only() {
-        let params = HashMap::from([
-            ("limit".to_string(), "20".to_string()),
-            (
-                "cursor".to_string(),
-                "2026-03-31T12:00:00+00:00|msg_123".to_string(),
-            ),
-        ]);
-
-        let req = parse_chat_history_request_params(&params).expect("cursor-only request");
+        validate_chat_history_query(Some(
+            "limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123",
+        ))
+        .expect("cursor-only request");
+        let req: GetChatHistoryRequest = serde_urlencoded::from_str(
+            "limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123",
+        )
+        .expect("deserialize cursor request");
 
         assert_eq!(req.limit, 20);
         assert_eq!(req.cursor, "2026-03-31T12:00:00+00:00|msg_123");
     }
 
     #[test]
-    fn test_parse_force_query_accepts_true_only() {
-        let params = HashMap::from([("force".to_string(), "true".to_string())]);
-        assert!(parse_force_query(&params));
+    fn test_delete_force_query_deserialization_accepts_bool_only() {
+        let query: DeleteMediaQuery = serde_urlencoded::from_str("force=true").unwrap();
+        assert!(query.force);
 
-        let params = HashMap::from([("force".to_string(), "false".to_string())]);
-        assert!(!parse_force_query(&params));
+        let query: DeletePlaylistQuery = serde_urlencoded::from_str("force=false").unwrap();
+        assert!(!query.force);
 
-        let params = HashMap::from([("force".to_string(), "1".to_string())]);
-        assert!(!parse_force_query(&params));
+        assert!(serde_urlencoded::from_str::<DeleteMediaQuery>("force=1").is_err());
     }
 
     #[test]
@@ -2075,5 +1867,21 @@ mod tests {
         let source_config: serde_json::Value = serde_json::from_slice(&body.source_config).unwrap();
         assert_eq!(source_config, serde_json::json!({"path":"/tv"}));
         assert_eq!(body.provider_instance_name, "alist-main");
+    }
+
+    #[test]
+    fn test_move_playlist_body_deserializes_without_path_playlist_id() {
+        let body: crate::proto::client::MovePlaylistRequest =
+            serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#).expect("deserialize");
+
+        assert!(body.playlist_id.is_empty());
+        assert_eq!(
+            body.anchor,
+            Some(
+                crate::proto::client::move_playlist_request::Anchor::BeforePlaylistId(
+                    "playlist-2".to_string()
+                )
+            )
+        );
     }
 }

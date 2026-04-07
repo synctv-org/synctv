@@ -6,38 +6,26 @@
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{header, StatusCode},
     response::Response,
     routing::get,
     Json, Router,
 };
 use bytes::Bytes;
-use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
-use crate::http::{error::map_api_error, middleware::AuthUser, AppError, AppResult, AppState};
+use crate::http::{
+    error::map_api_error, middleware::AuthUser, validation::ValidatedQuery, AppError, AppResult,
+    AppState,
+};
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::id::RoomId;
 use synctv_core::provider::proxy::ProxyAction;
 use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 use synctv_livestream::error::StreamError;
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct RoomQuery {
-    room_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-pub struct RoomStreamsQuery {
-    room_id: String,
-    page: Option<i32>,
-    page_size: Option<i32>,
-}
 
 pub fn rtmp_routes() -> Router<AppState> {
     create_live_provider_router()
@@ -49,8 +37,8 @@ pub fn live_proxy_routes() -> Router<AppState> {
 
 fn create_live_provider_router() -> Router<AppState> {
     Router::new()
-        .route("/info/{media_id}", get(handle_stream_info))
-        .route("/streams", get(handle_room_streams))
+        .route("/rooms/{room_id}/info/{media_id}", get(handle_stream_info))
+        .route("/rooms/{room_id}/streams", get(handle_room_streams))
 }
 
 fn map_stream_error(context: &str, error: &StreamError) -> AppError {
@@ -80,11 +68,11 @@ fn live_streaming_unavailable_http_error() -> AppError {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/providers/rtmp/info/{media_id}",
+        path = "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
         tag = "Provider",
         params(
+            ("room_id" = String, Path, description = "Room ID"),
             ("media_id" = String, Path, description = "Media ID"),
-            RoomQuery
         ),
         responses(
             (status = 200, description = "Live stream information", body = crate::proto::client::GetStreamInfoResponse),
@@ -99,13 +87,14 @@ fn live_streaming_unavailable_http_error() -> AppError {
 )]
 pub(crate) async fn handle_stream_info(
     auth: AuthUser,
-    Path(media_id): Path<String>,
-    Query(params): Query<RoomQuery>,
+    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<crate::proto::client::GetStreamInfoResponse>> {
+    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
+    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let resp = state
         .client_api
-        .get_stream_info(auth.user_id.as_str(), &params.room_id, &media_id)
+        .get_stream_info(auth.user_id.as_str(), &room_id, &media_id)
         .await
         .map_err(map_api_error)?;
 
@@ -116,9 +105,12 @@ pub(crate) async fn handle_stream_info(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/providers/rtmp/streams",
+        path = "/api/providers/rtmp/rooms/{room_id}/streams",
         tag = "Provider",
-        params(RoomStreamsQuery),
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            crate::proto::client::ListRoomStreamsRequest
+        ),
         responses(
             (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -131,14 +123,15 @@ pub(crate) async fn handle_stream_info(
 )]
 pub(crate) async fn handle_room_streams(
     auth: AuthUser,
-    Query(params): Query<RoomStreamsQuery>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<crate::proto::client::ListRoomStreamsRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<crate::proto::client::ListRoomStreamsResponse>> {
-    let (page, page_size) =
-        crate::http::validation::validate_pagination(params.page, params.page_size);
+    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
+    let room_id = path.room_id;
     let resp = state
         .client_api
-        .list_room_streams(auth.user_id.as_str(), &params.room_id, page, page_size)
+        .list_room_streams(auth.user_id.as_str(), &room_id, req)
         .await
         .map_err(map_api_error)?;
 
@@ -466,14 +459,24 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     #[test]
-    fn room_query_deserializes_room_id() {
-        let query: RoomQuery = serde_urlencoded::from_str("room_id=room123").unwrap();
-        assert_eq!(query.room_id, "room123");
+    fn room_streams_query_deserializes_proto_request() {
+        let query: crate::proto::client::ListRoomStreamsRequest = serde_urlencoded::from_str(
+            "page=2&page_size=25&search=beta&sort_by=1&sort_direction=2",
+        )
+        .unwrap();
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert_eq!(query.search, "beta");
+        assert_eq!(query.sort_by, 1);
+        assert_eq!(query.sort_direction, 2);
     }
 
     #[test]
-    fn room_query_rejects_removed_room_id_casing() {
-        assert!(serde_urlencoded::from_str::<RoomQuery>("roomId=room123").is_err());
+    fn room_streams_query_rejects_invalid_page_casing() {
+        let query: crate::proto::client::ListRoomStreamsRequest =
+            serde_urlencoded::from_str("pageSize=25").unwrap();
+        assert_eq!(query.page, 0);
+        assert_eq!(query.page_size, 0);
     }
 
     #[tokio::test]
@@ -502,7 +505,7 @@ mod tests {
 
     #[test]
     fn provider_live_info_path_uses_provider_prefix() {
-        let path = "/api/providers/rtmp/info/media123";
+        let path = "/api/providers/rtmp/rooms/room123/info/media123";
         assert!(path.starts_with("/api/providers/rtmp/"));
         assert!(path.ends_with("/media123"));
     }

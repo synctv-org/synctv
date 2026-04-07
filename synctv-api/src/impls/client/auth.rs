@@ -44,6 +44,8 @@ impl ClientApiImpl {
         crate::http::validation::validate_password(&req.password)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
+        crate::impls::validate_proto_request(&req)?;
+
         let email = if req.email.is_empty() {
             None
         } else {
@@ -70,6 +72,8 @@ impl ClientApiImpl {
         req: crate::proto::client::LoginRequest,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         // Login user (returns tuple: (User, access_token, refresh_token))
         let (user, access_token, refresh_token) = self
             .user_service
@@ -88,6 +92,8 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::RefreshTokenRequest,
     ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
         let (access_token, refresh_token) = self
             .user_service

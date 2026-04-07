@@ -39,21 +39,10 @@ impl MediaRepository {
     }
 
     fn scope_lock_key(room_id: &RoomId, playlist_id: Option<&PlaylistId>) -> i64 {
-        use std::hash::{Hash, Hasher};
-
-        let room_hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            room_id.as_str().hash(&mut h);
-            h.finish()
-        };
-        let playlist_hash = playlist_id.map_or(0, |playlist_id| {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            playlist_id.as_str().hash(&mut h);
-            h.finish()
-        });
-        let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-        let playlist_bits = (playlist_hash & 0x7FFFFFFF) as i64;
-        (room_bits << 31) | playlist_bits
+        super::stable_scope_lock_key(
+            room_id.as_str(),
+            playlist_id.map(crate::models::PlaylistId::as_str),
+        )
     }
 
     fn build_media_list_order_by(query: &MediaListQuery) -> String {
@@ -68,9 +57,9 @@ impl MediaRepository {
             crate::models::MediaListSortBy::UpdatedAt => {
                 format!("m.updated_at {direction}, m.position {direction}, m.id {direction}")
             }
-            crate::models::MediaListSortBy::SourceProvider => format!(
-                "m.source_provider {direction}, m.name {direction}, m.id {direction}"
-            ),
+            crate::models::MediaListSortBy::SourceProvider => {
+                format!("m.source_provider {direction}, m.name {direction}, m.id {direction}")
+            }
             crate::models::MediaListSortBy::ProviderInstanceName => format!(
                 "m.provider_instance_name {direction}, m.name {direction}, m.id {direction}"
             ),
@@ -78,6 +67,11 @@ impl MediaRepository {
                 format!("m.position {direction}, m.name {direction}, m.id {direction}")
             }
         }
+    }
+
+    fn normalize_provider_instance_name_for_db(provider_instance_name: &str) -> Option<&str> {
+        let trimmed = provider_instance_name.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
     }
 
     fn push_media_scope_filters(
@@ -111,8 +105,13 @@ impl MediaRepository {
             builder.push_bind(source_provider.clone());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
-            builder.push(" AND m.provider_instance_name = ");
-            builder.push_bind(provider_instance_name.clone());
+            let trimmed = provider_instance_name.trim();
+            if trimmed.is_empty() {
+                builder.push(" AND NULLIF(m.provider_instance_name, '') IS NULL");
+            } else {
+                builder.push(" AND m.provider_instance_name = ");
+                builder.push_bind(trimmed.to_owned());
+            }
         }
         match query.availability {
             Some(true) => {
@@ -135,10 +134,13 @@ impl MediaRepository {
         playlist_id: Option<&PlaylistId>,
         query: &MediaListQuery,
     ) -> Result<i64> {
-        let mut builder =
-            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
         Self::push_media_scope_filters(&mut builder, room_id, playlist_id, query);
-        builder.build_query_scalar().fetch_one(&self.pool).await.map_err(Into::into)
+        builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn list_filtered_by_scope(
@@ -153,7 +155,7 @@ impl MediaRepository {
 
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.position,
-                    m.source_provider, m.source_config, m.provider_instance_name,
+                    m.source_provider, m.source_config, COALESCE(m.provider_instance_name, '') AS provider_instance_name,
                     m.added_at, m.updated_at, m.version,
                     CASE
                       WHEN m.creator_id IS NULL THEN TRUE
@@ -201,7 +203,7 @@ impl MediaRepository {
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             "
         )
@@ -213,7 +215,9 @@ impl MediaRepository {
         .bind(media.position)
         .bind(media.source_provider.as_str())
         .bind(&source_config_json)
-        .bind(&media.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            &media.provider_instance_name,
+        ))
         .bind(media.added_at)
         .fetch_one(executor)
         .await?;
@@ -311,7 +315,7 @@ impl MediaRepository {
         }
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version",
         );
 
@@ -330,7 +334,9 @@ impl MediaRepository {
                 .bind(item.position)
                 .bind(item.source_provider.as_str())
                 .bind(&binds[i])
-                .bind(&item.provider_instance_name)
+                .bind(Self::normalize_provider_instance_name_for_db(
+                    &item.provider_instance_name,
+                ))
                 .bind(item.added_at);
         }
 
@@ -374,7 +380,7 @@ impl MediaRepository {
             SET name = $2, position = $3, source_config = $4,
                 provider_instance_name = $5
              WHERE id = $1             RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             "
         )
@@ -382,7 +388,9 @@ impl MediaRepository {
         .bind(&media.name)
         .bind(media.position)
         .bind(&source_config_json)
-        .bind(&media.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            &media.provider_instance_name,
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -418,7 +426,7 @@ impl MediaRepository {
                 provider_instance_name = $5, version = version + 1
              WHERE id = $1 AND version = $6
              RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             ",
         )
@@ -426,7 +434,9 @@ impl MediaRepository {
         .bind(&media.name)
         .bind(media.position)
         .bind(&source_config_json)
-        .bind(&media.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            &media.provider_instance_name,
+        ))
         .bind(expected_version)
         .fetch_optional(&self.pool)
         .await?;
@@ -442,7 +452,7 @@ impl MediaRepository {
         let row = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE id = $1            ",
@@ -479,7 +489,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE id = ANY($1)            ",
@@ -506,7 +516,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1
@@ -529,7 +539,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -551,7 +561,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -589,7 +599,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -635,7 +645,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -671,7 +681,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -700,7 +710,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -819,31 +829,27 @@ impl MediaRepository {
     ) -> Result<()> {
         let mut unique_scopes: Vec<(RoomId, Option<PlaylistId>)> = Vec::new();
         for (room_id, playlist_id) in scopes {
-            if unique_scopes
-                .iter()
-                .any(|(seen_room, seen_playlist)| seen_room == room_id && seen_playlist == playlist_id)
-            {
+            if unique_scopes.iter().any(|(seen_room, seen_playlist)| {
+                seen_room == room_id && seen_playlist == playlist_id
+            }) {
                 continue;
             }
             unique_scopes.push((room_id.clone(), playlist_id.clone()));
         }
 
         unique_scopes.sort_by(|(left_room, left_playlist), (right_room, right_playlist)| {
-            left_room
-                .as_str()
-                .cmp(right_room.as_str())
-                .then_with(|| {
-                    left_playlist
-                        .as_ref()
-                        .map(PlaylistId::as_str)
-                        .unwrap_or("")
-                        .cmp(
-                            right_playlist
-                                .as_ref()
-                                .map(PlaylistId::as_str)
-                                .unwrap_or(""),
-                        )
-                })
+            left_room.as_str().cmp(right_room.as_str()).then_with(|| {
+                left_playlist
+                    .as_ref()
+                    .map(PlaylistId::as_str)
+                    .unwrap_or("")
+                    .cmp(
+                        right_playlist
+                            .as_ref()
+                            .map(PlaylistId::as_str)
+                            .unwrap_or(""),
+                    )
+            })
         });
 
         for (room_id, playlist_id) in unique_scopes {
@@ -948,7 +954,7 @@ impl MediaRepository {
         let moved_rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = ANY($1)
@@ -1005,7 +1011,7 @@ impl MediaRepository {
             let anchor_media = sqlx::query(
                 r"
                 SELECT id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
                 FROM media
                 WHERE id = $1
@@ -1075,7 +1081,11 @@ impl MediaRepository {
                 ",
             )
             .bind(room_id.as_str())
-            .bind(effective_target_playlist_id.as_ref().map(PlaylistId::as_str))
+            .bind(
+                effective_target_playlist_id
+                    .as_ref()
+                    .map(PlaylistId::as_str),
+            )
             .bind(&media_id_strs)
             .fetch_all(&mut **tx)
             .await?;
@@ -1111,16 +1121,13 @@ impl MediaRepository {
             let previous = insertion_index
                 .checked_sub(1)
                 .map(|index| target_rows[index].1);
-            let next = target_rows.get(insertion_index).map(|(_, position)| *position);
-            let Some(positions) =
-                Self::allocate_positions(previous, next, moved_media.len())
+            let next = target_rows
+                .get(insertion_index)
+                .map(|(_, position)| *position);
+            let Some(positions) = Self::allocate_positions(previous, next, moved_media.len())
             else {
-                self.rebalance_scope_with_tx(
-                    room_id,
-                    effective_target_playlist_id.as_ref(),
-                    tx,
-                )
-                .await?;
+                self.rebalance_scope_with_tx(room_id, effective_target_playlist_id.as_ref(), tx)
+                    .await?;
                 continue;
             };
 
@@ -1134,12 +1141,16 @@ impl MediaRepository {
                         version = version + 1
                     WHERE id = $1
                     RETURNING id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, provider_instance_name,
+                              source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                               added_at, updated_at, version
                     ",
                 )
                 .bind(media.id.as_str())
-                .bind(effective_target_playlist_id.as_ref().map(PlaylistId::as_str))
+                .bind(
+                    effective_target_playlist_id
+                        .as_ref()
+                        .map(PlaylistId::as_str),
+                )
                 .bind(position)
                 .fetch_one(&mut **tx)
                 .await?;
@@ -1320,7 +1331,7 @@ impl MediaRepository {
         let moved = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = $1
@@ -1337,7 +1348,7 @@ impl MediaRepository {
         let anchor = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = $1
@@ -1407,7 +1418,7 @@ impl MediaRepository {
                     SET position = $2, version = version + 1
                     WHERE id = $1
                     RETURNING id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, provider_instance_name,
+                              source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
                               added_at, updated_at, version
                     ",
                 )
@@ -1547,6 +1558,7 @@ impl MediaRepository {
 mod tests {
     use super::*;
     use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
+    use sqlx::Execute;
     use synctv_core_testing::create_test_pool;
 
     /// Unit test: Media builder pattern
@@ -1570,6 +1582,23 @@ mod tests {
         assert_eq!(media.name, "Test Video");
         assert_eq!(media.position, 0.0);
         assert_eq!(media.source_provider, "direct_url");
+    }
+
+    #[test]
+    fn test_push_media_scope_filters_treats_empty_provider_instance_as_default() {
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT m.id FROM media m");
+        let query = MediaListQuery {
+            provider_instance_name: Some("   ".to_string()),
+            ..MediaListQuery::default()
+        };
+        let room_id = RoomId::from_string("room12345678".to_string());
+
+        MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query);
+
+        let built = builder.build();
+        assert!(built
+            .sql()
+            .contains("NULLIF(m.provider_instance_name, '') IS NULL"));
     }
 
     /// Unit test: `Media::from_direct_single_mode`
@@ -1823,6 +1852,94 @@ mod tests {
         // Delete non-existent returns false
         let deleted_again = media_repo.delete(&created.id).await.unwrap();
         assert!(!deleted_again);
+    }
+
+    /// Integration test: empty/default provider-instance filter must match rows
+    /// stored as NULL in the database.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
+        use crate::models::{MediaListQuery, MediaListSortBy};
+        use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
+        let media_repo = MediaRepository::new(pool.clone());
+
+        let owner = user_repo
+            .create(
+                &UserFixture::new()
+                    .with_username("media_default_instance_owner")
+                    .build(),
+            )
+            .await
+            .unwrap();
+
+        let room = room_repo
+            .create(
+                &RoomFixture::new()
+                    .with_name("Media Default Instance Room")
+                    .with_owner(owner.id.clone())
+                    .build(),
+            )
+            .await
+            .unwrap();
+
+        let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Default Instance Playlist",
+        )
+        .await;
+
+        let default_media = Media::from_provider(
+            Some(playlist.id.clone()),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Default Backend".to_string(),
+            serde_json::json!({"url": "https://example.com/default.mp4"}),
+            "direct_url",
+            String::new(),
+            0.0,
+        );
+        let explicit_media = Media::from_provider(
+            Some(playlist.id.clone()),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Explicit Backend".to_string(),
+            serde_json::json!({"url": "https://example.com/explicit.mp4"}),
+            "direct_url",
+            "direct_url_remote".to_string(),
+            1.0,
+        );
+
+        let created_default = media_repo.create(&default_media).await.unwrap();
+        media_repo.create(&explicit_media).await.unwrap();
+
+        let query = MediaListQuery {
+            provider_instance_name: Some(String::new()),
+            sort_by: MediaListSortBy::Position,
+            ..MediaListQuery::default()
+        };
+
+        let count = media_repo
+            .count_filtered_by_scope(&room.id, Some(&playlist.id), &query)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let rows = media_repo
+            .list_filtered_by_scope(&room.id, Some(&playlist.id), &query, 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].media.id, created_default.id);
+        assert!(rows[0].media.provider_instance_name.is_empty());
     }
 
     /// Integration test: Batch create media

@@ -97,24 +97,17 @@ impl OAuth2GrpcService {
     }
 }
 
-fn validate_redirect_url_for_grpc(redirect_url: &str) -> Result<Option<String>, Status> {
-    crate::http::validation::validate_oauth2_redirect_url(Some(redirect_url))
-        .map_err(|e| Status::invalid_argument(format!("Invalid redirect_url: {e}")))
+fn validate_oauth2_proto_request<T>(request: &T) -> Result<(), Status>
+where
+    T: prost_reflect::ReflectMessage,
+{
+    crate::impls::validate_proto_request(request)
+        .map_err(|error| Status::invalid_argument(error.to_string()))
 }
 
-fn validate_state_for_grpc(state: &str) -> Result<String, Status> {
-    crate::http::validation::validate_oauth2_state(state)
-        .map_err(|e| Status::invalid_argument(format!("Invalid state parameter: {e}")))
-}
-
-fn validate_code_for_grpc(code: &str) -> Result<String, Status> {
-    crate::http::validation::validate_oauth2_code(code)
-        .map_err(|e| Status::invalid_argument(format!("Invalid authorization code: {e}")))
-}
-
-fn validate_provider_user_id_for_grpc(provider_user_id: &str) -> Result<Option<String>, Status> {
-    crate::http::validation::validate_oauth2_provider_user_id(Some(provider_user_id))
-        .map_err(|e| Status::invalid_argument(format!("Invalid provider_user_id: {e}")))
+fn optional_non_empty_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[tonic::async_trait]
@@ -125,7 +118,8 @@ impl OAuth2Service for OAuth2GrpcService {
         request: Request<GetAuthorizationUrlRequest>,
     ) -> Result<Response<GetAuthorizationUrlResponse>, Status> {
         let req = request.into_inner();
-        let redirect_url = validate_redirect_url_for_grpc(&req.redirect_url)?;
+        validate_oauth2_proto_request(&req)?;
+        let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
         let (authorization_url, state) = self
             .oauth2_api
             .get_authorization_url(&req.provider, redirect_url)
@@ -154,7 +148,8 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<GetAuthorizationUrlForBindResponse>, Status> {
         let (user_id, request) = self.require_auth(request)?;
         let req = request.into_inner();
-        let redirect_url = validate_redirect_url_for_grpc(&req.redirect_url)?;
+        validate_oauth2_proto_request(&req)?;
+        let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
 
         let (authorization_url, state) = self
             .oauth2_api
@@ -197,14 +192,13 @@ impl OAuth2Service for OAuth2GrpcService {
         // Extract client IP for brute-force protection (Issue #24)
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
-        let validated_code = validate_code_for_grpc(&req.code)?;
-        let validated_state = validate_state_for_grpc(&req.state)?;
+        validate_oauth2_proto_request(&req)?;
         let result = self
             .oauth2_api
             .exchange_authorization_code(
                 &req.provider,
-                &validated_code,
-                &validated_state,
+                &req.code,
+                &req.state,
                 current_user_id.as_ref(),
                 client_ip,
             )
@@ -260,7 +254,8 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<UnlinkProviderResponse>, Status> {
         let (user_id, request) = self.require_auth(request)?;
         let req = request.into_inner();
-        let provider_user_id = validate_provider_user_id_for_grpc(&req.provider_user_id)?;
+        validate_oauth2_proto_request(&req)?;
+        let provider_user_id = optional_non_empty_trimmed(&req.provider_user_id);
 
         let result = self
             .oauth2_api
@@ -316,34 +311,48 @@ mod tests {
     use tonic::Code;
 
     #[test]
-    fn test_validate_redirect_url_for_grpc_rejects_invalid_scheme() {
-        let err = validate_redirect_url_for_grpc("javascript:alert(1)")
-            .expect_err("invalid redirect URL must be rejected before hitting oauth2 impl");
+    fn test_validate_oauth2_proto_request_rejects_invalid_redirect_url() {
+        let err = validate_oauth2_proto_request(&GetAuthorizationUrlRequest {
+            provider: "github".to_string(),
+            redirect_url: "javascript:alert(1)".to_string(),
+        })
+        .expect_err("invalid redirect URL must be rejected before hitting oauth2 impl");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("redirect_url"));
     }
 
     #[test]
-    fn test_validate_state_for_grpc_rejects_invalid_state() {
-        let err = validate_state_for_grpc("short")
-            .expect_err("invalid OAuth2 state must be rejected before exchange");
+    fn test_validate_oauth2_proto_request_rejects_invalid_state() {
+        let err = validate_oauth2_proto_request(&ExchangeAuthorizationCodeRequest {
+            provider: "github".to_string(),
+            code: "code.with.dots".to_string(),
+            state: "short".to_string(),
+        })
+        .expect_err("invalid OAuth2 state must be rejected before exchange");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("state"));
     }
 
     #[test]
-    fn test_validate_code_for_grpc_rejects_invalid_code() {
-        let err = validate_code_for_grpc("code with spaces")
-            .expect_err("invalid OAuth2 code must be rejected before exchange");
+    fn test_validate_oauth2_proto_request_rejects_invalid_code() {
+        let err = validate_oauth2_proto_request(&ExchangeAuthorizationCodeRequest {
+            provider: "github".to_string(),
+            code: "code with spaces".to_string(),
+            state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
+        })
+        .expect_err("invalid OAuth2 code must be rejected before exchange");
         assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("authorization code"));
+        assert!(err.message().contains("code"));
     }
 
     #[test]
-    fn test_validate_provider_user_id_for_grpc_rejects_too_long_value() {
-        let too_long = "a".repeat(crate::http::validation::limits::OAUTH2_PROVIDER_USER_ID_MAX + 1);
-        let err = validate_provider_user_id_for_grpc(&too_long)
-            .expect_err("overlong provider_user_id must be rejected");
+    fn test_validate_oauth2_proto_request_rejects_too_long_provider_user_id() {
+        let too_long = "a".repeat(257);
+        let err = validate_oauth2_proto_request(&UnlinkProviderRequest {
+            provider: "github".to_string(),
+            provider_user_id: too_long,
+        })
+        .expect_err("overlong provider_user_id must be rejected");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("provider_user_id"));
     }

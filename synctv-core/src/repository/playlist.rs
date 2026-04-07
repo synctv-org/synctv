@@ -23,6 +23,19 @@ pub struct PlaylistRepository {
 }
 
 impl PlaylistRepository {
+    fn normalize_provider_instance_name_for_db(
+        provider_instance_name: Option<&str>,
+    ) -> Option<&str> {
+        provider_instance_name.and_then(|provider_instance_name| {
+            let trimmed = provider_instance_name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -82,8 +95,13 @@ impl PlaylistRepository {
             builder.push_bind(source_provider.clone());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
-            builder.push(" AND p.provider_instance_name = ");
-            builder.push_bind(provider_instance_name.clone());
+            let trimmed = provider_instance_name.trim();
+            if trimmed.is_empty() {
+                builder.push(" AND NULLIF(p.provider_instance_name, '') IS NULL");
+            } else {
+                builder.push(" AND p.provider_instance_name = ");
+                builder.push_bind(trimmed.to_owned());
+            }
         }
         if let Some(dynamic_only) = query.dynamic_only {
             if dynamic_only {
@@ -113,10 +131,13 @@ impl PlaylistRepository {
         parent_id: Option<&PlaylistId>,
         query: &PlaylistListQuery,
     ) -> Result<i64> {
-        let mut builder =
-            sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
         Self::push_playlist_scope_filters(&mut builder, room_id, parent_id, query);
-        builder.build_query_scalar().fetch_one(&self.pool).await.map_err(Into::into)
+        builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn list_filtered_by_parent(
@@ -131,7 +152,7 @@ impl PlaylistRepository {
 
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
-                    p.source_provider, p.source_config, p.provider_instance_name,
+                    p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                     p.created_at, p.updated_at, p.version,
                     CASE
                       WHEN p.creator_id IS NULL THEN TRUE
@@ -166,7 +187,7 @@ impl PlaylistRepository {
         let row = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
@@ -199,7 +220,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = ANY($1)
@@ -219,7 +240,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL
@@ -259,7 +280,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL
@@ -283,7 +304,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE parent_id = $1
@@ -323,7 +344,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE parent_id = $1
@@ -347,7 +368,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1
@@ -387,7 +408,7 @@ impl PlaylistRepository {
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1
@@ -410,21 +431,7 @@ impl PlaylistRepository {
     const MIN_ORDER_GAP: f64 = 1e-9;
 
     fn scope_lock_key(room_id: &RoomId, parent_id: Option<&PlaylistId>) -> i64 {
-        use std::hash::{Hash, Hasher};
-
-        let room_hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            room_id.as_str().hash(&mut h);
-            h.finish()
-        };
-        let parent_hash = parent_id.map_or(0, |pid| {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            pid.as_str().hash(&mut h);
-            h.finish()
-        });
-        let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-        let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
-        (room_bits << 31) | parent_bits
+        super::stable_scope_lock_key(room_id.as_str(), parent_id.map(PlaylistId::as_str))
     }
 
     async fn lock_scope_with_tx(
@@ -580,7 +587,7 @@ impl PlaylistRepository {
                                    source_provider, source_config, provider_instance_name)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id, room_id, creator_id, name, parent_id, position,
-                      source_provider, source_config, provider_instance_name,
+                      source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                       created_at, updated_at, version
             ",
         )
@@ -597,7 +604,9 @@ impl PlaylistRepository {
         .bind(playlist.position)
         .bind(source_provider_str)
         .bind(&playlist.source_config)
-        .bind(&playlist.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            playlist.provider_instance_name.as_deref(),
+        ))
         .fetch_one(executor)
         .await?;
 
@@ -651,7 +660,7 @@ impl PlaylistRepository {
                 provider_instance_name = $6, version = version + 1
             WHERE id = $1 AND version = $7
             RETURNING id, room_id, creator_id, name, parent_id, position,
-                      source_provider, source_config, provider_instance_name,
+                      source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                       created_at, updated_at, version
             ",
         )
@@ -660,7 +669,9 @@ impl PlaylistRepository {
         .bind(playlist.position)
         .bind(source_provider_str)
         .bind(&playlist.source_config)
-        .bind(&playlist.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            playlist.provider_instance_name.as_deref(),
+        ))
         .bind(expected_version)
         .fetch_optional(&self.pool)
         .await?;
@@ -697,7 +708,7 @@ impl PlaylistRepository {
         let moved = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
@@ -714,7 +725,7 @@ impl PlaylistRepository {
         let anchor = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
@@ -739,12 +750,11 @@ impl PlaylistRepository {
             .await?;
 
         for _ in 0..2 {
-            let anchor_position: f64 = sqlx::query_scalar(
-                "SELECT position FROM playlists WHERE id = $1 FOR UPDATE",
-            )
-            .bind(anchor.id.as_str())
-            .fetch_one(&mut **tx)
-            .await?;
+            let anchor_position: f64 =
+                sqlx::query_scalar("SELECT position FROM playlists WHERE id = $1 FOR UPDATE")
+                    .bind(anchor.id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await?;
 
             let new_position = if before_playlist_id.is_some() {
                 match self
@@ -785,7 +795,7 @@ impl PlaylistRepository {
                     SET position = $2, version = version + 1
                     WHERE id = $1
                     RETURNING id, room_id, creator_id, name, parent_id, position,
-                              source_provider, source_config, provider_instance_name,
+                              source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                               created_at, updated_at, version
                     ",
                 )
@@ -901,20 +911,20 @@ impl PlaylistRepository {
             r"
             WITH RECURSIVE ancestors AS (
                 SELECT id, room_id, creator_id, name, parent_id, position,
-                       source_provider, source_config, provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        created_at, updated_at, version, 0 AS depth
                 FROM playlists
                 WHERE id = $1
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
-                       p.source_provider, p.source_config, p.provider_instance_name,
+                       p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                        p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
                 JOIN ancestors a ON p.id = a.parent_id
                 WHERE a.depth < 50
             )
             SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM ancestors
             ORDER BY depth DESC
@@ -933,6 +943,7 @@ impl PlaylistRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Execute;
     use synctv_core_testing::create_test_pool;
 
     /// Unit test: Repository constructor is const
@@ -944,106 +955,34 @@ mod tests {
         // Compilation test only - cannot create PgPool without database
     }
 
-    /// Unit test: Advisory lock key generation is deterministic
-    ///
-    /// The lock key must be consistent for the same (room_id, parent_id) pair
-    /// so that both `create()` and `get_next_position_for_update()` acquire
-    /// the same lock.
     #[test]
     fn test_advisory_lock_key_deterministic() {
-        use std::hash::{Hash, Hasher};
-
         let room_id = RoomId::from_string("room12345678".to_string());
         let parent_id = PlaylistId::from_string("parent123456".to_string());
-
-        // Test the same hash strategy used in the implementation
-        let key1 = {
-            let room_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                room_id.as_str().hash(&mut h);
-                h.finish()
-            };
-            let parent_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                parent_id.as_str().hash(&mut h);
-                h.finish()
-            };
-            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
-            (room_bits << 31) | parent_bits
-        };
-
-        // Same inputs should produce same key
-        let key2 = {
-            let room_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                room_id.as_str().hash(&mut h);
-                h.finish()
-            };
-            let parent_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                parent_id.as_str().hash(&mut h);
-                h.finish()
-            };
-            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
-            (room_bits << 31) | parent_bits
-        };
-
+        let key1 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
+        let key2 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
+        assert_eq!(key1, 3_505_116_572_805_754_167);
         assert_eq!(key1, key2, "Lock key should be deterministic");
     }
 
-    /// Unit test: Different (room_id, parent_id) pairs produce different keys
-    ///
-    /// While hash collisions are theoretically possible, this test verifies
-    /// that simple variations produce different keys.
     #[test]
     fn test_advisory_lock_key_different() {
-        use std::hash::{Hash, Hasher};
-
         let room1 = RoomId::from_string("room11111111".to_string());
         let room2 = RoomId::from_string("room22222222".to_string());
         let parent1 = PlaylistId::from_string("parent111111".to_string());
         let parent2 = PlaylistId::from_string("parent222222".to_string());
+        let key_room1_parent1 = PlaylistRepository::scope_lock_key(&room1, Some(&parent1));
+        let key_room1_parent2 = PlaylistRepository::scope_lock_key(&room1, Some(&parent2));
+        let key_room2_parent1 = PlaylistRepository::scope_lock_key(&room2, Some(&parent1));
+        let key_room2_none = PlaylistRepository::scope_lock_key(&room2, None);
 
-        let compute_key = |room_id: &RoomId, parent_id: Option<&PlaylistId>| {
-            let room_hash = {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                room_id.as_str().hash(&mut h);
-                h.finish()
-            };
-            let parent_hash = parent_id.map_or(0, |pid| {
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                pid.as_str().hash(&mut h);
-                h.finish()
-            });
-            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
-            (room_bits << 31) | parent_bits
-        };
-
-        let key_room1_parent1 = compute_key(&room1, Some(&parent1));
-        let key_room1_parent2 = compute_key(&room1, Some(&parent2));
-        let key_room2_parent1 = compute_key(&room2, Some(&parent1));
-        let key_room2_none = compute_key(&room2, None);
-
-        // Different room_id should produce different keys
         assert_ne!(key_room1_parent1, key_room2_parent1);
-        // Different parent_id should produce different keys
         assert_ne!(key_room1_parent1, key_room1_parent2);
-        // Root (no parent) should be different from child
         assert_ne!(key_room2_parent1, key_room2_none);
     }
 
-    /// Unit test: Lock key stays within i64 range
-    ///
-    /// The combination of two 31-bit values (room_bits and parent_bits)
-    /// should always fit within i64 without overflow.
     #[test]
     fn test_advisory_lock_key_range() {
-        use std::hash::{Hash, Hasher};
-
-        // Test with various ID patterns
         let test_ids = [
             "000000000000",
             "ZZZZZZZZZZZZ",
@@ -1055,26 +994,50 @@ mod tests {
         for id in test_ids {
             let room_id = RoomId::from_string(id.to_string());
             let parent_id = PlaylistId::from_string(id.to_string());
-
-            let key = {
-                let room_hash = {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    room_id.as_str().hash(&mut h);
-                    h.finish()
-                };
-                let parent_hash = {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    parent_id.as_str().hash(&mut h);
-                    h.finish()
-                };
-                let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-                let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
-                (room_bits << 31) | parent_bits
-            };
-
-            // Key should be positive (advisory lock keys in PostgreSQL are signed 64-bit)
+            let key = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
             assert!(key >= 0, "Lock key should be non-negative for id: {id}");
         }
+    }
+
+    #[test]
+    fn test_normalize_provider_instance_name_for_db() {
+        assert_eq!(
+            PlaylistRepository::normalize_provider_instance_name_for_db(None),
+            None
+        );
+        assert_eq!(
+            PlaylistRepository::normalize_provider_instance_name_for_db(Some("")),
+            None
+        );
+        assert_eq!(
+            PlaylistRepository::normalize_provider_instance_name_for_db(Some("   ")),
+            None
+        );
+        assert_eq!(
+            PlaylistRepository::normalize_provider_instance_name_for_db(Some("alist_home")),
+            Some("alist_home")
+        );
+        assert_eq!(
+            PlaylistRepository::normalize_provider_instance_name_for_db(Some("  alist_home  ")),
+            Some("alist_home")
+        );
+    }
+
+    #[test]
+    fn test_push_playlist_scope_filters_treats_empty_provider_instance_as_default() {
+        let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT p.id FROM playlists p");
+        let query = PlaylistListQuery {
+            provider_instance_name: Some("   ".to_string()),
+            ..PlaylistListQuery::default()
+        };
+        let room_id = RoomId::from_string("room12345678".to_string());
+
+        PlaylistRepository::push_playlist_scope_filters(&mut builder, &room_id, None, &query);
+
+        let built = builder.build();
+        assert!(built
+            .sql()
+            .contains("NULLIF(p.provider_instance_name, '') IS NULL"));
     }
 
     /// Integration test: Create and get playlist by ID
@@ -1152,6 +1115,125 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].id, created.id);
         assert!(fetched[0].is_top_level());
+    }
+
+    /// Integration test: empty provider instance name is normalized to database NULL.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_normalizes_empty_provider_instance_name_to_null() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("playlist_default_provider_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Default Provider Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let mut playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Dynamic Default Provider")
+            .build();
+        playlist.source_provider = Some("alist".to_string());
+        playlist.source_config = Some(serde_json::json!({ "path": "/movies" }));
+        playlist.provider_instance_name = Some("   ".to_string());
+
+        let created = playlist_repo.create(&playlist).await.unwrap();
+        assert!(created.provider_instance_name.is_none());
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT provider_instance_name FROM playlists WHERE id = $1")
+                .bind(created.id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(stored.is_none());
+
+        let fetched = playlist_repo.get_by_id(&created.id).await.unwrap().unwrap();
+        assert!(fetched.provider_instance_name.is_none());
+    }
+
+    /// Integration test: empty provider-instance filter matches default local dynamic playlists.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_list_filtered_by_parent_matches_default_provider_instance_name() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("playlist_default_provider_filter_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Default Provider Filter Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let mut default_provider_playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Default Provider Playlist")
+            .with_creator(owner.id.clone())
+            .build();
+        default_provider_playlist.source_provider = Some("alist".to_string());
+        default_provider_playlist.source_config = Some(serde_json::json!({ "path": "/default" }));
+        default_provider_playlist.provider_instance_name = Some(String::new());
+        let default_provider_playlist = playlist_repo
+            .create(&default_provider_playlist)
+            .await
+            .unwrap();
+
+        let mut explicit_provider_playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Explicit Provider Playlist")
+            .with_creator(owner.id.clone())
+            .build();
+        explicit_provider_playlist.source_provider = Some("alist".to_string());
+        explicit_provider_playlist.source_config = Some(serde_json::json!({ "path": "/explicit" }));
+        explicit_provider_playlist.provider_instance_name = Some("alist_home".to_string());
+        let _explicit_provider_playlist = playlist_repo
+            .create(&explicit_provider_playlist)
+            .await
+            .unwrap();
+
+        let query = PlaylistListQuery {
+            source_provider: Some("alist".to_string()),
+            provider_instance_name: Some("".to_string()),
+            dynamic_only: Some(true),
+            ..PlaylistListQuery::default()
+        };
+
+        let total = playlist_repo
+            .count_filtered_by_parent(&room.id, None, &query)
+            .await
+            .unwrap();
+        assert_eq!(total, 1);
+
+        let rows = playlist_repo
+            .list_filtered_by_parent(&room.id, None, &query, 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].playlist.id, default_provider_playlist.id);
+        assert!(rows[0].playlist.provider_instance_name.is_none());
     }
 
     /// Integration test: Get playlists by room
@@ -1455,7 +1537,10 @@ mod tests {
                 .with_name(&format!("Child {i}"))
                 .with_position((i + 1) * 1024)
                 .build();
-            playlist_repo.create_with_executor(&child, &mut *tx).await.unwrap();
+            playlist_repo
+                .create_with_executor(&child, &mut *tx)
+                .await
+                .unwrap();
         }
 
         // Next append position should continue the sparse sequence.

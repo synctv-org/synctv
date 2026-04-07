@@ -42,7 +42,7 @@ async fn test_check_permissions_batch_all_present() {
             &creator.id,
             &[
                 PermissionBits::SEND_CHAT,
-                PermissionBits::ADD_MOVIE,
+                PermissionBits::ADD_MEDIA,
                 PermissionBits::DELETE_ROOM,
             ],
         )

@@ -52,18 +52,18 @@ fn test_add_media_batch_empty_accepted() {
 /// Returns "self" if the user owns the media, "any" otherwise.
 fn required_delete_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
     if creator_id == Some(requester_id) {
-        "DELETE_MOVIE_SELF"
+        "DELETE_MEDIA_SELF"
     } else {
-        "DELETE_MOVIE_ANY"
+        "DELETE_MEDIA_ANY"
     }
 }
 
 /// Determines which permission is needed for `edit_media` based on ownership.
 fn required_edit_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
     if creator_id == Some(requester_id) {
-        "EDIT_MOVIE_SELF"
+        "EDIT_MEDIA_SELF"
     } else {
-        "EDIT_MOVIE_ANY"
+        "EDIT_MEDIA_ANY"
     }
 }
 
@@ -74,13 +74,13 @@ fn test_edit_media_owner_vs_non_owner_permission() {
 
     assert_eq!(
         required_edit_permission(Some(&owner), &owner),
-        "EDIT_MOVIE_SELF"
+        "EDIT_MEDIA_SELF"
     );
     assert_eq!(
         required_edit_permission(Some(&owner), &other),
-        "EDIT_MOVIE_ANY"
+        "EDIT_MEDIA_ANY"
     );
-    assert_eq!(required_edit_permission(None, &other), "EDIT_MOVIE_ANY");
+    assert_eq!(required_edit_permission(None, &other), "EDIT_MEDIA_ANY");
 }
 
 #[test]
@@ -94,6 +94,7 @@ fn test_add_media_permission_denied() {
     let request = AddMediaRequest {
         playlist_id: Some(PlaylistId::new()),
         name: "Test Video".to_string(),
+        source_provider: "bilibili".to_string(),
         provider_instance_name: "bilibili_main".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234567890"}),
     };
@@ -105,20 +106,20 @@ fn test_remove_media_owner_vs_non_owner_permission() {
     let owner = UserId::from_string("owner_user".to_string());
     let other = UserId::from_string("other_user".to_string());
 
-    // Owner deleting their own media needs DELETE_MOVIE_SELF
+    // Owner deleting their own media needs DELETE_MEDIA_SELF
     assert_eq!(
         required_delete_permission(Some(&owner), &owner),
-        "DELETE_MOVIE_SELF"
+        "DELETE_MEDIA_SELF"
     );
 
-    // Non-owner deleting needs DELETE_MOVIE_ANY
+    // Non-owner deleting needs DELETE_MEDIA_ANY
     assert_eq!(
         required_delete_permission(Some(&owner), &other),
-        "DELETE_MOVIE_ANY"
+        "DELETE_MEDIA_ANY"
     );
 
-    // Media with no creator recorded needs DELETE_MOVIE_ANY
-    assert_eq!(required_delete_permission(None, &other), "DELETE_MOVIE_ANY");
+    // Media with no creator recorded needs DELETE_MEDIA_ANY
+    assert_eq!(required_delete_permission(None, &other), "DELETE_MEDIA_ANY");
 }
 
 #[test]
@@ -128,8 +129,8 @@ fn test_remove_batch_mixed_permissions() {
     let requester = UserId::from_string("user_a".to_string());
 
     // In a batch delete with mixed ownership:
-    // - Items owned by requester need DELETE_MOVIE_SELF
-    // - Items owned by others need DELETE_MOVIE_ANY
+    // - Items owned by requester need DELETE_MEDIA_SELF
+    // - Items owned by others need DELETE_MEDIA_ANY
     let creators = vec![Some(user_a), Some(user_b), None];
 
     let mut needs_self = false;
@@ -142,8 +143,8 @@ fn test_remove_batch_mixed_permissions() {
         }
     }
 
-    assert!(needs_self, "Should need DELETE_MOVIE_SELF for own items");
-    assert!(needs_any, "Should need DELETE_MOVIE_ANY for others' items");
+    assert!(needs_self, "Should need DELETE_MEDIA_SELF for own items");
+    assert!(needs_any, "Should need DELETE_MEDIA_ANY for others' items");
 }
 
 // ============================================================================
@@ -155,6 +156,7 @@ fn test_add_media_request_with_null_source_config() {
     let request = AddMediaRequest {
         playlist_id: Some(PlaylistId::new()),
         name: "Null Config".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: "test".to_string(),
         source_config: serde_json::Value::Null,
     };

@@ -162,7 +162,7 @@ async fn test_set_member_permissions_creator_can_set() {
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
+            PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
             0,
         )
         .await
@@ -173,8 +173,8 @@ async fn test_set_member_permissions_creator_can_set() {
         "BAN_MEMBER should be added"
     );
     assert!(
-        updated.added_permissions & PermissionBits::KICK_USER != 0,
-        "KICK_USER should be added"
+        updated.added_permissions & PermissionBits::KICK_MEMBER != 0,
+        "KICK_MEMBER should be added"
     );
 }
 
@@ -227,15 +227,15 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            PermissionBits::DELETE_ROOM,
+            PermissionBits::USE_WEBRTC,
             PermissionBits::BAN_MEMBER,
         )
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_added_permissions & PermissionBits::DELETE_ROOM,
-        PermissionBits::DELETE_ROOM,
+        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
+        PermissionBits::USE_WEBRTC,
         "admin target must persist allow overrides into admin_added_permissions"
     );
     assert_eq!(
@@ -258,13 +258,65 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         .await
         .unwrap();
     assert!(
-        effective.has(PermissionBits::DELETE_ROOM),
+        effective.has(PermissionBits::USE_WEBRTC),
         "admin allow override should affect effective permissions"
     );
     assert!(
         !effective.has(PermissionBits::BAN_MEMBER),
         "admin deny override should affect effective permissions"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permission() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("deny_delete_room_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("deny_delete_room_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Disallow Delete Room Permission".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let err = room_service
+        .member_service()
+        .set_member_permissions(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::DELETE_ROOM,
+            0,
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        Error::InvalidInput(message) => {
+            assert!(message.contains("lifecycle-only"), "got: {message}");
+        }
+        other => panic!("Expected InvalidInput, got: {other:?}"),
+    }
 }
 
 // ========== set_member_permissions: optimistic lock retry ==========
@@ -383,7 +435,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
+            PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
             PermissionBits::SEND_CHAT,
         )
         .await
@@ -523,14 +575,14 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            PermissionBits::DELETE_ROOM,
+            PermissionBits::USE_WEBRTC,
         )
         .await
         .unwrap();
 
     assert_eq!(
-        updated.admin_added_permissions & PermissionBits::DELETE_ROOM,
-        PermissionBits::DELETE_ROOM,
+        updated.admin_added_permissions & PermissionBits::USE_WEBRTC,
+        PermissionBits::USE_WEBRTC,
         "grant_permission must target admin_added_permissions for admin members"
     );
     assert_eq!(
@@ -564,13 +616,64 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .await
         .unwrap();
     assert!(
-        effective.has(PermissionBits::DELETE_ROOM),
+        effective.has(PermissionBits::USE_WEBRTC),
         "granted admin override should be visible in effective permissions"
     );
     assert!(
         !effective.has(PermissionBits::BAN_MEMBER),
         "revoked admin override should be visible in effective permissions"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("deny_delete_room_grant_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("deny_delete_room_grant_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Disallow Delete Room Grant".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    let err = room_service
+        .member_service()
+        .grant_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::DELETE_ROOM,
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        Error::InvalidInput(message) => {
+            assert!(message.contains("lifecycle-only"), "got: {message}");
+        }
+        other => panic!("Expected InvalidInput, got: {other:?}"),
+    }
 }
 
 #[tokio::test]

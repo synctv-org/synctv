@@ -217,6 +217,16 @@ pub struct GetRoomMembersRequest {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TransferRoomOwnershipRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub new_owner_user_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateMemberPermissionsRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
@@ -788,7 +798,8 @@ pub enum UserStatus {
     Unspecified = 0,
     Active = 1,
     Pending = 2,
-    Banned = 3,
+    Rejected = 3,
+    Banned = 4,
 }
 impl UserStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -800,6 +811,7 @@ impl UserStatus {
             Self::Unspecified => "USER_STATUS_UNSPECIFIED",
             Self::Active => "USER_STATUS_ACTIVE",
             Self::Pending => "USER_STATUS_PENDING",
+            Self::Rejected => "USER_STATUS_REJECTED",
             Self::Banned => "USER_STATUS_BANNED",
         }
     }
@@ -809,6 +821,7 @@ impl UserStatus {
             "USER_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "USER_STATUS_ACTIVE" => Some(Self::Active),
             "USER_STATUS_PENDING" => Some(Self::Pending),
+            "USER_STATUS_REJECTED" => Some(Self::Rejected),
             "USER_STATUS_BANNED" => Some(Self::Banned),
             _ => None,
         }
@@ -821,7 +834,8 @@ pub enum RoomStatus {
     Unspecified = 0,
     Active = 1,
     Pending = 2,
-    Closed = 3,
+    Rejected = 3,
+    Closed = 4,
 }
 impl RoomStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -833,6 +847,7 @@ impl RoomStatus {
             Self::Unspecified => "ROOM_STATUS_UNSPECIFIED",
             Self::Active => "ROOM_STATUS_ACTIVE",
             Self::Pending => "ROOM_STATUS_PENDING",
+            Self::Rejected => "ROOM_STATUS_REJECTED",
             Self::Closed => "ROOM_STATUS_CLOSED",
         }
     }
@@ -842,6 +857,7 @@ impl RoomStatus {
             "ROOM_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "ROOM_STATUS_ACTIVE" => Some(Self::Active),
             "ROOM_STATUS_PENDING" => Some(Self::Pending),
+            "ROOM_STATUS_REJECTED" => Some(Self::Rejected),
             "ROOM_STATUS_CLOSED" => Some(Self::Closed),
             _ => None,
         }
@@ -2145,6 +2161,35 @@ pub mod management_service_client {
                     GrpcMethod::new(
                         "synctv.management.ManagementService",
                         "ResetRoomSettings",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn transfer_room_ownership(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TransferRoomOwnershipRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::TransferRoomOwnershipResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/TransferRoomOwnership",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "TransferRoomOwnership",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -3480,6 +3525,13 @@ pub mod management_service_server {
             request: tonic::Request<super::ResetRoomSettingsRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::admin::ResetRoomSettingsResponse>,
+            tonic::Status,
+        >;
+        async fn transfer_room_ownership(
+            &self,
+            request: tonic::Request<super::TransferRoomOwnershipRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::TransferRoomOwnershipResponse>,
             tonic::Status,
         >;
         async fn update_room_password(
@@ -5127,6 +5179,55 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ResetRoomSettingsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/TransferRoomOwnership" => {
+                    #[allow(non_camel_case_types)]
+                    struct TransferRoomOwnershipSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::TransferRoomOwnershipRequest>
+                    for TransferRoomOwnershipSvc<T> {
+                        type Response = ::synctv_proto::client::TransferRoomOwnershipResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TransferRoomOwnershipRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::transfer_room_ownership(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TransferRoomOwnershipSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

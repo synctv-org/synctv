@@ -55,6 +55,7 @@ fn test_user_role_from_str_case_insensitive() {
 fn test_user_status_can_login() {
     assert!(UserStatus::Active.can_login());
     assert!(!UserStatus::Pending.can_login());
+    assert!(!UserStatus::Rejected.can_login());
     assert!(!UserStatus::Banned.can_login());
 }
 
@@ -62,6 +63,7 @@ fn test_user_status_can_login() {
 fn test_user_status_can_create_room() {
     assert!(UserStatus::Active.can_create_room());
     assert!(!UserStatus::Pending.can_create_room());
+    assert!(!UserStatus::Rejected.can_create_room());
     assert!(!UserStatus::Banned.can_create_room());
 }
 
@@ -73,6 +75,10 @@ fn test_user_status_predicates() {
 
     assert!(!UserStatus::Pending.is_active());
     assert!(UserStatus::Pending.is_pending());
+    assert!(!UserStatus::Pending.is_rejected());
+
+    assert!(!UserStatus::Rejected.is_active());
+    assert!(UserStatus::Rejected.is_rejected());
 
     assert!(!UserStatus::Banned.is_active());
     assert!(UserStatus::Banned.is_banned());
@@ -80,7 +86,12 @@ fn test_user_status_predicates() {
 
 #[test]
 fn test_user_status_from_str_roundtrip() {
-    for status in [UserStatus::Active, UserStatus::Pending, UserStatus::Banned] {
+    for status in [
+        UserStatus::Active,
+        UserStatus::Pending,
+        UserStatus::Rejected,
+        UserStatus::Banned,
+    ] {
         let s = status.as_str();
         let parsed: UserStatus = s.parse().unwrap();
         assert_eq!(parsed, status);
@@ -217,10 +228,17 @@ fn test_room_status_predicates() {
 
     assert!(!RoomStatus::Pending.is_active());
     assert!(RoomStatus::Pending.is_pending());
+    assert!(!RoomStatus::Pending.is_rejected());
     assert!(!RoomStatus::Pending.is_closed());
+
+    assert!(!RoomStatus::Rejected.is_active());
+    assert!(!RoomStatus::Rejected.is_pending());
+    assert!(RoomStatus::Rejected.is_rejected());
+    assert!(!RoomStatus::Rejected.is_closed());
 
     assert!(!RoomStatus::Closed.is_active());
     assert!(!RoomStatus::Closed.is_pending());
+    assert!(!RoomStatus::Closed.is_rejected());
     assert!(RoomStatus::Closed.is_closed());
 }
 
@@ -230,26 +248,26 @@ fn test_room_status_predicates() {
 
 #[test]
 fn test_permission_bits_has_single() {
-    let perms = PermissionBits::new(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE);
+    let perms = PermissionBits::new(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
     assert!(perms.has(PermissionBits::SEND_CHAT));
-    assert!(perms.has(PermissionBits::ADD_MOVIE));
-    assert!(!perms.has(PermissionBits::DELETE_MOVIE_ANY));
+    assert!(perms.has(PermissionBits::ADD_MEDIA));
+    assert!(!perms.has(PermissionBits::DELETE_MEDIA_ANY));
 }
 
 #[test]
 fn test_permission_bits_has_all() {
     let perms = PermissionBits::new(
-        PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE | PermissionBits::PLAY_CONTROL,
+        PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA | PermissionBits::PLAY_CONTROL,
     );
-    assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE));
-    assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::DELETE_MOVIE_ANY));
+    assert!(perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
+    assert!(!perms.has_all(PermissionBits::SEND_CHAT | PermissionBits::DELETE_MEDIA_ANY));
 }
 
 #[test]
 fn test_permission_bits_has_any() {
     let perms = PermissionBits::new(PermissionBits::SEND_CHAT);
-    assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE));
-    assert!(!perms.has_any(PermissionBits::ADD_MOVIE | PermissionBits::PLAY_CONTROL));
+    assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
+    assert!(!perms.has_any(PermissionBits::ADD_MEDIA | PermissionBits::PLAY_CONTROL));
 }
 
 #[test]
@@ -344,7 +362,7 @@ fn test_effective_permissions_remove_only() {
     let removed = PermissionBits::SEND_CHAT;
     let effective = RoomSettingsJson::effective_permissions_for_role(global, None, Some(removed));
     assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::ADD_MOVIE)); // Other preserved
+    assert!(effective.has(PermissionBits::ADD_MEDIA)); // Other preserved
 }
 
 #[test]
@@ -356,7 +374,7 @@ fn test_effective_permissions_add_and_remove() {
         RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
     assert!(effective.has(PermissionBits::PLAY_CONTROL)); // Added
     assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
-    assert!(effective.has(PermissionBits::ADD_MOVIE)); // Unchanged
+    assert!(effective.has(PermissionBits::ADD_MEDIA)); // Unchanged
 }
 
 #[test]

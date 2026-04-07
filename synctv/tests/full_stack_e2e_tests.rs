@@ -1004,6 +1004,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             &room_id,
             "--username",
             "admin",
+            "--provider",
+            "direct_url",
             "--source-config-json",
             "{\"url\":\"https://cdn.example.com/cli-e2e.mp4\"}",
             "--title",
@@ -1136,9 +1138,11 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     assert_eq!(first_media.id, media_two_id);
     assert_eq!(first_media.title, "CLI E2E Media Second");
     assert_eq!(first_media.provider, "direct_url");
-    assert_eq!(first_media.provider_instance_name, "direct_url");
+    assert_eq!(first_media.provider_instance_name, "");
     assert_eq!(second_media.id, media_one_id);
     assert_eq!(second_media.title, "CLI E2E Media");
+    assert_eq!(second_media.provider, "direct_url");
+    assert_eq!(second_media.provider_instance_name, "");
 }
 
 #[tokio::test]

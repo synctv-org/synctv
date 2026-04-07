@@ -13,9 +13,10 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist, PlaylistId,
-        RelatedRoomListQuery, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus, User,
-        UserId, UserRole, UserStatus,
+        room_settings::{AllowAutoJoin, RequireApproval},
+        Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Playlist,
+        PlaylistId, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -330,6 +331,170 @@ async fn test_join_room_password_required_not_provided() {
     }
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_requires_approval_returns_pending_membership() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("approval_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("approval_joiner"))
+        .await
+        .unwrap();
+
+    let mut settings = RoomSettings::default();
+    settings.require_approval = RequireApproval(true);
+
+    let (room, _) = room_service
+        .create_room(
+            "Approval Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    let (_joined_room, member, members) = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(member.status, MemberStatus::Pending);
+    assert!(
+        members.is_empty(),
+        "pending joins must not broadcast active members"
+    );
+
+    let stored_member = room_service
+        .member_service()
+        .get_member(&room.id, &joiner.id)
+        .await
+        .unwrap()
+        .expect("pending membership should exist");
+    assert_eq!(stored_member.status, MemberStatus::Pending);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("manual_join_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("manual_join_target"))
+        .await
+        .unwrap();
+
+    let mut settings = RoomSettings::default();
+    settings.allow_auto_join = AllowAutoJoin(false);
+
+    let (room, _) = room_service
+        .create_room(
+            "Manual Join Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    let err = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await
+        .expect_err("self-service join must be blocked when allow_auto_join=false");
+
+    match err {
+        Error::Authorization(message) => {
+            assert!(
+                message.contains("does not allow self-service joins"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected authorization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("reject_creator"))
+        .await
+        .unwrap();
+    let joiner = user_repo.create(&make_user("reject_joiner")).await.unwrap();
+
+    let mut settings = RoomSettings::default();
+    settings.require_approval = RequireApproval(true);
+
+    let (room, _) = room_service
+        .create_room(
+            "Reject Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    let (_joined_room, pending_member, _) = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(pending_member.status, MemberStatus::Pending);
+
+    room_service
+        .reject_member(
+            room.id.clone(),
+            creator.id.clone(),
+            joiner.id.clone(),
+            Some("not now"),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        member_repo
+            .get(&room.id, &joiner.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "rejected memberships must not appear as active memberships"
+    );
+
+    let rejected = member_repo
+        .get_any(&room.id, &joiner.id)
+        .await
+        .unwrap()
+        .expect("rejected membership should remain auditable");
+    assert_eq!(rejected.status, MemberStatus::Rejected);
+    assert!(rejected.left_at.is_some());
+
+    let (_joined_room, pending_again, _) = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(pending_again.status, MemberStatus::Pending);
+}
+
 // ========== Room Leave Tests ==========
 
 #[tokio::test]
@@ -413,6 +578,52 @@ async fn test_leave_room_member_succeeds() {
 
     // Verify membership is gone
     assert!(!member_repo.is_member(&room.id, &joiner.id).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_leave_room_non_member_is_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("leave_non_member_owner"))
+        .await
+        .unwrap();
+    let outsider = user_repo
+        .create(&make_user("leave_non_member_outsider"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Leave Non Member Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let result = room_service
+        .leave_room(room.id.clone(), outsider.id.clone())
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Non-member should not be able to leave room"
+    );
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("not a member") || msg.contains("Not a member"),
+                "Error should mention membership requirement: {msg}"
+            );
+        }
+        other => panic!("Expected Authorization error, got: {other:?}"),
+    }
 }
 
 // ========== Room Delete Tests ==========
@@ -2511,7 +2722,7 @@ async fn test_remove_media_respects_admin_override_columns() {
     )
     .bind(room.id.as_str())
     .bind(admin.id.as_str())
-    .bind(PermissionBits::DELETE_MOVIE_ANY as i64)
+    .bind(PermissionBits::DELETE_MEDIA_ANY as i64)
     .execute(&pool)
     .await
     .unwrap();
@@ -2538,7 +2749,7 @@ async fn test_remove_media_respects_admin_override_columns() {
         .await;
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "admin DELETE_MOVIE_ANY revoke must be enforced by transactional SQL, got: {result:?}"
+        "admin DELETE_MEDIA_ANY revoke must be enforced by transactional SQL, got: {result:?}"
     );
 }
 
@@ -4125,6 +4336,107 @@ async fn test_non_creator_cannot_delete_room() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_room_admin_cannot_delete_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("room_admin_del_owner"))
+        .await
+        .unwrap();
+    let room_admin = user_repo
+        .create(&make_user("room_admin_del_actor"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Room Admin Delete Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    member_repo
+        .add(&synctv_core::models::RoomMember::new(
+            room.id.clone(),
+            room_admin.id.clone(),
+            RoomRole::Admin,
+        ))
+        .await
+        .unwrap();
+
+    let result = room_service
+        .delete_room(room.id.clone(), room_admin.id.clone())
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Room admin should not be able to delete room"
+    );
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("creator") || msg.contains("admin"),
+                "Error should explain who can delete room: {msg}"
+            );
+        }
+        other => panic!("Expected Authorization error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_global_admin_can_delete_room_via_delete_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("global_admin_del_owner"))
+        .await
+        .unwrap();
+    let mut admin_user = user_repo
+        .create(&make_user("global_admin_del_actor"))
+        .await
+        .unwrap();
+    admin_user.role = UserRole::Admin;
+    user_repo
+        .update(&admin_user, admin_user.version)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Global Admin Delete Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .delete_room(room.id.clone(), admin_user.id.clone())
+        .await
+        .unwrap();
+
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(
+        fetched.is_none(),
+        "Room should be soft-deleted by global admin"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_admin_delete_room_bypasses_permission_check() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4602,7 +4914,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
     let (rooms, total) = room_service
         .list_accessible_joined_rooms_with_query(
             &member.id,
-            &RelatedRoomListQuery {
+            &MyRoomListQuery {
                 pagination: PageParams::default(),
                 ..Default::default()
             },
@@ -4627,7 +4939,10 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 async fn test_list_rooms_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.max_rooms_per_user.set(32).await.unwrap();
+    room_service.set_settings_registry(registry);
 
     let owner = user_repo.create(&make_user("page_owner")).await.unwrap();
 
@@ -5801,6 +6116,7 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
         ("room.room_must_no_need_pwd", "room", "false"),
         ("room.disable_create_room", "room", "false"),
         ("server.allow_room_creation", "server", "true"),
+        ("server.max_rooms_per_user", "server", "10"),
         ("room.create_room_need_review", "room", "false"),
     ] {
         sqlx::query(
@@ -5960,6 +6276,167 @@ async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
     assert!(
         result.is_ok(),
         "Should allow room without password when room_must_no_need_pwd is true"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_updates_room_and_member_roles() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    room_service.set_settings_registry(registry);
+
+    let old_owner = user_repo
+        .create(&make_user("room_transfer_owner"))
+        .await
+        .unwrap();
+    let new_owner = user_repo
+        .create(&make_user("room_transfer_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Ownership Transfer Room".to_string(),
+            "transfer test".to_string(),
+            old_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), new_owner.id.clone(), None)
+        .await
+        .unwrap();
+
+    let updated_room = room_service
+        .transfer_room_ownership(room.id.clone(), old_owner.id.clone(), new_owner.id.clone())
+        .await
+        .expect("room ownership transfer should succeed");
+
+    assert_eq!(updated_room.created_by, new_owner.id);
+
+    let old_owner_member = member_repo
+        .get(&room.id, &old_owner.id)
+        .await
+        .unwrap()
+        .expect("old owner should remain a room member");
+    assert_eq!(old_owner_member.role, RoomRole::Admin);
+
+    let new_owner_member = member_repo
+        .get(&room.id, &new_owner.id)
+        .await
+        .unwrap()
+        .expect("new owner should remain a room member");
+    assert_eq!(new_owner_member.role, RoomRole::Creator);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.max_rooms_per_user.set(1).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let old_owner = user_repo
+        .create(&make_user("room_transfer_limit_owner"))
+        .await
+        .unwrap();
+    let new_owner = user_repo
+        .create(&make_user("room_transfer_limit_target"))
+        .await
+        .unwrap();
+
+    let (room_to_transfer, _) = room_service
+        .create_room(
+            "Transfer Source Room".to_string(),
+            String::new(),
+            old_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (_existing_room, _) = room_service
+        .create_room(
+            "Already Owned Room".to_string(),
+            String::new(),
+            new_owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room_to_transfer.id.clone(), new_owner.id.clone(), None)
+        .await
+        .unwrap();
+
+    let err = room_service
+        .transfer_room_ownership(
+            room_to_transfer.id.clone(),
+            old_owner.id.clone(),
+            new_owner.id.clone(),
+        )
+        .await
+        .expect_err("ownership transfer should fail when new owner reached room limit");
+
+    assert!(
+        matches!(err, Error::InvalidInput(ref msg) if msg.contains("maximum number of rooms")),
+        "error should explain room ownership limit, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_respects_max_rooms_per_user() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+    registry.max_rooms_per_user.set(1).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("room_create_limit_owner"))
+        .await
+        .unwrap();
+
+    room_service
+        .create_room(
+            "First Limited Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let err = room_service
+        .create_room(
+            "Second Limited Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("second room should exceed max_rooms_per_user");
+
+    assert!(
+        matches!(err, Error::InvalidInput(ref msg) if msg.contains("maximum number of rooms")),
+        "error should explain room creation limit, got: {err:?}"
     );
 }
 

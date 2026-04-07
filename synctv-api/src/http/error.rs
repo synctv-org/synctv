@@ -5,8 +5,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use crate::proto::client::ApiErrorResponse;
 
 /// Result type for HTTP handlers
 pub type AppResult<T> = Result<T, AppError>;
@@ -158,21 +159,6 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-/// Error response JSON structure
-#[derive(Debug, Serialize, Deserialize)]
-struct ErrorResponse {
-    error: String,
-    status: u16,
-    /// Application-level error code for programmatic handling.
-    /// Only present when the error originates from the impls layer.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<i32>,
-    /// Request ID for correlating the error with the request.
-    /// Present when the request has passed through `request_id_middleware`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request_id: Option<String>,
-}
-
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status;
@@ -203,9 +189,9 @@ impl IntoResponse for AppError {
             .try_with(Clone::clone)
             .ok();
 
-        let body = Json(ErrorResponse {
+        let body = Json(ApiErrorResponse {
             error: error_message,
-            status: status.as_u16(),
+            status: status.as_u16().into(),
             code: self.error_code,
             request_id,
         });

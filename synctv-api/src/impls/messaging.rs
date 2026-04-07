@@ -304,7 +304,8 @@ impl CachedMembership {
     }
 }
 
-// Re-use the canonical room_role_to_proto from client::convert (E2: deduplicate)
+// Re-use the canonical member/role proto mappers from client::convert.
+use crate::impls::client::convert::member_status_to_proto;
 use crate::impls::client::room_role_to_proto;
 
 /// Trait for sending server messages to clients
@@ -1527,6 +1528,9 @@ impl StreamMessageHandler {
                     username: self.username.clone(),
                     role: role_proto,
                     permissions,
+                    status: member
+                        .map(|member| member_status_to_proto(member.status))
+                        .unwrap_or(synctv_proto::common::MemberStatus::Active as i32),
                     added_permissions: added,
                     removed_permissions: removed,
                     admin_added_permissions: admin_added,
@@ -3134,6 +3138,7 @@ fn cluster_event_to_server_messages(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
+                    status: synctv_proto::common::MemberStatus::Active as i32,
                     added_permissions: added_permissions.0,
                     removed_permissions: removed_permissions.0,
                     admin_added_permissions: admin_added_permissions.0,

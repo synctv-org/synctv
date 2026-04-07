@@ -37,9 +37,17 @@ impl ClientApiImpl {
         old_password: Option<String>,
         new_password: Option<String>,
     ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
-        if let Some(ref username) = username {
+        let normalized_username = username.as_ref().map(|value| value.trim().to_string());
+        let request = crate::proto::client::UpdateUserRequest {
+            username: normalized_username.clone(),
+            password: new_password.clone(),
+            old_password: old_password.clone(),
+        };
+        crate::impls::validate_proto_request(&request)?;
+
+        if let Some(ref username) = normalized_username {
             UsernameValidator::new()
-                .validate(username.trim())
+                .validate(username)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         }
 
@@ -51,7 +59,7 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let updated_user = self
             .user_service
-            .update_profile(&uid, username, old_password, new_password)
+            .update_profile(&uid, normalized_username, old_password, new_password)
             .await
             .map_err(ApiError::from)?;
 

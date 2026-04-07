@@ -170,6 +170,22 @@ async fn test_banned_user_rejected_via_db() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_rejected_user_rejected_via_db() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Rejected, 0)).await;
+    let user_service = Arc::new(create_user_service(pool));
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
+    let claims = make_claims(&user.id, 0);
+
+    let result = pipeline.check(&claims).await;
+    assert!(result.is_err(), "Rejected user should be rejected via DB");
+    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;

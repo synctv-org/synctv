@@ -31,8 +31,8 @@ fn test_reorder_playlist_is_distinct_from_other_permissions() {
     );
     assert_ne!(
         PermissionBits::REORDER_PLAYLIST,
-        PermissionBits::ADD_MOVIE,
-        "REORDER_PLAYLIST should be distinct from ADD_MOVIE"
+        PermissionBits::ADD_MEDIA,
+        "REORDER_PLAYLIST should be distinct from ADD_MEDIA"
     );
     assert_ne!(
         PermissionBits::REORDER_PLAYLIST,
@@ -145,8 +145,8 @@ fn test_creator_has_all_permissions() {
         "Creator should have VIEW_PLAYLIST"
     );
     assert!(
-        creator_perms.has(PermissionBits::ADD_MOVIE),
-        "Creator should have ADD_MOVIE"
+        creator_perms.has(PermissionBits::ADD_MEDIA),
+        "Creator should have ADD_MEDIA"
     );
     assert!(
         creator_perms.has(PermissionBits::KICK_MEMBER),
@@ -166,19 +166,19 @@ fn test_creator_has_all_permissions() {
 fn test_multiple_permissions_can_be_checked() {
     let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
 
-    // Check multiple permissions at once - member has ADD_MOVIE but not REORDER_PLAYLIST
-    let required_for_reorder = PermissionBits::REORDER_PLAYLIST | PermissionBits::ADD_MOVIE;
+    // Check multiple permissions at once - member has ADD_MEDIA but not REORDER_PLAYLIST
+    let required_for_reorder = PermissionBits::REORDER_PLAYLIST | PermissionBits::ADD_MEDIA;
     let has_both = (member_default.0 & required_for_reorder) == required_for_reorder;
 
     assert!(
         !has_both,
-        "Member should NOT have both REORDER_PLAYLIST and ADD_MOVIE - only ADD_MOVIE"
+        "Member should NOT have both REORDER_PLAYLIST and ADD_MEDIA - only ADD_MEDIA"
     );
 
-    // But member should have ADD_MOVIE alone
+    // But member should have ADD_MEDIA alone
     assert!(
-        member_default.has(PermissionBits::ADD_MOVIE),
-        "Member should have ADD_MOVIE permission"
+        member_default.has(PermissionBits::ADD_MEDIA),
+        "Member should have ADD_MEDIA permission"
     );
 }
 

@@ -393,6 +393,7 @@ fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
     let proto_status = match user.status {
         UserStatus::Active => ProtoUserStatus::Active,
         UserStatus::Pending => ProtoUserStatus::Pending,
+        UserStatus::Rejected => ProtoUserStatus::Rejected,
         UserStatus::Banned => ProtoUserStatus::Banned,
     };
 

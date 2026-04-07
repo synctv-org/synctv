@@ -1,7 +1,7 @@
 //! Member operations: `get_room_members`, `update_member_permissions`, kick, ban, unban
 
 use crate::impls::ApiError;
-use synctv_core::models::UserId;
+use synctv_core::models::{PermissionBits, UserId};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
@@ -17,6 +17,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
 
@@ -25,6 +27,19 @@ impl ClientApiImpl {
             .check_membership(&rid, &uid)
             .await
             .map_err(Self::map_room_access_error)?;
+
+        let permissions = self
+            .room_service
+            .permission_service()
+            .get_user_permissions_no_cache(&rid, &uid)
+            .await
+            .map_err(ApiError::from)?;
+
+        if !permissions.has(PermissionBits::VIEW_MEMBER_LIST) {
+            return Err(ApiError::Authorization(
+                "Forbidden: Permission denied".to_string(),
+            ));
+        }
 
         let role = match req
             .role
@@ -44,7 +59,7 @@ impl ClientApiImpl {
             }
             _ => None,
         };
-        let status = match req
+        let requested_status = match req
             .status
             .and_then(|value| synctv_proto::common::MemberStatus::try_from(value).ok())
         {
@@ -54,6 +69,9 @@ impl ClientApiImpl {
             Some(synctv_proto::common::MemberStatus::Pending) => {
                 Some(synctv_core::models::MemberStatus::Pending)
             }
+            Some(synctv_proto::common::MemberStatus::Rejected) => {
+                Some(synctv_core::models::MemberStatus::Rejected)
+            }
             Some(synctv_proto::common::MemberStatus::Banned) => {
                 Some(synctv_core::models::MemberStatus::Banned)
             }
@@ -61,6 +79,27 @@ impl ClientApiImpl {
                 Some(synctv_core::models::MemberStatus::Left)
             }
             _ => None,
+        };
+        let can_view_non_active_members = permissions.has_any(
+            PermissionBits::APPROVE_MEMBER
+                | PermissionBits::KICK_MEMBER
+                | PermissionBits::BAN_MEMBER
+                | PermissionBits::ADD_MEMBER
+                | PermissionBits::SET_MEMBER_PERMISSIONS,
+        );
+        let status = if can_view_non_active_members {
+            requested_status
+        } else {
+            match requested_status {
+                Some(synctv_core::models::MemberStatus::Active) | None => {
+                    Some(synctv_core::models::MemberStatus::Active)
+                }
+                Some(_) => {
+                    return Err(ApiError::Authorization(
+                        "Forbidden: Viewing pending or historical room members requires room moderation permissions".to_string(),
+                    ));
+                }
+            }
         };
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: synctv_core::models::PageParams::new(
@@ -114,18 +153,175 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn add_member(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::AddMemberRequest,
+    ) -> Result<crate::proto::client::AddMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::AddMemberRequest {
+            user_id: target_user_id,
+            role,
+            notify,
+        } = req;
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
+            synctv_core::models::RoomRole::Member
+        } else {
+            proto_role_to_room_role(role)?
+        };
+
+        let member = self
+            .room_service
+            .add_member(rid.clone(), uid, target_uid.clone(), role, notify)
+            .await
+            .map_err(ApiError::from)?;
+
+        let username = self
+            .user_service
+            .get_user(&target_uid)
+            .await
+            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+        let is_online = self
+            .connection_manager
+            .get_connection_id(&rid, &target_uid)
+            .is_some();
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online,
+            is_active: member.status.is_active(),
+            banned_at: member.banned_at,
+            banned_reason: member.banned_reason,
+        };
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .unwrap_or_default();
+        let role_default = self
+            .room_service
+            .permission_service()
+            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
+
+        Ok(crate::proto::client::AddMemberResponse {
+            member: Some(room_member_to_proto(member_with_user, role_default)),
+        })
+    }
+
+    pub async fn approve_member(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::ApproveMemberRequest,
+    ) -> Result<crate::proto::client::ApproveMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::ApproveMemberRequest {
+            user_id: target_user_id,
+        } = req;
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+
+        let member = self
+            .room_service
+            .approve_member(rid.clone(), uid, target_uid.clone())
+            .await
+            .map_err(ApiError::from)?;
+
+        let username = self
+            .user_service
+            .get_user(&target_uid)
+            .await
+            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+        let is_online = self
+            .connection_manager
+            .get_connection_id(&rid, &target_uid)
+            .is_some();
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online,
+            is_active: member.status.is_active(),
+            banned_at: member.banned_at,
+            banned_reason: member.banned_reason,
+        };
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .unwrap_or_default();
+        let role_default = self
+            .room_service
+            .permission_service()
+            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
+
+        Ok(crate::proto::client::ApproveMemberResponse {
+            member: Some(room_member_to_proto(member_with_user, role_default)),
+        })
+    }
+
+    pub async fn reject_member(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::RejectMemberRequest,
+    ) -> Result<crate::proto::client::RejectMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::RejectMemberRequest {
+            user_id: target_user_id,
+            reason,
+        } = req;
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let reason = (!reason.trim().is_empty()).then_some(reason.as_str());
+
+        self.room_service
+            .reject_member(rid, uid, target_uid, reason)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::RejectMemberResponse { success: true })
+    }
+
     pub async fn update_member_permissions(
         &self,
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::UpdateMemberPermissionsRequest,
     ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::UpdateMemberPermissionsRequest {
+            user_id: target_user_id,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        } = req;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let target_uid = UserId::from_string(req.user_id.clone());
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let permission_fanout = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),
@@ -136,13 +332,13 @@ impl ClientApiImpl {
         // Fetch current target member state BEFORE any mutations.
         // This prevents partial mutation when role change + permission update
         // are requested together and validation fails after the role commit.
-        let has_permission_changes = req.added_permissions > 0
-            || req.removed_permissions > 0
-            || req.admin_added_permissions > 0
-            || req.admin_removed_permissions > 0;
+        let has_permission_changes = added_permissions > 0
+            || removed_permissions > 0
+            || admin_added_permissions > 0
+            || admin_removed_permissions > 0;
 
         if has_permission_changes
-            || req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32
+            || role != synctv_proto::common::RoomMemberRole::Unspecified as i32
         {
             let target_member = self
                 .room_service
@@ -156,25 +352,23 @@ impl ClientApiImpl {
             // When the request changes the role, we must use the NEW role
             // (not the current role) to decide which permission columns
             // to validate against and write to.
-            let role_is_changing =
-                req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32;
+            let role_is_changing = role != synctv_proto::common::RoomMemberRole::Unspecified as i32;
             let effective_is_admin = if role_is_changing {
-                let new_role = proto_role_to_room_role(req.role)?;
+                let new_role = proto_role_to_room_role(role)?;
                 matches!(new_role, synctv_core::models::RoomRole::Admin)
             } else {
                 matches!(target_member.role, synctv_core::models::RoomRole::Admin)
             };
 
             if has_permission_changes {
-                if effective_is_admin && (req.added_permissions > 0 || req.removed_permissions > 0)
-                {
+                if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
                     return Err(ApiError::Authorization(
                         "Admin members must use admin_added_permissions/admin_removed_permissions"
                             .to_string(),
                     ));
                 }
                 if !effective_is_admin
-                    && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
+                    && (admin_added_permissions > 0 || admin_removed_permissions > 0)
                 {
                     return Err(ApiError::Authorization(
                         "Only admin members use admin_added_permissions/admin_removed_permissions"
@@ -187,7 +381,7 @@ impl ClientApiImpl {
 
             // Handle role update if provided (non-zero = specified).
             if role_is_changing {
-                let new_role = proto_role_to_room_role(req.role)?;
+                let new_role = proto_role_to_room_role(role)?;
                 self.room_service
                     .member_service()
                     .set_member_role(rid.clone(), uid.clone(), target_uid.clone(), new_role)
@@ -201,15 +395,15 @@ impl ClientApiImpl {
                 // GRANT_PERMISSION as the single source of truth via
                 // check_permission_no_cache.
                 let added = if effective_is_admin {
-                    req.admin_added_permissions
+                    admin_added_permissions
                 } else {
-                    req.added_permissions
+                    added_permissions
                 };
 
                 let removed = if effective_is_admin {
-                    req.admin_removed_permissions
+                    admin_removed_permissions
                 } else {
-                    req.removed_permissions
+                    removed_permissions
                 };
 
                 self.room_service
@@ -293,12 +487,13 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::KickMemberRequest,
     ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::KickMemberRequest {
+            user_id: target_user_id,
+        } = req;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let target_uid = UserId::from_string(req.user_id.clone());
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let cluster_event = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),
@@ -345,32 +540,25 @@ impl ClientApiImpl {
         Ok(crate::proto::client::KickMemberResponse { success: true })
     }
 
-    /// Maximum length for ban reason text
-    const BAN_REASON_MAX: usize = 500;
-
     pub async fn ban_member(
         &self,
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::BanMemberRequest,
     ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
-        if req.reason.chars().count() > Self::BAN_REASON_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Ban reason too long (maximum {} characters)",
-                Self::BAN_REASON_MAX
-            )));
-        }
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::BanMemberRequest {
+            user_id: target_user_id,
+            reason,
+        } = req;
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let target_uid = UserId::from_string(req.user_id.clone());
-        let reason = if req.reason.is_empty() {
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let reason = if reason.is_empty() {
             None
         } else {
-            Some(req.reason)
+            Some(reason)
         };
         let cluster_event = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -425,12 +613,13 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UnbanMemberRequest,
     ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::client::UnbanMemberRequest {
+            user_id: target_user_id,
+        } = req;
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
-        let target_uid = UserId::from_string(req.user_id.clone());
+        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let permission_fanout = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),

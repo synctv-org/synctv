@@ -679,6 +679,39 @@ async fn test_login_pending_user_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_login_rejected_user_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    let username = format!("rejected_login_{}", synctv_common::snanoid!(6));
+    let (user, _, _) = service
+        .register(
+            username.clone(),
+            Some(format!(
+                "rejected_login_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
+        .bind(user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to set rejected status");
+
+    let result = service
+        .login(username, "StrongPass1".to_string(), None)
+        .await;
+    assert!(result.is_err(), "Rejected user should not be able to login");
+    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_soft_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());

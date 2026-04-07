@@ -3,8 +3,7 @@
 // Database access layer for provider instance configuration management.
 
 use crate::models::{
-    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
-    UserProviderCredential,
+    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
 };
 use crate::service::CredentialEncryption;
 use crate::Result;
@@ -66,21 +65,13 @@ impl ProviderInstanceRepository {
         }
         if let Some(search) = &query.search {
             let pattern = format!("%{}%", super::query_builder::escape_ilike(search));
-            builder.push(
-                " AND (name ILIKE ",
-            );
+            builder.push(" AND (name ILIKE ");
             builder.push_bind(pattern.clone());
-            builder.push(
-                " ESCAPE '\\' OR endpoint ILIKE ",
-            );
+            builder.push(" ESCAPE '\\' OR endpoint ILIKE ");
             builder.push_bind(pattern.clone());
-            builder.push(
-                " ESCAPE '\\' OR COALESCE(comment, '') ILIKE ",
-            );
+            builder.push(" ESCAPE '\\' OR COALESCE(comment, '') ILIKE ");
             builder.push_bind(pattern.clone());
-            builder.push(
-                " ESCAPE '\\' OR array_to_string(providers, ' ') ILIKE ",
-            );
+            builder.push(" ESCAPE '\\' OR array_to_string(providers, ' ') ILIKE ");
             builder.push_bind(pattern);
             builder.push(" ESCAPE '\\')");
         }
@@ -378,6 +369,15 @@ impl std::fmt::Debug for UserProviderCredentialRepository {
 }
 
 impl UserProviderCredentialRepository {
+    fn normalize_provider_instance_name_for_db(
+        provider_instance_name: Option<&str>,
+    ) -> Option<&str> {
+        provider_instance_name.and_then(|provider_instance_name| {
+            let trimmed = provider_instance_name.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+    }
+
     /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -516,7 +516,9 @@ impl UserProviderCredentialRepository {
         .bind(&credential.user_id)
         .bind(&credential.provider)
         .bind(&credential.server_id)
-        .bind(&credential.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            credential.provider_instance_name.as_deref(),
+        ))
         .bind(&encrypted_data)
         .bind(credential.expires_at)
         .execute(&self.pool)
@@ -537,7 +539,9 @@ impl UserProviderCredentialRepository {
             "
         )
         .bind(&credential.id)
-        .bind(&credential.provider_instance_name)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            credential.provider_instance_name.as_deref(),
+        ))
         .bind(&encrypted_data)
         .bind(credential.expires_at)
         .execute(&self.pool)
@@ -692,6 +696,34 @@ mod tests {
             err.to_string()
                 .contains("Credential encryption must be configured"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_normalize_provider_instance_name_for_db() {
+        assert_eq!(
+            UserProviderCredentialRepository::normalize_provider_instance_name_for_db(None),
+            None
+        );
+        assert_eq!(
+            UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some("")),
+            None
+        );
+        assert_eq!(
+            UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some("   ")),
+            None
+        );
+        assert_eq!(
+            UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some(
+                "alist-main"
+            )),
+            Some("alist-main")
+        );
+        assert_eq!(
+            UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some(
+                "  alist-main  "
+            )),
+            Some("alist-main")
         );
     }
 }

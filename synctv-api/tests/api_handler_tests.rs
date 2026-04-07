@@ -26,6 +26,62 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+mod validated_query_extractor {
+    use super::*;
+    use synctv_api::http::validation::ValidatedQuery;
+    use synctv_proto::client::ListMyRoomsRequest;
+
+    #[tokio::test]
+    async fn test_rejects_invalid_proto_query_via_http_extractor() {
+        let app = Router::new().route(
+            "/api/user/rooms",
+            get(|ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
+                Json(serde_json::json!({"page": req.page}))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/user/rooms?page=-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        let error = json["error"].as_str().unwrap();
+        assert!(!error.is_empty());
+        assert_ne!(error, "Invalid URL");
+    }
+
+    #[tokio::test]
+    async fn test_accepts_valid_proto_query_via_http_extractor() {
+        let app = Router::new().route(
+            "/api/user/rooms",
+            get(|ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
+                Json(serde_json::json!({
+                    "page": req.page,
+                    "status": req.status,
+                    "relation": req.relation
+                }))
+            }),
+        );
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/user/rooms?page=1&status=1&relation=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["status"], 1);
+        assert_eq!(json["relation"], 2);
+    }
+}
+
 // ============================================================================
 // API1: update_playback handler validation
 // ============================================================================
@@ -33,7 +89,7 @@ async fn body_json(response: axum::response::Response) -> Value {
 mod update_playback_validation {
     use super::*;
     use synctv_api::http::error::AppError;
-    use synctv_api::http::room::UpdatePlaybackRequest;
+    use synctv_proto::client::{PlaybackPatchState, UpdatePlaybackRequest};
 
     /// Simulate the `update_playback` handler validation logic:
     /// Empty body (all None) should produce 400
@@ -43,12 +99,12 @@ mod update_playback_validation {
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
                 // Reproduce the validation from room.rs:573-577
-                if req.state.is_none()
+                if req.state == PlaybackPatchState::Unspecified as i32
                     && req.position.is_none()
                     && req.speed.is_none()
-                    && req.media_id.is_none()
-                    && req.playlist_id.is_none()
-                    && req.target.is_none()
+                    && req.media_id.is_empty()
+                    && req.playlist_id.is_empty()
+                    && req.target.is_empty()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
@@ -74,33 +130,33 @@ mod update_playback_validation {
             .contains("No valid playback update field"));
     }
 
-    /// Invalid state string (not "playing" or "paused") should produce 400
+    /// Invalid numeric enum value should produce 400
     #[tokio::test]
-    async fn test_invalid_state_string_returns_400() {
+    async fn test_invalid_state_value_returns_400() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
                 // Reproduce the validation from room.rs:580-584
-                if req.state.is_none()
+                if req.state == PlaybackPatchState::Unspecified as i32
                     && req.position.is_none()
                     && req.speed.is_none()
-                    && req.media_id.is_none()
-                    && req.playlist_id.is_none()
-                    && req.target.is_none()
+                    && req.media_id.is_empty()
+                    && req.playlist_id.is_empty()
+                    && req.target.is_empty()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "No valid playback update field provided",
                     ));
                 }
-                match req.state.as_deref() {
-                    Some("playing") => {}
-                    Some("paused") => {}
-                    Some(_) => {
+                match req.state {
+                    x if x == PlaybackPatchState::Unspecified as i32 => {}
+                    x if x == PlaybackPatchState::Playing as i32 => {}
+                    x if x == PlaybackPatchState::Paused as i32 => {}
+                    _ => {
                         return Err(AppError::bad_request(
-                            "Invalid state value, use 'playing' or 'paused'",
+                            "Invalid state value, use 0 (unspecified), 1 (playing), or 2 (paused)",
                         ));
                     }
-                    None => {}
                 }
                 Ok(Json(serde_json::json!({"status": "ok"})))
             }),
@@ -110,7 +166,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": "stopped"}"#))
+            .body(Body::from(r#"{"state": 99}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -122,27 +178,28 @@ mod update_playback_validation {
             .contains("Invalid state value"));
     }
 
-    /// Valid state "playing" should pass validation
+    /// Valid state `PLAYING` should pass validation
     #[tokio::test]
     async fn test_valid_state_playing_passes_validation() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state.is_none()
+                if req.state == PlaybackPatchState::Unspecified as i32
                     && req.position.is_none()
                     && req.speed.is_none()
-                    && req.media_id.is_none()
-                    && req.playlist_id.is_none()
-                    && req.target.is_none()
+                    && req.media_id.is_empty()
+                    && req.playlist_id.is_empty()
+                    && req.target.is_empty()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
-                match req.state.as_deref() {
-                    Some("playing" | "paused") => {}
-                    Some(_) => {
+                match req.state {
+                    x if x == PlaybackPatchState::Unspecified as i32 => {}
+                    x if x == PlaybackPatchState::Playing as i32 => {}
+                    x if x == PlaybackPatchState::Paused as i32 => {}
+                    _ => {
                         return Err(AppError::bad_request("Invalid state value"));
                     }
-                    None => {}
                 }
                 Ok(Json(serde_json::json!({"state": "playing"})))
             }),
@@ -152,34 +209,35 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": "playing"}"#))
+            .body(Body::from(r#"{"state": 1}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Valid state "paused" should pass validation
+    /// Valid state `PAUSED` should pass validation
     #[tokio::test]
     async fn test_valid_state_paused_passes_validation() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state.is_none()
+                if req.state == PlaybackPatchState::Unspecified as i32
                     && req.position.is_none()
                     && req.speed.is_none()
-                    && req.media_id.is_none()
-                    && req.playlist_id.is_none()
-                    && req.target.is_none()
+                    && req.media_id.is_empty()
+                    && req.playlist_id.is_empty()
+                    && req.target.is_empty()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
-                match req.state.as_deref() {
-                    Some("playing" | "paused") => {}
-                    Some(_) => {
+                match req.state {
+                    x if x == PlaybackPatchState::Unspecified as i32 => {}
+                    x if x == PlaybackPatchState::Playing as i32 => {}
+                    x if x == PlaybackPatchState::Paused as i32 => {}
+                    _ => {
                         return Err(AppError::bad_request("Invalid state value"));
                     }
-                    None => {}
                 }
                 Ok(Json(serde_json::json!({"state": "paused"})))
             }),
@@ -189,7 +247,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": "paused"}"#))
+            .body(Body::from(r#"{"state": 2}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -202,12 +260,12 @@ mod update_playback_validation {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state.is_none()
+                if req.state == PlaybackPatchState::Unspecified as i32
                     && req.position.is_none()
                     && req.speed.is_none()
-                    && req.media_id.is_none()
-                    && req.playlist_id.is_none()
-                    && req.target.is_none()
+                    && req.media_id.is_empty()
+                    && req.playlist_id.is_empty()
+                    && req.target.is_empty()
                 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
@@ -287,10 +345,10 @@ mod update_playback_validation {
             "/api/rooms/{room_id}/playback",
             patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
                 let target_requested =
-                    req.media_id.is_some() || req.playlist_id.is_some() || req.target.is_some();
+                    !req.media_id.is_empty() || !req.playlist_id.is_empty() || !req.target.is_empty();
 
                 if target_requested
-                    && (req.state.is_some()
+                    && (req.state != PlaybackPatchState::Unspecified as i32
                         || req.position.is_some()
                         || req.speed.is_some()
                         || req.version.is_some())
@@ -309,7 +367,7 @@ mod update_playback_validation {
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
             .body(Body::from(
-                r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"},"state":"playing"}"#,
+                r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"},"state":1}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -514,14 +572,14 @@ mod update_user_validation {
 mod create_ticket_validation {
     use super::*;
     use synctv_api::http::error::AppError;
-    use synctv_api::http::ticket::CreateTicketRequest;
+    use synctv_proto::client::CreateWebSocketTicketRequest;
 
     /// Empty `room_id` should produce 400
     #[tokio::test]
     async fn test_empty_room_id_returns_400() {
         let app = Router::new().route(
             "/api/tickets",
-            post(|Json(req): Json<CreateTicketRequest>| async move {
+            post(|Json(req): Json<CreateWebSocketTicketRequest>| async move {
                 // Reproduce ticket.rs:84-85
                 if req.room_id.trim().is_empty() {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
@@ -553,7 +611,7 @@ mod create_ticket_validation {
     async fn test_whitespace_room_id_returns_400() {
         let app = Router::new().route(
             "/api/tickets",
-            post(|Json(req): Json<CreateTicketRequest>| async move {
+            post(|Json(req): Json<CreateWebSocketTicketRequest>| async move {
                 if req.room_id.trim().is_empty() {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "room_id is required",
@@ -579,7 +637,7 @@ mod create_ticket_validation {
     async fn test_invalid_room_id_format_returns_400() {
         let app = Router::new().route(
             "/api/tickets",
-            post(|Json(req): Json<CreateTicketRequest>| async move {
+            post(|Json(req): Json<CreateWebSocketTicketRequest>| async move {
                 if req.room_id.trim().is_empty() {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
                         "room_id is required",
@@ -1018,30 +1076,37 @@ mod live_streaming_validation {
 
     /// provider live query deserialization edge cases
     #[test]
-    fn test_live_query_deserialize_required_room_id() {
-        use synctv_api::http::providers::live::RoomQuery;
-
-        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("room_id=room123");
-        assert!(result.is_ok(), "provider RoomQuery should deserialize");
-    }
-
-    #[test]
-    fn test_live_query_deserialize_empty_fails() {
-        use synctv_api::http::providers::live::RoomQuery;
-
-        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("");
-        assert!(result.is_err(), "provider RoomQuery requires room_id");
-    }
-
-    #[test]
-    fn test_live_query_deserialize_removed_room_id_casing_rejected() {
-        use synctv_api::http::providers::live::RoomQuery;
-
-        let result: Result<RoomQuery, _> = serde_urlencoded::from_str("roomId=room123");
+    fn test_live_query_deserialize_page_and_page_size() {
+        let result: Result<synctv_proto::client::ListRoomStreamsRequest, _> =
+            serde_urlencoded::from_str(
+                "page=2&page_size=25&search=beta&sort_by=1&sort_direction=2",
+            );
         assert!(
-            result.is_err(),
-            "removed camelCase roomId must not deserialize"
+            result.is_ok(),
+            "provider ListRoomStreamsRequest should deserialize"
         );
+        let req = result.unwrap();
+        assert_eq!(req.page, 2);
+        assert_eq!(req.page_size, 25);
+        assert_eq!(req.search, "beta");
+        assert_eq!(req.sort_by, 1);
+        assert_eq!(req.sort_direction, 2);
+    }
+
+    #[test]
+    fn test_live_query_deserialize_empty_defaults() {
+        let result: synctv_proto::client::ListRoomStreamsRequest =
+            serde_urlencoded::from_str("").expect("empty query should default");
+        assert_eq!(result.page, 0);
+        assert_eq!(result.page_size, 0);
+    }
+
+    #[test]
+    fn test_live_query_deserialize_removed_page_size_casing_ignored() {
+        let result: synctv_proto::client::ListRoomStreamsRequest =
+            serde_urlencoded::from_str("pageSize=25").expect("unknown field should be ignored");
+        assert_eq!(result.page, 0);
+        assert_eq!(result.page_size, 0);
     }
 }
 
@@ -1050,7 +1115,8 @@ mod live_streaming_validation {
 // ============================================================================
 
 mod websocket_auth_priority {
-    use synctv_api::http::websocket::{AuthMethod, WsQuery};
+    use synctv_api::http::websocket::AuthMethod;
+    use synctv_proto::client::WebSocketConnectRequest;
 
     /// Auth priority: header present -> should use Header method
     #[test]
@@ -1071,22 +1137,24 @@ mod websocket_auth_priority {
     #[test]
     fn test_auth_priority_ticket_second() {
         let headers = axum::http::HeaderMap::new();
-        let query = WsQuery {
-            ticket: Some("ticket_abc".to_string()),
+        let query = WebSocketConnectRequest {
+            ticket: "ticket_abc".to_string(),
         };
 
         assert!(headers.get("Authorization").is_none());
-        assert!(query.ticket.is_some());
+        assert!(!query.ticket.is_empty());
     }
 
     /// Missing all credentials should produce unauthorized
     #[test]
     fn test_missing_all_credentials_produces_unauthorized() {
         let headers = axum::http::HeaderMap::new();
-        let query = WsQuery { ticket: None };
+        let query = WebSocketConnectRequest {
+            ticket: String::new(),
+        };
 
         assert!(headers.get("Authorization").is_none());
-        assert!(query.ticket.is_none());
+        assert!(query.ticket.is_empty());
 
         // This would produce:
         let err = synctv_api::http::error::AppError::unauthorized(
@@ -1104,18 +1172,18 @@ mod websocket_auth_priority {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
     }
 
-    /// `WsQuery` deserialization
+    /// `WebSocketConnectRequest` deserialization
     #[test]
     fn test_ws_query_deserialization_combinations() {
         // With ticket
         let json = r#"{"ticket":"tix"}"#;
-        let query: WsQuery = serde_json::from_str(json).unwrap();
-        assert!(query.ticket.is_some());
+        let query: WebSocketConnectRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(query.ticket, "tix");
 
         // Neither
         let json = r"{}";
-        let query: WsQuery = serde_json::from_str(json).unwrap();
-        assert!(query.ticket.is_none());
+        let query: WebSocketConnectRequest = serde_json::from_str(json).unwrap();
+        assert!(query.ticket.is_empty());
     }
 
     /// Non-Bearer auth header should not be extracted
@@ -1390,10 +1458,10 @@ mod validation_coverage {
     /// `validate_room_id` accepts valid IDs
     #[test]
     fn test_validate_room_id_accepts_valid() {
-        assert!(validate_room_id("room1234_abx").is_ok());
-        assert!(validate_room_id("room_123-xyz").is_ok());
-        assert!(validate_room_id("room-123_abc").is_ok());
-        assert!(validate_room_id("ABC12345_DEF").is_ok());
+        assert!(validate_room_id("AbC123xYz890").is_ok());
+        assert!(validate_room_id("1234567890Ab").is_ok());
+        assert!(validate_room_id("ABCDEFGHIJKL").is_ok());
+        assert!(validate_room_id("abcdefghijkl").is_ok());
     }
 
     /// `validate_email` rejects invalid formats

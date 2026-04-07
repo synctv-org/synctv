@@ -66,7 +66,7 @@ COMMENT ON COLUMN playlists.parent_id IS 'Parent playlist ID. NULL means this pl
 COMMENT ON COLUMN playlists.position IS 'Floating-point order position in parent directory';
 COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name (NULL=static folder, non-NULL=dynamic folder, e.g., "alist", "emby")';
 COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (required for dynamic folders)';
-COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provider backend instance name (optional)';
+COMMENT ON COLUMN playlists.provider_instance_name IS 'Optional media provider backend instance name. NULL or empty means use the default local instance for source_provider.';
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
 COMMENT ON COLUMN playlists.version IS 'Optimistic locking version, incremented on each update';
 

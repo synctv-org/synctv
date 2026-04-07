@@ -4,14 +4,17 @@
 //! Proxy routes are handled by the unified proxy handler in `providers/mod.rs`.
 
 use axum::{
-    extract::{Query, State},
+    extract::State,
     routing::{get, post},
     Json, Router,
 };
 
 use crate::http::{
-    middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState,
+    middleware::AuthUser, provider_common::provider_instance_name, validation::ValidatedQuery,
+    AppError, AppResult, AppState,
 };
+use crate::proto::client::ProviderInstanceQuery;
+use crate::proto::providers::alist::{BindInfo, GetBindsResponse};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -41,7 +44,7 @@ pub fn alist_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/alist/login",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::alist::LoginRequest,
         responses(
             (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
@@ -56,14 +59,15 @@ pub fn alist_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.alist_api;
     let resp = api
-        .login(&auth.user_id.to_string(), req, query.as_deref())
+        .login(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Alist login failed: {}", e);
@@ -80,7 +84,7 @@ pub(crate) async fn login(
         post,
         path = "/api/providers/alist/list",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::alist::ListRequest,
         responses(
             (status = 200, description = "Alist directory listing", body = crate::proto::providers::alist::ListResponse),
@@ -95,14 +99,15 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.alist_api;
     let resp = api
-        .list(&auth.user_id.to_string(), req, query.as_deref())
+        .list(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Alist list failed: {}", e);
@@ -118,7 +123,7 @@ pub(crate) async fn list(
         post,
         path = "/api/providers/alist/me",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::alist::GetMeRequest,
         responses(
             (status = 200, description = "Alist account info", body = crate::proto::providers::alist::GetMeResponse),
@@ -133,14 +138,15 @@ pub(crate) async fn list(
 pub(crate) async fn me(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.alist_api;
     let resp = api
-        .get_me(&auth.user_id.to_string(), req, query.as_deref())
+        .get_me(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Alist me failed: {}", e);
@@ -185,22 +191,6 @@ pub(crate) async fn logout(
     Ok(Json(resp))
 }
 
-/// Get Alist binds (saved credentials)
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct AlistBindInfoDoc {
-    id: String,
-    host: String,
-    username: String,
-    created_at: String,
-}
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct AlistBindsResponseDoc {
-    binds: Vec<AlistBindInfoDoc>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -208,7 +198,7 @@ pub(crate) struct AlistBindsResponseDoc {
         path = "/api/providers/alist/binds",
         tag = "Provider",
         responses(
-            (status = 200, description = "Saved Alist credentials", body = AlistBindsResponseDoc),
+            (status = 200, description = "Saved Alist credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -220,7 +210,7 @@ pub(crate) struct AlistBindsResponseDoc {
 pub(crate) async fn binds(
     auth: crate::http::middleware::AuthUser,
     State(state): State<AppState>,
-) -> AppResult<Json<AlistBindsResponseDoc>> {
+) -> AppResult<Json<GetBindsResponse>> {
     tracing::info!("Alist binds request for user: {}", auth.user_id);
 
     let provider_binds = get_provider_binds(
@@ -234,13 +224,13 @@ pub(crate) async fn binds(
 
     let alist_binds: Vec<_> = provider_binds
         .into_iter()
-        .map(|b| AlistBindInfoDoc {
+        .map(|b| BindInfo {
             id: b.id,
             host: b.host,
             username: b.label_value,
-            created_at: b.created_at_str,
+            created_at: b.created_at,
         })
         .collect();
 
-    Ok(Json(AlistBindsResponseDoc { binds: alist_binds }))
+    Ok(Json(GetBindsResponse { binds: alist_binds }))
 }

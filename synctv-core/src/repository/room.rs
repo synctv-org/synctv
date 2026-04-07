@@ -182,7 +182,8 @@ impl RoomRepository {
         match &query.status {
             Some(RoomStatus::Active) => wb.push_literal("r.status = 1"),
             Some(RoomStatus::Pending) => wb.push_literal("r.status = 2"),
-            Some(RoomStatus::Closed) => wb.push_literal("r.status = 3"),
+            Some(RoomStatus::Rejected) => wb.push_literal("r.status = 3"),
+            Some(RoomStatus::Closed) => wb.push_literal("r.status = 4"),
             None => {}
         }
 
@@ -405,7 +406,7 @@ impl RoomRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status != 3), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status = 1), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
@@ -473,10 +474,10 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL AND status != $2",
+             WHERE room_id = $1 AND left_at IS NULL AND status = $2",
         )
         .bind(room_id.as_str())
-        .bind(crate::models::MemberStatus::Banned)
+        .bind(crate::models::MemberStatus::Active)
         .fetch_one(&self.pool)
         .await?;
 
@@ -544,7 +545,7 @@ impl RoomRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status != 3), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status = 1), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
@@ -632,6 +633,30 @@ impl RoomRepository {
         .bind(description)
         .bind(room_id.as_str())
         .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+
+        Ok(room)
+    }
+
+    /// Transfer room ownership inside an existing transaction.
+    pub async fn transfer_ownership_with_executor(
+        &self,
+        room_id: &RoomId,
+        new_owner_id: &UserId,
+        executor: impl sqlx::PgExecutor<'_>,
+    ) -> Result<Room> {
+        let room = sqlx::query_as::<_, Room>(
+            r"
+            UPDATE rooms
+            SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(new_owner_id.as_str())
+        .fetch_optional(executor)
         .await?
         .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
 
@@ -788,7 +813,7 @@ mod tests {
         let wb = RoomRepository::build_room_list_conditions(&query);
 
         let (sql, _) = wb.build(1);
-        assert!(sql.contains("r.status = 3"));
+        assert!(sql.contains("r.status = 4"));
     }
 
     #[test]
@@ -1437,6 +1462,103 @@ mod tests {
         };
         let (rooms, _) = room_repo.list(&query).await.unwrap();
         assert!(rooms.iter().all(|r| r.name.contains("Active")));
+    }
+
+    /// Integration test: room member_count excludes banned and rejected members.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_list_with_count_excludes_banned_and_rejected_members() {
+        use crate::models::{MemberStatus, RoomMember, RoomRole, User};
+        use crate::repository::{RoomMemberRepository, UserRepository};
+        use crate::test_helpers::{RoomFixture, UserFixture};
+        use chrono::Utc;
+
+        fn make_user(username: &str) -> User {
+            User::new(
+                username.to_string(),
+                Some(format!("{username}@test.com")),
+                "hash".to_string(),
+                crate::models::SignupMethod::Email,
+            )
+        }
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let member_repo = RoomMemberRepository::new(pool.clone());
+
+        let owner = user_repo
+            .create(&UserFixture::new().with_username("count_owner").build())
+            .await
+            .unwrap();
+        let active = user_repo.create(&make_user("count_active")).await.unwrap();
+        let banned = user_repo.create(&make_user("count_banned")).await.unwrap();
+        let rejected = user_repo.create(&make_user("count_rejected")).await.unwrap();
+
+        let room = room_repo
+            .create(
+                &RoomFixture::new()
+                    .with_name("Counted Room")
+                    .with_owner(owner.id.clone())
+                    .build(),
+            )
+            .await
+            .unwrap();
+
+        member_repo
+            .add(&RoomMember::new(
+                room.id.clone(),
+                active.id.clone(),
+                RoomRole::Member,
+            ))
+            .await
+            .unwrap();
+
+        member_repo
+            .add(&RoomMember {
+                status: MemberStatus::Banned,
+                ..RoomMember::new(room.id.clone(), banned.id.clone(), RoomRole::Member)
+            })
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO room_members (
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version
+             ) VALUES ($1, $2, $3, $4, 0, 0, 0, 0, $5, $6, 0)",
+        )
+        .bind(room.id.as_str())
+        .bind(rejected.id.as_str())
+        .bind(RoomRole::Member)
+        .bind(MemberStatus::Rejected)
+        .bind(Utc::now())
+        .bind(Some(Utc::now()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let query = RoomListQuery {
+            pagination: PageParams::new(Some(1), Some(10)),
+            status: None,
+            search: Some("Counted".to_string()),
+            is_banned: None,
+            creator_id: None,
+            sort_by: crate::models::RoomListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
+        };
+
+        let (rows, total) = room_repo.list_with_count(&query).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].room.id, room.id);
+        assert_eq!(
+            rows[0].member_count, 1,
+            "room member_count should exclude banned/rejected rows"
+        );
+        assert_eq!(room_repo.get_member_count(&room.id).await.unwrap(), 1);
     }
 
     /// Integration test: List rooms by creator

@@ -78,9 +78,9 @@ use crate::{
         RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
-        playlist::PlaylistListItem, media::MediaListItem, ChatRepository, MediaRepository,
-        PlaylistRepository, RoomMemberRepository,
-        RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+        media::MediaListItem, playlist::PlaylistListItem, ChatRepository, MediaRepository,
+        PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository,
+        RoomSettingsRepository,
     },
     service::{
         audit::{AuditAction, AuditService, AuditTargetType},
@@ -206,6 +206,40 @@ impl std::fmt::Debug for RoomService {
 }
 
 impl RoomService {
+    async fn enforce_room_ownership_limit(
+        &self,
+        owner_id: &UserId,
+        excluding_room_id: Option<&RoomId>,
+    ) -> Result<()> {
+        let max_rooms = self
+            .settings_registry
+            .as_ref()
+            .map(|registry| registry.max_rooms_per_user.get())
+            .transpose()?
+            .unwrap_or(10);
+
+        let (rooms, total) = self
+            .room_repo
+            .list_by_creator(
+                owner_id,
+                PageParams::new(Some(1), Some(max_rooms as u32 + 1)),
+            )
+            .await?;
+
+        let owned_room_count = match excluding_room_id {
+            Some(room_id) => rooms.iter().filter(|room| room.id != *room_id).count() as i64,
+            None => total,
+        };
+
+        if owned_room_count >= max_rooms {
+            return Err(Error::InvalidInput(format!(
+                "User has reached the maximum number of rooms ({max_rooms})"
+            )));
+        }
+
+        Ok(())
+    }
+
     fn playlist_client_availability(
         playlist: &Playlist,
         active_creators: &HashSet<UserId>,
@@ -332,7 +366,10 @@ impl RoomService {
         let active_creators = self
             .load_active_creators(playlist.creator_id.iter())
             .await?;
-        Ok(Self::playlist_client_availability(playlist, &active_creators))
+        Ok(Self::playlist_client_availability(
+            playlist,
+            &active_creators,
+        ))
     }
 
     pub async fn playlist_availability_map(
@@ -383,9 +420,7 @@ impl RoomService {
     }
 
     pub async fn media_availability(&self, media: &Media) -> Result<ClientResourceAvailability> {
-        let active_creators = self
-            .load_active_creators(media.creator_id.iter())
-            .await?;
+        let active_creators = self.load_active_creators(media.creator_id.iter()).await?;
         Ok(Self::media_client_availability(media, &active_creators))
     }
 
@@ -555,8 +590,11 @@ impl RoomService {
             permission_service.clone(),
         );
         member_service.set_room_settings_repo(room_settings_repo.clone());
-        let playlist_service =
-            PlaylistService::new(playlist_repo.clone(), permission_service.clone());
+        let playlist_service = PlaylistService::new(
+            playlist_repo.clone(),
+            permission_service.clone(),
+            providers_manager.clone(),
+        );
         let media_service = MediaService::new(
             media_repo.clone(),
             playlist_repo.clone(),
@@ -618,7 +656,9 @@ impl RoomService {
         &mut self,
         encryption: crate::service::CredentialEncryption,
     ) {
-        self.media_service.set_credential_encryption(encryption);
+        self.media_service
+            .set_credential_encryption(encryption.clone());
+        self.playlist_service.set_credential_encryption(encryption);
     }
 
     /// Inject credential repository into the media service so dynamic provider
@@ -627,7 +667,8 @@ impl RoomService {
         &mut self,
         repo: std::sync::Arc<crate::repository::UserProviderCredentialRepository>,
     ) {
-        self.media_service.set_credential_repo(repo);
+        self.media_service.set_credential_repo(repo.clone());
+        self.playlist_service.set_credential_repo(repo);
     }
 
     #[cfg(test)]
@@ -858,6 +899,8 @@ impl RoomService {
             None
         };
 
+        self.enforce_room_ownership_limit(&created_by, None).await?;
+
         // Determine initial room status based on create_room_need_review setting
         let need_review = self
             .settings_registry
@@ -977,6 +1020,108 @@ impl RoomService {
         }
 
         Ok((created_room, created_member))
+    }
+
+    /// Transfer room ownership to another active member.
+    ///
+    /// This updates `rooms.created_by` and the corresponding creator/admin
+    /// member roles in one transaction so ownership semantics stay consistent.
+    pub async fn transfer_room_ownership(
+        &self,
+        room_id: RoomId,
+        current_owner_id: UserId,
+        new_owner_id: UserId,
+    ) -> Result<Room> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        if room.created_by != current_owner_id {
+            return Err(Error::Authorization(
+                "Only the current room owner can transfer ownership".to_string(),
+            ));
+        }
+
+        if current_owner_id == new_owner_id {
+            return Err(Error::InvalidInput(
+                "Room ownership is already assigned to this user".to_string(),
+            ));
+        }
+
+        let new_owner = self.user_service.get_user(&new_owner_id).await?;
+        if !new_owner.status.is_active() {
+            return Err(Error::Authorization(
+                "New room owner must be an active user".to_string(),
+            ));
+        }
+
+        let new_owner_member = self
+            .member_repo
+            .get(&room_id, &new_owner_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidInput(
+                    "New room owner must already be an active member of this room".to_string(),
+                )
+            })?;
+
+        if !new_owner_member.status.is_active() {
+            return Err(Error::InvalidInput(
+                "New room owner must already be an active member of this room".to_string(),
+            ));
+        }
+
+        let current_owner_member = self
+            .member_repo
+            .get(&room_id, &current_owner_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Internal(
+                    "Current room owner is missing the required creator membership".to_string(),
+                )
+            })?;
+
+        self.enforce_room_ownership_limit(&new_owner_id, Some(&room_id))
+            .await?;
+
+        let mut tx = self.pool.begin().await?;
+
+        let updated_room = self
+            .room_repo
+            .transfer_ownership_with_executor(&room_id, &new_owner_id, &mut *tx)
+            .await?;
+
+        self.member_repo
+            .update_role_with_executor(&room_id, &current_owner_id, RoomRole::Admin, &mut *tx)
+            .await?;
+        self.member_repo
+            .update_role_with_executor(&room_id, &new_owner_id, RoomRole::Creator, &mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        self.invalidate_room_caches(&room_id).await;
+        self.notify_room_settings_invalidation(&room_id).await;
+
+        self.audit_log(
+            &current_owner_id,
+            "",
+            AuditAction::RoomOwnershipTransferred,
+            AuditTargetType::Room,
+            Some(room_id.as_str().to_string()),
+            serde_json::json!({
+                "operation": "transfer_ownership",
+                "previous_owner_id": current_owner_id.as_str(),
+                "new_owner_id": new_owner_id.as_str(),
+                "previous_owner_role": format!("{:?}", current_owner_member.role),
+                "new_owner_previous_role": format!("{:?}", new_owner_member.role),
+            }),
+        )
+        .await;
+
+        Ok(updated_room)
     }
 
     /// Create a room as a global admin.
@@ -1137,14 +1282,16 @@ impl RoomService {
                         }
                     }
 
-                    self.do_join_room(fresh_ctx.room, room_id, user_id).await
+                    self.do_join_room(fresh_ctx.room, fresh_ctx.settings, room_id, user_id)
+                        .await
                 }
             }).await;
         }
 
         // Single-replica path: no distributed lock, rely on DB-level constraints
         let room = ctx.room;
-        self.do_join_room(room, room_id, user_id).await
+        self.do_join_room(room, ctx.settings, room_id, user_id)
+            .await
     }
 
     /// Internal join implementation: adds member, lists members, notifies.
@@ -1160,15 +1307,51 @@ impl RoomService {
     async fn do_join_room(
         &self,
         room: Room,
+        settings: RoomSettings,
         room_id: RoomId,
         user_id: UserId,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
+        if let Some(existing_member) = self.member_repo.get(&room_id, &user_id).await? {
+            if existing_member.status.is_pending() {
+                tracing::info!(
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "Join request is already pending approval"
+                );
+                return Ok((room, existing_member, Vec::new()));
+            }
+
+            tracing::debug!(
+                room_id = %room_id,
+                user_id = %user_id,
+                "User is already an active member of the room"
+            );
+            let members = self.member_service.list_members(&room_id).await?;
+            self.touch_room_activity(room_id.clone()).await;
+            return Ok((room, existing_member, members));
+        }
+
+        if !settings.allow_auto_join.0 {
+            return Err(Error::Authorization(
+                "This room does not allow self-service joins. Ask a room manager to add you."
+                    .to_string(),
+            ));
+        }
+
+        let initial_status = if settings.require_approval.0 {
+            MemberStatus::Pending
+        } else {
+            MemberStatus::Active
+        };
+
         // R-P2-1: Enforce room capacity limits by enabling max_members check.
         // AddMemberOptions::new() defaults to check_max_members=false; explicitly
         // enable it so the member_service reads max_members from RoomSettings and
         // rejects the join if the room is at capacity.
         use crate::service::member::AddMemberOptions;
-        let options = AddMemberOptions::new().with_max_members(0); // 0 = read from RoomSettings
+        let options = AddMemberOptions::new()
+            .with_max_members(0)
+            .with_initial_status(initial_status); // 0 = read from RoomSettings
         let created_member = match self
             .member_service
             .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
@@ -1193,6 +1376,15 @@ impl RoomService {
             }
             Err(e) => return Err(e),
         };
+
+        if created_member.status.is_pending() {
+            tracing::info!(
+                room_id = %room_id,
+                user_id = %user_id,
+                "Join request created and is awaiting approval"
+            );
+            return Ok((room, created_member, Vec::new()));
+        }
 
         // Get all members
         let members = self.member_service.list_members(&room_id).await?;
@@ -1222,31 +1414,511 @@ impl RoomService {
         Ok((room, created_member, members))
     }
 
-    /// Leave a room
-    ///
-    /// The room creator cannot leave; they must delete the room instead.
-    ///
-    /// **Important for callers**: This method only removes the membership record
-    /// and sends an in-app notification. It does NOT:
-    /// - Disconnect the user's WebSocket/gRPC connections from the room
-    /// - Publish a `ClusterEvent::UserLeft` for cross-replica disconnect propagation
-    ///
-    /// Callers (API layer) MUST handle these two concerns after calling this method.
-    /// See `synctv-api/src/impls/client/room.rs` `leave_room()` for the reference
-    /// implementation that correctly handles WS disconnect and cluster events.
-    pub async fn leave_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
-        tracing::info!(room_id = %room_id, user_id = %user_id, "User leaving room");
+    async fn notify_membership_event_best_effort(
+        &self,
+        target_user_id: &UserId,
+        room: &Room,
+        event: String,
+    ) {
+        let Some(ref notif_service) = self.user_notification_service else {
+            return;
+        };
 
-        // Block the creator from leaving - they must delete the room instead
+        if let Err(error) = notif_service
+            .create_room_event(
+                target_user_id.clone(),
+                room.id.as_str().to_string(),
+                room.name.clone(),
+                event,
+            )
+            .await
+        {
+            tracing::warn!(
+                room_id = %room.id.as_str(),
+                user_id = %target_user_id.as_str(),
+                error = %error,
+                "Failed to create room membership notification"
+            );
+        }
+    }
+
+    async fn notify_room_invitation_best_effort(
+        &self,
+        target_user_id: &UserId,
+        room: &Room,
+        actor_username: &str,
+    ) {
+        let Some(ref notif_service) = self.user_notification_service else {
+            return;
+        };
+
+        if let Err(error) = notif_service
+            .create_room_invitation(
+                target_user_id.clone(),
+                room.id.as_str().to_string(),
+                room.name.clone(),
+                actor_username.to_string(),
+            )
+            .await
+        {
+            tracing::warn!(
+                room_id = %room.id.as_str(),
+                user_id = %target_user_id.as_str(),
+                error = %error,
+                "Failed to create room invitation notification"
+            );
+        }
+    }
+
+    /// Explicitly add a user as an active member.
+    ///
+    /// This is the manager-side admission path used when `allow_auto_join=false`.
+    pub async fn add_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        target_user_id: UserId,
+        role: RoomRole,
+        notify: bool,
+    ) -> Result<RoomMember> {
         let room = self
             .room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
+        self.ensure_room_creator_is_active_for_access(&room, &actor_id)
+            .await?;
+        self.permission_service
+            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::ADD_MEMBER)
+            .await?;
+
+        let target_user = self.user_service.get_user(&target_user_id).await?;
+        if !target_user.status.can_join_room() {
+            return Err(Error::Authorization(format!(
+                "Target user cannot be added while account status is {}",
+                target_user.status
+            )));
+        }
+
+        let created = self
+            .member_service
+            .add_member_with_options(
+                room_id.clone(),
+                target_user_id.clone(),
+                role,
+                crate::service::member::AddMemberOptions::new()
+                    .with_max_members(0)
+                    .with_initial_status(MemberStatus::Active),
+            )
+            .await?;
+
+        let actor_username = self
+            .user_service
+            .get_username(&actor_id)
+            .await?
+            .unwrap_or_else(|| actor_id.as_str().to_string());
+
+        self.audit_log(
+            &actor_id,
+            &actor_username,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "new_status": "active",
+                "role": role.to_string(),
+                "source": "explicit_add_member",
+            }),
+        )
+        .await;
+
+        if notify {
+            self.notify_room_invitation_best_effort(&target_user_id, &room, &actor_username)
+                .await;
+        }
+
+        Ok(created)
+    }
+
+    /// Approve a pending join request and promote it to an active membership.
+    pub async fn approve_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        target_user_id: UserId,
+    ) -> Result<RoomMember> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        self.ensure_room_creator_is_active_for_access(&room, &actor_id)
+            .await?;
+
+        let member = self
+            .member_repo
+            .get(&room_id, &target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+        if !member.status.is_pending() {
+            return Err(Error::InvalidInput(
+                "Only pending join requests can be approved".to_string(),
+            ));
+        }
+
+        let updated = self
+            .member_service
+            .set_member_status(
+                room_id.clone(),
+                actor_id.clone(),
+                target_user_id.clone(),
+                MemberStatus::Active,
+            )
+            .await?;
+
+        self.notify_membership_event_best_effort(
+            &target_user_id,
+            &room,
+            "Your join request was approved".to_string(),
+        )
+        .await;
+
+        Ok(updated)
+    }
+
+    /// Reject a pending join request without banning the user from the room.
+    pub async fn reject_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        target_user_id: UserId,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        self.ensure_room_creator_is_active_for_access(&room, &actor_id)
+            .await?;
+        self.permission_service
+            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
+            .await?;
+
+        let member = self
+            .member_repo
+            .get(&room_id, &target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+        if !member.status.is_pending() {
+            return Err(Error::InvalidInput(
+                "Only pending join requests can be rejected".to_string(),
+            ));
+        }
+
+        let _rejected = super::optimistic_retry::retry_with_optimistic_lock(
+            3,
+            5,
+            "Reject member failed after maximum retry attempts",
+            || async {
+                let fresh_member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+                if !fresh_member.status.is_pending() {
+                    return Err(Error::InvalidInput(
+                        "Only pending join requests can be rejected".to_string(),
+                    ));
+                }
+
+                self.member_repo
+                    .reject_member(&room_id, &target_user_id, fresh_member.version)
+                    .await
+            },
+        )
+        .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        let actor_username = self
+            .user_service
+            .get_username(&actor_id)
+            .await?
+            .unwrap_or_else(|| actor_id.as_str().to_string());
+
+        self.audit_log(
+            &actor_id,
+            &actor_username,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "old_status": "pending",
+                "new_status": "rejected",
+                "source": "reject_join_request",
+                "reason": reason.unwrap_or_default(),
+            }),
+        )
+        .await;
+
+        let event = if let Some(reason) = reason.filter(|value| !value.is_empty()) {
+            format!("Your join request was rejected: {reason}")
+        } else {
+            "Your join request was rejected".to_string()
+        };
+        self.notify_membership_event_best_effort(&target_user_id, &room, event)
+            .await;
+
+        Ok(())
+    }
+
+    /// Administrative override: add a room member without requiring room-local membership.
+    pub async fn admin_add_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+        role: RoomRole,
+        notify: bool,
+    ) -> Result<RoomMember> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let target_user = self.user_service.get_user(&target_user_id).await?;
+        if !target_user.status.can_join_room() {
+            return Err(Error::Authorization(format!(
+                "Target user cannot be added while account status is {}",
+                target_user.status
+            )));
+        }
+
+        let created = self
+            .member_service
+            .add_member_with_options(
+                room_id.clone(),
+                target_user_id.clone(),
+                role,
+                crate::service::member::AddMemberOptions::new()
+                    .with_max_members(0)
+                    .with_initial_status(MemberStatus::Active),
+            )
+            .await?;
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "new_status": "active",
+                "role": role.to_string(),
+                "source": "admin_add_member",
+            }),
+        )
+        .await;
+
+        if notify {
+            self.notify_room_invitation_best_effort(&target_user_id, &room, actor_username)
+                .await;
+        }
+
+        Ok(created)
+    }
+
+    /// Administrative override: approve a pending member without room-local permission checks.
+    pub async fn admin_approve_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+    ) -> Result<RoomMember> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let updated = super::optimistic_retry::retry_with_optimistic_lock(
+            3,
+            5,
+            "Approve member failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+                if !member.status.is_pending() {
+                    return Err(Error::InvalidInput(
+                        "Only pending join requests can be approved".to_string(),
+                    ));
+                }
+
+                self.member_repo
+                    .update_status(
+                        &room_id,
+                        &target_user_id,
+                        MemberStatus::Active,
+                        member.version,
+                    )
+                    .await
+            },
+        )
+        .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "old_status": "pending",
+                "new_status": "active",
+                "source": "admin_approve_member",
+            }),
+        )
+        .await;
+
+        self.notify_membership_event_best_effort(
+            &target_user_id,
+            &room,
+            "Your join request was approved".to_string(),
+        )
+        .await;
+
+        Ok(updated)
+    }
+
+    /// Administrative override: reject a pending member without banning them.
+    pub async fn admin_reject_member(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        actor_username: &str,
+        target_user_id: UserId,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let _rejected = super::optimistic_retry::retry_with_optimistic_lock(
+            3,
+            5,
+            "Reject member failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+                if !member.status.is_pending() {
+                    return Err(Error::InvalidInput(
+                        "Only pending join requests can be rejected".to_string(),
+                    ));
+                }
+
+                self.member_repo
+                    .reject_member(&room_id, &target_user_id, member.version)
+                    .await
+            },
+        )
+        .await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+
+        self.audit_log(
+            &actor_id,
+            actor_username,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "old_status": "pending",
+                "new_status": "rejected",
+                "source": "admin_reject_member",
+                "reason": reason.unwrap_or_default(),
+            }),
+        )
+        .await;
+
+        let event = if let Some(reason) = reason.filter(|value| !value.is_empty()) {
+            format!("Your join request was rejected: {reason}")
+        } else {
+            "Your join request was rejected".to_string()
+        };
+        self.notify_membership_event_best_effort(&target_user_id, &room, event)
+            .await;
+
+        Ok(())
+    }
+
+    /// Leave a room.
+    ///
+    /// Lifecycle rules:
+    /// - the actor must currently be an active member of the room
+    /// - the creator cannot leave and must transfer ownership or delete the room
+    ///
+    /// **Important for callers**: This method only removes the membership record
+    /// and sends an in-app notification. It does NOT disconnect active room
+    /// connections or fan out cluster disconnect events.
+    pub async fn leave_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
+        tracing::info!(room_id = %room_id, user_id = %user_id, "User leaving room");
+
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let membership = self
+            .member_repo
+            .get(&room_id, &user_id)
+            .await?
+            .ok_or_else(|| Error::Authorization("You are not a member of this room".to_string()))?;
+
         if room.created_by == user_id {
             return Err(Error::Authorization(
-                "Room creator cannot leave the room. Delete the room instead.".to_string(),
+                "Room creator cannot leave the room. Transfer ownership or delete the room instead."
+                    .to_string(),
+            ));
+        }
+
+        if membership.role == RoomRole::Creator {
+            return Err(Error::Authorization(
+                "Room creator cannot leave the room. Transfer ownership or delete the room instead."
+                    .to_string(),
             ));
         }
 
@@ -1328,7 +2000,7 @@ impl RoomService {
         Ok(())
     }
 
-    /// Soft-delete a room (creator only)
+    /// Soft-delete a room.
     ///
     /// Sets the `deleted_at` timestamp on the room row. The room and its related
     /// data (members, playlists, media, chat messages, settings, playback state)
@@ -1348,27 +2020,35 @@ impl RoomService {
     /// 3. Preserves only the room row (for audit) and `audit_logs` entries
     /// 4. `CleanupService::purge_soft_deleted_rooms()` eventually purges the room row
     ///    after `room_soft_delete_retention_days` (default: 90 days)
+    ///
+    /// Authorization model:
+    /// - room creator can delete their own room
+    /// - global admin/root can delete any room
+    /// - room-scoped admins cannot delete a room unless they are also a global admin
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "Soft-deleting room");
 
-        // First check if room exists and is not already deleted (before permission check)
-        let room_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1 AND deleted_at IS NULL)",
-        )
-        .bind(room_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found or already deleted".to_string()))?;
 
-        if !room_exists {
-            return Err(Error::NotFound(
-                "Room not found or already deleted".to_string(),
+        let actor = self.user_service.get_user(&user_id).await?;
+        let is_global_admin = actor.role.is_admin_or_above();
+        let is_creator = room.created_by == user_id;
+
+        if !is_creator && !is_global_admin {
+            if self.member_repo.get(&room_id, &user_id).await?.is_some() {
+                return Err(Error::Authorization(
+                    "Only the room creator or a global admin can delete this room".to_string(),
+                ));
+            }
+
+            return Err(Error::Authorization(
+                "You are not a member of this room".to_string(),
             ));
         }
-
-        // Check permission without cache - critical operation requires fresh permissions
-        self.permission_service
-            .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_ROOM)
-            .await?;
 
         let mut tx = self.pool.begin().await?;
         let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await?;
@@ -1387,6 +2067,8 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id,
             user_id = %user_id,
+            is_creator,
+            is_global_admin,
             playlists_deleted = impact.deleted_playlist_ids.len(),
             media_deleted = impact.deleted_media_ids.len(),
             members_deleted = impact.members_deleted,
@@ -1487,10 +2169,10 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// Reject a pending room, changing its status to Closed.
+    /// Reject a pending room, changing its status to Rejected.
     ///
     /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
-    /// Rejected rooms are closed and cannot be used.
+    /// Rejected rooms are preserved for review/audit but remain inaccessible.
     ///
     /// # Errors
     /// - `Error::NotFound` if room doesn't exist
@@ -1527,10 +2209,10 @@ impl RoomService {
             )));
         }
 
-        // Update status to Closed
+        // Update status to Rejected
         let updated = self
             .room_repo
-            .update_status(&room_id, RoomStatus::Closed)
+            .update_status(&room_id, RoomStatus::Rejected)
             .await?;
 
         // Invalidate cache
@@ -1548,13 +2230,13 @@ impl RoomService {
             Some(room_id.as_str().to_string()),
             serde_json::json!({
                 "previous_status": "pending",
-                "new_status": "closed",
+                "new_status": "rejected",
                 "reason": reason,
             }),
         )
         .await;
 
-        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room rejected and closed");
+        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room rejected");
 
         Ok(updated)
     }
@@ -2255,7 +2937,7 @@ impl RoomService {
     pub async fn list_joined_rooms_with_query(
         &self,
         user_id: &UserId,
-        query: &crate::models::RelatedRoomListQuery,
+        query: &crate::models::MyRoomListQuery,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         query.pagination.validate()?;
         self.member_service
@@ -2266,7 +2948,7 @@ impl RoomService {
     pub async fn list_accessible_joined_rooms_with_query(
         &self,
         user_id: &UserId,
-        query: &crate::models::RelatedRoomListQuery,
+        query: &crate::models::MyRoomListQuery,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         query.pagination.validate()?;
         self.member_repo
@@ -2539,7 +3221,7 @@ impl RoomService {
                 &mut tx,
                 &room_id,
                 &user_id,
-                PermissionBits::DELETE_MOVIE_SELF,
+                PermissionBits::DELETE_MEDIA_SELF,
             )
             .await?
         {
@@ -2550,7 +3232,7 @@ impl RoomService {
                 &mut tx,
                 &room_id,
                 &user_id,
-                PermissionBits::DELETE_MOVIE_ANY,
+                PermissionBits::DELETE_MEDIA_ANY,
             )
             .await?
         {
@@ -2751,10 +3433,7 @@ impl RoomService {
         name: Option<String>,
     ) -> Result<Media> {
         use crate::service::media::EditMediaRequest;
-        let request = EditMediaRequest {
-            media_id,
-            name,
-        };
+        let request = EditMediaRequest { media_id, name };
         self.media_service
             .edit_media(room_id, user_id, request)
             .await
@@ -4433,13 +5112,16 @@ mod tests {
     #[test]
     fn test_settings_validate_permissions_member_escalation_is_rejected() {
         let mut settings = RoomSettings::default();
-        // Grant members a permission that exceeds DEFAULT_ADMIN (e.g., DELETE_ROOM)
+        // Grant members a lifecycle permission that is not assignable in room settings.
         settings.member_added_permissions = MemberAddedPermissions(PermissionBits::DELETE_ROOM);
         let result = settings.validate_permissions();
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::InvalidInput(msg) => {
-                assert!(msg.contains("Member"), "got: {msg}");
+                assert!(
+                    msg.contains("lifecycle") || msg.contains("Member"),
+                    "got: {msg}"
+                );
             }
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
@@ -4458,7 +5140,7 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added_and_removed() {
         let mut settings = RoomSettings::default();
-        let base = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MOVIE);
+        let base = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
 
         // Add PLAY_CONTROL, remove SEND_CHAT
         settings.admin_added_permissions =
@@ -4467,8 +5149,8 @@ mod tests {
             crate::models::room_settings::AdminRemovedPermissions(PermissionBits::SEND_CHAT);
 
         let result = settings.admin_permissions(base);
-        // Should have ADD_MOVIE and PLAY_CONTROL, but not SEND_CHAT
-        assert!(result.0 & PermissionBits::ADD_MOVIE != 0);
+        // Should have ADD_MEDIA and PLAY_CONTROL, but not SEND_CHAT
+        assert!(result.0 & PermissionBits::ADD_MEDIA != 0);
         assert!(result.0 & PermissionBits::PLAY_CONTROL != 0);
         assert_eq!(result.0 & PermissionBits::SEND_CHAT, 0);
     }

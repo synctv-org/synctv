@@ -22,20 +22,20 @@ impl PermissionBits {
     /// Send chat messages (includes messages with position for danmaku display)
     pub const SEND_CHAT: u64 = 1 << 0;
 
-    /// Add movie to playlist
-    pub const ADD_MOVIE: u64 = 1 << 1;
+    /// Add media to a playlist
+    pub const ADD_MEDIA: u64 = 1 << 1;
 
-    /// Delete own movie
-    pub const DELETE_MOVIE_SELF: u64 = 1 << 2;
+    /// Delete own media
+    pub const DELETE_MEDIA_SELF: u64 = 1 << 2;
 
-    /// Delete any movie
-    pub const DELETE_MOVIE_ANY: u64 = 1 << 3;
+    /// Delete any media
+    pub const DELETE_MEDIA_ANY: u64 = 1 << 3;
 
-    /// Edit own movie info
-    pub const EDIT_MOVIE_SELF: u64 = 1 << 4;
+    /// Edit own media metadata
+    pub const EDIT_MEDIA_SELF: u64 = 1 << 4;
 
-    /// Edit any movie info
-    pub const EDIT_MOVIE_ANY: u64 = 1 << 5;
+    /// Edit any media metadata
+    pub const EDIT_MEDIA_ANY: u64 = 1 << 5;
 
     /// Reorder playlist
     pub const REORDER_PLAYLIST: u64 = 1 << 6;
@@ -54,25 +54,19 @@ impl PermissionBits {
     /// Play control (play/pause/seek)
     pub const PLAY_CONTROL: u64 = 1 << 10;
 
-    /// Switch current movie
-    pub const CHANGE_CURRENT_MOVIE: u64 = 1 << 11;
+    /// Switch current playback media
+    pub const CHANGE_CURRENT_MEDIA: u64 = 1 << 11;
 
     /// Change playback rate
     pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 12;
 
     // ===== Member Management Permissions (20-29) =====
 
-    /// Approve pending members
+    /// Approve or reject pending join requests
     pub const APPROVE_MEMBER: u64 = 1 << 20;
 
     /// Kick member
     pub const KICK_MEMBER: u64 = 1 << 21;
-
-    /// Invite user
-    pub const INVITE_USER: u64 = 1 << 20;
-
-    /// Kick user
-    pub const KICK_USER: u64 = 1 << 21;
 
     /// Ban/unban member
     pub const BAN_MEMBER: u64 = 1 << 22;
@@ -80,28 +74,26 @@ impl PermissionBits {
     /// Set member permissions
     pub const SET_MEMBER_PERMISSIONS: u64 = 1 << 23;
 
-    /// Manage admins (promote/demote)
-    pub const MANAGE_ADMIN: u64 = 1 << 24;
+    /// Explicitly add a member when self-service joining is disabled
+    pub const ADD_MEMBER: u64 = 1 << 24;
 
     // ===== Room Management Permissions (30-39) =====
 
     /// Modify room settings
     pub const SET_ROOM_SETTINGS: u64 = 1 << 30;
 
-    /// Set room password
-    pub const SET_ROOM_PASSWORD: u64 = 1 << 31;
-
     /// Delete chat messages
     pub const DELETE_CHAT: u64 = 1 << 32;
 
-    /// View room statistics
-    pub const VIEW_STATS: u64 = 1 << 33;
-
-    /// Export room data
-    pub const EXPORT_DATA: u64 = 1 << 34;
-
     /// Delete room
     pub const DELETE_ROOM: u64 = 1 << 35;
+
+    /// Permissions that can be delegated within a room to non-creator members.
+    ///
+    /// Room deletion is a lifecycle operation owned by the room creator or the
+    /// global management plane, not a room-scoped capability that should be
+    /// granted through role overrides or member permission editing.
+    pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::DELETE_ROOM;
 
     // ===== View Permissions (40-49) =====
 
@@ -129,31 +121,31 @@ impl PermissionBits {
 
     /// Default member permissions
     pub const DEFAULT_MEMBER: u64 = Self::SEND_CHAT
-        | Self::ADD_MOVIE
-        | Self::DELETE_MOVIE_SELF
-        | Self::EDIT_MOVIE_SELF
+        | Self::ADD_MEDIA
+        | Self::DELETE_MEDIA_SELF
+        | Self::EDIT_MEDIA_SELF
         | Self::VIEW_PLAYLIST
         | Self::VIEW_MEMBER_LIST
         | Self::VIEW_CHAT_HISTORY;
 
     /// Default admin permissions
     pub const DEFAULT_ADMIN: u64 = Self::DEFAULT_MEMBER
-        | Self::DELETE_MOVIE_ANY
-        | Self::EDIT_MOVIE_ANY
+        | Self::DELETE_MEDIA_ANY
+        | Self::EDIT_MEDIA_ANY
         | Self::REORDER_PLAYLIST
         | Self::CLEAR_PLAYLIST
         | Self::START_LIVE
         | Self::PLAY_CONTROL
-        | Self::CHANGE_CURRENT_MOVIE
+        | Self::CHANGE_CURRENT_MEDIA
         | Self::CHANGE_PLAYBACK_RATE
         | Self::APPROVE_MEMBER
         | Self::KICK_MEMBER
         | Self::BAN_MEMBER
         | Self::SET_MEMBER_PERMISSIONS
+        | Self::ADD_MEMBER
         | Self::SET_ROOM_SETTINGS
-        | Self::SET_ROOM_PASSWORD
         | Self::DELETE_CHAT
-        | Self::VIEW_STATS;
+        | Self::USE_WEBRTC;
 
     /// Default guest permissions (read-only)
     pub const DEFAULT_GUEST: u64 = Self::VIEW_PLAYLIST;
@@ -210,6 +202,11 @@ impl PermissionBits {
     /// Toggle permission
     pub const fn toggle(&mut self, permission: u64) {
         self.0 ^= permission;
+    }
+
+    #[must_use]
+    pub const fn includes_only_assignable_in_room(bits: u64) -> bool {
+        bits & !Self::ASSIGNABLE_IN_ROOM == 0
     }
 }
 
@@ -319,21 +316,21 @@ mod tests {
     fn test_permission_has() {
         let perms = PermissionBits(PermissionBits::SEND_CHAT);
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(!perms.has(PermissionBits::ADD_MOVIE));
+        assert!(!perms.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
     fn test_permission_grant_revoke() {
         let mut perms = PermissionBits::empty();
         perms.grant(PermissionBits::SEND_CHAT);
-        perms.grant(PermissionBits::ADD_MOVIE);
+        perms.grant(PermissionBits::ADD_MEDIA);
 
         assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
 
         perms.revoke(PermissionBits::SEND_CHAT);
         assert!(!perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
@@ -348,7 +345,7 @@ mod tests {
 
         let guest_perms = Role::Guest.permissions();
         assert!(guest_perms.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!guest_perms.has(PermissionBits::ADD_MOVIE));
+        assert!(!guest_perms.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]
@@ -365,7 +362,7 @@ mod tests {
         assert!(!perms.has(PermissionBits::SEND_CHAT));
 
         // Other DEFAULT_MEMBER permissions remain
-        assert!(perms.has(PermissionBits::ADD_MOVIE));
+        assert!(perms.has(PermissionBits::ADD_MEDIA));
     }
 
     // ========== Bitmask Operation Edge Cases ==========

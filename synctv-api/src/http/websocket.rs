@@ -23,7 +23,6 @@ use axum::{
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -97,14 +96,7 @@ impl Drop for MetricsGuard {
     }
 }
 
-/// Query parameters for WebSocket connection
-#[derive(Debug, Deserialize)]
-pub struct WsQuery {
-    /// WebSocket ticket for authentication (recommended)
-    /// Short-lived, one-time-use ticket obtained via POST /api/tickets
-    /// More secure than passing JWT in URL.
-    pub ticket: Option<String>,
-}
+type WsQuery = crate::proto::client::WebSocketConnectRequest;
 
 /// Authentication method used for WebSocket connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,17 +177,17 @@ async fn extract_user_id(
     // The ticket is validated against the target room to prevent cross-room replay (Issue #65).
     // User status and password version are checked atomically with ticket consumption
     // to prevent TOCTOU race conditions (Issue #17).
-    if let Some(ref ticket) = query.ticket {
+    if !query.ticket.is_empty() {
         let pending = state
             .ws_ticket_service
-            .validate_checked(ticket, room_id, &*state.user_service)
+            .validate_checked(&query.ticket, room_id, &*state.user_service)
             .await
             .map_err(map_websocket_ticket_validation_error)?;
 
         return Ok(HandshakeAuthContext {
             user_id: pending.user_id.clone(),
             ticket_commit: Some(TicketAuthCommit {
-                ticket: ticket.clone(),
+                ticket: query.ticket.clone(),
                 pending,
             }),
         });
@@ -820,13 +812,16 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// - Browser clients: `ws://host/ws/rooms/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
 pub async fn websocket_handler(
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
     connect_info: ConnectInfo<std::net::SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
     validate_websocket_runtime_dependencies(&state)?;
+    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
+    crate::impls::validate_proto_request(&query).map_err(crate::http::error::map_api_error)?;
+    let room_id = path.room_id;
 
     let prepared = run_websocket_handshake_with_timeout(async {
         let prepared =
@@ -986,8 +981,7 @@ async fn prepare_websocket_upgrade(
         &state.config.server.trusted_proxies,
     )?;
 
-    let rid = crate::room_id_validation::parse_room_id(room_id)
-        .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    let rid = synctv_core::models::RoomId::from_string(room_id.to_string());
 
     let auth = extract_user_id(state, headers, query, &rid).await?;
     let user_id = auth.user_id.clone();
@@ -1255,16 +1249,18 @@ mod tests {
 
     #[test]
     fn test_ws_query_no_auth() {
-        let query = WsQuery { ticket: None };
-        assert!(query.ticket.is_none());
+        let query = WsQuery {
+            ticket: String::new(),
+        };
+        assert!(query.ticket.is_empty());
     }
 
     #[test]
     fn test_ws_query_with_ticket() {
         let query = WsQuery {
-            ticket: Some("ticket_abc".to_string()),
+            ticket: "ticket_abc".to_string(),
         };
-        assert_eq!(query.ticket.as_deref(), Some("ticket_abc"));
+        assert_eq!(query.ticket, "ticket_abc");
     }
 
     #[test]
@@ -1293,21 +1289,21 @@ mod tests {
     fn test_ws_query_deserialization_empty() {
         let json = "{}";
         let query: WsQuery = serde_json::from_str(json).expect("deserialize empty");
-        assert!(query.ticket.is_none());
+        assert!(query.ticket.is_empty());
     }
 
     #[test]
     fn test_ws_query_deserialization_with_ticket() {
         let json = r#"{"ticket":"my_ticket"}"#;
         let query: WsQuery = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.ticket.as_deref(), Some("my_ticket"));
+        assert_eq!(query.ticket, "my_ticket");
     }
 
     #[test]
     fn test_ws_query_deserialization_ignores_extra_fields() {
         let json = r#"{"ticket":"tix","extra":"ignored"}"#;
         let query: WsQuery = serde_json::from_str(json).expect("deserialize with extra");
-        assert_eq!(query.ticket.as_deref(), Some("tix"));
+        assert_eq!(query.ticket, "tix");
     }
 
     #[test]
@@ -1378,22 +1374,24 @@ mod tests {
     fn test_auth_priority_no_header_falls_through_to_ticket() {
         let headers = HeaderMap::new();
         let query = WsQuery {
-            ticket: Some("ticket_abc".to_string()),
+            ticket: "ticket_abc".to_string(),
         };
 
         // No Authorization header
         assert!(headers.get("Authorization").is_none());
         // Ticket is available as fallback
-        assert!(query.ticket.is_some());
+        assert!(!query.ticket.is_empty());
     }
 
     #[test]
     fn test_auth_priority_no_auth_at_all() {
         let headers = HeaderMap::new();
-        let query = WsQuery { ticket: None };
+        let query = WsQuery {
+            ticket: String::new(),
+        };
 
         assert!(headers.get("Authorization").is_none());
-        assert!(query.ticket.is_none());
+        assert!(query.ticket.is_empty());
         // This would produce an Unauthorized error in extract_user_id
     }
 

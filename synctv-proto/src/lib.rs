@@ -7,12 +7,24 @@
 pub mod http_serde;
 pub mod serde_defaults;
 
+pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
+    std::sync::LazyLock::new(|| {
+        prost_reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+            .expect("synctv-proto descriptor pool must decode")
+    });
+
 /// Encoded file descriptor set for client/admin/oauth2 proto definitions.
 /// Used by tonic-reflection to serve gRPC server reflection.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
 
 /// Encoded file descriptor set for provider proto definitions.
 pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("providers/descriptor.bin");
+
+pub fn validate<M: prost_reflect::ReflectMessage>(
+    message: &M,
+) -> Result<(), prost_protovalidate::Error> {
+    prost_protovalidate::validate(message)
+}
 
 // Common shared types (enums, RoomMember)
 pub mod common {
@@ -48,6 +60,10 @@ pub mod providers {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use prost::Message;
+
+    fn validation_error_text(error: prost_protovalidate::Error) -> String {
+        error.to_string()
+    }
 
     // === Protobuf Serialization Roundtrip Tests ===
     // Verifies encode -> decode produces identical messages for critical types.
@@ -108,6 +124,7 @@ mod tests {
             username: "alice".into(),
             role: crate::common::RoomMemberRole::Admin.into(),
             permissions: 0xFF,
+            status: crate::common::MemberStatus::Active.into(),
             added_permissions: 0x0F,
             removed_permissions: 0x01,
             admin_added_permissions: 0x00,
@@ -811,6 +828,70 @@ mod tests {
     }
 
     #[test]
+    fn http_json_admin_update_provider_instance_request_defaults_path_and_repeated_fields() {
+        let json = r#"{"endpoint":"https://provider.example.com"}"#;
+
+        let decoded: crate::admin::UpdateProviderInstanceRequest = serde_json::from_str(json)
+            .expect("path-populated provider update fields should default");
+
+        assert!(decoded.name.is_empty());
+        assert_eq!(
+            decoded.endpoint.as_deref(),
+            Some("https://provider.example.com")
+        );
+        assert!(decoded.providers.is_empty());
+        assert!(decoded.config.is_empty());
+    }
+
+    #[test]
+    fn validate_admin_create_user_request_allows_empty_optional_email() {
+        crate::validate(&crate::admin::CreateUserRequest {
+            username: "admin_created".into(),
+            password: "StrongPwd12345!".into(),
+            email: String::new(),
+            role: crate::common::UserRole::Admin as i32,
+            status: crate::common::UserStatus::Active as i32,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn http_json_move_playlist_request_deserializes_flat_anchor_fields() {
+        let decoded: crate::client::MovePlaylistRequest =
+            serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#)
+                .expect("flat oneof fields should deserialize");
+
+        assert!(decoded.playlist_id.is_empty());
+        assert_eq!(
+            decoded.anchor,
+            Some(
+                crate::client::move_playlist_request::Anchor::BeforePlaylistId(
+                    "playlist-2".to_string()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn http_json_move_playlist_request_defaults_missing_anchor_for_later_validation() {
+        let decoded: crate::client::MovePlaylistRequest =
+            serde_json::from_str(r#"{}"#).expect("transport deserialization should succeed");
+
+        assert!(decoded.playlist_id.is_empty());
+        assert!(decoded.anchor.is_none());
+    }
+
+    #[test]
+    fn http_json_move_playlist_request_rejects_multiple_anchors() {
+        let err = serde_json::from_str::<crate::client::MovePlaylistRequest>(
+            r#"{"before_playlist_id":"playlist-1","after_playlist_id":"playlist-2"}"#,
+        )
+        .expect_err("multiple anchors must be rejected");
+
+        assert!(err.is_data());
+    }
+
+    #[test]
     fn http_json_set_room_password_request_requires_password_field() {
         let err = serde_json::from_str::<crate::client::SetRoomPasswordRequest>("{}")
             .expect_err("missing password should be rejected");
@@ -953,5 +1034,710 @@ mod tests {
         let bilibili_err = serde_json::from_str::<crate::providers::bilibili::CheckQrRequest>("{}")
             .expect_err("missing QR key should fail");
         assert!(bilibili_err.is_data());
+    }
+
+    #[test]
+    fn validate_register_request_rejects_invalid_username_email_and_password() {
+        let request = crate::client::RegisterRequest {
+            username: "ab".into(),
+            password: "short".into(),
+            email: "not-an-email".into(),
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("username"), "{error}");
+        assert!(error.contains("password"), "{error}");
+        assert!(error.contains("email"), "{error}");
+    }
+
+    #[test]
+    fn validate_register_request_accepts_valid_payload() {
+        let request = crate::client::RegisterRequest {
+            username: "valid_user".into(),
+            password: "ComplexPass123".into(),
+            email: "valid@example.com".into(),
+        };
+
+        crate::validate(&request).unwrap();
+    }
+
+    #[test]
+    fn validate_update_user_request_checks_optional_fields_when_present() {
+        let request = crate::client::UpdateUserRequest {
+            username: Some("bad name".into()),
+            password: Some("short".into()),
+            old_password: Some(String::new()),
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("username"), "{error}");
+        assert!(error.contains("password"), "{error}");
+        assert!(error.contains("old_password"), "{error}");
+    }
+
+    #[test]
+    fn validate_create_room_request_rejects_html_name_and_long_description() {
+        let request = crate::client::CreateRoomRequest {
+            name: "<script>alert(1)</script>".into(),
+            password: String::new(),
+            settings: Vec::new(),
+            description: "x".repeat(501),
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("name"), "{error}");
+        assert!(error.contains("description"), "{error}");
+    }
+
+    #[test]
+    fn validate_join_room_request_requires_room_id_length() {
+        let request = crate::client::JoinRoomRequest {
+            password: String::new(),
+            room_id: "short".into(),
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        assert!(error.contains("room_id"), "{error}");
+    }
+
+    #[test]
+    fn validate_create_user_request_rejects_undefined_enum_values() {
+        let request = crate::admin::CreateUserRequest {
+            username: "valid_user".into(),
+            password: "StrongPass123".into(),
+            email: "valid@example.com".into(),
+            role: 99,
+            status: 99,
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("role"), "{error}");
+        assert!(error.contains("status"), "{error}");
+    }
+
+    #[test]
+    fn validate_list_notifications_request_rejects_invalid_pagination_and_enums() {
+        let request = crate::client::ListNotificationsRequest {
+            page: -1,
+            page_size: 101,
+            is_read: None,
+            notification_type: Some(crate::client::NotificationType::Unspecified as i32),
+            search: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("page"), "{error}");
+        assert!(error.contains("page_size"), "{error}");
+        assert!(error.contains("notification_type"), "{error}");
+        assert!(error.contains("sort_by"), "{error}");
+        assert!(error.contains("sort_direction"), "{error}");
+    }
+
+    #[test]
+    fn validate_list_notifications_request_accepts_defaultable_values() {
+        let request = crate::client::ListNotificationsRequest {
+            page: 0,
+            page_size: 0,
+            is_read: Some(true),
+            notification_type: Some(crate::client::NotificationType::RoomInvitation as i32),
+            search: "alert".into(),
+            sort_by: crate::client::NotificationListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        };
+
+        crate::validate(&request).unwrap();
+    }
+
+    #[test]
+    fn validate_room_list_requests_reject_invalid_pagination_and_enums() {
+        let list_rooms = crate::client::ListRoomsRequest {
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let my_rooms = crate::client::ListMyRoomsRequest {
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            status: 99,
+            is_banned: None,
+            relation: 99,
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let members = crate::client::GetRoomMembersRequest {
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            role: Some(99),
+            status: Some(99),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+
+        for error in [
+            validation_error_text(crate::validate(&list_rooms).unwrap_err()),
+            validation_error_text(crate::validate(&my_rooms).unwrap_err()),
+            validation_error_text(crate::validate(&members).unwrap_err()),
+        ] {
+            assert!(error.contains("page"), "{error}");
+            assert!(error.contains("page_size"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_room_list_requests_accept_defaultable_values() {
+        crate::validate(&crate::client::ListRoomsRequest {
+            page: 0,
+            page_size: 0,
+            search: "room".into(),
+            sort_by: crate::client::RoomListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::client::ListMyRoomsRequest {
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            status: crate::common::RoomStatus::Unspecified as i32,
+            is_banned: Some(false),
+            relation: crate::client::MyRoomRelation::All as i32,
+            sort_by: crate::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::client::GetRoomMembersRequest {
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            role: Some(crate::common::RoomMemberRole::Member as i32),
+            status: Some(crate::common::MemberStatus::Active as i32),
+            sort_by: crate::client::RoomMemberListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_playlist_list_requests_reject_invalid_pagination_and_enums() {
+        let playlists = crate::client::ListPlaylistsRequest {
+            parent_id: String::new(),
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
+            dynamic_only: None,
+            sort_by: 99,
+            sort_direction: 99,
+            availability: 99,
+        };
+        let items = crate::client::ListPlaylistItemsRequest {
+            playlist_id: String::new(),
+            target: Vec::new(),
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+            availability: 99,
+        };
+
+        for error in [
+            validation_error_text(crate::validate(&playlists).unwrap_err()),
+            validation_error_text(crate::validate(&items).unwrap_err()),
+        ] {
+            assert!(error.contains("page"), "{error}");
+            assert!(error.contains("page_size"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_playlist_list_requests_accept_defaultable_values() {
+        crate::validate(&crate::client::ListPlaylistsRequest {
+            parent_id: String::new(),
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
+            dynamic_only: Some(true),
+            sort_by: crate::client::PlaylistListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+            availability: crate::client::ResourceAvailabilityFilter::All as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::client::ListPlaylistItemsRequest {
+            playlist_id: String::new(),
+            target: Vec::new(),
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
+            sort_by: crate::client::MediaListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+            availability: crate::client::ResourceAvailabilityFilter::All as i32,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_admin_list_requests_reject_invalid_pagination_and_enums() {
+        let provider_instances = crate::admin::ListProviderInstancesRequest {
+            page: -1,
+            page_size: 101,
+            provider_type: String::new(),
+            search: String::new(),
+            enabled: None,
+            tls: None,
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let users = crate::admin::ListUsersRequest {
+            page: -1,
+            page_size: 101,
+            status: 99,
+            role: 99,
+            search: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let user_rooms = crate::admin::GetUserRoomsRequest {
+            user_id: "abc123def456".into(),
+            page: -1,
+            page_size: 101,
+            status: 99,
+            search: String::new(),
+            is_banned: None,
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let rooms = crate::admin::ListRoomsRequest {
+            page: -1,
+            page_size: 101,
+            status: 99,
+            search: String::new(),
+            creator_id: String::new(),
+            is_banned: None,
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let members = crate::admin::GetRoomMembersRequest {
+            room_id: "abc123def456".into(),
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            role: 99,
+            status: 99,
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let admins = crate::admin::ListAdminsRequest {
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+        let streams = crate::admin::ListActiveStreamsRequest {
+            page: -1,
+            page_size: 101,
+            room_id: String::new(),
+            user_id: String::new(),
+            node_id: String::new(),
+            search: String::new(),
+            sort_by: 99,
+            sort_direction: 99,
+        };
+
+        for error in [
+            validation_error_text(crate::validate(&provider_instances).unwrap_err()),
+            validation_error_text(crate::validate(&users).unwrap_err()),
+            validation_error_text(crate::validate(&user_rooms).unwrap_err()),
+            validation_error_text(crate::validate(&rooms).unwrap_err()),
+            validation_error_text(crate::validate(&members).unwrap_err()),
+            validation_error_text(crate::validate(&admins).unwrap_err()),
+            validation_error_text(crate::validate(&streams).unwrap_err()),
+        ] {
+            assert!(error.contains("page"), "{error}");
+            assert!(error.contains("page_size"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_admin_list_requests_accept_defaultable_values() {
+        crate::validate(&crate::admin::ListProviderInstancesRequest {
+            page: 0,
+            page_size: 0,
+            provider_type: "alist".into(),
+            search: "edge".into(),
+            enabled: Some(true),
+            tls: Some(true),
+            sort_by: crate::admin::ProviderInstanceListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::ListUsersRequest {
+            page: 0,
+            page_size: 0,
+            status: crate::common::UserStatus::Unspecified as i32,
+            role: crate::common::UserRole::Unspecified as i32,
+            search: "admin".into(),
+            sort_by: crate::admin::UserListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::GetUserRoomsRequest {
+            user_id: "abc123def456".into(),
+            page: 0,
+            page_size: 0,
+            status: crate::common::RoomStatus::Unspecified as i32,
+            search: String::new(),
+            is_banned: Some(false),
+            sort_by: crate::admin::RoomListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::ListRoomsRequest {
+            page: 0,
+            page_size: 0,
+            status: crate::common::RoomStatus::Unspecified as i32,
+            search: "room".into(),
+            creator_id: String::new(),
+            is_banned: Some(false),
+            sort_by: crate::admin::RoomListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::GetRoomMembersRequest {
+            room_id: "abc123def456".into(),
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            role: crate::common::RoomMemberRole::Member as i32,
+            status: crate::common::MemberStatus::Active as i32,
+            sort_by: crate::admin::RoomMemberListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::ListAdminsRequest {
+            page: 0,
+            page_size: 0,
+            search: "root".into(),
+            sort_by: crate::admin::UserListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+
+        crate::validate(&crate::admin::ListActiveStreamsRequest {
+            page: 0,
+            page_size: 0,
+            room_id: String::new(),
+            user_id: String::new(),
+            node_id: String::new(),
+            search: "stream".into(),
+            sort_by: crate::admin::ActiveStreamListSortBy::Unspecified as i32,
+            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_list_room_streams_request_rejects_invalid_pagination() {
+        let request = crate::client::ListRoomStreamsRequest {
+            page: -1,
+            page_size: 101,
+            search: String::new(),
+            sort_by: crate::client::RoomStreamListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        };
+
+        let error = validation_error_text(crate::validate(&request).unwrap_err());
+
+        assert!(error.contains("page"), "{error}");
+        assert!(error.contains("page_size"), "{error}");
+    }
+
+    #[test]
+    fn validate_list_room_streams_request_accepts_defaultable_values() {
+        crate::validate(&crate::client::ListRoomStreamsRequest {
+            page: 0,
+            page_size: 0,
+            search: String::new(),
+            sort_by: crate::client::RoomStreamListSortBy::Unspecified as i32,
+            sort_direction: crate::client::SortDirection::Unspecified as i32,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_move_playlist_request_requires_anchor() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::MovePlaylistRequest {
+                playlist_id: "playlist-1".into(),
+                anchor: None,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("anchor"), "{error}");
+    }
+
+    #[test]
+    fn validate_create_playlist_request_rejects_long_name_and_incomplete_dynamic_fields() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::CreatePlaylistRequest {
+                name: "a".repeat(256),
+                parent_id: String::new(),
+                source_provider: "alist".into(),
+                source_config: Vec::new(),
+                provider_instance_name: String::new(),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(
+            error.contains("name") || error.contains("dynamic"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_create_playlist_request_allows_missing_provider_instance_for_default_provider() {
+        crate::validate(&crate::client::CreatePlaylistRequest {
+            name: "Dynamic".into(),
+            parent_id: String::new(),
+            source_provider: "alist".into(),
+            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            provider_instance_name: String::new(),
+        })
+        .expect("dynamic playlist should allow default provider instance");
+    }
+
+    #[test]
+    fn validate_update_playlist_request_rejects_long_name_when_present() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::UpdatePlaylistRequest {
+                playlist_id: "playlist-1".into(),
+                name: "a".repeat(256),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("name"), "{error}");
+    }
+
+    #[test]
+    fn validate_move_media_request_rejects_conflicting_scope_and_selection_modes() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::MoveMediaRequest {
+                media_ids: vec!["media-1".into()],
+                source_playlist_id: Some("playlist-1".into()),
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("move_media.source_scope"), "{error}");
+    }
+
+    #[test]
+    fn validate_move_media_request_rejects_missing_media_ids_for_explicit_move() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::MoveMediaRequest {
+                media_ids: Vec::new(),
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("move_media.explicit_selection"), "{error}");
+    }
+
+    #[test]
+    fn validate_move_media_request_rejects_multiple_anchor_ids() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::MoveMediaRequest {
+                media_ids: vec!["media-1".into()],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: Some("media-before".into()),
+                after_media_id: Some("media-after".into()),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("move_media.anchor"), "{error}");
+    }
+
+    #[test]
+    fn validate_move_media_request_rejects_batch_size_above_limit() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::MoveMediaRequest {
+                media_ids: (0..101).map(|idx| format!("media-{idx}")).collect(),
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("media_ids"), "{error}");
+    }
+
+    #[test]
+    fn validate_add_media_request_allows_missing_provider_instance_for_default_provider() {
+        crate::validate(&crate::client::AddMediaRequest {
+            playlist_id: None,
+            provider: "alist".into(),
+            provider_instance_name: String::new(),
+            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            title: String::new(),
+        })
+        .expect("provider-backed media add should allow default provider instance");
+    }
+
+    #[test]
+    fn validate_add_media_request_rejects_oversized_title() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::AddMediaRequest {
+                playlist_id: None,
+                provider: String::new(),
+                provider_instance_name: String::new(),
+                source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+                title: "a".repeat(501),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("title"), "{error}");
+    }
+
+    #[test]
+    fn validate_add_media_batch_request_rejects_too_many_items() {
+        let template = crate::client::AddMediaRequest {
+            playlist_id: None,
+            provider: String::new(),
+            provider_instance_name: String::new(),
+            source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+            title: String::new(),
+        };
+        let error = validation_error_text(
+            crate::validate(&crate::client::AddMediaBatchRequest {
+                items: vec![template; 101],
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("items"), "{error}");
+    }
+
+    #[test]
+    fn validate_start_playback_request_rejects_multiple_targets() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::StartPlaybackRequest {
+                media_id: "media-1".into(),
+                playlist_id: "playlist-1".into(),
+                target: Vec::new(),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(
+            error.contains("start_playback") || error.contains("media_id"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_start_playback_request_rejects_static_media_with_target() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::StartPlaybackRequest {
+                media_id: "media-1".into(),
+                playlist_id: String::new(),
+                target: br#"{"provider":"alist"}"#.to_vec(),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("target"), "{error}");
+    }
+
+    #[test]
+    fn validate_start_playback_request_rejects_dynamic_playlist_without_target() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::StartPlaybackRequest {
+                media_id: String::new(),
+                playlist_id: "playlist-1".into(),
+                target: Vec::new(),
+            })
+            .unwrap_err(),
+        );
+
+        assert!(error.contains("target"), "{error}");
+    }
+
+    #[test]
+    fn validate_delete_entries_request_rejects_empty_target_set() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::DeleteEntriesRequest {
+                playlist_ids: Vec::new(),
+                media_ids: Vec::new(),
+                force: false,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(
+            error.contains("delete_entries") || error.contains("playlist_ids"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_delete_entries_request_rejects_batch_size_above_limit() {
+        let error = validation_error_text(
+            crate::validate(&crate::client::DeleteEntriesRequest {
+                playlist_ids: (0..51).map(|idx| format!("playlist-{idx}")).collect(),
+                media_ids: (0..50).map(|idx| format!("media-{idx}")).collect(),
+                force: true,
+            })
+            .unwrap_err(),
+        );
+
+        assert!(
+            error.contains("delete_entries") || error.contains("playlist_ids"),
+            "{error}"
+        );
     }
 }

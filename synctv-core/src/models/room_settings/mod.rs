@@ -499,6 +499,33 @@ impl RoomSettings {
     /// - Guest added permissions cannot exceed `DEFAULT_MEMBER`
     /// - Member added permissions cannot exceed `DEFAULT_ADMIN`
     pub fn validate_permissions(&self) -> Result<()> {
+        let admin_unassignable =
+            self.admin_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
+        if admin_unassignable != 0 {
+            return Err(Error::InvalidInput(
+                "Room admin permission defaults cannot grant lifecycle-only permissions"
+                    .to_string(),
+            ));
+        }
+
+        let member_unassignable =
+            self.member_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
+        if member_unassignable != 0 {
+            return Err(Error::InvalidInput(
+                "Room member permission defaults cannot grant lifecycle-only permissions"
+                    .to_string(),
+            ));
+        }
+
+        let guest_unassignable =
+            self.guest_added_permissions.0 & !PermissionBits::ASSIGNABLE_IN_ROOM;
+        if guest_unassignable != 0 {
+            return Err(Error::InvalidInput(
+                "Room guest permission defaults cannot grant lifecycle-only permissions"
+                    .to_string(),
+            ));
+        }
+
         let guest_overflow = self.guest_added_permissions.0 & !PermissionBits::DEFAULT_MEMBER;
         if guest_overflow != 0 {
             return Err(Error::InvalidInput(
@@ -624,12 +651,12 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
-            admin_added_permissions: AdminAddedPermissions(PermissionBits::EXPORT_DATA),
+            admin_added_permissions: AdminAddedPermissions(PermissionBits::USE_WEBRTC),
             ..Default::default()
         };
         let global = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         let result = settings.admin_permissions(global);
-        assert!(result.has(PermissionBits::EXPORT_DATA));
+        assert!(result.has(PermissionBits::USE_WEBRTC));
         // Original permissions preserved
         assert!(result.has(PermissionBits::SEND_CHAT));
     }
@@ -645,7 +672,7 @@ mod tests {
         // SEND_CHAT should be removed
         assert!(!result.has(PermissionBits::SEND_CHAT));
         // Other permissions remain
-        assert!(result.has(PermissionBits::ADD_MOVIE));
+        assert!(result.has(PermissionBits::ADD_MEDIA));
     }
 
     #[test]

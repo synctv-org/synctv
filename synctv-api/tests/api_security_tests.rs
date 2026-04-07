@@ -450,7 +450,7 @@ fn test_e7_classify_error_database_errors() {
 // ============================================================================
 
 /// Verify that u32::try_from handles negative i32 values safely.
-/// This is the pattern used in the fixed list_rooms/get_joined_rooms.
+/// This is the pattern used in the fixed list endpoints, including `list_my_rooms`.
 #[test]
 fn test_i32_to_u32_negative_conversion() {
     // Negative i32 values must not wrap to huge u32 values

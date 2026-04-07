@@ -1,6 +1,16 @@
 use synctv_proto::client::{
-    AddMediaRequest, DeleteEntriesRequest, DeleteMediaRequest, DeletePlaylistRequest,
-    ListPlaylistItemsRequest, StartPlaybackRequest,
+    AddMediaRequest, CheckRoomRequest, CreatePublishKeyRequest, CreateWebSocketTicketRequest,
+    DeleteEntriesRequest, DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest,
+    EditMediaRequest, ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
+    GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
+    GetRoomMembersRequest, GetRoomRequest, GetStreamInfoRequest, ListMyRoomsRequest,
+    ListNotificationsRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    ListProviderBackendsRequest, ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest,
+    MovePlaylistRequest, OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest,
+    ProviderInstanceQuery, ProviderProxyPathRequest, RoomMediaTargetPathRequest,
+    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
+    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
+    UpdatePlaybackRequest, UpdatePlaylistRequest, WebSocketConnectRequest,
 };
 
 #[test]
@@ -14,6 +24,36 @@ fn test_add_media_request_allows_room_root_without_playlist_id() {
     };
 
     assert!(request.playlist_id.is_none());
+}
+
+#[test]
+fn test_add_media_request_requires_non_empty_provider() {
+    let request = AddMediaRequest {
+        playlist_id: None,
+        provider: String::new(),
+        provider_instance_name: String::new(),
+        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        title: "Example".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_add_media_request_rejects_invalid_playlist_id() {
+    let request = AddMediaRequest {
+        playlist_id: Some("bad-playlist".to_string()),
+        provider: "direct_url".to_string(),
+        provider_instance_name: String::new(),
+        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        title: "Example".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
 }
 
 #[test]
@@ -43,6 +83,76 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
 }
 
 #[test]
+fn test_get_room_request_rejects_invalid_room_id() {
+    let request = GetRoomRequest {
+        room_id: "bad-room".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("room_id"), "{message}");
+}
+
+#[test]
+fn test_room_path_request_rejects_invalid_room_id() {
+    let request = RoomPathRequest {
+        room_id: "bad-room".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("room_id"), "{message}");
+}
+
+#[test]
+fn test_room_member_target_path_request_rejects_invalid_room_id() {
+    let request = RoomMemberTargetPathRequest {
+        room_id: "bad-room".to_string(),
+        user_id: "AbC123xYz890".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("room_id"), "{message}");
+}
+
+#[test]
+fn test_room_member_target_path_request_rejects_invalid_user_id() {
+    let request = RoomMemberTargetPathRequest {
+        room_id: "AbC123xYz890".to_string(),
+        user_id: "bad-user".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("user_id"), "{message}");
+}
+
+#[test]
+fn test_room_media_target_path_request_rejects_invalid_media_id() {
+    let request = RoomMediaTargetPathRequest {
+        room_id: "AbC123xYz890".to_string(),
+        media_id: "bad-media".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_id"), "{message}");
+}
+
+#[test]
+fn test_room_playlist_target_path_request_rejects_invalid_playlist_id() {
+    let request = RoomPlaylistTargetPathRequest {
+        room_id: "AbC123xYz890".to_string(),
+        playlist_id: "bad-playlist".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
+}
+
+#[test]
 fn test_delete_media_request_serializes_force_flag() {
     let request = DeleteMediaRequest {
         media_id: "media-1".to_string(),
@@ -52,6 +162,18 @@ fn test_delete_media_request_serializes_force_flag() {
     let json = serde_json::to_value(&request).expect("serialize delete media request");
     assert_eq!(json["media_id"], "media-1");
     assert_eq!(json["force"], true);
+}
+
+#[test]
+fn test_delete_media_request_rejects_invalid_media_id() {
+    let request = DeleteMediaRequest {
+        media_id: "bad-media".to_string(),
+        force: false,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_id"), "{message}");
 }
 
 #[test]
@@ -67,6 +189,29 @@ fn test_delete_playlist_request_serializes_force_flag() {
 }
 
 #[test]
+fn test_delete_playlist_request_rejects_invalid_playlist_id() {
+    let request = DeletePlaylistRequest {
+        playlist_id: "bad-playlist".to_string(),
+        force: false,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
+}
+
+#[test]
+fn test_get_playlist_request_rejects_invalid_playlist_id() {
+    let request = GetPlaylistRequest {
+        playlist_id: "bad-playlist".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
+}
+
+#[test]
 fn test_delete_entries_request_serializes_force_flag() {
     let request = DeleteEntriesRequest {
         playlist_ids: vec!["playlist-1".to_string()],
@@ -78,6 +223,32 @@ fn test_delete_entries_request_serializes_force_flag() {
     assert_eq!(json["playlist_ids"][0], "playlist-1");
     assert_eq!(json["media_ids"][0], "media-1");
     assert_eq!(json["force"], true);
+}
+
+#[test]
+fn test_delete_entries_request_rejects_invalid_playlist_id() {
+    let request = DeleteEntriesRequest {
+        playlist_ids: vec!["bad-playlist".to_string()],
+        media_ids: vec!["AbC123xYz890".to_string()],
+        force: false,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_ids"), "{message}");
+}
+
+#[test]
+fn test_delete_entries_request_rejects_invalid_media_id() {
+    let request = DeleteEntriesRequest {
+        playlist_ids: vec!["AbC123xYz890".to_string()],
+        media_ids: vec!["bad-media".to_string()],
+        force: false,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_ids"), "{message}");
 }
 
 #[test]
@@ -112,4 +283,632 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
     assert_eq!(json["source_provider"], "alist");
     assert_eq!(json["provider_instance_name"], "alist-main");
     assert_eq!(json["source_config"], serde_json::json!({"path":"/tv"}));
+}
+
+#[test]
+fn test_provider_instance_query_allows_empty_instance_name() {
+    let request = ProviderInstanceQuery {
+        instance_name: String::new(),
+    };
+
+    synctv_proto::validate(&request).expect("empty instance name should be allowed");
+}
+
+#[test]
+fn test_provider_instance_query_rejects_invalid_instance_name() {
+    let request = ProviderInstanceQuery {
+        instance_name: "bad name".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("instance_name"), "{message}");
+}
+
+#[test]
+fn test_list_provider_backends_request_rejects_invalid_provider_type_format() {
+    let request = ListProviderBackendsRequest {
+        provider_type: "bad-name".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider_type"), "{message}");
+}
+
+#[test]
+fn test_provider_proxy_path_request_rejects_invalid_provider_name_format() {
+    let request = ProviderProxyPathRequest {
+        provider_name: "bad-provider".to_string(),
+        sub_path: "v1/media".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider_name"), "{message}");
+}
+
+#[test]
+fn test_provider_proxy_path_request_rejects_empty_sub_path() {
+    let request = ProviderProxyPathRequest {
+        provider_name: "direct_url".to_string(),
+        sub_path: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("sub_path"), "{message}");
+}
+
+#[test]
+fn test_get_authorization_url_request_rejects_invalid_provider_instance_name() {
+    let request = GetAuthorizationUrlRequest {
+        provider: "bad provider".to_string(),
+        redirect_url: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_oauth2_provider_instance_path_request_rejects_invalid_provider_name() {
+    let request = OAuth2ProviderInstancePathRequest {
+        provider: "bad provider".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_get_authorization_url_for_bind_request_rejects_dangerous_redirect_url() {
+    let request = GetAuthorizationUrlForBindRequest {
+        provider: "github".to_string(),
+        redirect_url: "javascript:alert(1)".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("redirect_url"), "{message}");
+}
+
+#[test]
+fn test_exchange_authorization_code_request_rejects_invalid_state() {
+    let request = ExchangeAuthorizationCodeRequest {
+        provider: "github".to_string(),
+        code: "code.with.dots".to_string(),
+        state: "short".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("state"), "{message}");
+}
+
+#[test]
+fn test_unlink_provider_request_rejects_invalid_provider_type() {
+    let request = UnlinkProviderRequest {
+        provider: "custom".to_string(),
+        provider_user_id: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_oauth2_provider_type_path_request_rejects_invalid_provider_type() {
+    let request = OAuth2ProviderTypePathRequest {
+        provider: "github-main".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("provider"), "{message}");
+}
+
+#[test]
+fn test_list_rooms_request_rejects_too_long_search() {
+    let request = synctv_proto::client::ListRoomsRequest {
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        sort_by: synctv_proto::client::RoomListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_get_room_members_request_rejects_too_long_search() {
+    let request = GetRoomMembersRequest {
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        role: None,
+        status: None,
+        sort_by: synctv_proto::client::RoomMemberListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_list_playlists_request_rejects_too_long_search() {
+    let request = ListPlaylistsRequest {
+        parent_id: String::new(),
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        dynamic_only: None,
+        sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_create_playlist_request_rejects_invalid_source_provider_format() {
+    let request = synctv_proto::client::CreatePlaylistRequest {
+        name: "Dyn".to_string(),
+        parent_id: String::new(),
+        source_provider: "Bad Provider".to_string(),
+        source_config: br#"{"path":"/tv"}"#.to_vec(),
+        provider_instance_name: "alist-main".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("source_provider"), "{message}");
+}
+
+#[test]
+fn test_list_playlists_request_rejects_invalid_provider_filters() {
+    let request = ListPlaylistsRequest {
+        parent_id: String::new(),
+        page: 1,
+        page_size: 20,
+        search: String::new(),
+        source_provider: "Bad Provider".to_string(),
+        provider_instance_name: "bad name".to_string(),
+        dynamic_only: None,
+        sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("source_provider") || message.contains("provider_instance_name"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
+    let request = ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: Vec::new(),
+        page: 1,
+        page_size: 20,
+        search: String::new(),
+        source_provider: "Bad Provider".to_string(),
+        provider_instance_name: "bad name".to_string(),
+        sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("source_provider") || message.contains("provider_instance_name"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_add_media_request_rejects_invalid_provider_identifiers() {
+    let request = AddMediaRequest {
+        playlist_id: None,
+        provider: "Bad Provider".to_string(),
+        provider_instance_name: "bad name".to_string(),
+        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        title: "Example".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("provider") || message.contains("provider_instance_name"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_list_playlist_items_request_rejects_too_long_search() {
+    let request = ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: Vec::new(),
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_list_my_rooms_request_rejects_too_long_search() {
+    let request = ListMyRoomsRequest {
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        status: synctv_proto::common::RoomStatus::Unspecified as i32,
+        is_banned: None,
+        relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+        sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_list_room_streams_request_rejects_too_long_search() {
+    let request = ListRoomStreamsRequest {
+        page: 1,
+        page_size: 20,
+        search: "a".repeat(101),
+        sort_by: synctv_proto::client::RoomStreamListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_list_notifications_request_rejects_too_long_search() {
+    let request = ListNotificationsRequest {
+        page: 1,
+        page_size: 20,
+        is_read: None,
+        notification_type: None,
+        search: "a".repeat(101),
+        sort_by: synctv_proto::client::NotificationListSortBy::Unspecified as i32,
+        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
+    let request = TransferRoomOwnershipRequest {
+        new_owner_user_id: "bad-id".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("new_owner_user_id"), "{message}");
+}
+
+#[test]
+fn test_check_room_request_rejects_invalid_room_id() {
+    let request = CheckRoomRequest {
+        room_id: "bad-room".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("room_id"), "{message}");
+}
+
+#[test]
+fn test_create_publish_key_request_rejects_invalid_media_id() {
+    let request = CreatePublishKeyRequest {
+        id: "bad-media".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("id"), "{message}");
+}
+
+#[test]
+fn test_get_stream_info_request_rejects_invalid_media_id() {
+    let request = GetStreamInfoRequest {
+        media_id: "bad-media".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_id"), "{message}");
+}
+
+#[test]
+fn test_get_chat_history_request_rejects_invalid_limit() {
+    let request = GetChatHistoryRequest {
+        limit: 101,
+        cursor: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("limit"), "{message}");
+}
+
+#[test]
+fn test_edit_media_request_rejects_invalid_media_id() {
+    let request = EditMediaRequest {
+        media_id: "bad-media".to_string(),
+        title: "Episode 1".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_id"), "{message}");
+}
+
+#[test]
+fn test_update_playlist_request_rejects_invalid_playlist_id() {
+    let request = UpdatePlaylistRequest {
+        playlist_id: "bad-playlist".to_string(),
+        name: "Folder".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
+}
+
+#[test]
+fn test_move_playlist_request_rejects_invalid_anchor_playlist_id() {
+    let request = MovePlaylistRequest {
+        playlist_id: "AbC123xYz890".to_string(),
+        anchor: Some(
+            synctv_proto::client::move_playlist_request::Anchor::BeforePlaylistId(
+                "bad-playlist".to_string(),
+            ),
+        ),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("before_playlist_id"), "{message}");
+}
+
+#[test]
+fn test_move_media_request_rejects_invalid_media_id() {
+    let request = MoveMediaRequest {
+        media_ids: vec!["bad-media".to_string()],
+        source_playlist_id: None,
+        target_playlist_id: None,
+        all_from_scope: false,
+        before_media_id: None,
+        after_media_id: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_ids"), "{message}");
+}
+
+#[test]
+fn test_move_media_request_rejects_invalid_source_playlist_id() {
+    let request = MoveMediaRequest {
+        media_ids: Vec::new(),
+        source_playlist_id: Some("bad-playlist".to_string()),
+        target_playlist_id: None,
+        all_from_scope: true,
+        before_media_id: None,
+        after_media_id: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("source_playlist_id"), "{message}");
+}
+
+#[test]
+fn test_move_media_request_rejects_invalid_target_playlist_id() {
+    let request = MoveMediaRequest {
+        media_ids: vec!["AbC123xYz890".to_string()],
+        source_playlist_id: None,
+        target_playlist_id: Some("bad-playlist".to_string()),
+        all_from_scope: false,
+        before_media_id: None,
+        after_media_id: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("target_playlist_id"), "{message}");
+}
+
+#[test]
+fn test_move_media_request_rejects_invalid_anchor_media_id() {
+    let request = MoveMediaRequest {
+        media_ids: vec!["AbC123xYz890".to_string()],
+        source_playlist_id: None,
+        target_playlist_id: None,
+        all_from_scope: false,
+        before_media_id: Some("bad-media".to_string()),
+        after_media_id: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("before_media_id"), "{message}");
+}
+
+#[test]
+fn test_update_playback_request_rejects_invalid_media_id() {
+    let request = UpdatePlaybackRequest {
+        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
+        position: None,
+        speed: None,
+        media_id: "bad-media".to_string(),
+        playlist_id: String::new(),
+        target: Vec::new(),
+        version: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("media_id"), "{message}");
+}
+
+#[test]
+fn test_update_playback_request_rejects_invalid_playlist_id() {
+    let request = UpdatePlaybackRequest {
+        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
+        position: None,
+        speed: None,
+        media_id: String::new(),
+        playlist_id: "bad-playlist".to_string(),
+        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
+        version: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("playlist_id"), "{message}");
+}
+
+#[test]
+fn test_update_playback_request_rejects_mixed_switch_and_patch_fields() {
+    let request = UpdatePlaybackRequest {
+        state: synctv_proto::client::PlaybackPatchState::Playing as i32,
+        position: None,
+        speed: None,
+        media_id: String::new(),
+        playlist_id: "AbC123xYz890".to_string(),
+        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
+        version: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("update_playback.switch_patch_exclusive"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_update_playback_request_rejects_target_without_switch_id() {
+    let request = UpdatePlaybackRequest {
+        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
+        position: None,
+        speed: None,
+        media_id: String::new(),
+        playlist_id: String::new(),
+        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
+        version: None,
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(
+        message.contains("update_playback.switch_requires_target_id"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_create_websocket_ticket_request_rejects_invalid_room_id() {
+    let request = CreateWebSocketTicketRequest {
+        room_id: "bad-room".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("room_id"), "{message}");
+}
+
+#[test]
+fn test_websocket_connect_request_rejects_invalid_ticket_format() {
+    let request = WebSocketConnectRequest {
+        ticket: "bad ticket".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("ticket"), "{message}");
+}
+
+#[test]
+fn test_websocket_connect_request_allows_empty_ticket_for_header_auth() {
+    let request = WebSocketConnectRequest {
+        ticket: String::new(),
+    };
+
+    synctv_proto::validate(&request).expect("empty ticket should be allowed for header auth");
+}
+
+#[test]
+fn test_get_notification_request_rejects_invalid_notification_id() {
+    let request = GetNotificationRequest {
+        notification_id: "bad-id".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("notification_id"), "{message}");
+}
+
+#[test]
+fn test_mark_as_read_request_rejects_invalid_notification_id() {
+    let request = MarkAsReadRequest {
+        notification_ids: vec![
+            "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            "bad-id".to_string(),
+        ],
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("notification_ids"), "{message}");
+}
+
+#[test]
+fn test_delete_notification_request_rejects_invalid_notification_id() {
+    let request = DeleteNotificationRequest {
+        notification_id: "bad-id".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("notification_id"), "{message}");
 }

@@ -8,10 +8,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, ConnectionManager, PublishRequest};
 use synctv_core::models::{
-    MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
-    PlaylistId, PlaylistListQuery as CorePlaylistListQuery,
-    PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
-    UserId, UserRole, UserStatus,
+    MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy, PlaylistId,
+    PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
+    RoomId, SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
 };
 use synctv_core::service::{
     AuditService, EmailService, RemoteProviderManager, RoomService, SettingsRegistry,
@@ -22,10 +21,10 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
 
 use super::client::convert::{
-    media_to_proto, media_to_proto_with_availability, playback_result_to_proto,
-    playback_state_to_proto,
-    playlist_path_node_to_proto, playlist_to_proto,
-    playlist_to_proto_with_availability, provider_playback_info_to_model, room_to_proto_basic,
+    media_to_proto, media_to_proto_with_availability, member_status_to_proto,
+    playback_result_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
+    playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
+    room_to_proto_basic,
 };
 use super::reserve_cluster_event_publish;
 use super::ApiError;
@@ -55,7 +54,7 @@ fn live_streaming_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Live streaming is not available on this server.".to_string())
 }
 
-fn validate_batch_user_ids(user_ids: &[String]) -> Result<(), ApiError> {
+fn parse_batch_user_ids(user_ids: &[String]) -> Result<Vec<UserId>, ApiError> {
     if user_ids.is_empty() {
         return Err(ApiError::InvalidInput(
             "user_ids cannot be empty".to_string(),
@@ -69,7 +68,10 @@ fn validate_batch_user_ids(user_ids: &[String]) -> Result<(), ApiError> {
         )));
     }
 
-    Ok(())
+    user_ids
+        .iter()
+        .map(|user_id| crate::impls::parse_user_id_param(user_id, "user_ids"))
+        .collect()
 }
 
 fn publish_key_service_unavailable_error() -> ApiError {
@@ -111,13 +113,16 @@ pub async fn validate_admin_auth(
         AdminApiImpl::map_admin_auth_user_lookup_error(e)
     })?;
 
-    if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending
+    if user.is_deleted()
+        || user.status == UserStatus::Banned
+        || user.status == UserStatus::Pending
+        || user.status == UserStatus::Rejected
     {
         tracing::debug!(
             user_id = %user_id.as_str(),
             status = ?user.status,
             deleted = user.is_deleted(),
-            "Admin auth rejected: user is deleted, banned, or pending"
+            "Admin auth rejected: user is deleted or not in an active status"
         );
         return Err(ApiError::Authentication(
             "Authentication failed".to_string(),
@@ -201,7 +206,9 @@ fn map_admin_media_sort(sort_by: i32) -> CoreMediaListSortBy {
         crate::proto::client::MediaListSortBy::Name => CoreMediaListSortBy::Name,
         crate::proto::client::MediaListSortBy::AddedAt => CoreMediaListSortBy::AddedAt,
         crate::proto::client::MediaListSortBy::UpdatedAt => CoreMediaListSortBy::UpdatedAt,
-        crate::proto::client::MediaListSortBy::SourceProvider => CoreMediaListSortBy::SourceProvider,
+        crate::proto::client::MediaListSortBy::SourceProvider => {
+            CoreMediaListSortBy::SourceProvider
+        }
         crate::proto::client::MediaListSortBy::ProviderInstanceName => {
             CoreMediaListSortBy::ProviderInstanceName
         }
@@ -226,38 +233,24 @@ fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Vec<T> {
     items.into_iter().skip(offset).take(page_size).collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoomStreamListQuery {
-    pub page: i32,
-    pub page_size: i32,
-    pub search: Option<String>,
-    pub sort_direction: synctv_core::models::SortDirection,
-}
-
 fn build_room_stream_list_response(
     mut media_ids: Vec<String>,
-    query: &RoomStreamListQuery,
+    req: &crate::proto::client::ListRoomStreamsRequest,
 ) -> crate::proto::client::ListRoomStreamsResponse {
-    if let Some(search) = query
-        .search
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-    {
+    if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
         media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(&search));
     }
 
     media_ids.sort_unstable();
     if matches!(
-        query.sort_direction,
-        synctv_core::models::SortDirection::Desc
+        crate::proto::client::SortDirection::try_from(req.sort_direction),
+        Ok(crate::proto::client::SortDirection::Desc)
     ) {
         media_ids.reverse();
     }
 
     let total = media_ids.len() as i32;
-    let streams = paginate_vec(media_ids, query.page, query.page_size)
+    let streams = paginate_vec(media_ids, req.page, req.page_size)
         .into_iter()
         .map(|media_id| crate::proto::client::StreamEntry {
             media_id,
@@ -305,9 +298,6 @@ fn compare_active_streams(
 }
 
 impl AdminApiImpl {
-    /// Maximum length for member-ban reason text.
-    const MEMBER_BAN_REASON_MAX: usize = 500;
-
     fn map_admin_auth_user_lookup_error(err: synctv_core::Error) -> ApiError {
         match err {
             synctv_core::Error::NotFound(_) => {
@@ -497,17 +487,28 @@ impl AdminApiImpl {
         media: synctv_core::models::Media,
     ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
         let providers_manager = self.room_service.media_service().providers_manager();
-        let instance_name = media.provider_instance_name.trim();
-        if instance_name.is_empty() {
-            return Err(ApiError::Internal(format!(
-                "Static media '{}' is missing provider_instance_name",
-                media.id
-            )));
-        }
-
-        let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
-            ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-        })?;
+        let provider = if let Some(instance_name) =
+            (!media.provider_instance_name.trim().is_empty())
+                .then_some(media.provider_instance_name.trim())
+        {
+            providers_manager.get(instance_name).await.ok_or_else(|| {
+                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
+            })?
+        } else {
+            let provider_name = media.source_provider.trim();
+            if provider_name.is_empty() {
+                return Err(ApiError::Internal(format!(
+                    "Static media '{}' is missing source_provider",
+                    media.id
+                )));
+            }
+            providers_manager
+                .get_by_type(provider_name)
+                .await
+                .ok_or_else(|| {
+                    ApiError::NotFound(format!("Provider '{provider_name}' not found"))
+                })?
+        };
 
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
@@ -819,6 +820,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ListRoomsRequest,
     ) -> Result<crate::proto::admin::ListRoomsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
@@ -833,6 +836,9 @@ impl AdminApiImpl {
                     }
                     Ok(synctv_proto::common::RoomStatus::Pending) => {
                         synctv_core::models::RoomStatus::Pending
+                    }
+                    Ok(synctv_proto::common::RoomStatus::Rejected) => {
+                        synctv_core::models::RoomStatus::Rejected
                     }
                     Ok(synctv_proto::common::RoomStatus::Closed) => {
                         synctv_core::models::RoomStatus::Closed
@@ -928,8 +934,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomRequest,
     ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
         let room = self
             .room_service
             .get_room(&rid)
@@ -1028,8 +1034,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
 
         self.room_service
             .admin_delete_room(&rid, admin_user_id)
@@ -1087,8 +1093,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
-        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let room_id = crate::impls::proto_validated_room_id(req.room_id.clone());
         let new_password = if req.new_password.is_empty() {
             None
         } else {
@@ -1120,8 +1126,9 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomMembersRequest,
     ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
         let role = match synctv_proto::common::RoomMemberRole::try_from(req.role) {
             Ok(synctv_proto::common::RoomMemberRole::Guest) => {
                 Some(synctv_core::models::RoomRole::Guest)
@@ -1143,6 +1150,9 @@ impl AdminApiImpl {
             }
             Ok(synctv_proto::common::MemberStatus::Pending) => {
                 Some(synctv_core::models::MemberStatus::Pending)
+            }
+            Ok(synctv_proto::common::MemberStatus::Rejected) => {
+                Some(synctv_core::models::MemberStatus::Rejected)
             }
             Ok(synctv_proto::common::MemberStatus::Banned) => {
                 Some(synctv_core::models::MemberStatus::Banned)
@@ -1194,23 +1204,223 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn update_member_permissions(
+    pub async fn add_member(
         &self,
-        room_id: &str,
-        req: crate::proto::client::UpdateMemberPermissionsRequest,
+        req: crate::proto::admin::AddMemberRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+    ) -> Result<crate::proto::admin::AddMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::AddMemberRequest {
+            room_id,
+            user_id,
+            role,
+            notify,
+        } = req;
+        let actor = self.require_admin_actor(admin_user_id).await?;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
+            synctv_core::models::RoomRole::Member
+        } else {
+            proto_role_to_room_role(role)?
+        };
 
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let target_uid = UserId::from_string(req.user_id.clone());
-        let role = if req.role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
+        let member = self
+            .room_service
+            .admin_add_member(
+                rid.clone(),
+                admin_user_id.clone(),
+                &actor.username,
+                target_uid.clone(),
+                role,
+                notify,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        let username = self
+            .user_service
+            .get_user(&target_uid)
+            .await
+            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+        let is_online = self
+            .connection_manager
+            .get_connection_id(&rid, &target_uid)
+            .is_some();
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online,
+            is_active: member.status.is_active(),
+            banned_at: member.banned_at,
+            banned_reason: member.banned_reason,
+        };
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::service::AuditAction::MemberStatusUpdated,
+            synctv_core::service::AuditTargetType::Member,
+            Some(target_uid.as_str().to_string()),
+            serde_json::json!({
+                "room_id": rid.as_str(),
+                "new_status": "active",
+                "role": role.to_string(),
+                "notify": notify,
+            }),
+            ctx,
+        )
+        .await;
+
+        Ok(crate::proto::admin::AddMemberResponse {
+            member: Some(admin_room_member_to_proto(&member_with_user)),
+        })
+    }
+
+    pub async fn approve_member(
+        &self,
+        req: crate::proto::admin::ApproveMemberRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::ApproveMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::ApproveMemberRequest { room_id, user_id } = req;
+        let actor = self.require_admin_actor(admin_user_id).await?;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
+
+        let member = self
+            .room_service
+            .admin_approve_member(
+                rid.clone(),
+                admin_user_id.clone(),
+                &actor.username,
+                target_uid.clone(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        let username = self
+            .user_service
+            .get_user(&target_uid)
+            .await
+            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+        let is_online = self
+            .connection_manager
+            .get_connection_id(&rid, &target_uid)
+            .is_some();
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online,
+            is_active: member.status.is_active(),
+            banned_at: member.banned_at,
+            banned_reason: member.banned_reason,
+        };
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::service::AuditAction::MemberStatusUpdated,
+            synctv_core::service::AuditTargetType::Member,
+            Some(target_uid.as_str().to_string()),
+            serde_json::json!({
+                "room_id": rid.as_str(),
+                "old_status": "pending",
+                "new_status": "active",
+            }),
+            ctx,
+        )
+        .await;
+
+        Ok(crate::proto::admin::ApproveMemberResponse {
+            member: Some(admin_room_member_to_proto(&member_with_user)),
+        })
+    }
+
+    pub async fn reject_member(
+        &self,
+        req: crate::proto::admin::RejectMemberRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::RejectMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::RejectMemberRequest {
+            room_id,
+            user_id,
+            reason,
+        } = req;
+        let actor = self.require_admin_actor(admin_user_id).await?;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let reason_for_service = (!reason.trim().is_empty()).then_some(reason.as_str());
+
+        self.room_service
+            .admin_reject_member(
+                rid.clone(),
+                admin_user_id.clone(),
+                &actor.username,
+                target_uid.clone(),
+                reason_for_service,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::service::AuditAction::MemberStatusUpdated,
+            synctv_core::service::AuditTargetType::Member,
+            Some(target_uid.as_str().to_string()),
+            serde_json::json!({
+                "room_id": rid.as_str(),
+                "old_status": "pending",
+                "new_status": "rejected",
+                "reason": reason,
+            }),
+            ctx,
+        )
+        .await;
+
+        Ok(crate::proto::admin::RejectMemberResponse { success: true })
+    }
+
+    pub async fn update_member_permissions(
+        &self,
+        req: crate::proto::admin::UpdateMemberPermissionsRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::UpdateMemberPermissionsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::UpdateMemberPermissionsRequest {
+            room_id,
+            user_id,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        } = req;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             None
         } else {
-            Some(proto_role_to_room_role(req.role)?)
+            Some(proto_role_to_room_role(role)?)
         };
 
         let admin_username = self
@@ -1228,10 +1438,10 @@ impl AdminApiImpl {
                 &admin_username,
                 target_uid.clone(),
                 role,
-                req.added_permissions,
-                req.removed_permissions,
-                req.admin_added_permissions,
-                req.admin_removed_permissions,
+                added_permissions,
+                removed_permissions,
+                admin_added_permissions,
+                admin_removed_permissions,
             )
             .await
             .map_err(ApiError::from)?;
@@ -1280,23 +1490,26 @@ impl AdminApiImpl {
             Some(target_uid.as_str().to_string()),
             serde_json::json!({
                 "room_id": rid.as_str(),
-                "role": req.role,
-                "added_permissions": req.added_permissions,
-                "removed_permissions": req.removed_permissions,
-                "admin_added_permissions": req.admin_added_permissions,
-                "admin_removed_permissions": req.admin_removed_permissions,
+                "role": role
+                    .map(crate::impls::client::room_role_to_proto)
+                    .unwrap_or_default(),
+                "added_permissions": added_permissions,
+                "removed_permissions": removed_permissions,
+                "admin_added_permissions": admin_added_permissions,
+                "admin_removed_permissions": admin_removed_permissions,
             }),
             ctx,
         )
         .await;
 
-        Ok(crate::proto::client::UpdateMemberPermissionsResponse {
+        Ok(crate::proto::admin::UpdateMemberPermissionsResponse {
             member: Some(synctv_proto::common::RoomMember {
                 room_id: member_with_user.room_id.as_str().to_string(),
                 user_id: member_with_user.user_id.as_str().to_string(),
                 username: member_with_user.username.clone(),
                 role: crate::impls::client::room_role_to_proto(member_with_user.role),
                 permissions: member_with_user.effective_permissions(role_default).0,
+                status: member_status_to_proto(member_with_user.status),
                 added_permissions: member_with_user.added_permissions,
                 removed_permissions: member_with_user.removed_permissions,
                 admin_added_permissions: member_with_user.admin_added_permissions,
@@ -1309,17 +1522,14 @@ impl AdminApiImpl {
 
     pub async fn kick_member(
         &self,
-        room_id: &str,
-        req: crate::proto::client::KickMemberRequest,
+        req: crate::proto::admin::KickMemberRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let target_uid = UserId::from_string(req.user_id);
+    ) -> Result<crate::proto::admin::KickMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::KickMemberRequest { room_id, user_id } = req;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
@@ -1374,33 +1584,28 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(crate::proto::client::KickMemberResponse { success: true })
+        Ok(crate::proto::admin::KickMemberResponse { success: true })
     }
 
     pub async fn ban_member(
         &self,
-        room_id: &str,
-        req: crate::proto::client::BanMemberRequest,
+        req: crate::proto::admin::BanMemberRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+    ) -> Result<crate::proto::admin::BanMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::BanMemberRequest {
+            room_id,
+            user_id,
+            reason,
+        } = req;
 
-        if req.reason.chars().count() > Self::MEMBER_BAN_REASON_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Ban reason too long (maximum {} characters)",
-                Self::MEMBER_BAN_REASON_MAX
-            )));
-        }
-
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let target_uid = UserId::from_string(req.user_id);
-        let reason = if req.reason.is_empty() {
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let reason = if reason.is_empty() {
             None
         } else {
-            Some(req.reason)
+            Some(reason)
         };
         let admin_username = self
             .load_admin_actor(admin_user_id)
@@ -1458,22 +1663,19 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(crate::proto::client::BanMemberResponse { success: true })
+        Ok(crate::proto::admin::BanMemberResponse { success: true })
     }
 
     pub async fn unban_member(
         &self,
-        room_id: &str,
-        req: crate::proto::client::UnbanMemberRequest,
+        req: crate::proto::admin::UnbanMemberRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
-        crate::http::validation::validate_id(&req.user_id, "user_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
-
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let target_uid = UserId::from_string(req.user_id);
+    ) -> Result<crate::proto::admin::UnbanMemberResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let crate::proto::admin::UnbanMemberRequest { room_id, user_id } = req;
+        let rid = crate::impls::proto_validated_room_id(room_id);
+        let target_uid = crate::impls::proto_validated_user_id(user_id);
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
@@ -1509,7 +1711,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(crate::proto::client::UnbanMemberResponse { success: true })
+        Ok(crate::proto::admin::UnbanMemberResponse { success: true })
     }
 
     // === User Management ===
@@ -1518,6 +1720,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ListUsersRequest,
     ) -> Result<crate::proto::admin::ListUsersResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
@@ -1528,6 +1732,9 @@ impl AdminApiImpl {
             }
             Ok(synctv_proto::common::UserStatus::Pending) => {
                 Some(synctv_core::models::UserStatus::Pending)
+            }
+            Ok(synctv_proto::common::UserStatus::Rejected) => {
+                Some(synctv_core::models::UserStatus::Rejected)
             }
             Ok(synctv_proto::common::UserStatus::Banned) => {
                 Some(synctv_core::models::UserStatus::Banned)
@@ -1600,7 +1807,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetUserRequest,
     ) -> Result<crate::proto::admin::GetUserResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let user = self
             .user_service
             .get_user(&uid)
@@ -1619,7 +1827,8 @@ impl AdminApiImpl {
         caller_role: synctv_core::models::UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserRoleResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
         let user = self
             .user_service
             .get_user(&uid)
@@ -1704,19 +1913,9 @@ impl AdminApiImpl {
         caller_role: synctv_core::models::UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
-        use crate::http::validation::limits::{PASSWORD_MAX, PASSWORD_MIN};
-        if req.new_password.chars().count() < PASSWORD_MIN {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at least {PASSWORD_MIN} characters"
-            )));
-        }
-        if req.new_password.chars().count() > PASSWORD_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at most {PASSWORD_MAX} characters"
-            )));
-        }
+        crate::impls::validate_proto_request(&req)?;
 
-        let uid = UserId::from_string(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
 
         // Fetch target user to check role hierarchy
         let target_user = self
@@ -1918,6 +2117,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ListProviderInstancesRequest,
     ) -> Result<crate::proto::admin::ListProviderInstancesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let query = synctv_core::models::ProviderInstanceListQuery {
             pagination: synctv_core::models::PageParams::new(
                 Some(req.page.max(1) as u32),
@@ -1958,8 +2159,10 @@ impl AdminApiImpl {
             .list_instances(&query)
             .await
             .map_err(ApiError::from)?;
-        let proto_instances: Vec<_> =
-            instances.into_iter().map(provider_instance_to_proto).collect();
+        let proto_instances: Vec<_> = instances
+            .into_iter()
+            .map(provider_instance_to_proto)
+            .collect();
 
         Ok(crate::proto::admin::ListProviderInstancesResponse {
             instances: proto_instances,
@@ -1972,6 +2175,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         // Parse config if provided
         let (jwt_secret, custom_ca) = if req.config.is_empty() {
             (None, None)
@@ -2043,6 +2247,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         // Get existing instance
         let mut instance = self
             .provider_instance_manager
@@ -2162,10 +2367,9 @@ impl AdminApiImpl {
             .get_instance(&req.name)
             .await
             .map_err(ApiError::from)?;
-        let instance = instances
-            .ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-            })?;
+        let instance = instances.ok_or_else(|| {
+            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
+        })?;
 
         // Audit log: provider instance reconnection (best-effort)
         self.log_admin_action(
@@ -2201,10 +2405,9 @@ impl AdminApiImpl {
             .get_instance(&req.name)
             .await
             .map_err(ApiError::from)?;
-        let instance = instances
-            .ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-            })?;
+        let instance = instances.ok_or_else(|| {
+            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
+        })?;
 
         Ok(crate::proto::admin::EnableProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -2226,10 +2429,9 @@ impl AdminApiImpl {
             .get_instance(&req.name)
             .await
             .map_err(ApiError::from)?;
-        let instance = instances
-            .ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-            })?;
+        let instance = instances.ok_or_else(|| {
+            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
+        })?;
 
         Ok(crate::proto::admin::DisableProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -2245,24 +2447,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::CreateUserResponse, ApiError> {
-        if req.username.is_empty() || req.password.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "Username and password are required".to_string(),
-            ));
-        }
-
-        // Validate password length using shared constants (chars().count() for multi-byte safety)
-        use crate::http::validation::limits::{PASSWORD_MAX, PASSWORD_MIN};
-        if req.password.chars().count() < PASSWORD_MIN {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at least {PASSWORD_MIN} characters"
-            )));
-        }
-        if req.password.chars().count() > PASSWORD_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at most {PASSWORD_MAX} characters"
-            )));
-        }
+        crate::impls::validate_proto_request(&req)?;
 
         let email = match req.email.trim() {
             "" => None,
@@ -2294,6 +2479,7 @@ impl AdminApiImpl {
                 match synctv_proto::common::UserStatus::try_from(req.status) {
                     Ok(synctv_proto::common::UserStatus::Active) => UserStatus::Active,
                     Ok(synctv_proto::common::UserStatus::Pending) => UserStatus::Pending,
+                    Ok(synctv_proto::common::UserStatus::Rejected) => UserStatus::Rejected,
                     Ok(synctv_proto::common::UserStatus::Banned) => UserStatus::Banned,
                     _ => {
                         return Err(ApiError::InvalidInput(
@@ -2340,7 +2526,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let summary = self
             .user_service
             .delete_user_with_summary(&uid)
@@ -2378,7 +2565,9 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
 
         // Apply the same validation rules as client-facing set_username:
         // trim, check length, charset, and leading character restrictions.
@@ -2450,7 +2639,8 @@ impl AdminApiImpl {
         caller_role: synctv_core::models::UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
         let updated = self
             .ban_user_with_cleanup(&uid, admin_user_id, caller_role)
             .await?;
@@ -2482,7 +2672,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -2526,7 +2717,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveUserResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -2571,7 +2763,9 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetUserRoomsRequest,
     ) -> Result<crate::proto::admin::GetUserRoomsResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
         let page = u32::try_from(req.page).unwrap_or(1);
         let page_size = u32::try_from(req.page_size).unwrap_or(50).min(100);
         let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
@@ -2580,6 +2774,9 @@ impl AdminApiImpl {
             }
             Ok(synctv_proto::common::RoomStatus::Pending) => {
                 Some(synctv_core::models::RoomStatus::Pending)
+            }
+            Ok(synctv_proto::common::RoomStatus::Rejected) => {
+                Some(synctv_core::models::RoomStatus::Rejected)
             }
             Ok(synctv_proto::common::RoomStatus::Closed) => {
                 Some(synctv_core::models::RoomStatus::Closed)
@@ -2662,8 +2859,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
         let room = self
             .room_service
             .get_room(&rid)
@@ -2748,8 +2945,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
         let room = self
             .room_service
             .get_room(&rid)
@@ -2801,8 +2998,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveRoomResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
         let room = self
             .room_service
             .approve_room(&rid)
@@ -2842,8 +3039,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomSettingsRequest,
     ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
         let settings = self
             .room_service
             .get_room_settings(&rid)
@@ -2861,8 +3058,8 @@ impl AdminApiImpl {
         req: crate::proto::admin::UpdateRoomSettingsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
 
@@ -2921,8 +3118,8 @@ impl AdminApiImpl {
         req: crate::proto::admin::ResetRoomSettingsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        crate::impls::validate_proto_request(&req)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id);
         let default_settings = synctv_core::models::RoomSettings::default();
         self.room_service
             .set_room_settings(&rid, &default_settings)
@@ -2988,7 +3185,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -3035,7 +3233,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
-        let uid = UserId::from_string(req.user_id);
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -3081,6 +3280,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ListAdminsRequest,
     ) -> Result<crate::proto::admin::ListAdminsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = req.page_size.clamp(1, 100);
         let query = synctv_core::models::UserListQuery {
@@ -3216,6 +3417,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ListActiveStreamsRequest,
     ) -> Result<crate::proto::admin::ListActiveStreamsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -3291,12 +3494,15 @@ impl AdminApiImpl {
     /// Kick an active stream
     pub async fn kick_stream(
         &self,
-        room_id: &str,
-        media_id: &str,
-        reason: &str,
+        req: crate::proto::admin::KickStreamRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<(), ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let room_id = req.room_id;
+        let media_id = req.media_id;
+        let reason = req.reason;
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -3311,7 +3517,7 @@ impl AdminApiImpl {
         );
 
         infrastructure
-            .kick_stream(room_id, media_id)
+            .kick_stream(&room_id, &media_id)
             .await
             .map_err(|error| ApiError::Internal(format!("Failed to kick stream: {error}")))?;
 
@@ -3326,12 +3532,12 @@ impl AdminApiImpl {
                 .log_stream_kicked(
                     admin_user_id.as_str().to_string(),
                     admin_username.clone(),
-                    room_id.to_string(),
-                    media_id.to_string(),
+                    room_id.clone(),
+                    media_id.clone(),
                     if reason.is_empty() {
                         None
                     } else {
-                        Some(reason.to_string())
+                        Some(reason)
                     },
                     ctx.ip_address.clone(),
                     ctx.user_agent.clone(),
@@ -3359,12 +3565,9 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
-        crate::http::validation::validate_id(media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let media_id = synctv_core::models::MediaId::from_string(media_id.to_string());
+        let media_id = crate::impls::parse_media_id_param(media_id, "media_id")?;
 
         let media = self
             .room_service
@@ -3414,7 +3617,7 @@ impl AdminApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::GetStreamInfoResponse, ApiError> {
-        crate::http::validation::validate_id(media_id, "media_id")
+        crate::http::validation::validate_nanoid_id(media_id, "media_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
 
         let _rid = crate::room_id_validation::parse_room_id(room_id)
@@ -3449,8 +3652,9 @@ impl AdminApiImpl {
     pub async fn list_room_streams(
         &self,
         room_id: &str,
-        query: &RoomStreamListQuery,
+        req: crate::proto::client::ListRoomStreamsRequest,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
+        let req = crate::impls::client::build_room_streams_request(req)?;
         let _rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         if self.live_streaming_infrastructure.is_none() {
@@ -3459,7 +3663,7 @@ impl AdminApiImpl {
 
         let media_ids = self.active_room_stream_media_ids(room_id).await;
 
-        Ok(build_room_stream_list_response(media_ids, query))
+        Ok(build_room_stream_list_response(media_ids, &req))
     }
 
     pub async fn start_playback(
@@ -3471,28 +3675,15 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let media_id = if req.media_id.is_empty() {
-            None
-        } else {
-            crate::http::validation::validate_id(&req.media_id, "media_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-            Some(MediaId::from_string(req.media_id))
-        };
-        let playlist_id = if req.playlist_id.is_empty() {
-            None
-        } else {
-            crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-            Some(PlaylistId::from_string(req.playlist_id))
-        };
+        let target = crate::impls::client::build_start_playback_request(req)?;
 
         self.room_service
             .admin_start_playback(
                 rid.clone(),
                 admin_user_id.clone(),
-                media_id.clone(),
-                playlist_id.clone(),
-                req.target,
+                target.media_id.clone(),
+                target.playlist_id.clone(),
+                target.target,
             )
             .await
             .map_err(ApiError::from)?;
@@ -3502,8 +3693,8 @@ impl AdminApiImpl {
         tracing::info!(
             room_id = %rid.as_str(),
             admin_user_id = %admin_user_id.as_str(),
-            media_id = media_id.as_ref().map(|id| id.as_str()).unwrap_or(""),
-            playlist_id = playlist_id.as_ref().map(|id| id.as_str()).unwrap_or(""),
+            media_id = target.media_id.as_ref().map(|id| id.as_str()).unwrap_or(""),
+            playlist_id = target.playlist_id.as_ref().map(|id| id.as_str()).unwrap_or(""),
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
             "Admin started playback"
@@ -3598,11 +3789,9 @@ impl AdminApiImpl {
         playlist_id: &str,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(playlist_id, "playlist_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let pid = PlaylistId::from_string(playlist_id.to_string());
+        let pid = crate::impls::parse_playlist_id_param(playlist_id, "playlist_id")?;
 
         self.require_admin_actor(admin_user_id).await?;
 
@@ -3646,10 +3835,8 @@ impl AdminApiImpl {
         req: crate::proto::client::ListPlaylistsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
-        if !req.parent_id.is_empty() {
-            crate::http::validation::validate_id(&req.parent_id, "parent_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid parent_id: {e}")))?;
-        }
+        crate::impls::validate_proto_request(&req)?;
+
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
@@ -3667,7 +3854,7 @@ impl AdminApiImpl {
         let parent_id = if req.parent_id.is_empty() {
             None
         } else {
-            let parent_id = PlaylistId::from_string(req.parent_id.clone());
+            let parent_id = crate::impls::proto_validated_playlist_id(req.parent_id.clone());
             let parent = self
                 .room_service
                 .playlist_service()
@@ -3724,15 +3911,9 @@ impl AdminApiImpl {
         let playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count = counts
-                    .get(entry.playlist.id.as_str())
-                    .copied()
-                    .unwrap_or(0) as i32;
-                playlist_to_proto_with_availability(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                )
+                let item_count =
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
 
@@ -3748,25 +3929,7 @@ impl AdminApiImpl {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         self.require_admin_actor(admin_user_id).await?;
-
-        let parent_id = if req.parent_id.is_empty() {
-            None
-        } else {
-            crate::http::validation::validate_id(&req.parent_id, "parent_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid parent_id: {e}")))?;
-            Some(PlaylistId::from_string(req.parent_id))
-        };
-        let source_provider = (!req.source_provider.is_empty()).then_some(req.source_provider);
-        let source_config =
-            if req.source_config.is_empty() {
-                None
-            } else {
-                Some(serde_json::from_slice(&req.source_config).map_err(|e| {
-                    ApiError::InvalidInput(format!("Invalid source_config JSON: {e}"))
-                })?)
-            };
-        let provider_instance_name =
-            (!req.provider_instance_name.is_empty()).then_some(req.provider_instance_name);
+        let service_req = crate::impls::client::playlist::build_create_playlist_request(&rid, req)?;
 
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -3778,18 +3941,7 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_create_playlist(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: rid.clone(),
-                    name: req.name,
-                    parent_id,
-                    source_provider,
-                    source_config,
-                    provider_instance_name,
-                },
-            )
+            .admin_create_playlist(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -3816,11 +3968,10 @@ impl AdminApiImpl {
         req: crate::proto::client::UpdatePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         self.require_admin_actor(admin_user_id).await?;
+        let service_req = crate::impls::client::playlist::build_update_playlist_request(req)?;
 
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -3832,18 +3983,7 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_set_playlist(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::playlist::SetPlaylistRequest {
-                    playlist_id: PlaylistId::from_string(req.playlist_id),
-                    name: if req.name.is_empty() {
-                        None
-                    } else {
-                        Some(req.name)
-                    },
-                },
-            )
+            .admin_set_playlist(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -3870,31 +4010,10 @@ impl AdminApiImpl {
         req: crate::proto::client::MovePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         self.require_admin_actor(admin_user_id).await?;
-
-        let anchor = req.anchor.ok_or_else(|| {
-            ApiError::InvalidInput(
-                "Exactly one of before_playlist_id or after_playlist_id must be set".to_string(),
-            )
-        })?;
-        let (before_playlist_id, after_playlist_id) = match anchor {
-            crate::proto::client::move_playlist_request::Anchor::BeforePlaylistId(anchor_id) => {
-                crate::http::validation::validate_id(&anchor_id, "before_playlist_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid before_playlist_id: {e}")),
-                )?;
-                (Some(PlaylistId::from_string(anchor_id)), None)
-            }
-            crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(anchor_id) => {
-                crate::http::validation::validate_id(&anchor_id, "after_playlist_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid after_playlist_id: {e}")),
-                )?;
-                (None, Some(PlaylistId::from_string(anchor_id)))
-            }
-        };
+        let service_req = crate::impls::client::playlist::build_move_playlist_request(req)?;
 
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -3906,15 +4025,7 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_move_playlist(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::playlist::MovePlaylistRequest {
-                    playlist_id: PlaylistId::from_string(req.playlist_id),
-                    before_playlist_id,
-                    after_playlist_id,
-                },
-            )
+            .admin_move_playlist(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -3941,8 +4052,6 @@ impl AdminApiImpl {
         req: crate::proto::client::DeletePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
-        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         self.require_admin_actor(admin_user_id).await?;
@@ -3953,14 +4062,12 @@ impl AdminApiImpl {
             "failed to fan out room cache invalidation to cluster replicas",
         )
         .await?;
+        let (playlist_id, _force) =
+            crate::impls::client::playlist::build_delete_playlist_request(req)?;
 
         self.room_service
             .playlist_service()
-            .admin_delete_playlist(
-                rid.clone(),
-                admin_user_id.clone(),
-                PlaylistId::from_string(req.playlist_id),
-            )
+            .admin_delete_playlist(rid.clone(), admin_user_id.clone(), playlist_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -3978,17 +4085,15 @@ impl AdminApiImpl {
         req: crate::proto::client::ListPlaylistItemsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
-        if !req.playlist_id.is_empty() {
-            crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-        }
+        crate::impls::validate_proto_request(&req)?;
+
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
         self.require_admin_actor(admin_user_id).await?;
 
-        let Some(playlist_id) =
-            (!req.playlist_id.is_empty()).then(|| PlaylistId::from_string(req.playlist_id.clone()))
+        let Some(playlist_id) = (!req.playlist_id.is_empty())
+            .then(|| crate::impls::proto_validated_playlist_id(req.playlist_id.clone()))
         else {
             if !req.target.is_empty() {
                 return Err(ApiError::InvalidInput(
@@ -4036,7 +4141,13 @@ impl AdminApiImpl {
             let (playlists, media) = if skip < folder_count {
                 let playlists = self
                     .room_service
-                    .list_client_playlists(&rid, None, &playlist_query, page_size as i64, skip as i64)
+                    .list_client_playlists(
+                        &rid,
+                        None,
+                        &playlist_query,
+                        page_size as i64,
+                        skip as i64,
+                    )
                     .await
                     .map_err(ApiError::from)?;
                 let remaining = page_size.saturating_sub(playlists.len());
@@ -4064,7 +4175,8 @@ impl AdminApiImpl {
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
             };
-            let folder_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
+            let folder_ids: Vec<&str> =
+                playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
             let counts = self
                 .room_service
                 .media_service()
@@ -4074,10 +4186,8 @@ impl AdminApiImpl {
             let proto_playlists = playlists
                 .iter()
                 .map(|entry| {
-                    let item_count = counts
-                        .get(entry.playlist.id.as_str())
-                        .copied()
-                        .unwrap_or(0) as i32;
+                    let item_count =
+                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
                     playlist_to_proto_with_availability(
                         &entry.playlist,
                         item_count,
@@ -4265,13 +4375,7 @@ impl AdminApiImpl {
             let remaining = page_size.saturating_sub(playlists.len());
             let media = if remaining > 0 {
                 self.room_service
-                    .list_client_media(
-                        &rid,
-                        Some(&playlist_id),
-                        &media_query,
-                        remaining as i64,
-                        0,
-                    )
+                    .list_client_media(&rid, Some(&playlist_id), &media_query, remaining as i64, 0)
                     .await
                     .map_err(ApiError::from)?
             } else {
@@ -4303,15 +4407,9 @@ impl AdminApiImpl {
         let proto_playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count = counts
-                    .get(entry.playlist.id.as_str())
-                    .copied()
-                    .unwrap_or(0) as i32;
-                playlist_to_proto_with_availability(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                )
+                let item_count =
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
         let proto_media = media
@@ -4338,32 +4436,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let playlist_id = if let Some(playlist_id) = req.playlist_id.as_ref() {
-            crate::http::validation::validate_id(playlist_id, "playlist_id")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
-            Some(PlaylistId::from_string(playlist_id.clone()))
-        } else {
-            None
-        };
-
-        let provider = crate::impls::client::media::parse_add_media_provider(&req.provider)?;
-        let source_config: serde_json::Value = if req.source_config.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&req.source_config)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
-        };
-        let title = if req.title.is_empty() {
-            let raw = source_config
-                .get("url")
-                .and_then(|u| u.as_str())
-                .and_then(|u| u.split('/').next_back())
-                .unwrap_or("Unknown");
-            crate::impls::client::media::sanitize_url_derived_title(raw)
-        } else {
-            crate::http::validation::validate_media_title(&req.title)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
-        };
+        let service_req = crate::impls::client::media::build_add_media_request(req)?;
+        let playlist_id = service_req.playlist_id.clone();
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
@@ -4384,13 +4458,6 @@ impl AdminApiImpl {
             )));
         }
 
-        let provider_instance_name =
-            crate::impls::client::media::resolve_add_media_provider_instance(
-                provider,
-                &req.provider,
-                req.provider_instance_name,
-            )?;
-
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),
@@ -4401,16 +4468,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_add_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::media::AddMediaRequest {
-                    playlist_id,
-                    name: title,
-                    provider_instance_name,
-                    source_config,
-                },
-            )
+            .admin_add_media(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -4430,18 +4488,9 @@ impl AdminApiImpl {
         req: crate::proto::client::EditMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let title = if req.title.is_empty() {
-            None
-        } else {
-            Some(
-                crate::http::validation::validate_media_title(&req.title)
-                    .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?,
-            )
-        };
+        let service_req = crate::impls::client::media::build_edit_media_request(req)?;
 
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -4453,14 +4502,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_edit_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::media::EditMediaRequest {
-                    media_id: MediaId::from_string(req.media_id),
-                    name: title,
-                },
-            )
+            .admin_edit_media(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -4480,8 +4522,6 @@ impl AdminApiImpl {
         req: crate::proto::client::DeleteMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
-        crate::http::validation::validate_id(&req.media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
@@ -4496,11 +4536,10 @@ impl AdminApiImpl {
             .admin_delete_entries(
                 rid.clone(),
                 admin_user_id.clone(),
-                synctv_core::service::room::DeleteEntriesRequest {
-                    playlist_ids: Vec::new(),
-                    media_ids: vec![MediaId::from_string(req.media_id)],
-                    force: req.force,
-                },
+                crate::impls::client::media::build_delete_entries_request(
+                    crate::impls::client::media::build_delete_media_request(req)?,
+                )?
+                .0,
             )
             .await
             .map_err(ApiError::from)?;
@@ -4521,36 +4560,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-
-        for media_id in &req.media_ids {
-            crate::http::validation::validate_id(media_id, "media_ids")
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_ids: {e}")))?;
-        }
-        if let Some(ref playlist_id) = req.source_playlist_id {
-            crate::http::validation::validate_id(playlist_id, "source_playlist_id").map_err(
-                |e| ApiError::InvalidInput(format!("Invalid source_playlist_id: {e}")),
-            )?;
-        }
-        if let Some(ref playlist_id) = req.target_playlist_id {
-            crate::http::validation::validate_id(playlist_id, "target_playlist_id").map_err(
-                |e| ApiError::InvalidInput(format!("Invalid target_playlist_id: {e}")),
-            )?;
-        }
-        let (before_media_id, after_media_id) = match req.anchor {
-            Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(anchor_id)) => {
-                crate::http::validation::validate_id(&anchor_id, "before_media_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid before_media_id: {e}")),
-                )?;
-                (Some(MediaId::from_string(anchor_id)), None)
-            }
-            Some(crate::proto::client::move_media_request::Anchor::AfterMediaId(anchor_id)) => {
-                crate::http::validation::validate_id(&anchor_id, "after_media_id").map_err(
-                    |e| ApiError::InvalidInput(format!("Invalid after_media_id: {e}")),
-                )?;
-                (None, Some(MediaId::from_string(anchor_id)))
-            }
-            None => (None, None),
-        };
+        let service_req = crate::impls::client::media::build_move_media_request(req)?;
 
         let cache_invalidation = reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -4562,18 +4572,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_move_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                synctv_core::service::media::MoveMediaRequest {
-                    media_ids: req.media_ids.into_iter().map(MediaId::from_string).collect(),
-                    source_playlist_id: req.source_playlist_id.map(PlaylistId::from_string),
-                    target_playlist_id: req.target_playlist_id.map(PlaylistId::from_string),
-                    all_from_scope: req.all_from_scope,
-                    before_media_id,
-                    after_media_id,
-                },
-            )
+            .admin_move_media(rid.clone(), admin_user_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -4604,7 +4603,8 @@ impl AdminApiImpl {
         caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchBanUsersResponse, ApiError> {
-        validate_batch_user_ids(&req.user_ids)?;
+        crate::impls::validate_proto_request(&req)?;
+        let parsed_user_ids = parse_batch_user_ids(&req.user_ids)?;
 
         // Pre-filter: check role hierarchy for each target user before delegating
         // to the service layer. Users that violate hierarchy are skipped with an error.
@@ -4612,9 +4612,8 @@ impl AdminApiImpl {
         let mut succeeded = 0i32;
         let mut failed = 0i32;
 
-        for user_id_str in &req.user_ids {
-            let uid = UserId::from_string(user_id_str.clone());
-            match self.user_service.get_user(&uid).await {
+        for (user_id_str, uid) in req.user_ids.iter().zip(parsed_user_ids.iter()) {
+            match self.user_service.get_user(uid).await {
                 Ok(target_user) => {
                     if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "ban") {
                         proto_results.push(crate::proto::admin::BatchResultItem {
@@ -4626,7 +4625,7 @@ impl AdminApiImpl {
                         continue;
                     }
                     match self
-                        .ban_user_with_cleanup(&uid, admin_user_id, caller_role)
+                        .ban_user_with_cleanup(uid, admin_user_id, caller_role)
                         .await
                     {
                         Ok(_) => {
@@ -4693,7 +4692,8 @@ impl AdminApiImpl {
         caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchDeleteUsersResponse, ApiError> {
-        validate_batch_user_ids(&req.user_ids)?;
+        crate::impls::validate_proto_request(&req)?;
+        let parsed_user_ids = parse_batch_user_ids(&req.user_ids)?;
 
         // Pre-filter: check role hierarchy for each target user before delegating
         // to the service layer. Users that violate hierarchy are skipped with an error.
@@ -4702,8 +4702,7 @@ impl AdminApiImpl {
         let mut succeeded = 0i32;
         let mut failed = 0i32;
 
-        for user_id_str in &req.user_ids {
-            let uid = UserId::from_string(user_id_str.clone());
+        for (user_id_str, uid) in req.user_ids.iter().zip(parsed_user_ids.into_iter()) {
             match self.user_service.get_user(&uid).await {
                 Ok(target_user) => {
                     if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "delete") {
@@ -4715,7 +4714,7 @@ impl AdminApiImpl {
                         failed += 1;
                         continue;
                     }
-                    allowed_ids.push(user_id_str.clone());
+                    allowed_ids.push((user_id_str.clone(), uid));
                 }
                 Err(e) => {
                     proto_results.push(crate::proto::admin::BatchResultItem {
@@ -4730,8 +4729,7 @@ impl AdminApiImpl {
 
         // Process the allowed users through the service layer
         if !allowed_ids.is_empty() {
-            for user_id in allowed_ids {
-                let uid = UserId::from_string(user_id.clone());
+            for (user_id, uid) in allowed_ids {
                 match self.user_service.delete_user_with_summary(&uid).await {
                     Ok(summary) => {
                         proto_results.push(crate::proto::admin::BatchResultItem {
@@ -4797,6 +4795,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchBanRoomsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         let results = self
             .room_service
             .batch_ban_rooms(&req.room_ids, admin_user_id)
@@ -4890,6 +4889,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchDeleteRoomsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         let results = self
             .room_service
             .batch_delete_rooms(&req.room_ids, admin_user_id)
@@ -5107,6 +5107,7 @@ fn admin_room_member_to_proto(
         username: member.username.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
         permissions: member.effective_permissions(member.role.permissions()).0,
+        status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,
@@ -5133,6 +5134,9 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
         synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
         synctv_core::models::UserStatus::Pending => {
             synctv_proto::common::UserStatus::Pending as i32
+        }
+        synctv_core::models::UserStatus::Rejected => {
+            synctv_proto::common::UserStatus::Rejected as i32
         }
         synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
     };
@@ -5377,6 +5381,45 @@ mod tests {
         );
         user_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
         user_service
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_validate_admin_auth_rejects_rejected_user() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_service = make_user_service(pool.clone());
+        let user_repo = UserRepository::new(pool);
+
+        let rejected_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "rejected_admin_auth".to_string(),
+            email: Some("rejected_admin_auth@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Admin,
+            status: UserStatus::Rejected,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&rejected_admin)
+            .await
+            .expect("create rejected admin");
+
+        let err = validate_admin_auth(&user_service, rejected_admin.id.clone(), 0, 0)
+            .await
+            .err()
+            .expect("rejected admin must not pass admin auth");
+
+        assert!(
+            matches!(err, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
+            "rejected admin auth must fail with generic authentication error, got: {err:?}"
+        );
     }
 
     async fn make_admin_api_for_delete_user_test(
@@ -6289,6 +6332,193 @@ mod tests {
             .map(|instance| instance.name)
             .collect();
         assert_eq!(names, vec!["beta-edge".to_string()]);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_list_endpoints_reject_invalid_proto_requests() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+
+        let list_rooms_error = admin_api
+            .list_rooms(crate::proto::admin::ListRoomsRequest {
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: String::new(),
+                creator_id: String::new(),
+                is_banned: None,
+                sort_by: crate::proto::admin::RoomListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid list_rooms request must be rejected");
+        assert!(matches!(list_rooms_error, ApiError::InvalidInput(_)));
+
+        let get_room_members_error = admin_api
+            .get_room_members(crate::proto::admin::GetRoomMembersRequest {
+                room_id: "abc123def456".to_string(),
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                status: synctv_proto::common::MemberStatus::Unspecified as i32,
+                sort_by: crate::proto::admin::RoomMemberListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid get_room_members request must be rejected");
+        assert!(matches!(get_room_members_error, ApiError::InvalidInput(_)));
+
+        let list_users_error = admin_api
+            .list_users(crate::proto::admin::ListUsersRequest {
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::UserStatus::Unspecified as i32,
+                role: synctv_proto::common::UserRole::Unspecified as i32,
+                search: "a".repeat(101),
+                sort_by: crate::proto::admin::UserListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid list_users request must be rejected");
+        assert!(matches!(list_users_error, ApiError::InvalidInput(_)));
+
+        let list_provider_instances_error = admin_api
+            .list_provider_instances(crate::proto::admin::ListProviderInstancesRequest {
+                page: -1,
+                page_size: 101,
+                provider_type: String::new(),
+                search: String::new(),
+                enabled: None,
+                tls: None,
+                sort_by: crate::proto::admin::ProviderInstanceListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid list_provider_instances request must be rejected");
+        assert!(matches!(
+            list_provider_instances_error,
+            ApiError::InvalidInput(_)
+        ));
+
+        let get_user_rooms_error = admin_api
+            .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
+                user_id: "abc123def456".to_string(),
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: "a".repeat(101),
+                is_banned: None,
+                sort_by: crate::proto::admin::RoomListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid get_user_rooms request must be rejected");
+        assert!(matches!(get_user_rooms_error, ApiError::InvalidInput(_)));
+
+        let list_admins_error = admin_api
+            .list_admins(crate::proto::admin::ListAdminsRequest {
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                sort_by: crate::proto::admin::UserListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid list_admins request must be rejected");
+        assert!(matches!(list_admins_error, ApiError::InvalidInput(_)));
+
+        let list_active_streams_error = admin_api
+            .list_active_streams(crate::proto::admin::ListActiveStreamsRequest {
+                page: -1,
+                page_size: 101,
+                room_id: String::new(),
+                user_id: String::new(),
+                node_id: String::new(),
+                search: "a".repeat(101),
+                sort_by: crate::proto::admin::ActiveStreamListSortBy::Unspecified as i32,
+                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await
+            .expect_err("invalid list_active_streams request must be rejected");
+        assert!(matches!(
+            list_active_streams_error,
+            ApiError::InvalidInput(_)
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool);
+        let now = chrono::Utc::now();
+        let admin_user = synctv_core::models::User {
+            id: UserId::new(),
+            username: "proto_list_admin".to_string(),
+            email: Some("proto_list_admin@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&admin_user)
+            .await
+            .expect("create admin user");
+
+        let list_playlists_error = admin_api
+            .list_playlists(
+                "abc123def456",
+                crate::proto::client::ListPlaylistsRequest {
+                    parent_id: String::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: "Bad Provider".to_string(),
+                    provider_instance_name: "bad name".to_string(),
+                    dynamic_only: None,
+                    sort_by: crate::proto::client::PlaylistListSortBy::Unspecified as i32,
+                    sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+                    availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                },
+                &admin_user.id,
+            )
+            .await
+            .expect_err("invalid list_playlists request must be rejected");
+        assert!(matches!(list_playlists_error, ApiError::InvalidInput(_)));
+
+        let list_media_error = admin_api
+            .list_media(
+                "abc123def456",
+                crate::proto::client::ListPlaylistItemsRequest {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: "Bad Provider".to_string(),
+                    provider_instance_name: "bad name".to_string(),
+                    sort_by: crate::proto::client::MediaListSortBy::Unspecified as i32,
+                    sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+                    availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                },
+                &admin_user.id,
+            )
+            .await
+            .expect_err("invalid list_media request must be rejected");
+        assert!(matches!(list_media_error, ApiError::InvalidInput(_)));
     }
 
     #[tokio::test]
@@ -7816,6 +8046,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_parse_batch_user_ids_trims_and_preserves_order() {
+        let parsed =
+            parse_batch_user_ids(&["  AbC123xYz890  ".to_string(), "987zyxWVutSR".to_string()])
+                .expect("batch ids should parse");
+
+        let ids: Vec<_> = parsed.into_iter().map(|id| id.to_string()).collect();
+        assert_eq!(ids, vec!["AbC123xYz890", "987zyxWVutSR"]);
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_member_permissions_bypasses_room_creator_constraint_for_global_admin() {
@@ -7883,8 +8123,8 @@ mod tests {
 
         let response = admin_api
             .update_member_permissions(
-                room.id.as_str(),
-                crate::proto::client::UpdateMemberPermissionsRequest {
+                crate::proto::admin::UpdateMemberPermissionsRequest {
+                    room_id: room.id.as_str().to_string(),
                     user_id: target.id.as_str().to_string(),
                     role: synctv_proto::common::RoomMemberRole::Admin as i32,
                     added_permissions: 0,
@@ -7985,8 +8225,8 @@ mod tests {
 
         let response = admin_api
             .kick_member(
-                room.id.as_str(),
-                crate::proto::client::KickMemberRequest {
+                crate::proto::admin::KickMemberRequest {
+                    room_id: room.id.as_str().to_string(),
                     user_id: target.id.as_str().to_string(),
                 },
                 &global_admin.id,
@@ -8075,8 +8315,8 @@ mod tests {
 
         let response = admin_api
             .ban_member(
-                room.id.as_str(),
-                crate::proto::client::BanMemberRequest {
+                crate::proto::admin::BanMemberRequest {
+                    room_id: room.id.as_str().to_string(),
                     user_id: target.id.as_str().to_string(),
                     reason: "policy".to_string(),
                 },
@@ -8175,8 +8415,8 @@ mod tests {
 
         let response = admin_api
             .unban_member(
-                room.id.as_str(),
-                crate::proto::client::UnbanMemberRequest {
+                crate::proto::admin::UnbanMemberRequest {
+                    room_id: room.id.as_str().to_string(),
                     user_id: target.id.as_str().to_string(),
                 },
                 &global_admin.id,
@@ -8356,11 +8596,12 @@ mod tests {
         let response = admin_api
             .list_room_streams(
                 room.id.as_str(),
-                &RoomStreamListQuery {
+                crate::proto::client::ListRoomStreamsRequest {
                     page: 1,
                     page_size: 50,
-                    search: None,
-                    sort_direction: synctv_core::models::SortDirection::Asc,
+                    search: String::new(),
+                    sort_by: crate::proto::client::RoomStreamListSortBy::Unspecified as i32,
+                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
                 },
             )
             .await
@@ -8379,11 +8620,12 @@ mod tests {
                 "alpha-01".to_string(),
                 "beta-01".to_string(),
             ],
-            &RoomStreamListQuery {
+            &crate::proto::client::ListRoomStreamsRequest {
                 page: 2,
                 page_size: 1,
-                search: Some("beta".to_string()),
-                sort_direction: synctv_core::models::SortDirection::Desc,
+                search: "beta".to_string(),
+                sort_by: crate::proto::client::RoomStreamListSortBy::MediaId as i32,
+                sort_direction: crate::proto::client::SortDirection::Desc as i32,
             },
         );
 
@@ -9530,7 +9772,7 @@ mod tests {
                 room.id.as_str(),
                 crate::proto::client::AddMediaRequest {
                     playlist_id: None,
-                    provider: String::new(),
+                    provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
                     source_config: serde_json::to_vec(&serde_json::json!({
                         "url": "https://example.com/added.mp4"
@@ -9782,9 +10024,8 @@ mod tests {
                     source_playlist_id: None,
                     target_playlist_id: None,
                     all_from_scope: false,
-                    anchor: Some(crate::proto::client::move_media_request::Anchor::BeforeMediaId(
-                        media_a.id.as_str().to_string(),
-                    )),
+                    before_media_id: Some(media_a.id.as_str().to_string()),
+                    after_media_id: None,
                 },
                 &global_admin.id,
             )

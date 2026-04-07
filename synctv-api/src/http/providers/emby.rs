@@ -5,14 +5,17 @@
 //! in `providers/mod.rs` via `EmbyProvider::resolve_proxy`.
 
 use axum::{
-    extract::{Query, State},
+    extract::State,
     routing::{get, post},
     Json, Router,
 };
 
 use crate::http::{
-    middleware::AuthUser, provider_common::InstanceQuery, AppError, AppResult, AppState,
+    middleware::AuthUser, provider_common::provider_instance_name, validation::ValidatedQuery,
+    AppError, AppResult, AppState,
 };
+use crate::proto::client::ProviderInstanceQuery;
+use crate::proto::providers::emby::{BindInfo, GetBindsResponse};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -42,7 +45,7 @@ pub fn emby_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/emby/login",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::LoginRequest,
         responses(
             (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
@@ -57,14 +60,15 @@ pub fn emby_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.emby_api;
     let resp = api
-        .login(&auth.user_id.to_string(), req, query.as_deref())
+        .login(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Emby login failed: {}", e);
@@ -80,7 +84,7 @@ pub(crate) async fn login(
         post,
         path = "/api/providers/emby/list",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::ListRequest,
         responses(
             (status = 200, description = "Emby library listing", body = crate::proto::providers::emby::ListResponse),
@@ -95,14 +99,15 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.emby_api;
     let resp = api
-        .list(&auth.user_id.to_string(), req, query.as_deref())
+        .list(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Emby list failed: {}", e);
@@ -118,7 +123,7 @@ pub(crate) async fn list(
         post,
         path = "/api/providers/emby/me",
         tag = "Provider",
-        params(InstanceQuery),
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::GetMeRequest,
         responses(
             (status = 200, description = "Emby account info", body = crate::proto::providers::emby::GetMeResponse),
@@ -133,14 +138,15 @@ pub(crate) async fn list(
 pub(crate) async fn me(
     auth: AuthUser,
     State(state): State<AppState>,
-    Query(query): Query<InstanceQuery>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
+    let instance_name = provider_instance_name(&query)?;
     let api = &state.emby_api;
     let resp = api
-        .get_me(&auth.user_id.to_string(), req, query.as_deref())
+        .get_me(&auth.user_id.to_string(), req, instance_name)
         .await
         .map_err(|e| {
             tracing::error!("Emby me failed: {}", e);
@@ -185,22 +191,6 @@ pub(crate) async fn logout(
     Ok(Json(resp))
 }
 
-/// Get Emby binds (saved credentials)
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct EmbyBindInfoDoc {
-    id: String,
-    host: String,
-    user_id: String,
-    created_at: String,
-}
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub(crate) struct EmbyBindsResponseDoc {
-    binds: Vec<EmbyBindInfoDoc>,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -208,7 +198,7 @@ pub(crate) struct EmbyBindsResponseDoc {
         path = "/api/providers/emby/binds",
         tag = "Provider",
         responses(
-            (status = 200, description = "Saved Emby credentials", body = EmbyBindsResponseDoc),
+            (status = 200, description = "Saved Emby credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
         ),
@@ -220,7 +210,7 @@ pub(crate) struct EmbyBindsResponseDoc {
 pub(crate) async fn binds(
     auth: crate::http::middleware::AuthUser,
     State(state): State<AppState>,
-) -> AppResult<Json<EmbyBindsResponseDoc>> {
+) -> AppResult<Json<GetBindsResponse>> {
     tracing::info!("Emby binds request for user: {}", auth.user_id);
 
     let provider_binds = get_provider_binds(
@@ -234,13 +224,13 @@ pub(crate) async fn binds(
 
     let emby_binds: Vec<_> = provider_binds
         .into_iter()
-        .map(|b| EmbyBindInfoDoc {
+        .map(|b| BindInfo {
             id: b.id,
             host: b.host,
             user_id: b.label_value,
-            created_at: b.created_at_str,
+            created_at: b.created_at,
         })
         .collect();
 
-    Ok(Json(EmbyBindsResponseDoc { binds: emby_binds }))
+    Ok(Json(GetBindsResponse { binds: emby_binds }))
 }

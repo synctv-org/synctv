@@ -109,6 +109,9 @@ where
 
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+    health_reporter
         .set_serving::<ManagementServiceServer<ManagementServiceImpl>>()
         .await;
 

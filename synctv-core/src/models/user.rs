@@ -123,10 +123,15 @@ pub enum UserStatus {
     /// - Can login but cannot create or join rooms
     Pending = 2,
 
+    /// Rejected during signup or review
+    /// - Cannot login
+    /// - May be re-approved later without implying abuse
+    Rejected = 3,
+
     /// Banned state
     /// - Cannot login
     /// - All operations forbidden
-    Banned = 3,
+    Banned = 4,
 }
 
 impl UserStatus {
@@ -135,6 +140,7 @@ impl UserStatus {
         match self {
             Self::Active => "active",
             Self::Pending => "pending",
+            Self::Rejected => "rejected",
             Self::Banned => "banned",
         }
     }
@@ -172,6 +178,11 @@ impl UserStatus {
     }
 
     #[must_use]
+    pub const fn is_rejected(&self) -> bool {
+        matches!(self, Self::Rejected)
+    }
+
+    #[must_use]
     pub const fn is_banned(&self) -> bool {
         matches!(self, Self::Banned)
     }
@@ -184,6 +195,7 @@ impl FromStr for UserStatus {
         match s.to_lowercase().as_str() {
             "active" => Ok(Self::Active),
             "pending" => Ok(Self::Pending),
+            "rejected" => Ok(Self::Rejected),
             "banned" => Ok(Self::Banned),
             _ => Err(format!("Unknown user status: {s}")),
         }
@@ -196,7 +208,7 @@ impl std::fmt::Display for UserStatus {
     }
 }
 
-// Database mapping: UserStatus -> SMALLINT (1=active, 2=pending, 3=banned)
+// Database mapping: UserStatus -> SMALLINT (1=active, 2=pending, 3=rejected, 4=banned)
 impl sqlx::Type<sqlx::Postgres> for UserStatus {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
@@ -211,7 +223,8 @@ impl sqlx::Encode<'_, sqlx::Postgres> for UserStatus {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
-            Self::Banned => 3,
+            Self::Rejected => 3,
+            Self::Banned => 4,
         };
         <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
     }
@@ -225,7 +238,8 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserStatus {
         match val {
             1 => Ok(Self::Active),
             2 => Ok(Self::Pending),
-            3 => Ok(Self::Banned),
+            3 => Ok(Self::Rejected),
+            4 => Ok(Self::Banned),
             _ => Err(format!("Invalid UserStatus value: {val}").into()),
         }
     }

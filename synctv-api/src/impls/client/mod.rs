@@ -19,11 +19,15 @@ pub use auth::LogoutOutcome;
 pub(crate) mod media;
 mod member;
 mod playback;
-mod playlist;
+pub(crate) mod playlist;
 mod room;
 mod stream;
 mod user;
 mod webrtc;
+pub(crate) use playback::build_start_playback_request;
+pub(crate) use playback::{build_update_playback_request, PlaybackUpdateCommand};
+pub(crate) use room::build_create_websocket_ticket_request;
+pub(crate) use stream::build_room_streams_request;
 
 // Proto conversion helpers used across impls modules within this crate.
 pub(crate) mod convert;
@@ -74,7 +78,7 @@ pub(crate) fn validate_password_for_set(password: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
-/// Validate a password that is being **verified** (join room, check password).
+/// Validate a password that is being **verified** during room join.
 fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
     if password.chars().count() > ROOM_PASSWORD_MAX {
         return Err(ApiError::InvalidInput(format!(
@@ -145,13 +149,6 @@ impl ClientApiImpl {
             synctv_core::Error::Authorization(msg) => {
                 ApiError::Authorization(format!("Forbidden: {msg}"))
             }
-            other => ApiError::from(other),
-        }
-    }
-
-    fn map_room_lookup_error(err: synctv_core::Error) -> ApiError {
-        match err {
-            synctv_core::Error::NotFound(_) => ApiError::NotFound("Room not found".to_string()),
             other => ApiError::from(other),
         }
     }

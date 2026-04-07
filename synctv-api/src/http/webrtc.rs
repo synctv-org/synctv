@@ -47,11 +47,11 @@ use crate::proto::client::GetIceServersResponse;
 pub async fn get_ice_servers(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(room_id): Path<String>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
     let user_id = auth.user_id;
-    let room_id = crate::room_id_validation::parse_room_id(&room_id)
-        .map_err(|e| crate::http::AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
+    let room_id = synctv_core::models::RoomId::from_string(path.room_id);
 
     // Membership check is performed inside client_api.get_ice_servers()
     // Errors are mapped via map_api_error for proper HTTP status codes:

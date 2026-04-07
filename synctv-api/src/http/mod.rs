@@ -51,6 +51,112 @@ pub use error::{AppError, AppResult};
 const HTTP_REQUEST_TIMEOUT: std::time::Duration =
     synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
+pub(crate) trait WithUserId: Sized {
+    fn with_user_id(self, user_id: String) -> Self;
+}
+
+pub(crate) trait WithRoomId: Sized {
+    fn with_room_id(self, room_id: String) -> Self;
+}
+
+pub(crate) trait WithMediaId: Sized {
+    fn with_media_id(self, media_id: String) -> Self;
+}
+
+pub(crate) trait WithPlaylistId: Sized {
+    fn with_playlist_id(self, playlist_id: String) -> Self;
+}
+
+pub(crate) trait WithProviderInstanceName: Sized {
+    fn with_provider_instance_name(self, name: String) -> Self;
+}
+
+pub(crate) trait WithId: Sized {
+    fn with_id(self, id: String) -> Self;
+}
+
+macro_rules! impl_with_string_field {
+    ($trait_name:ident, $method_name:ident, $field:ident, [$($ty:path),+ $(,)?]) => {
+        $(
+            impl $trait_name for $ty {
+                fn $method_name(mut self, value: String) -> Self {
+                    self.$field = value;
+                    self
+                }
+            }
+        )+
+    };
+}
+
+impl_with_string_field!(
+    WithUserId,
+    with_user_id,
+    user_id,
+    [
+        crate::proto::client::UpdateMemberPermissionsRequest,
+        crate::proto::admin::UpdateUserRoleRequest,
+        crate::proto::admin::UpdateUserPasswordRequest,
+        crate::proto::admin::UpdateUserUsernameRequest,
+        crate::proto::admin::BanUserRequest,
+        crate::proto::admin::GetUserRoomsRequest
+    ]
+);
+
+impl_with_string_field!(
+    WithRoomId,
+    with_room_id,
+    room_id,
+    [
+        crate::proto::admin::UpdateRoomPasswordRequest,
+        crate::proto::admin::GetRoomMembersRequest,
+        crate::proto::admin::BanRoomRequest,
+        crate::proto::admin::UpdateRoomSettingsRequest
+    ]
+);
+
+impl_with_string_field!(
+    WithMediaId,
+    with_media_id,
+    media_id,
+    [crate::proto::client::EditMediaRequest]
+);
+
+impl_with_string_field!(
+    WithPlaylistId,
+    with_playlist_id,
+    playlist_id,
+    [
+        crate::proto::client::UpdatePlaylistRequest,
+        crate::proto::client::MovePlaylistRequest
+    ]
+);
+
+impl_with_string_field!(
+    WithProviderInstanceName,
+    with_provider_instance_name,
+    name,
+    [crate::proto::admin::UpdateProviderInstanceRequest]
+);
+
+impl_with_string_field!(
+    WithId,
+    with_id,
+    id,
+    [crate::proto::client::CreatePublishKeyRequest]
+);
+
+impl_with_string_field!(
+    WithUserId,
+    with_user_id,
+    user_id,
+    [
+        crate::proto::client::KickMemberRequest,
+        crate::proto::client::UnbanMemberRequest,
+        crate::proto::client::ApproveMemberRequest,
+        crate::proto::client::RejectMemberRequest
+    ]
+);
+
 /// Configuration for creating the HTTP router
 #[derive(Clone)]
 pub struct RouterConfig {
@@ -389,7 +495,7 @@ pub fn start_proxy_cache_lifecycle(
 /// the limit is enforced before the handler reads the body, and the global 10 MB
 /// safety net remains as a fallback for routes not explicitly limited here.
 mod body_limits {
-    /// Auth endpoints (login, register, refresh, password verify): 64 KB.
+    /// Auth endpoints (login, register, refresh, OAuth2 exchange): 64 KB.
     /// A typical login JSON body is under 512 bytes; 64 KB is generous.
     pub const AUTH: usize = 64 * 1024;
 
@@ -401,7 +507,7 @@ mod body_limits {
     pub const MEDIA: usize = 512 * 1024;
 }
 
-/// Authentication routes (register, login, refresh, `OAuth2` exchange, password verify).
+/// Authentication routes (register, login, refresh, `OAuth2` exchange).
 /// Strict rate limiting: 5 req/min. Body limit: 64 KB (Issue #23).
 fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
@@ -411,10 +517,6 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
         .route(
             "/api/oauth2/{provider}/exchange",
             post(oauth2::exchange_authorization_code),
-        )
-        .route(
-            "/api/rooms/{room_id}/password/verify",
-            post(room::check_password),
         )
         // Tighter body limit for authentication endpoints (64 KB)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
@@ -434,17 +536,10 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
             axum::routing::delete(room::clear_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/media",
-            axum::routing::patch(room::update_media_batch),
-        )
-        .route(
             "/api/rooms/{room_id}/media/batch",
             post(room::push_media_batch),
         )
-        .route(
-            "/api/rooms/{room_id}/media/move",
-            post(room::move_media),
-        )
+        .route("/api/rooms/{room_id}/media/move", post(room::move_media))
         .route(
             "/api/rooms/{room_id}/media/{media_id}",
             axum::routing::delete(room::delete_media),
@@ -478,9 +573,22 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/members/@me",
             axum::routing::delete(room::leave_room),
         )
+        .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
+        .route(
+            "/api/rooms/{room_id}/members/{user_id}/approve",
+            post(room_extra::approve_member),
+        )
+        .route(
+            "/api/rooms/{room_id}/members/{user_id}/reject",
+            post(room_extra::reject_member),
+        )
         .route(
             "/api/rooms/{room_id}/settings",
             axum::routing::patch(room::update_room_settings),
+        )
+        .route(
+            "/api/rooms/{room_id}/owner",
+            post(room::transfer_room_ownership),
         )
         .route(
             "/api/rooms/{room_id}/password",
@@ -501,10 +609,6 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/user/logout", post(auth::logout))
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/me", axum::routing::delete(user::delete_me))
-        .route(
-            "/api/user/rooms/{room_id}",
-            axum::routing::delete(user::delete_my_room),
-        )
         .route(
             "/api/rooms/{room_id}/members/{user_id}",
             axum::routing::delete(room_extra::kick_member),
@@ -558,7 +662,7 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             get(oauth2::get_bind_authorize_url),
         )
         .route(
-            "/api/oauth2/{provider}/unlink",
+            "/api/oauth2/type/{provider}/unlink",
             axum::routing::delete(oauth2::unlink_provider),
         )
         .route("/api/oauth2/linked", get(oauth2::get_linked_providers));
@@ -577,8 +681,7 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
 fn register_read_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/user", get(user::get_me))
-        .route("/api/user/rooms", get(user::get_joined_rooms))
-        .route("/api/user/rooms/created", get(user::list_created_rooms))
+        .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/rooms", get(room::list_or_get_rooms))
         .route("/api/rooms/hot", get(room::get_hot_rooms))
         .route("/api/rooms/{room_id}/check", get(room::check_room))
@@ -997,7 +1100,8 @@ fn apply_global_layers_with_timeout(
 mod tests {
     use super::{
         apply_global_layers_with_timeout, build_app_state, build_cors_layer,
-        register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig,
+        register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig, WithId,
+        WithMediaId, WithPlaylistId, WithProviderInstanceName, WithRoomId, WithUserId,
         HTTP_REQUEST_TIMEOUT,
     };
     use axum::body::Body;
@@ -1017,6 +1121,94 @@ mod tests {
     };
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
     use tower::ServiceExt;
+
+    #[test]
+    fn test_with_user_id_injects_proto_user_scoped_requests() {
+        let req = crate::proto::admin::BanUserRequest {
+            user_id: String::new(),
+            reason: "spam".to_string(),
+        }
+        .with_user_id("AbC123xYz890".to_string());
+
+        assert_eq!(req.user_id, "AbC123xYz890");
+        assert_eq!(req.reason, "spam");
+    }
+
+    #[test]
+    fn test_with_user_id_injects_client_single_field_requests() {
+        let req = crate::proto::client::KickMemberRequest::default()
+            .with_user_id("AbC123xYz890".to_string());
+
+        assert_eq!(req.user_id, "AbC123xYz890");
+    }
+
+    #[test]
+    fn test_with_room_id_injects_proto_room_scoped_requests() {
+        let req = crate::proto::admin::GetRoomMembersRequest {
+            room_id: String::new(),
+            page: 2,
+            page_size: 25,
+            search: "alice".to_string(),
+            role: 0,
+            status: 0,
+            sort_by: 0,
+            sort_direction: 0,
+        }
+        .with_room_id("ZyX098wVu765".to_string());
+
+        assert_eq!(req.room_id, "ZyX098wVu765");
+        assert_eq!(req.page, 2);
+        assert_eq!(req.page_size, 25);
+        assert_eq!(req.search, "alice");
+    }
+
+    #[test]
+    fn test_proto_http_injection_traits_cover_media_playlist_and_provider_name() {
+        let edit_media = crate::proto::client::EditMediaRequest {
+            media_id: String::new(),
+            title: "Episode 1".to_string(),
+        }
+        .with_media_id("AbC123xYz890".to_string());
+
+        let move_playlist = crate::proto::client::MovePlaylistRequest {
+            playlist_id: String::new(),
+            anchor: Some(
+                crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(
+                    "QwErTy123456".to_string(),
+                ),
+            ),
+        }
+        .with_playlist_id("ZyX098wVu765".to_string());
+
+        let update_provider = crate::proto::admin::UpdateProviderInstanceRequest {
+            name: String::new(),
+            endpoint: Some("https://provider.internal".to_string()),
+            comment: None,
+            timeout_seconds: None,
+            tls: None,
+            insecure_tls: None,
+            providers: Vec::new(),
+            config: Vec::new(),
+        }
+        .with_provider_instance_name("alist_main".to_string());
+
+        assert_eq!(edit_media.media_id, "AbC123xYz890");
+        assert_eq!(edit_media.title, "Episode 1");
+        assert_eq!(move_playlist.playlist_id, "ZyX098wVu765");
+        assert_eq!(update_provider.name, "alist_main");
+        assert_eq!(
+            update_provider.endpoint.as_deref(),
+            Some("https://provider.internal")
+        );
+    }
+
+    #[test]
+    fn test_with_id_injects_single_id_requests() {
+        let req =
+            crate::proto::client::CreatePublishKeyRequest::default().with_id("ZyX098wVu765".into());
+
+        assert_eq!(req.id, "ZyX098wVu765");
+    }
 
     pub(crate) fn test_app_state() -> super::AppState {
         test_app_state_with_rate_limits(
@@ -1403,6 +1595,171 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_public_rooms_route_is_reachable_without_auth() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/rooms?page=1&page_size=10")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "public room listing must not require auth"
+        );
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "public room listing route must be registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_removed_room_password_verify_route_returns_not_found() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/rooms/room1234_abx/password/verify")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"password":"secret"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "legacy room password verify route must stay removed from the latest API surface"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_member_approval_routes_are_reachable_via_project_router() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        for (method, uri, body) in [
+            (
+                "POST",
+                "/api/rooms/room1234_abx/members",
+                Some(r#"{"user_id":"AbC123xYz890","role":1,"notify":true}"#),
+            ),
+            (
+                "POST",
+                "/api/rooms/room1234_abx/members/AbC123xYz890/approve",
+                None,
+            ),
+            (
+                "POST",
+                "/api/rooms/room1234_abx/members/AbC123xYz890/reject",
+                Some(r#"{"reason":"no longer eligible"}"#),
+            ),
+        ] {
+            let builder = Request::builder().method(method).uri(uri);
+            let builder = if body.is_some() {
+                builder.header(axum::http::header::CONTENT_TYPE, "application/json")
+            } else {
+                builder
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    builder
+                        .body(Body::from(body.unwrap_or_default().to_string()))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{uri} must be registered in the project router"
+            );
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{uri} must accept its documented HTTP method"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_oauth2_unlink_route_uses_provider_type_namespace() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let new_route_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/oauth2/type/github/unlink")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
+
+        let legacy_route_response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/oauth2/github/unlink")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(legacy_route_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_read_notifications_uses_read_namespace() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(state.clone()).with_state(state);
+
+        let new_route_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/notifications/read")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
+
+        let legacy_route_response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/notifications/actions/mark-read")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(legacy_route_response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
     async fn test_main_router_does_not_expose_metrics_endpoint() {
         let mut state = test_app_state();
         Arc::make_mut(&mut state.router_config).config = Arc::new({
@@ -1680,7 +2037,7 @@ mod tests {
         let state = test_app_state();
 
         let timeout_router = Router::new().route(
-            "/api/providers/rtmp/info/{media_id}",
+            "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
             get(|| async {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 "metadata too slow"
@@ -1708,7 +2065,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/providers/rtmp/info/media123")
+                    .uri("/api/providers/rtmp/rooms/room123/info/media123")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -1845,9 +2202,11 @@ mod tests {
         assert!(json["paths"]["/api/email/verify/send"].is_object());
         assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
         assert!(json["paths"]["/api/providers/alist/login"].is_object());
-        assert!(json["paths"]["/api/providers/rtmp/streams"].is_object());
-        assert!(json["paths"]["/api/providers/live_proxy/streams"].is_object());
-        assert!(json["paths"]["/api/providers/live_proxy/info/{media_id}"].is_object());
+        assert!(json["paths"]["/api/providers/rtmp/rooms/{room_id}/streams"].is_object());
+        assert!(json["paths"]["/api/providers/live_proxy/rooms/{room_id}/streams"].is_object());
+        assert!(
+            json["paths"]["/api/providers/live_proxy/rooms/{room_id}/info/{media_id}"].is_object()
+        );
         assert_eq!(
             json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
                 ["application/json"]["schema"]["$ref"],
@@ -1866,12 +2225,12 @@ mod tests {
         assert_eq!(
             json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
                 ["schema"]["$ref"],
-            "#/components/schemas/UpdateUserResponseDoc"
+            "#/components/schemas/synctv_client_UpdateUserResponse"
         );
         assert_eq!(
             json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]
                 ["application/json"]["schema"]["$ref"],
-            "#/components/schemas/TicketResponse"
+            "#/components/schemas/synctv_client_CreateWebSocketTicketResponse"
         );
         assert_eq!(
             json["paths"]["/api/rooms/{room_id}/webrtc/ice-servers"]["get"]["responses"]["200"]
@@ -2364,7 +2723,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/providers/rtmp/streams?room_id=room1234_abx")
+                    .uri("/api/providers/rtmp/rooms/room1234_abx/streams")
                     .body(Body::empty())
                     .expect("request"),
             )

@@ -1394,7 +1394,7 @@ impl PlaybackService {
     ) -> Result<RoomPlaybackState> {
         if !bypass_room_permissions {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MOVIE)
+                .check_permission(&room_id, &user_id, PermissionBits::CHANGE_CURRENT_MEDIA)
                 .await?;
         }
         let target = SwitchPlaybackTarget {

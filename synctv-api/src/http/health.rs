@@ -15,12 +15,12 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
 
 use crate::http::AppState;
 use crate::observability::metrics;
+pub use crate::proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 
 /// Timeout for individual health check probes (DB, Redis).
 /// Prevents a hung dependency from blocking the readiness endpoint indefinitely.
@@ -36,46 +36,6 @@ pub fn create_health_router() -> Router<AppState> {
 /// Dedicated metrics router.
 pub fn create_metrics_router() -> Router<AppState> {
     Router::new().route("/metrics", get(prometheus_metrics))
-}
-
-/// Health check response structure
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct HealthResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<HealthDetails>,
-}
-
-/// Detailed health check information
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct HealthDetails {
-    pub database: String,
-    pub redis: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_ticket: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub livestream: Option<String>,
-    /// Memory usage percentage (0-100). None if unavailable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory: Option<MemoryHealth>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// Memory health information
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct MemoryHealth {
-    /// Memory usage percentage (0-100)
-    pub usage_percent: f64,
-    /// Human-readable status: "healthy" or "unhealthy"
-    pub status: String,
 }
 
 /// Liveness probe - checks if the application process is running

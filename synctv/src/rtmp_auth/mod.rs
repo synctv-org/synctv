@@ -568,6 +568,7 @@ struct ValidatedPublish {
 enum RoomAccessRejection {
     Banned,
     Pending,
+    Rejected,
     Closed,
 }
 
@@ -576,6 +577,7 @@ impl RoomAccessRejection {
         match self {
             Self::Banned => format!("Room {app_name} is banned").into(),
             Self::Pending => format!("Room {app_name} is pending, need admin approval").into(),
+            Self::Rejected => format!("Room {app_name} was rejected by admin").into(),
             Self::Closed => format!("Room {app_name} is closed").into(),
         }
     }
@@ -584,6 +586,7 @@ impl RoomAccessRejection {
         match self {
             Self::Banned => "RTMP play rejected: room is banned",
             Self::Pending => "RTMP play rejected: room is pending approval",
+            Self::Rejected => "RTMP play rejected: room was rejected",
             Self::Closed => "RTMP play rejected: room is closed",
         }
     }
@@ -595,6 +598,9 @@ fn validate_rtmp_room_state(room: &Room) -> Result<(), RoomAccessRejection> {
     }
     if room.status == RoomStatus::Pending {
         return Err(RoomAccessRejection::Pending);
+    }
+    if room.status == RoomStatus::Rejected {
+        return Err(RoomAccessRejection::Rejected);
     }
     if room.status == RoomStatus::Closed {
         return Err(RoomAccessRejection::Closed);
@@ -647,8 +653,12 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|e| format!("Failed to load user: {e}"))?;
 
-        if user.status == UserStatus::Banned {
-            return Err(format!("User {} is banned", claims.user_id).into());
+        if user.status == UserStatus::Banned || user.status == UserStatus::Rejected {
+            return Err(format!(
+                "User {} is not allowed to publish while account status is {}",
+                claims.user_id, user.status
+            )
+            .into());
         }
         if user.deleted_at.is_some() {
             return Err(format!("User {} is deleted", claims.user_id).into());

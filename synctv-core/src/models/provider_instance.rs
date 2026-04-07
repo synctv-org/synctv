@@ -41,7 +41,9 @@ impl std::str::FromStr for ProviderInstanceListSortBy {
             "endpoint" => Ok(Self::Endpoint),
             "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
             "created_at" | "createdat" => Ok(Self::CreatedAt),
-            other => Err(format!("Unknown provider instance list sort field: {other}")),
+            other => Err(format!(
+                "Unknown provider instance list sort field: {other}"
+            )),
         }
     }
 }

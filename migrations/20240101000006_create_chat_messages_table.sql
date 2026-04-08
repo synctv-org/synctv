@@ -1,31 +1,19 @@
--- Create chat_messages table (partitioned by day for efficient time-based retention)
--- Partitioning enables O(1) retention: drop entire daily partitions instead of DELETE millions of rows
-
 CREATE TABLE IF NOT EXISTS chat_messages (
     id CHAR(12) NOT NULL,
     room_id CHAR(12) NOT NULL,
-    user_id CHAR(12),  -- nullable to support SET NULL on user deletion
+    user_id CHAR(12),
     content TEXT NOT NULL,
-    message_type SMALLINT NOT NULL DEFAULT 1,  -- 1=text, 2=system, 3=action
+    message_type SMALLINT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id, created_at),  -- Partition key must be in PK
+    PRIMARY KEY (id, created_at),
     CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE RESTRICT
-    -- No FOREIGN KEY on user_id: partitioned tables do not support FK references
-    -- to non-partitioned tables. user_id is set to NULL by application logic on
-    -- user deletion.
 ) PARTITION BY RANGE (created_at);
 
--- Comments
 COMMENT ON TABLE chat_messages IS 'Persistent chat messages (partitioned by day, retention configurable)';
 COMMENT ON COLUMN chat_messages.id IS '12-character base62 ID';
 COMMENT ON COLUMN chat_messages.content IS 'Message content (HTML sanitized)';
 
--- ============================================================================
--- Partition management functions
--- ============================================================================
-
--- Function 1: Create a single partition with indexes (fixed daily granularity)
 CREATE OR REPLACE FUNCTION create_chat_message_partition(
     partition_date DATE DEFAULT CURRENT_DATE
 ) RETURNS JSON AS $$
@@ -35,35 +23,28 @@ DECLARE
     end_date DATE;
     index_count INTEGER := 0;
 BEGIN
-    -- Normalize to start of day
     start_date := DATE_TRUNC('day', partition_date);
     end_date := start_date + INTERVAL '1 day';
     partition_name := 'chat_messages_' || TO_CHAR(start_date, 'YYYY_MM_DD');
 
-    -- Create partition
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS %I PARTITION OF chat_messages
          FOR VALUES FROM (%L) TO (%L)',
         partition_name, start_date, end_date
     );
 
-    -- Index 1: Room pagination (primary query pattern)
     EXECUTE format(
         'CREATE INDEX IF NOT EXISTS %I ON %I(room_id, created_at DESC, user_id)',
         partition_name || '_idx_room_pagination', partition_name
     );
     index_count := index_count + 1;
 
-    -- Index 2: User messages lookup
     EXECUTE format(
         'CREATE INDEX IF NOT EXISTS %I ON %I(user_id, created_at DESC)',
         partition_name || '_idx_user_created', partition_name
     );
     index_count := index_count + 1;
 
-    -- Index 3: Time-based queries and partition pruning (Task #18)
-    -- Supports DELETE WHERE created_at <= NOW() - INTERVAL '90 days'
-    -- and other time-range queries without room_id filter
     EXECUTE format(
         'CREATE INDEX IF NOT EXISTS %I ON %I(created_at DESC)',
         partition_name || '_idx_created_at', partition_name
@@ -83,7 +64,6 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION create_chat_message_partition(DATE) IS
 'Create a single chat message partition with indexes (idempotent, daily granularity). Parameter: partition date (default: current date)';
 
--- Function 2: Batch-create future partitions (fixed daily granularity)
 CREATE OR REPLACE FUNCTION create_chat_message_partitions(
     days_ahead INTEGER DEFAULT 30
 ) RETURNS JSON AS $$
@@ -115,7 +95,6 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION create_chat_message_partitions(INTEGER) IS
 'Batch-create chat message partitions for current day + N days ahead (daily granularity). Parameter: days ahead (default: 30)';
 
--- Function 3: Drop old partitions (retention enforcement, fixed daily granularity)
 CREATE OR REPLACE FUNCTION drop_old_chat_message_partitions(
     keep_days INTEGER DEFAULT 90
 ) RETURNS JSON AS $$
@@ -129,7 +108,6 @@ BEGIN
     cutoff_date := CURRENT_DATE - (keep_days || ' days')::INTERVAL;
     cutoff_name := 'chat_messages_' || TO_CHAR(cutoff_date, 'YYYY_MM_DD');
 
-    -- Find and drop old partitions
     FOR partition_record IN
         SELECT tablename
         FROM pg_tables
@@ -159,7 +137,6 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION drop_old_chat_message_partitions(INTEGER) IS
 'Drop chat message partitions older than N days (daily granularity). Parameter: days to keep (default: 90)';
 
--- Function 4: Check partition health (fixed daily granularity)
 CREATE OR REPLACE FUNCTION check_chat_message_partitions(
     days_ahead INTEGER DEFAULT 30
 ) RETURNS JSON AS $$
@@ -174,14 +151,12 @@ DECLARE
 BEGIN
     partition_date := DATE_TRUNC('day', CURRENT_DATE);
 
-    -- Build list of expected partition names
     FOR i IN 0..days_ahead LOOP
         expected_name := 'chat_messages_' || TO_CHAR(partition_date, 'YYYY_MM_DD');
         expected_partitions := array_append(expected_partitions, expected_name);
         partition_date := partition_date + INTERVAL '1 day';
     END LOOP;
 
-    -- Check for missing partitions
     FOREACH expected_name IN ARRAY expected_partitions
     LOOP
         IF NOT EXISTS (
@@ -195,7 +170,6 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Count total partitions and calculate size
     FOR partition_record IN
         SELECT
             tablename,
@@ -227,19 +201,12 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION check_chat_message_partitions(INTEGER) IS
 'Check health of chat message partitions (daily granularity). Parameter: days ahead to check (default: 30)';
 
--- ============================================================================
--- Initial partition creation
--- ============================================================================
-
--- Default partition catches any rows that don't match a specific daily partition.
--- This prevents insert failures if ChatPartitionManager background task hasn't
--- created a partition for the target date yet.
 CREATE TABLE IF NOT EXISTS chat_messages_default PARTITION OF chat_messages DEFAULT;
+CREATE INDEX IF NOT EXISTS chat_messages_default_idx_room_pagination
+    ON chat_messages_default(room_id, created_at DESC, user_id);
+CREATE INDEX IF NOT EXISTS chat_messages_default_idx_user_created
+    ON chat_messages_default(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_messages_default_idx_created_at
+    ON chat_messages_default(created_at DESC);
 
--- Create partitions for current day + next 30 days (fixed daily granularity)
 SELECT create_chat_message_partitions(30) AS initial_partitions;
-
--- Per-row trigger removed: partition pre-creation via create_chat_message_partitions(30) above
--- and periodic background task (ChatPartitionManager) handle partition availability.
-DROP TRIGGER IF EXISTS trigger_auto_create_chat_partition ON chat_messages;
-DROP FUNCTION IF EXISTS auto_create_chat_message_partition();

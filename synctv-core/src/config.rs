@@ -166,6 +166,149 @@ fn config_file_format_for_path(path: &Path) -> Result<FileFormat, ConfigError> {
     }
 }
 
+fn join_config_key_path(parent: &str, key: &str) -> String {
+    if parent.is_empty() {
+        key.to_string()
+    } else {
+        format!("{parent}.{key}")
+    }
+}
+
+fn resolve_config_file_reference_path(config_path: &Path, reference: &str) -> PathBuf {
+    let reference_path = Path::new(reference);
+    if reference_path.is_absolute() {
+        reference_path.to_path_buf()
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(reference_path)
+    }
+}
+
+fn load_config_string_from_file(
+    config_path: &Path,
+    key_path: &str,
+    reference: &str,
+) -> Result<String, ConfigError> {
+    let trimmed_reference = reference.trim();
+    if trimmed_reference.is_empty() {
+        return Err(ConfigError::Message(format!(
+            "config key '{key_path}_file' in {} must not be empty",
+            absolute_display_path(config_path)
+        )));
+    }
+
+    let resolved_path = resolve_config_file_reference_path(config_path, trimmed_reference);
+    let contents = std::fs::read_to_string(&resolved_path).map_err(|error| {
+        ConfigError::Message(format!(
+            "failed to read config file reference '{key_path}_file' from {}: {error}",
+            absolute_display_path(&resolved_path)
+        ))
+    })?;
+
+    Ok(contents.trim().to_string())
+}
+
+fn is_secret_like_provider_key(base_key: &str) -> bool {
+    matches!(
+        base_key,
+        "access_token"
+            | "api_key"
+            | "client_secret"
+            | "password"
+            | "refresh_token"
+            | "secret"
+            | "shared_secret"
+            | "token"
+    )
+}
+
+fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
+    let key_path = join_config_key_path(current_path, base_key);
+    matches!(
+        key_path.as_str(),
+        "server.cluster_secret"
+            | "management.auth_token"
+            | "metrics.auth.basic_password"
+            | "metrics.auth.bearer_token"
+            | "jwt.secret"
+            | "email.smtp_password"
+            | "webrtc.turn_shared_secret"
+            | "bootstrap.root_password"
+    ) || ((current_path.starts_with("oauth2.providers.")
+        || current_path.starts_with("media_providers.providers."))
+        && is_secret_like_provider_key(base_key))
+}
+
+fn resolve_secret_file_references_in_json_value(
+    value: &mut serde_json::Value,
+    config_path: &Path,
+    current_path: &str,
+) -> Result<(), ConfigError> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let file_keys = map
+                .keys()
+                .filter(|key| key.ends_with("_file"))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            for file_key in file_keys {
+                let Some(file_reference) = map.get(&file_key).and_then(serde_json::Value::as_str)
+                else {
+                    let key_path = join_config_key_path(current_path, &file_key);
+                    return Err(ConfigError::Message(format!(
+                        "config key '{key_path}' in {} must be a string path",
+                        absolute_display_path(config_path)
+                    )));
+                };
+
+                let Some(base_key) = file_key.strip_suffix("_file") else {
+                    continue;
+                };
+                if base_key.is_empty() {
+                    let key_path = join_config_key_path(current_path, &file_key);
+                    return Err(ConfigError::Message(format!(
+                        "config key '{key_path}' in {} has an invalid _file suffix",
+                        absolute_display_path(config_path)
+                    )));
+                }
+
+                if supports_secret_file_reference(current_path, base_key) {
+                    let key_path = join_config_key_path(current_path, base_key);
+                    let resolved_value =
+                        load_config_string_from_file(config_path, &key_path, file_reference)?;
+                    map.insert(
+                        base_key.to_string(),
+                        serde_json::Value::String(resolved_value),
+                    );
+                    map.remove(&file_key);
+                }
+            }
+
+            let child_keys = map.keys().cloned().collect::<Vec<_>>();
+            for key in child_keys {
+                if let Some(child) = map.get_mut(&key) {
+                    resolve_secret_file_references_in_json_value(
+                        child,
+                        config_path,
+                        &join_config_key_path(current_path, &key),
+                    )?;
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                resolve_secret_file_references_in_json_value(item, config_path, current_path)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
     let parsed = url::Url::parse(origin)
         .map_err(|_| format!("CORS origin '{origin}' is not a valid URL"))?;
@@ -487,13 +630,14 @@ impl std::str::FromStr for ManagementTransport {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ManagementConfig {
     pub enabled: bool,
     pub transport: ManagementTransport,
     pub port: u16,
     pub unix_socket_path: String,
+    pub auth_token: String,
     pub enable_reflection: bool,
 }
 
@@ -508,8 +652,22 @@ impl Default for ManagementConfig {
             },
             port: 50052,
             unix_socket_path: default_management_unix_socket_path().display().to_string(),
+            auth_token: String::new(),
             enable_reflection: false,
         }
+    }
+}
+
+impl std::fmt::Debug for ManagementConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagementConfig")
+            .field("enabled", &self.enabled)
+            .field("transport", &self.transport)
+            .field("port", &self.port)
+            .field("unix_socket_path", &self.unix_socket_path)
+            .field("auth_token", &"<redacted>")
+            .field("enable_reflection", &self.enable_reflection)
+            .finish()
     }
 }
 
@@ -1146,7 +1304,27 @@ impl Config {
             ))
         })?;
         let format = config_file_format_for_path(path)?;
-        Self::deserialize_config_contents(&contents, format)
+        let mut parsed_value = match format {
+            FileFormat::Yaml => serde_yaml::from_str::<serde_json::Value>(&contents)
+                .map_err(|error| ConfigError::Message(error.to_string()))?,
+            FileFormat::Json => serde_json::from_str::<serde_json::Value>(&contents)
+                .map_err(|error| ConfigError::Message(error.to_string()))?,
+            FileFormat::Toml => {
+                let parsed = toml::from_str::<toml::Value>(&contents)
+                    .map_err(|error| ConfigError::Message(error.to_string()))?;
+                serde_json::to_value(parsed)
+                    .map_err(|error| ConfigError::Message(error.to_string()))?
+            }
+            _ => {
+                return Err(ConfigError::Message(
+                    "unsupported config file format".to_string(),
+                ));
+            }
+        };
+        resolve_secret_file_references_in_json_value(&mut parsed_value, path, "")?;
+        let normalized_contents = serde_json::to_string(&parsed_value)
+            .map_err(|error| ConfigError::Message(error.to_string()))?;
+        Self::deserialize_config_contents(&normalized_contents, FileFormat::Json)
     }
 
     fn finalize_unknown_keys(mut unknown_keys: Vec<String>) -> Vec<String> {
@@ -1583,6 +1761,10 @@ impl Config {
         env_override_str(
             "SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH",
             &mut self.management.unix_socket_path,
+        );
+        env_override_str(
+            "SYNCTV_MANAGEMENT_AUTH_TOKEN",
+            &mut self.management.auth_token,
         );
         env_override_bool(
             "SYNCTV_MANAGEMENT_ENABLE_REFLECTION",
@@ -2404,6 +2586,13 @@ impl Config {
                             self.management_bind_target(),
                             self.api_address()
                         ));
+                    }
+                    if self.management.auth_token.trim().is_empty() {
+                        errors.push(
+                            "management.auth_token must be set when management.enabled=true \
+                             and management.transport='tcp'"
+                                .to_string(),
+                        );
                     }
                 }
                 ManagementTransport::Unix => {
@@ -3283,6 +3472,7 @@ impl Default for GrpcRateLimitConfig {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use tempfile::tempdir;
 
     fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
         entries
@@ -3841,6 +4031,229 @@ jwt:
     }
 
     #[test]
+    fn test_from_file_resolves_typed_secret_file_references_relative_to_config_path() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_dir = temp_dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+
+        std::fs::write(config_dir.join("jwt.secret"), "jwt-secret-from-file\n")
+            .expect("jwt secret file should be written");
+        std::fs::write(
+            config_dir.join("cluster.secret"),
+            "cluster-secret-from-file\n",
+        )
+        .expect("cluster secret file should be written");
+        std::fs::write(
+            config_dir.join("management.token"),
+            "management-token-from-file\n",
+        )
+        .expect("management token file should be written");
+        std::fs::write(
+            config_dir.join("metrics.password"),
+            "metrics-basic-password\n",
+        )
+        .expect("metrics password file should be written");
+        std::fs::write(
+            config_dir.join("smtp.password"),
+            "smtp-password-from-file\n",
+        )
+        .expect("smtp password file should be written");
+        std::fs::write(
+            config_dir.join("turn.secret"),
+            "turn-shared-secret-from-file\n",
+        )
+        .expect("turn secret file should be written");
+        std::fs::write(config_dir.join("root.password"), "StrongPwd12345!\n")
+            .expect("root password file should be written");
+
+        let config_path = config_dir.join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+server:
+  cluster_secret_file: "./cluster.secret"
+management:
+  transport: "unix"
+  auth_token_file: "./management.token"
+metrics:
+  auth:
+    mode: "basic"
+    basic_username: "metrics"
+    basic_password_file: "./metrics.password"
+jwt:
+  secret_file: "./jwt.secret"
+email:
+  smtp_host: "smtp.example.com"
+  smtp_password_file: "./smtp.password"
+webrtc:
+  turn_shared_secret_file: "./turn.secret"
+bootstrap:
+  create_root_user: true
+  root_username: "admin"
+  root_email: "admin@example.com"
+  root_password_file: "./root.password"
+"#,
+        )
+        .expect("config file should be written");
+
+        let unknown_keys =
+            Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
+                .expect("supported _file keys should not be reported as unknown");
+        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect("typed _file references should load");
+
+        assert!(
+            unknown_keys.is_empty(),
+            "supported _file keys should not be treated as unknown: {unknown_keys:?}"
+        );
+        assert_eq!(config.jwt.secret, "jwt-secret-from-file");
+        assert_eq!(config.server.cluster_secret, "cluster-secret-from-file");
+        assert_eq!(config.management.auth_token, "management-token-from-file");
+        assert_eq!(config.metrics.auth.basic_password, "metrics-basic-password");
+        assert_eq!(config.email.smtp_password, "smtp-password-from-file");
+        assert_eq!(
+            config.webrtc.turn_shared_secret,
+            "turn-shared-secret-from-file"
+        );
+        assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
+    }
+
+    #[test]
+    fn test_from_file_resolves_secret_file_references_inside_provider_json() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            temp_dir.path().join("github.client_secret"),
+            "github-client-secret-from-file\n",
+        )
+        .expect("github client secret should be written");
+        std::fs::write(
+            temp_dir.path().join("provider.access_token"),
+            "provider-access-token-from-file\n",
+        )
+        .expect("provider access token should be written");
+
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+oauth2:
+  providers:
+    github:
+      type: "github"
+      client_id: "github-client-id"
+      client_secret_file: "./github.client_secret"
+media_providers:
+  providers:
+    demo:
+      type: "custom"
+      access_token_file: "./provider.access_token"
+"#,
+        )
+        .expect("config file should be written");
+
+        let unknown_keys =
+            Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
+                .expect("supported nested _file keys should not be reported as unknown");
+        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect("nested provider _file references should load");
+
+        assert!(
+            unknown_keys.is_empty(),
+            "nested _file keys should not be treated as unknown: {unknown_keys:?}"
+        );
+        assert_eq!(
+            config.oauth2.providers["github"]["client_secret"],
+            "github-client-secret-from-file"
+        );
+        assert_eq!(
+            config.media_providers.providers["demo"]["access_token"],
+            "provider-access-token-from-file"
+        );
+    }
+
+    #[test]
+    fn test_from_file_only_resolves_supported_nested_secret_file_paths() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            temp_dir.path().join("github.client_secret"),
+            "github-client-secret-from-file\n",
+        )
+        .expect("github client secret should be written");
+        std::fs::write(
+            temp_dir.path().join("provider.access_token"),
+            "provider-access-token-from-file\n",
+        )
+        .expect("provider access token should be written");
+
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+oauth2:
+  providers:
+    github:
+      type: "github"
+      client_id: "github-client-id"
+      client_secret_file: "./github.client_secret"
+      avatar_file: "avatars/github.png"
+media_providers:
+  providers:
+    demo:
+      type: "custom"
+      access_token_file: "./provider.access_token"
+      poster_file: "providers/demo/poster.png"
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect("unrelated *_file fields inside free-form provider JSON must remain literal");
+
+        assert_eq!(
+            config.oauth2.providers["github"]["client_secret"],
+            "github-client-secret-from-file"
+        );
+        assert_eq!(
+            config.oauth2.providers["github"]["avatar_file"],
+            "avatars/github.png"
+        );
+        assert_eq!(
+            config.media_providers.providers["demo"]["access_token"],
+            "provider-access-token-from-file"
+        );
+        assert_eq!(
+            config.media_providers.providers["demo"]["poster_file"],
+            "providers/demo/poster.png"
+        );
+    }
+
+    #[test]
+    fn test_from_file_rejects_missing_secret_file_reference() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret_file: "./missing.secret"
+"#,
+        )
+        .expect("config file should be written");
+
+        let error = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect_err("missing _file target must fail closed");
+
+        assert!(
+            error.to_string().contains("jwt.secret_file"),
+            "missing file error should mention the failing _file key: {error}"
+        );
+    }
+
+    #[test]
     fn test_from_file_rejects_missing_path() {
         let unique = format!(
             "synctv-missing-config-{}-{}.yaml",
@@ -4213,6 +4626,43 @@ jwt:
 
         assert_eq!(config.management_endpoint(), "http://127.0.0.1:50099");
         assert_eq!(config.management_bind_target(), "127.0.0.1:50099");
+    }
+
+    #[test]
+    fn test_validate_management_tcp_requires_auth_token() {
+        let mut config = valid_prod_config();
+        config.management.transport = ManagementTransport::Tcp;
+        config.management.auth_token.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("management tcp transport must reject missing auth token");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("management.auth_token")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_management_unix_allows_empty_auth_token() {
+        let mut config = valid_prod_config();
+        config.management.transport = ManagementTransport::Unix;
+        config.management.auth_token.clear();
+
+        assert!(
+            config.validate().is_ok(),
+            "unix management transport may rely on owner-only socket permissions without a bearer token"
+        );
+    }
+
+    #[test]
+    fn test_from_env_overrides_management_auth_token() {
+        let config =
+            Config::from_env_map(&env_map(&[("SYNCTV_MANAGEMENT_AUTH_TOKEN", "mgmt-secret")]))
+                .expect("management auth token env override should parse");
+
+        assert_eq!(config.management.auth_token, "mgmt-secret");
     }
 
     #[cfg(not(unix))]

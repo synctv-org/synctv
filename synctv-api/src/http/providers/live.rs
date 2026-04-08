@@ -268,13 +268,22 @@ async fn execute_flv_stream(
                 }
                 data = rx.recv() => {
                     if let Some(chunk) = data {
-                        let send_success = send_flv_chunk(&tx, chunk, write_timeout).await;
-                        if send_success {
-                            consecutive_drops = 0;
-                        } else {
-                            consecutive_drops += 1;
-                            if consecutive_drops >= MAX_CONSECUTIVE_DROPS {
-                                LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL.inc();
+                        match send_flv_chunk(&tx, chunk, write_timeout).await {
+                            FlvChunkSendResult::Delivered => {
+                                consecutive_drops = 0;
+                            }
+                            FlvChunkSendResult::Backpressured => {
+                                consecutive_drops += 1;
+                                if consecutive_drops >= MAX_CONSECUTIVE_DROPS {
+                                    LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL.inc();
+                                    break;
+                                }
+                            }
+                            FlvChunkSendResult::Closed => {
+                                info!(
+                                    room_id = %room_id_clone.as_str(),
+                                    "FLV stream terminated: client response channel closed"
+                                );
                                 break;
                             }
                         }
@@ -443,15 +452,26 @@ async fn send_flv_chunk(
     tx: &mpsc::Sender<Result<Bytes, std::io::Error>>,
     chunk: Result<Bytes, std::io::Error>,
     write_timeout: std::time::Duration,
-) -> bool {
+) -> FlvChunkSendResult {
     if write_timeout.is_zero() {
-        tx.send(chunk).await.is_ok()
+        match tx.send(chunk).await {
+            Ok(()) => FlvChunkSendResult::Delivered,
+            Err(_) => FlvChunkSendResult::Closed,
+        }
     } else {
-        matches!(
-            tokio::time::timeout(write_timeout, tx.send(chunk)).await,
-            Ok(Ok(()))
-        )
+        match tokio::time::timeout(write_timeout, tx.send(chunk)).await {
+            Ok(Ok(())) => FlvChunkSendResult::Delivered,
+            Ok(Err(_)) => FlvChunkSendResult::Closed,
+            Err(_) => FlvChunkSendResult::Backpressured,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlvChunkSendResult {
+    Delivered,
+    Backpressured,
+    Closed,
 }
 
 #[cfg(test)]
@@ -497,9 +517,27 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"first"))
         );
-        assert!(send_task.await.unwrap());
+        assert_eq!(send_task.await.unwrap(), FlvChunkSendResult::Delivered);
         assert!(
             matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"second"))
+        );
+    }
+
+    #[tokio::test]
+    async fn send_flv_chunk_reports_closed_receiver_immediately() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let result = send_flv_chunk(
+            &tx,
+            Ok(Bytes::from_static(b"orphaned")),
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert!(
+            matches!(result, FlvChunkSendResult::Closed),
+            "closed response body receiver must terminate the FLV forwarder immediately"
         );
     }
 

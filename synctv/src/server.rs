@@ -110,6 +110,7 @@ pub struct SyncTvServer {
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const METRICS_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn build_proxy_slice_cache_config(
     _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
@@ -237,6 +238,52 @@ async fn await_task_shutdown(name: &'static str, mut handle: JoinHandle<()>, tim
     }
 }
 
+async fn shutdown_metrics_connection_tasks(connections: &mut JoinSet<()>, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if connections.is_empty() {
+            return;
+        }
+
+        let remaining = remaining_budget(deadline);
+        if remaining.is_zero() {
+            break;
+        }
+
+        match tokio::time::timeout(remaining, connections.join_next()).await {
+            Ok(Some(Ok(()))) => {}
+            Ok(Some(Err(error))) => {
+                if error.is_panic() {
+                    std::panic::resume_unwind(error.into_panic());
+                }
+                warn!(error = %error, "metrics connection task ended unexpectedly");
+            }
+            Ok(None) => return,
+            Err(_) => break,
+        }
+    }
+
+    if connections.is_empty() {
+        return;
+    }
+
+    warn!(
+        timeout_secs = timeout.as_secs_f64(),
+        remaining_connections = connections.len(),
+        "metrics server still has active connections after drain timeout; aborting remaining tasks"
+    );
+    connections.abort_all();
+
+    while let Some(join_result) = connections.join_next().await {
+        if let Err(error) = join_result {
+            if error.is_panic() {
+                std::panic::resume_unwind(error.into_panic());
+            }
+        }
+    }
+}
+
 fn map_runtime_server_exit(
     name: &'static str,
     result: Result<anyhow::Result<()>, tokio::task::JoinError>,
@@ -317,15 +364,32 @@ fn remaining_budget(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now())
 }
 
-async fn shutdown_livestream_state<T>(livestream_state: &mut Option<T>, timeout_secs: u64)
+fn livestream_shutdown_timeout_secs(timeout: Duration) -> u64 {
+    if timeout.is_zero() {
+        0
+    } else {
+        timeout.as_secs().max(1)
+    }
+}
+
+async fn shutdown_livestream_state<T>(livestream_state: &mut Option<T>, budget: Duration)
 where
     T: LivestreamShutdown + Send,
 {
     if let Some(state) = livestream_state.as_mut() {
         info!("Stopping livestream infrastructure...");
-        let graceful = state.shutdown_for_server(timeout_secs).await;
+        let timeout_secs = livestream_shutdown_timeout_secs(budget);
+        let graceful = match tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs)).await {
+            Ok(graceful) => graceful,
+            Err(_) => {
+                warn!(
+                    "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
+                );
+                false
+            }
+        };
         if !graceful {
-            warn!("Livestream infrastructure required force-abort during shutdown");
+            warn!("Livestream infrastructure required force-abort or timed out during shutdown");
         }
         info!("Livestream infrastructure shut down");
     }
@@ -1070,7 +1134,7 @@ impl SyncTvServer {
 
         // Stop livestream
         let livestream_budget = remaining_budget(deadline);
-        shutdown_livestream_state(&mut self.livestream_state, livestream_budget.as_secs()).await;
+        shutdown_livestream_state(&mut self.livestream_state, livestream_budget).await;
 
         // Shut down health monitor
         if let Some(ref health_monitor) = self.services.health_monitor {
@@ -1425,14 +1489,8 @@ impl SyncTvServer {
                 }
             }
 
-            while let Some(join_result) = connections.join_next().await {
-                if let Err(error) = join_result {
-                    if error.is_panic() {
-                        std::panic::resume_unwind(error.into_panic());
-                    }
-                    warn!(error = %error, "metrics connection task ended unexpectedly");
-                }
-            }
+            shutdown_metrics_connection_tasks(&mut connections, METRICS_CONNECTION_DRAIN_TIMEOUT)
+                .await;
 
             info!("Metrics server shut down gracefully");
             Ok(())
@@ -1562,9 +1620,10 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
-        build_ws_ticket_service, cleanup_partial_startup, map_background_task_exit,
-        map_runtime_server_exit, shutdown_after_startup_failure, shutdown_livestream_state,
-        shutdown_runtime_phase, spawn_admin_event_listener, LivestreamShutdown,
+        build_ws_ticket_service, cleanup_partial_startup, livestream_shutdown_timeout_secs,
+        map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
+        shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
+        spawn_admin_event_listener, LivestreamShutdown,
     };
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
@@ -1574,6 +1633,7 @@ mod tests {
     };
     use std::time::Duration;
     use tokio::sync::{oneshot, watch};
+    use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
 
     fn test_settings_registry() -> Arc<synctv_core::service::SettingsRegistry> {
@@ -1916,6 +1976,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_shutdown_metrics_connection_tasks_aborts_stuck_connections_after_timeout() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_clone = Arc::clone(&dropped);
+        let mut connections = JoinSet::new();
+        connections.spawn(async move {
+            let _guard = DropFlag(dropped_clone);
+            std::future::pending::<()>().await;
+        });
+
+        shutdown_metrics_connection_tasks(&mut connections, Duration::from_millis(20)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "metrics shutdown must abort stuck per-connection tasks after the drain timeout"
+        );
+        assert!(
+            connections.is_empty(),
+            "metrics shutdown must fully drain aborted connection tasks"
+        );
+    }
+
+    #[tokio::test]
     async fn test_await_runtime_server_shutdown_zero_timeout_waits_for_graceful_stop() {
         let stopped = Arc::new(AtomicBool::new(false));
         let stopped_clone = Arc::clone(&stopped);
@@ -1998,7 +2088,7 @@ mod tests {
             timeout_seen: Arc::clone(&timeout_seen),
         });
 
-        shutdown_livestream_state(&mut livestream_state, 17).await;
+        shutdown_livestream_state(&mut livestream_state, Duration::from_secs(17)).await;
 
         assert!(
             called.load(Ordering::SeqCst),
@@ -2008,6 +2098,46 @@ mod tests {
             timeout_seen.load(Ordering::SeqCst),
             17,
             "server shutdown must pass through the configured drain timeout"
+        );
+    }
+
+    #[test]
+    fn test_livestream_shutdown_timeout_secs_rounds_subsecond_budget_up() {
+        assert_eq!(
+            livestream_shutdown_timeout_secs(Duration::from_millis(500)),
+            1,
+            "sub-second shutdown budgets should still grant a 1s graceful livestream drain"
+        );
+        assert_eq!(
+            livestream_shutdown_timeout_secs(Duration::ZERO),
+            0,
+            "zero shutdown budget should remain zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_livestream_state_does_not_exceed_budget() {
+        struct SlowLivestreamState;
+
+        #[async_trait]
+        impl LivestreamShutdown for SlowLivestreamState {
+            async fn shutdown_for_server(&mut self, _timeout_secs: u64) -> bool {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                true
+            }
+        }
+
+        let mut livestream_state = Some(SlowLivestreamState);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(20),
+            shutdown_livestream_state(&mut livestream_state, Duration::from_millis(20)),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "livestream shutdown must respect the caller's remaining shutdown budget"
         );
     }
 

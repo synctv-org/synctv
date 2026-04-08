@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
-use synctv_core::bootstrap::{load_config_with_options, LoadConfigOptions};
+use synctv_core::bootstrap::{load_config_with_options, load_dotenv, LoadConfigOptions};
 use synctv_management::proto::management_service_client::ManagementServiceClient;
 use tokio::net::UnixStream;
 use tonic::transport::Channel;
+use tonic::{metadata::MetadataValue, service::Interceptor, Request, Status};
 
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -14,21 +15,33 @@ pub struct AdminConnectionOptions {
     pub load_dotenv: bool,
     pub verbose: bool,
     pub resolved_config_endpoint: Option<String>,
+    pub allow_config_auth_for_explicit_endpoint: bool,
 }
 
-pub type AuthenticatedManagementClient = ManagementServiceClient<Channel>;
+pub type AuthenticatedManagementClient = ManagementServiceClient<
+    tonic::service::interceptor::InterceptedService<Channel, ManagementAuthInterceptor>,
+>;
 
 pub struct RemoteAdminSession {
     channel: Channel,
     endpoint: String,
+    authorization: Option<MetadataValue<tonic::metadata::Ascii>>,
 }
 
 impl RemoteAdminSession {
     pub async fn connect(options: AdminConnectionOptions) -> Result<Self> {
         let endpoints = resolve_candidate_endpoints(&options)?;
         let (channel, endpoint) = connect_first_available(&endpoints).await?;
+        let authorization = resolve_management_auth_token(&options)?
+            .map(|token| format!("Bearer {token}").parse())
+            .transpose()
+            .context("invalid management auth token metadata")?;
 
-        Ok(Self { channel, endpoint })
+        Ok(Self {
+            channel,
+            endpoint,
+            authorization,
+        })
     }
 
     pub fn endpoint(&self) -> &str {
@@ -36,7 +49,28 @@ impl RemoteAdminSession {
     }
 
     pub fn management_client(&self) -> AuthenticatedManagementClient {
-        ManagementServiceClient::new(self.channel.clone())
+        ManagementServiceClient::with_interceptor(
+            self.channel.clone(),
+            ManagementAuthInterceptor {
+                authorization: self.authorization.clone(),
+            },
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagementAuthInterceptor {
+    authorization: Option<MetadataValue<tonic::metadata::Ascii>>,
+}
+
+impl Interceptor for ManagementAuthInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
+        if let Some(authorization) = &self.authorization {
+            request
+                .metadata_mut()
+                .insert("authorization", authorization.clone());
+        }
+        Ok(request)
     }
 }
 
@@ -106,6 +140,56 @@ fn resolve_management_endpoint_from_config(
         verbose,
     })?;
     normalize_endpoint(&config.management_endpoint())
+}
+
+fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Option<String>> {
+    let explicit_endpoint = options
+        .endpoint
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+
+    if explicit_endpoint {
+        if options.load_dotenv {
+            load_dotenv(options.verbose)?;
+        }
+        if let Ok(token) = std::env::var("SYNCTV_MANAGEMENT_AUTH_TOKEN") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Ok(Some(token.to_string()));
+            }
+        }
+
+        if !options.allow_config_auth_for_explicit_endpoint {
+            return Ok(None);
+        }
+    }
+
+    if let Ok(token) = std::env::var("SYNCTV_MANAGEMENT_AUTH_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Ok(Some(token.to_string()));
+        }
+    }
+
+    let explicit_config_source =
+        options.config_path.is_some() || std::env::var_os("SYNCTV_CONFIG_PATH").is_some();
+
+    if explicit_endpoint && !explicit_config_source {
+        return Ok(None);
+    }
+
+    let config = load_config_with_options(LoadConfigOptions {
+        config_path: options.config_path.clone(),
+        load_dotenv: options.load_dotenv,
+        validate: false,
+        verbose: options.verbose,
+    })?;
+    let token = config.management.auth_token.trim();
+    if token.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(token.to_string()))
+    }
 }
 
 fn resolve_candidate_endpoints(options: &AdminConnectionOptions) -> Result<Vec<String>> {
@@ -186,6 +270,7 @@ mod tests {
     use tempfile::tempdir;
 
     use futures_util::stream;
+    use std::sync::{Arc, Mutex};
     use synctv_management::proto::{
         management_service_server::{ManagementService, ManagementServiceServer},
         AddAdminRequest, AddDirectUrlMediaRequest, AddMediaRequest, AddProviderInstanceRequest,
@@ -227,6 +312,15 @@ mod tests {
                 value: previous,
             }
         }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key,
+                value: previous,
+            }
+        }
     }
 
     impl Drop for EnvVarGuard {
@@ -258,7 +352,9 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct TestManagementService;
+    struct TestManagementService {
+        seen_authorization: Option<Arc<Mutex<Vec<Option<String>>>>>,
+    }
 
     #[tonic::async_trait]
     impl ManagementService for TestManagementService {
@@ -267,8 +363,20 @@ mod tests {
 
         async fn get_system_stats(
             &self,
-            _request: Request<GetSystemStatsRequest>,
+            request: Request<GetSystemStatsRequest>,
         ) -> std::result::Result<Response<admin_proto::GetSystemStatsResponse>, Status> {
+            if let Some(seen_authorization) = &self.seen_authorization {
+                seen_authorization
+                    .lock()
+                    .expect("authorization sink mutex should not be poisoned")
+                    .push(
+                        request
+                            .metadata()
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string),
+                    );
+            }
             Ok(Response::new(admin_proto::GetSystemStatsResponse::default()))
         }
 
@@ -729,6 +837,7 @@ mod tests {
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
         })
         .expect("default admin endpoints should resolve");
         assert_eq!(
@@ -760,6 +869,7 @@ management:
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
         })
         .expect("configured management endpoint should resolve");
 
@@ -777,6 +887,7 @@ management:
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
         })
         .expect_err("missing explicit config path must fail closed");
 
@@ -812,6 +923,7 @@ management:
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
         })
         .await
         .expect("remote admin session should connect via unix socket");
@@ -822,6 +934,399 @@ management:
             .get_system_stats(GetSystemStatsRequest {})
             .await
             .expect("management client should call get_system_stats over unix socket");
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[tokio::test]
+    async fn remote_admin_session_injects_management_bearer_token_from_config() {
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("management.sock");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+management:
+  transport: "unix"
+  unix_socket_path: "{}"
+  auth_token: "management-secret-token"
+"#,
+                socket_path.display()
+            ),
+        )
+        .expect("config should be written");
+
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let seen_authorization = Arc::new(Mutex::new(Vec::new()));
+        let service = TestManagementService {
+            seen_authorization: Some(Arc::clone(&seen_authorization)),
+        };
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: None,
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("remote admin session should connect via unix socket");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management client should send get_system_stats");
+
+        assert_eq!(
+            seen_authorization
+                .lock()
+                .expect("authorization sink mutex should not be poisoned")
+                .as_slice(),
+            &[Some("Bearer management-secret-token".to_string())],
+            "management client must inject the configured management bearer token",
+        );
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[tokio::test]
+    async fn remote_admin_session_does_not_inherit_config_token_for_explicit_endpoint() {
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("management.sock");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+management:
+  transport: "unix"
+  unix_socket_path: "{}"
+  auth_token: "management-secret-token"
+"#,
+                socket_path.display()
+            ),
+        )
+        .expect("config should be written");
+
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let seen_authorization = Arc::new(Mutex::new(Vec::new()));
+        let service = TestManagementService {
+            seen_authorization: Some(Arc::clone(&seen_authorization)),
+        };
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint),
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("remote admin session should connect via explicit unix socket");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management client should send get_system_stats");
+
+        assert_eq!(
+            seen_authorization
+                .lock()
+                .expect("authorization sink mutex should not be poisoned")
+                .as_slice(),
+            &[None],
+            "explicit endpoint overrides must not reuse config-managed auth tokens",
+        );
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[tokio::test]
+    async fn remote_admin_session_can_opt_in_to_config_token_for_explicit_endpoint() {
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("management.sock");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+management:
+  transport: "unix"
+  unix_socket_path: "{}"
+  auth_token: "management-secret-token"
+"#,
+                socket_path.display()
+            ),
+        )
+        .expect("config should be written");
+
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let seen_authorization = Arc::new(Mutex::new(Vec::new()));
+        let service = TestManagementService {
+            seen_authorization: Some(Arc::clone(&seen_authorization)),
+        };
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint),
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: true,
+        })
+        .await
+        .expect("opted-in explicit unix socket should connect");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management client should send get_system_stats");
+
+        assert_eq!(
+            seen_authorization
+                .lock()
+                .expect("authorization sink mutex should not be poisoned")
+                .as_slice(),
+            &[Some("Bearer management-secret-token".to_string())],
+            "explicit endpoint config auth opt-in must forward the configured management token",
+        );
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[tokio::test]
+    async fn remote_admin_session_uses_env_token_for_explicit_endpoint() {
+        let _env_guard =
+            EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN", "explicit-endpoint-token");
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("management.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let seen_authorization = Arc::new(Mutex::new(Vec::new()));
+        let service = TestManagementService {
+            seen_authorization: Some(Arc::clone(&seen_authorization)),
+        };
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint),
+            config_path: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("remote admin session should connect via explicit unix socket");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management client should send get_system_stats");
+
+        assert_eq!(
+            seen_authorization
+                .lock()
+                .expect("authorization sink mutex should not be poisoned")
+                .as_slice(),
+            &[Some("Bearer explicit-endpoint-token".to_string())],
+            "explicit endpoint overrides should only use explicitly provided auth tokens",
+        );
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[tokio::test]
+    async fn remote_admin_session_with_explicit_endpoint_ignores_missing_config_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("management.sock");
+        let missing_config_path = temp_dir.path().join("missing-synctv.yaml");
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let service = TestManagementService::default();
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint.clone()),
+            config_path: Some(missing_config_path.to_string_lossy().to_string()),
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("explicit management endpoint should remain usable without a readable config file");
+
+        assert_eq!(session.endpoint(), endpoint);
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management client should work with explicit endpoint even when config file is missing");
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remote_admin_session_with_explicit_endpoint_does_not_require_auto_discovered_config() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        std::fs::write(temp_dir.path().join("synctv.yaml"), "not: [valid")
+            .expect("invalid config should be written");
+        let _cwd = CurrentDirGuard::change_to(temp_dir.path());
+
+        let socket_path = temp_dir.path().join("explicit-endpoint.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(TestManagementService::default()))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint),
+            config_path: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("explicit management endpoint should not depend on auto-discovered config");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management call should succeed via explicit endpoint");
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remote_admin_session_with_explicit_endpoint_does_not_use_auto_discovered_auth_token() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        std::fs::write(
+            temp_dir.path().join("synctv.yaml"),
+            r#"
+management:
+  transport: "unix"
+  auth_token: "auto-discovered-secret"
+"#,
+        )
+        .expect("config should be written");
+        let _cwd = CurrentDirGuard::change_to(temp_dir.path());
+
+        let socket_path = temp_dir.path().join("explicit-endpoint-auth.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .expect("unix management listener should bind");
+        let seen_authorization = Arc::new(Mutex::new(Vec::new()));
+        let service = TestManagementService {
+            seen_authorization: Some(Arc::clone(&seen_authorization)),
+        };
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(ManagementServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
+                .await
+                .expect("unix management server should serve");
+        });
+
+        let endpoint = format!("unix://{}", socket_path.display());
+        let session = RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint),
+            config_path: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .await
+        .expect("explicit management endpoint should connect without auto-discovered auth");
+
+        session
+            .management_client()
+            .get_system_stats(GetSystemStatsRequest {})
+            .await
+            .expect("management call should succeed via explicit endpoint");
+
+        assert_eq!(
+            seen_authorization
+                .lock()
+                .expect("authorization sink mutex should not be poisoned")
+                .as_slice(),
+            &[None],
+            "explicit endpoint mode must not inject auto-discovered management auth tokens",
+        );
 
         serve_handle.abort();
         let _ = serve_handle.await;

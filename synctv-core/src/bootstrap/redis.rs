@@ -70,7 +70,8 @@ pub async fn init_redis(
 ) -> Result<RedisInit, anyhow::Error> {
     match config.redis.deployment_mode {
         RedisDeploymentMode::Standalone => {
-            if config.redis.url.is_empty() {
+            let redis_url = config.redis_url();
+            if redis_url.is_empty() {
                 info!("Redis URL is not configured — running without Redis");
                 return Ok(RedisInit {
                     handles: None,
@@ -78,7 +79,7 @@ pub async fn init_redis(
                 });
             }
             Ok(RedisInit {
-                handles: Some(init_standalone(config).await?),
+                handles: Some(init_standalone(config, &redis_url).await?),
                 sentinel_health_check_task: None,
             })
         }
@@ -102,6 +103,29 @@ mod init_tests {
 
         assert!(result.handles.is_none());
         assert!(result.sentinel_health_check_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_init_redis_standalone_with_split_config_attempts_connection() {
+        let mut config = Config::default();
+        config.redis.url.clear();
+        config.redis.deployment_mode = RedisDeploymentMode::Standalone;
+        config.redis.host = "127.0.0.1".to_string();
+        config.redis.port = 1;
+        config.redis.database = 7;
+
+        let err = init_redis(&config, None)
+            .await
+            .expect_err("split redis config should be treated as configured at runtime");
+
+        assert!(
+            err.to_string().contains("Connection refused")
+                || err.to_string().contains("connection refused")
+                || err.to_string().contains("failed to lookup address information")
+                || err.to_string().contains("timed out")
+                || err.to_string().contains("os error"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -141,6 +165,25 @@ mod init_tests {
     }
 
     #[test]
+    fn test_parse_redis_node_settings_preserves_auth_and_db_from_split_config() {
+        let mut config = Config::default();
+        config.redis.url.clear();
+        config.redis.host = "redis.example.com".to_string();
+        config.redis.port = 6380;
+        config.redis.username = "sync-user".to_string();
+        config.redis.password = "secret".to_string();
+        config.redis.database = 7;
+
+        let redis_settings = parse_redis_node_settings(&config)
+            .expect("parse redis settings")
+            .expect("split redis config should produce redis settings");
+
+        assert_eq!(redis_settings.username(), Some("sync-user"));
+        assert_eq!(redis_settings.password(), Some("secret"));
+        assert_eq!(redis_settings.db(), 7);
+    }
+
+    #[test]
     fn test_redis_connection_manager_config_uses_connect_timeout() {
         let mut config = Config::default();
         config.redis.connect_timeout_seconds = 9;
@@ -161,11 +204,12 @@ fn redis_connection_manager_config(config: &Config) -> RedisConnectionManagerCon
 }
 
 fn parse_redis_node_settings(config: &Config) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
-    if config.redis.url.is_empty() {
+    let redis_url = config.redis_url();
+    if redis_url.is_empty() {
         return Ok(None);
     }
 
-    let connection_info: redis::ConnectionInfo = config.redis.url.parse()?;
+    let connection_info: redis::ConnectionInfo = redis_url.parse()?;
     Ok(Some(connection_info.redis_settings().clone()))
 }
 
@@ -177,9 +221,9 @@ fn build_sentinel_node_info(
     }))
 }
 
-async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error> {
+async fn init_standalone(config: &Config, redis_url: &str) -> Result<RedisHandles, anyhow::Error> {
     info!("Initializing Redis in standalone mode");
-    let client = redis::Client::open(config.redis.url.clone())?;
+    let client = redis::Client::open(redis_url.to_string())?;
     let conn = redis::aio::ConnectionManager::new_with_config(
         client.clone(),
         redis_connection_manager_config(config),

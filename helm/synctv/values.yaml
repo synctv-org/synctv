@@ -268,6 +268,11 @@ config:
 
   ## ManagementConfig
   ## transport=tcp is always loopback-only inside the process; only the port is configurable.
+  ## TCP transport requires secrets.management.authToken (auto-generated if left empty).
+  ## Unix transport can also enforce the token, but defaults to empty and may rely on
+  ## owner-only socket permissions.
+  ## Raw SyncTV config files support auth_token_file, but this chart prefers Secret-backed
+  ## injection through secrets.management.authToken or existingSecret.
   management:
     enabled: true
     transport: "unix"
@@ -288,6 +293,7 @@ config:
     keyPrefix: "synctv:"
 
   ## JwtConfig (secret injected via SYNCTV_JWT_SECRET env var)
+  ## Raw SyncTV config files also support jwt.secret_file, but this chart uses Secret env injection.
   jwt:
     accessTokenDurationHours: 1
     refreshTokenDurationDays: 30
@@ -336,6 +342,8 @@ config:
     stunPort: 3478
     stunHost: "0.0.0.0"
     stunExternalAddr: ""
+    ## Raw SyncTV config files support turn_shared_secret_file.
+    ## In this chart, prefer Secret/env injection or an external ConfigMap you manage yourself.
     turnSharedSecret: ""
     turnServerUrls: []
     turnCredentialTtlSeconds: 86400
@@ -387,6 +395,8 @@ config:
 ##
 ## You can still provide explicit values via `--set` flags, separate values file,
 ## or external secret managers (e.g., sealed-secrets, external-secrets, Vault).
+## Raw SyncTV config files also support *_file secret references, but this chart's default
+## path is to inject sensitive values via Kubernetes Secrets and environment variables.
 ## ============================================================================
 secrets:
   ## Database credentials injected via SYNCTV_DATABASE_USER / SYNCTV_DATABASE_PASSWORD
@@ -441,6 +451,14 @@ secrets:
     basicUsername: "metrics"
     ## Leave empty to auto-generate on first install when mode=basic.
     basicPassword: ""
+
+  ## Management endpoint bearer token
+  management:
+    ## Required when config.management.transport=tcp.
+    ## Leave empty to auto-generate on first install when tcp transport is enabled.
+    ## Unix transport can also use this token, but defaults to empty and may rely on
+    ## filesystem permissions.
+    authToken: ""
 
 ## ============================================================================
 ## Additional Settings

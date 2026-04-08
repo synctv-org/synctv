@@ -6112,6 +6112,8 @@ dependencies = [
  "protoc-bin-vendored",
  "serde",
  "serde_json",
+ "sha2",
+ "subtle",
  "synctv-api",
  "synctv-core",
  "synctv-proto",

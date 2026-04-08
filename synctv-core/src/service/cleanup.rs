@@ -169,20 +169,13 @@ impl CleanupService {
             }
         }
 
-        // 1. Purge soft-deleted users
-        if self.config.soft_delete_retention_days > 0 {
-            match self.purge_soft_deleted_users().await {
-                Ok(count) => {
-                    result.users_purged = count;
-                    if count > 0 {
-                        info!(count, "Purged soft-deleted users");
-                    }
-                }
-                Err(e) => warn!(error = %e, "Failed to purge soft-deleted users"),
-            }
-        }
-
-        // 2. Purge soft-deleted rooms
+        // 1. Purge soft-deleted rooms first.
+        //
+        // Soft-deleted users can still be referenced by their owned room rows
+        // (`rooms.created_by` is `ON DELETE RESTRICT`). Purging rooms before
+        // users lets a single cleanup run fully retire the common "user deleted
+        // together with their rooms" path instead of deferring user purge by a
+        // whole cleanup interval.
         if self.config.room_soft_delete_retention_days > 0 {
             match self.purge_soft_deleted_rooms().await {
                 Ok(count) => {
@@ -192,6 +185,19 @@ impl CleanupService {
                     }
                 }
                 Err(e) => warn!(error = %e, "Failed to purge soft-deleted rooms"),
+            }
+        }
+
+        // 2. Purge soft-deleted users
+        if self.config.soft_delete_retention_days > 0 {
+            match self.purge_soft_deleted_users().await {
+                Ok(count) => {
+                    result.users_purged = count;
+                    if count > 0 {
+                        info!(count, "Purged soft-deleted users");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to purge soft-deleted users"),
             }
         }
 
@@ -301,19 +307,63 @@ impl CleanupService {
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
         let days = self.config.soft_delete_retention_days as i32;
-        let result = sqlx::query(
+        let user_ids: Vec<String> = sqlx::query_scalar(
             r"
-            DELETE FROM users
+            SELECT id
+            FROM users
             WHERE deleted_at IS NOT NULL
               AND deleted_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            ORDER BY deleted_at ASC, id ASC
             ",
         )
         .bind(days)
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await
-        .internal_with_err("Failed to purge soft-deleted users")?;
+        .internal_with_err("Failed to list soft-deleted users for purge")?;
 
-        Ok(result.rows_affected())
+        let mut purged = 0u64;
+        for user_id in user_ids {
+            let mut tx = self.pool.begin().await?;
+
+            // User soft-delete keeps historical memberships by marking them as
+            // `left`. Those rows still carry `ON DELETE RESTRICT` FKs, so they
+            // must be removed before the hard delete can succeed.
+            sqlx::query("DELETE FROM room_members WHERE user_id = $1")
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to delete room memberships during user purge")?;
+
+            match sqlx::query(
+                r"
+                DELETE FROM users
+                WHERE id = $1
+                  AND deleted_at IS NOT NULL
+                  AND deleted_at < CURRENT_TIMESTAMP - ($2 || ' days')::INTERVAL
+                ",
+            )
+            .bind(&user_id)
+            .bind(days)
+            .execute(&mut *tx)
+            .await
+            {
+                Ok(result) => {
+                    tx.commit()
+                        .await
+                        .internal_with_err("Failed to commit user purge transaction")?;
+                    purged += result.rows_affected();
+                }
+                Err(error) => {
+                    warn!(
+                        user_id = %user_id,
+                        error = %error,
+                        "Failed to purge soft-deleted user; leaving row for a future retry"
+                    );
+                }
+            }
+        }
+
+        Ok(purged)
     }
 
     /// Permanently delete rooms that were soft-deleted beyond the retention period

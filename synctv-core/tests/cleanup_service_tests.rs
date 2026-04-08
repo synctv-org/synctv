@@ -169,6 +169,109 @@ async fn test_partial_config_only_some_tasks_enabled() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup() {
+    let (_container, pool) = create_test_pool().await;
+
+    let room_owner = create_test_user(&pool).await;
+    let deleted_user = create_test_user(&pool).await;
+
+    let deleted_owned_room = create_test_room(deleted_user.id.clone(), None);
+    let surviving_room = create_test_room(room_owner.id.clone(), None);
+
+    let room_repo = RoomRepository::new(pool.clone());
+    room_repo
+        .create(&deleted_owned_room)
+        .await
+        .expect("Failed to create deleted user's owned room");
+    room_repo
+        .create(&surviving_room)
+        .await
+        .expect("Failed to create surviving room");
+
+    let forty_days_ago = Utc::now() - Duration::days(40);
+    sqlx::query(
+        "UPDATE users
+         SET deleted_at = $2, updated_at = $2
+         WHERE id = $1",
+    )
+    .bind(deleted_user.id.as_str())
+    .bind(forty_days_ago)
+    .execute(&pool)
+    .await
+    .expect("Failed to soft-delete user");
+
+    sqlx::query(
+        "UPDATE rooms
+         SET deleted_at = $2, updated_at = $2
+         WHERE id = $1",
+    )
+    .bind(deleted_owned_room.id.as_str())
+    .bind(forty_days_ago)
+    .execute(&pool)
+    .await
+    .expect("Failed to soft-delete owned room");
+
+    sqlx::query(
+        "INSERT INTO room_members (room_id, user_id, role, status, joined_at, left_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, 0)",
+    )
+    .bind(surviving_room.id.as_str())
+    .bind(deleted_user.id.as_str())
+    .bind(3_i16)
+    .bind(5_i16)
+    .bind(forty_days_ago)
+    .bind(forty_days_ago)
+    .execute(&pool)
+    .await
+    .expect("Failed to insert historical room membership");
+
+    let service = CleanupService::new(
+        pool.clone(),
+        CleanupConfig {
+            room_ttl_seconds: 0,
+            soft_delete_retention_days: 30,
+            room_soft_delete_retention_days: 30,
+            expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
+            notification_retention_days: 0,
+            notification_max_retention_days: 0,
+            chat_max_messages_per_room: 0,
+        },
+        Arc::new(AlwaysLeader),
+    );
+
+    let result = service.run_all().await;
+
+    assert_eq!(
+        result.rooms_purged, 1,
+        "Cleanup should purge the user's soft-deleted owned room first"
+    );
+    assert_eq!(
+        result.users_purged, 1,
+        "Cleanup should purge the soft-deleted user in the same run"
+    );
+
+    let user_still_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(deleted_user.id.as_str())
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to query deleted user");
+    assert!(!user_still_exists, "Soft-deleted user should be hard-deleted");
+
+    let membership_still_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)")
+            .bind(deleted_user.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to query historical memberships");
+    assert!(
+        !membership_still_exists,
+        "Historical room_members rows must not block hard deletion of soft-deleted users"
+    );
+}
+
 // ========== Room TTL enforcement tests ==========
 
 /// Helper to create a test user in the database

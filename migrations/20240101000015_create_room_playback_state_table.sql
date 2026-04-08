@@ -1,4 +1,3 @@
--- Create room_playback_state table
 CREATE TABLE IF NOT EXISTS room_playback_state (
     room_id CHAR(12) PRIMARY KEY REFERENCES rooms(id) ON DELETE RESTRICT,
     playing_media_id CHAR(12) NULL,
@@ -19,17 +18,14 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
         ON DELETE RESTRICT
 );
 
--- Create indexes
 CREATE INDEX idx_room_playback_state_media_id ON room_playback_state(playing_media_id);
 CREATE INDEX idx_room_playback_state_playlist_id ON room_playback_state(playing_playlist_id);
 CREATE INDEX idx_room_playback_state_updated_at ON room_playback_state(updated_at);
 
--- Create updated_at trigger
 CREATE TRIGGER update_room_playback_state_updated_at
     BEFORE UPDATE ON room_playback_state
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Add check constraints
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_current_time_check
     CHECK ("current_time" >= 0);
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_speed_check
@@ -53,7 +49,6 @@ ALTER TABLE room_playback_state ADD CONSTRAINT playback_target_mode_check
         )
     );
 
--- Comments
 COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';
 COMMENT ON COLUMN room_playback_state.playing_media_id IS 'Currently playing media item';
 COMMENT ON COLUMN room_playback_state.playing_playlist_id IS 'Currently playing playlist';

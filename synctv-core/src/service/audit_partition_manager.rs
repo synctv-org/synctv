@@ -66,15 +66,6 @@ pub struct PartitionCreationDetail {
     pub status: String,
 }
 
-/// Result of index ensure operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexEnsureResult {
-    pub status: String,
-    pub partitions_updated: i64,
-    pub total_indexes_created: i64,
-    pub partitions: Vec<PartitionInfo>,
-}
-
 /// Audit log partition manager
 pub struct AuditPartitionManager {
     pool: PgPool,
@@ -88,34 +79,6 @@ impl AuditPartitionManager {
     #[must_use]
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
         Self { pool, leader_check }
-    }
-
-    /// Ensure existing partitions have indexes
-    ///
-    /// Adds missing indexes to existing partitions (idempotent operation)
-    pub async fn ensure_existing_indexes(&self, partition_count: i32) -> Result<IndexEnsureResult> {
-        info!("Ensuring indexes for last {} partitions", partition_count);
-
-        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
-            .await
-            .internal_with_err("Failed to acquire DDL connection for ensuring indexes")?;
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT ensure_existing_partitions_indexes($1)",
-        )
-        .bind(partition_count)
-        .fetch_one(&mut *conn)
-        .await
-        .internal_with_err("Failed to ensure indexes")?;
-
-        let result: IndexEnsureResult = serde_json::from_value(result_json)
-            .internal_with_err("Failed to parse index result")?;
-
-        info!(
-            "Indexes ensured: {} partitions, {} indexes created",
-            result.partitions_updated, result.total_indexes_created
-        );
-
-        Ok(result)
     }
 
     /// Ensure partitions exist for the next N months
@@ -435,13 +398,10 @@ async fn initialize_audit_partitions_on_startup(
 ) -> Result<()> {
     let manager = AuditPartitionManager::new(pool.clone(), Arc::new(super::AlwaysLeader));
 
-    // Step 1: Ensure existing partitions have indexes (idempotent)
-    manager.ensure_existing_indexes(4).await?;
-
-    // Step 2: Ensure next 6 months have partitions (with retry)
+    // Step 1: Ensure next 6 months have partitions (with retry)
     manager.ensure_future_partitions_with_retry(6).await?;
 
-    // Step 3: Check health status
+    // Step 2: Check health status
     let health = manager.check_health().await?;
     if health.health_status != "healthy" {
         warn!("Partition health check: {}", health.health_status);
@@ -542,8 +502,8 @@ mod tests {
     fn test_partition_creation_result_deserialization() {
         let json = r#"{
             "status": "completed",
-            "total_requested": 6,
-            "success_count": 6,
+            "total_requested": 7,
+            "success_count": 7,
             "partitions": [
                 {
                     "partition_name": "audit_logs_2026_05",
@@ -556,31 +516,10 @@ mod tests {
         }"#;
 
         let result: PartitionCreationResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.total_requested, 6);
-        assert_eq!(result.success_count, 6);
+        assert_eq!(result.total_requested, 7);
+        assert_eq!(result.success_count, 7);
         assert_eq!(result.partitions.len(), 1);
         assert_eq!(result.partitions[0].indexes_created, 4);
-    }
-
-    #[test]
-    fn test_index_ensure_result_deserialization() {
-        let json = r#"{
-            "status": "completed",
-            "partitions_updated": 4,
-            "total_indexes_created": 16,
-            "partitions": [
-                {
-                    "partition": "audit_logs_2024_01",
-                    "row_count": 0,
-                    "size_mb": 0.0
-                }
-            ]
-        }"#;
-
-        let result: IndexEnsureResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.partitions_updated, 4);
-        assert_eq!(result.total_indexes_created, 16);
-        assert_eq!(result.partitions.len(), 1);
     }
 
     #[test]

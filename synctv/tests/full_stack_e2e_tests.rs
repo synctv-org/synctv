@@ -32,6 +32,7 @@ use tonic_health::pb::HealthCheckRequest;
 
 const PROVIDER_PROBE_HOST: &str = "provider-test.example.com";
 const PROVIDER_PROBE_SECRET: &str = "provider-remote-e2e-secret";
+const MANAGEMENT_E2E_AUTH_TOKEN: &str = "management-e2e-secret";
 const TEST_CREDENTIAL_ENCRYPTION_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -68,6 +69,7 @@ fn test_config(
     config.management.enabled = true;
     config.management.transport = synctv_core::config::ManagementTransport::Tcp;
     config.management.port = management_port;
+    config.management.auth_token = MANAGEMENT_E2E_AUTH_TOKEN.to_string();
     config.management.enable_reflection = false;
     config.database.url = database_url;
     config.redis.url = redis_url;
@@ -108,6 +110,24 @@ fn test_config(
     config.http_rate_limits.websocket_max_requests = 5_000;
     config.http_rate_limits.websocket_window_seconds = 1;
     config
+}
+
+#[cfg(unix)]
+fn configure_management_unix_socket(config: &mut Config, socket_path: &std::path::Path) {
+    config.management.transport = synctv_core::config::ManagementTransport::Unix;
+    config.management.unix_socket_path = socket_path.display().to_string();
+    config.management.auth_token.clear();
+}
+
+#[cfg(unix)]
+fn configure_management_unix_socket_with_auth_token(
+    config: &mut Config,
+    socket_path: &std::path::Path,
+    auth_token: &str,
+) {
+    config.management.transport = synctv_core::config::ManagementTransport::Unix;
+    config.management.unix_socket_path = socket_path.display().to_string();
+    config.management.auth_token = auth_token.to_string();
 }
 
 // ---------------------------------------------------------------------------
@@ -590,10 +610,13 @@ fn run_synctv_remote_cli(server: &SharedServer, args: &[&str]) -> std::process::
     structured_args.extend(["--output", "json"]);
     run_synctv_cli_with_env(
         &structured_args,
-        &[(
-            "SYNCTV_MANAGEMENT_ENDPOINT",
-            server.management_base_url.as_str(),
-        )],
+        &[
+            (
+                "SYNCTV_MANAGEMENT_ENDPOINT",
+                server.management_base_url.as_str(),
+            ),
+            ("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN),
+        ],
     )
 }
 
@@ -813,7 +836,11 @@ fn room_id_metadata(room_id: &str) -> MetadataValue<tonic::metadata::Ascii> {
 }
 
 fn management_request<T>(message: T) -> tonic::Request<T> {
-    tonic::Request::new(message)
+    let mut request = tonic::Request::new(message);
+    request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(MANAGEMENT_E2E_AUTH_TOKEN));
+    request
 }
 
 async fn recv_grpc_server_message(
@@ -1715,7 +1742,7 @@ async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_with
             "--output",
             "json",
         ],
-        &[],
+        &[("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN)],
     );
     assert!(
         system_stats.status.success(),
@@ -2084,8 +2111,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
         management_port,
         rtmp_port,
     );
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
-    config.management.unix_socket_path = socket_path.display().to_string();
+    configure_management_unix_socket(&mut config, &socket_path);
 
     let app = Application::build_with_options(
         config,
@@ -2231,6 +2257,102 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
 #[cfg(unix)]
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_from_config() {
+    let (postgres, database_url) = create_test_database_url_with_label(
+        "synctv_e2e_unix_auth",
+        "full-stack-management-unix-auth",
+    )
+    .await;
+    let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix-auth").await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let socket_dir = tempfile::tempdir().expect("temp dir should be created");
+    let socket_path = socket_dir.path().join("management.sock");
+    let config_path = socket_dir.path().join("synctv.yaml");
+    let management_auth_token = "unix-management-config-token";
+
+    let mut config = test_config(
+        database_url,
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    configure_management_unix_socket_with_auth_token(
+        &mut config,
+        &socket_path,
+        management_auth_token,
+    );
+    let config_yaml = serde_yaml::to_string(&config).expect("config should serialize to yaml");
+    std::fs::write(&config_path, config_yaml).expect("config file should be written");
+
+    let app = Application::build_with_options(
+        config,
+        ApplicationBuildOptions {
+            credential_encryption_hex_key_override: Some(
+                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
+            ),
+            ..ApplicationBuildOptions::default()
+        },
+    )
+    .await
+    .expect("unix management auth application should build");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_handle = tokio::spawn(async move {
+        app.run_with_shutdown_signal(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    wait_until_live(&api_base_url).await;
+    wait_until_unix_grpc_ready(&socket_path).await;
+
+    let system_stats = run_synctv_cli_with_env_async(
+        &[
+            "system",
+            "stats",
+            "--output",
+            "json",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        system_stats.status.success(),
+        "system stats via CLI over unix socket with config-managed auth token should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&system_stats.stdout),
+        String::from_utf8_lossy(&system_stats.stderr),
+    );
+    let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
+        .expect("CLI unix socket system stats output should be JSON");
+    assert!(
+        system_stats_body["total_users"]
+            .as_i64()
+            .expect("total_users should be an integer")
+            >= 1,
+        "system stats over authenticated unix socket should report at least the bootstrap root user: {system_stats_body}"
+    );
+
+    let _ = shutdown_tx.send(());
+    let server_result = server_handle
+        .await
+        .expect("unix management auth server task should join");
+    server_result.expect("unix management auth server should shut down cleanly");
+
+    drop(postgres);
+    drop(redis);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_stop_graceful", "full-stack-stop-graceful")
@@ -2249,8 +2371,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         management_port,
         rtmp_port,
     );
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
-    config.management.unix_socket_path = socket_path.display().to_string();
+    configure_management_unix_socket(&mut config, &socket_path);
 
     let app = Application::build_with_options(
         config,
@@ -2324,8 +2445,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
         management_port,
         rtmp_port,
     );
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
-    config.management.unix_socket_path = socket_path.display().to_string();
+    configure_management_unix_socket(&mut config, &socket_path);
 
     let app = Application::build_with_options(
         config,

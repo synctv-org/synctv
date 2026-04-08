@@ -1,44 +1,26 @@
--- Create media table (media files in playlists)
-
 CREATE TABLE IF NOT EXISTS media (
     id CHAR(12) PRIMARY KEY,
 
-    -- ========== Belongs to playlist ==========
-    -- NULL means the media lives directly under the room root.
     playlist_id CHAR(12),
 
-    -- ========== Basic information ==========
-    -- Room deletion is application-orchestrated: media must be explicitly
-    -- deleted before a room row can be hard-deleted.
     room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
-    -- User deletion is application-orchestrated: media must be explicitly
-    -- deleted or reassigned before a user row can be hard-deleted.
     creator_id CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
 
-    -- Media display name
     name VARCHAR(255) NOT NULL,
 
-    -- Sort position (within playlist).
-    -- Floating-point gaps allow single-row reordering between siblings.
     position DOUBLE PRECISION NOT NULL,
 
-    -- ========== Video source type (string for flexibility) ==========
     source_provider VARCHAR(64) NOT NULL,
 
-    -- ========== Video source configuration (persistent storage) ==========
     source_config JSONB NOT NULL,
 
-    -- Provider instance name (for registry lookup)
     provider_instance_name VARCHAR(64),
 
-    -- Timestamps
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    -- Optimistic locking version (incremented on each update)
     version INTEGER NOT NULL DEFAULT 0,
 
-    -- Constraints
     CONSTRAINT valid_media_name CHECK (char_length(name) <= 255),
     CONSTRAINT media_playlist_same_room_fk
         FOREIGN KEY (playlist_id, room_id)
@@ -48,21 +30,16 @@ CREATE TABLE IF NOT EXISTS media (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_id_room_unique ON media(id, room_id);
 
--- Unique index: prevent duplicate positions within the same playlist
--- Create indexes
 CREATE INDEX idx_media_room ON media(room_id);
 CREATE INDEX idx_media_creator ON media(creator_id);
 CREATE INDEX idx_media_added_at ON media(added_at DESC);
 CREATE INDEX idx_media_source_provider ON media(source_provider);
 CREATE INDEX idx_media_provider_name ON media(provider_instance_name);
 CREATE INDEX idx_media_source_config ON media USING gin(source_config);
-
--- Performance optimization: ordered covering indexes for playlist queries
 CREATE INDEX idx_media_playlist_covering ON media(playlist_id, position, id, source_provider, name);
 CREATE INDEX idx_media_room_root_covering ON media(room_id, position, id, source_provider, name)
     WHERE playlist_id IS NULL;
 
--- Comments
 COMMENT ON TABLE media IS 'Media items (videos/audio) in playlists';
 COMMENT ON COLUMN media.id IS '12-character base62 ID';
 COMMENT ON COLUMN media.playlist_id IS 'Associated playlist (directory). NULL means the media is directly under the room root.';
@@ -75,7 +52,6 @@ COMMENT ON COLUMN media.version IS 'Optimistic locking version, incremented on e
 COMMENT ON COLUMN media.updated_at IS 'Timestamp of last update (auto-maintained by trigger)';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'Media display name must fit within the database column limit.';
 
--- Trigger to auto-update updated_at on row modification
 CREATE OR REPLACE FUNCTION update_media_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN

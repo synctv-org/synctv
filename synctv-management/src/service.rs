@@ -2,6 +2,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::Stream;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tonic::{Request, Response, Status};
 
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
@@ -38,12 +40,62 @@ struct ValidatedManagementUser {
     role: CoreUserRole,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ManagementAccessController {
+    required_bearer_token: Option<String>,
+}
+
+impl ManagementAccessController {
+    pub(crate) fn new(auth_token: &str) -> Self {
+        let trimmed = auth_token.trim();
+        let required_bearer_token = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        Self {
+            required_bearer_token,
+        }
+    }
+
+    pub(crate) fn authorize<T: std::fmt::Debug>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<(), Status> {
+        let Some(expected_token) = &self.required_bearer_token else {
+            return Ok(());
+        };
+
+        let header_value = request
+            .metadata()
+            .get("authorization")
+            .ok_or_else(|| Status::unauthenticated("Management authentication required"))?
+            .to_str()
+            .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
+
+        let provided_token =
+            synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
+                .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
+
+        if constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated(
+                "Invalid management authorization header",
+            ))
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let left_hash = Sha256::digest(left);
+    let right_hash = Sha256::digest(right);
+    left_hash.ct_eq(&right_hash).into()
+}
+
 #[derive(Clone)]
 pub struct ManagementServiceImpl {
     user_service: Arc<UserService>,
     admin_api: Arc<AdminApiImpl>,
     client_api: Arc<ClientApiImpl>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
+    access_controller: ManagementAccessController,
 }
 
 impl ManagementServiceImpl {
@@ -53,16 +105,22 @@ impl ManagementServiceImpl {
         admin_api: Arc<AdminApiImpl>,
         client_api: Arc<ClientApiImpl>,
         lifecycle_controller: Arc<ManagementLifecycleController>,
+        management_auth_token: String,
     ) -> Self {
         Self {
             user_service,
             admin_api,
             client_api,
             lifecycle_controller,
+            access_controller: ManagementAccessController::new(&management_auth_token),
         }
     }
 
-    async fn management_actor(&self) -> Result<ValidatedManagementUser, Status> {
+    async fn management_actor(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<ValidatedManagementUser, Status> {
+        self.access_controller.authorize(request)?;
         Ok(ValidatedManagementUser {
             user_id: UserId::from_string(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string()),
             role: CoreUserRole::Root,
@@ -71,13 +129,13 @@ impl ManagementServiceImpl {
 
     async fn check_admin_get_validated(
         &self,
-        _request: &Request<impl std::fmt::Debug>,
+        request: &Request<impl std::fmt::Debug>,
     ) -> Result<ValidatedManagementUser, Status> {
-        self.management_actor().await
+        self.management_actor(request).await
     }
 
-    async fn check_root(&self, _request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
-        self.management_actor().await?;
+    async fn check_root(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
+        self.management_actor(request).await?;
         Ok(())
     }
 
@@ -1860,8 +1918,9 @@ fn map_api_error(err: ApiError) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_client_actor_user;
+    use super::{validate_client_actor_user, ManagementAccessController};
     use synctv_core::models::{SignupMethod, User, UserStatus};
+    use tonic::{Code, Request};
 
     fn make_actor_user(username: &str, status: UserStatus) -> User {
         let mut user = User::new_with_status(
@@ -1933,5 +1992,57 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("secret"));
+    }
+
+    #[test]
+    fn management_access_controller_allows_missing_header_when_token_disabled() {
+        let controller = ManagementAccessController::new("");
+        let request = Request::new(());
+
+        controller
+            .authorize(&request)
+            .expect("disabled management token should allow local requests");
+    }
+
+    #[test]
+    fn management_access_controller_rejects_missing_header_when_token_configured() {
+        let controller = ManagementAccessController::new("management-secret");
+        let request = Request::new(());
+
+        let error = controller
+            .authorize(&request)
+            .expect_err("missing auth header must be rejected when management token is configured");
+
+        assert_eq!(error.code(), Code::Unauthenticated);
+        assert_eq!(error.message(), "Management authentication required");
+    }
+
+    #[test]
+    fn management_access_controller_rejects_incorrect_bearer_token() {
+        let controller = ManagementAccessController::new("management-secret");
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer wrong-secret".parse().unwrap());
+
+        let error = controller
+            .authorize(&request)
+            .expect_err("wrong management bearer token must be rejected");
+
+        assert_eq!(error.code(), Code::Unauthenticated);
+        assert_eq!(error.message(), "Invalid management authorization header");
+    }
+
+    #[test]
+    fn management_access_controller_accepts_matching_bearer_token() {
+        let controller = ManagementAccessController::new("management-secret");
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer management-secret".parse().unwrap());
+
+        controller
+            .authorize(&request)
+            .expect("matching management bearer token should be accepted");
     }
 }

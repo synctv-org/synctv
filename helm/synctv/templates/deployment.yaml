@@ -206,6 +206,12 @@ spec:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
             {{- end }}
+            - name: SYNCTV_MANAGEMENT_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_MANAGEMENT_AUTH_TOKEN
+                  optional: true
             {{- with .Values.extraEnvVars }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

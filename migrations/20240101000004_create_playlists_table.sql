@@ -1,42 +1,24 @@
--- Create playlists table (supporting tree structure and dynamic folders)
-
 CREATE TABLE IF NOT EXISTS playlists (
     id CHAR(12) PRIMARY KEY,
 
-    -- Basic information
-    -- Room deletion is application-orchestrated: playlists must be explicitly
-    -- deleted before a room row can be hard-deleted.
     room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
-    -- User deletion is application-orchestrated: playlists must be explicitly
-    -- deleted or reassigned before a user row can be hard-deleted.
     creator_id CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
 
-    -- Playlist display name
     name VARCHAR(255) NOT NULL DEFAULT '',
 
-    -- Tree structure (file system style)
-    -- Nested playlist cleanup is application-orchestrated: descendants must be
-    -- deleted explicitly in depth-first order.
     parent_id CHAR(12) REFERENCES playlists(id) ON DELETE RESTRICT,
 
-    -- Sort position (support append and anchor-based reordering).
-    -- Floating-point gaps allow moving a single row between siblings without
-    -- rewriting every sibling on each drag operation.
     position DOUBLE PRECISION NOT NULL,
 
-    -- ========== Dynamic folder support ==========
     source_provider VARCHAR(64),
     source_config JSONB,
     provider_instance_name VARCHAR(64),
 
-    -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Optimistic locking version (incremented on each update)
     version INTEGER NOT NULL DEFAULT 0,
 
-    -- Constraints
     CONSTRAINT valid_parent CHECK (parent_id IS NULL OR parent_id != id),
     CONSTRAINT valid_dynamic_folder CHECK (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
@@ -46,7 +28,6 @@ CREATE TABLE IF NOT EXISTS playlists (
     CONSTRAINT unique_playlist_id_room UNIQUE (id, room_id)
 );
 
--- Indexes
 CREATE INDEX idx_playlists_room ON playlists(room_id);
 CREATE INDEX idx_playlists_parent ON playlists(parent_id, position, id);
 CREATE INDEX idx_playlists_tree ON playlists(room_id, parent_id, position, id);
@@ -54,7 +35,6 @@ CREATE INDEX idx_playlists_creator ON playlists(creator_id);
 CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
 CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 
--- Trigger to update updated_at
 CREATE TRIGGER update_playlists_updated_at
     BEFORE UPDATE ON playlists
     FOR EACH ROW
@@ -70,13 +50,6 @@ COMMENT ON COLUMN playlists.provider_instance_name IS 'Optional media provider b
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
 COMMENT ON COLUMN playlists.version IS 'Optimistic locking version, incremented on each update';
 
--- ============================================================================
--- Circular Reference Protection
--- ============================================================================
-
--- Function: Detect circular references in playlist tree
--- This function checks if setting parent_id would create a cycle
--- Uses recursive CTE to traverse the tree from the proposed parent upwards
 CREATE OR REPLACE FUNCTION check_playlist_cycle(
     playlist_id CHAR(12),
     new_parent_id CHAR(12)
@@ -84,26 +57,22 @@ CREATE OR REPLACE FUNCTION check_playlist_cycle(
 DECLARE
     cycle_detected BOOLEAN;
 BEGIN
-    -- If new parent is NULL, no cycle possible
     IF new_parent_id IS NULL THEN
         RETURN FALSE;
     END IF;
 
-    -- Check if playlist_id appears in the ancestor chain of new_parent_id
     SELECT EXISTS (
         WITH RECURSIVE ancestors AS (
-            -- Start from the proposed parent
             SELECT id, parent_id, 0 AS depth
             FROM playlists
             WHERE id = new_parent_id
 
             UNION ALL
 
-            -- Traverse up the tree
             SELECT p.id, p.parent_id, a.depth + 1
             FROM playlists p
             JOIN ancestors a ON p.id = a.parent_id
-            WHERE a.depth < 50  -- Prevent infinite loop (max depth protection)
+            WHERE a.depth < 50
         )
         SELECT 1
         FROM ancestors
@@ -117,19 +86,16 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION check_playlist_cycle(CHAR, CHAR) IS
 'Check if setting parent_id would create a circular reference. Returns TRUE if cycle detected. Max depth: 50 levels.';
 
--- Trigger function: Prevent circular references
 CREATE OR REPLACE FUNCTION prevent_playlist_cycle()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Only check on UPDATE if parent_id is being changed, or on INSERT with non-NULL parent
     IF (TG_OP = 'INSERT' AND NEW.parent_id IS NOT NULL) OR
        (TG_OP = 'UPDATE' AND NEW.parent_id IS DISTINCT FROM OLD.parent_id AND NEW.parent_id IS NOT NULL) THEN
 
-        -- Check for cycle
         IF check_playlist_cycle(NEW.id, NEW.parent_id) THEN
             RAISE EXCEPTION 'Circular reference detected: setting parent_id=% for playlist % would create a cycle',
                 NEW.parent_id, NEW.id
-                USING ERRCODE = '23514',  -- check_violation
+                USING ERRCODE = '23514',
                       HINT = 'Cannot set a descendant as parent';
         END IF;
     END IF;
@@ -138,7 +104,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger: Validate playlist tree integrity before INSERT/UPDATE
 CREATE TRIGGER trigger_prevent_playlist_cycle
     BEFORE INSERT OR UPDATE OF parent_id ON playlists
     FOR EACH ROW
@@ -147,43 +112,32 @@ CREATE TRIGGER trigger_prevent_playlist_cycle
 COMMENT ON TRIGGER trigger_prevent_playlist_cycle ON playlists IS
 'Prevent circular references in playlist tree. Validates that parent_id does not create a cycle (max depth: 50).';
 
--- ============================================================================
--- Cross-Room Parent Validation (Task #17)
--- ============================================================================
-
--- Function: Validate that parent playlist belongs to the same room
--- This enforces room isolation - a playlist cannot have a parent from another room
 CREATE OR REPLACE FUNCTION validate_parent_same_room()
 RETURNS TRIGGER AS $$
 DECLARE
     parent_room_id CHAR(12);
 BEGIN
-    -- If parent_id is NULL (top-level playlist), no validation needed
     IF NEW.parent_id IS NULL THEN
         RETURN NEW;
     END IF;
 
-    -- On UPDATE, only check if parent_id is being changed
     IF TG_OP = 'UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN
         RETURN NEW;
     END IF;
 
-    -- Get the room_id of the parent playlist
     SELECT room_id INTO parent_room_id
     FROM playlists
     WHERE id = NEW.parent_id;
 
-    -- Parent must exist (FK will catch this, but check anyway)
     IF parent_room_id IS NULL THEN
         RAISE EXCEPTION 'Parent playlist % does not exist', NEW.parent_id
-            USING ERRCODE = '23503';  -- foreign_key_violation
+            USING ERRCODE = '23503';
     END IF;
 
-    -- Validate that parent belongs to the same room
     IF parent_room_id != NEW.room_id THEN
         RAISE EXCEPTION 'Cross-room parent_id violation: playlist % in room % cannot have parent % from room %',
             NEW.id, NEW.room_id, NEW.parent_id, parent_room_id
-            USING ERRCODE = '23514',  -- check_violation
+            USING ERRCODE = '23514',
                   HINT = 'Parent playlist must belong to the same room';
     END IF;
 
@@ -194,7 +148,6 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION validate_parent_same_room() IS
 'Enforce room isolation for playlist parent_id. A playlist cannot have a parent from a different room.';
 
--- Trigger: Validate cross-room parent before INSERT/UPDATE
 CREATE TRIGGER trigger_validate_parent_same_room
     BEFORE INSERT OR UPDATE OF parent_id, room_id ON playlists
     FOR EACH ROW

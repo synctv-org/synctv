@@ -1,31 +1,20 @@
--- Create room_members table with Allow/Deny permission pattern
 CREATE TABLE IF NOT EXISTS room_members (
     room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
     user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
 
-    -- Role and Status (separated as per design)
-    role SMALLINT NOT NULL DEFAULT 3,  -- 1=creator, 2=admin, 3=member, 4=guest
-    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=rejected, 4=banned, 5=left
+    role SMALLINT NOT NULL DEFAULT 3,
+    status SMALLINT NOT NULL DEFAULT 1,
 
-    -- Allow/Deny permission pattern
-    -- effective_permissions = ((global_default | room_added | admin_added | member_added) & ~(room_removed | admin_removed | member_removed))
-    -- For regular members: uses member_added/member_removed
-    -- For admins: uses admin_added/admin_removed (overrides member-level)
-    -- NOTE: Stored as BIGINT (signed i64) but logically treated as u64 bitmasks.
-    -- CHECK constraints prevent negative values to avoid overflow when cast to u64.
-    added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (added_permissions >= 0),      -- For member role: extra permissions
-    removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (removed_permissions >= 0),    -- For member role: removed permissions
-    admin_added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_added_permissions >= 0),     -- For admin role: extra permissions (on top of admin default)
-    admin_removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_removed_permissions >= 0),   -- For admin role: removed permissions (overrides admin default)
+    added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (added_permissions >= 0),
+    removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (removed_permissions >= 0),
+    admin_added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_added_permissions >= 0),
+    admin_removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_removed_permissions >= 0),
 
-    -- Timestamps
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     left_at TIMESTAMPTZ NULL,
 
-    -- Optimistic locking for permission updates
     version BIGINT NOT NULL DEFAULT 0,
 
-    -- Banned info
     banned_at TIMESTAMPTZ,
     banned_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
     banned_reason TEXT,
@@ -33,23 +22,11 @@ CREATE TABLE IF NOT EXISTS room_members (
     PRIMARY KEY (room_id, user_id)
 );
 
--- Create indexes
 CREATE INDEX idx_room_members_user_id ON room_members(user_id);
 CREATE INDEX idx_room_members_joined_at ON room_members(joined_at);
--- Partial index for efficient lookup of active members in a room
 CREATE INDEX idx_room_members_room_active ON room_members(room_id) WHERE left_at IS NULL;
-
--- Performance optimization indexes (covering indexes to avoid table lookups)
--- Task #57: Covering index for list_by_user_with_details query
--- Supports: WHERE user_id = ? AND left_at IS NULL
---           JOIN on room_id
---           SELECT role, status, joined_at
---           ORDER BY joined_at DESC
--- This index allows the query to be satisfied entirely from the index without table lookups
 CREATE INDEX idx_room_members_user_active ON room_members(user_id, room_id, role, status, joined_at DESC)
     WHERE left_at IS NULL;
-
--- Permission-related indexes
 CREATE INDEX idx_room_members_role ON room_members(room_id, role)
     WHERE left_at IS NULL;
 CREATE INDEX idx_room_members_status ON room_members(room_id, status)
@@ -57,26 +34,14 @@ CREATE INDEX idx_room_members_status ON room_members(room_id, status)
 CREATE INDEX idx_room_members_banned ON room_members(banned_at)
     WHERE banned_at IS NOT NULL;
 
--- Constraints: 1=creator, 2=admin, 3=member, 4=guest
 ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_role
     CHECK (role BETWEEN 1 AND 4);
 
--- Status constraint: 1=active, 2=pending, 3=rejected, 4=banned, 5=left
 ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_status
     CHECK (status BETWEEN 1 AND 5);
 
--- Status constraint: 1=active, 2=pending, 3=rejected, 4=banned, 5=left
--- Note: Status changes are managed at the application layer:
--- - Pending -> rejected: application sets left_at
--- - Active/pending/rejected -> banned: application sets banned_at and left_at
--- - Banned -> active: application clears banned_at and left_at
--- - Active/pending -> left: application sets left_at
--- - Left -> active: application clears left_at
--- This constraint is removed to allow flexible state transitions at-- Comment removed
-
--- Comments
 COMMENT ON TABLE room_members IS 'Room membership with Allow/Deny permission pattern';
 COMMENT ON COLUMN room_members.role IS 'Room role: 1=creator, 2=admin, 3=member, 4=guest';
 COMMENT ON COLUMN room_members.status IS 'Member status: 1=active, 2=pending, 3=rejected, 4=banned, 5=left';
@@ -88,13 +53,6 @@ COMMENT ON COLUMN room_members.banned_by IS 'User ID who banned this member';
 COMMENT ON COLUMN room_members.banned_reason IS 'Reason for banning';
 COMMENT ON COLUMN room_members.left_at IS 'NULL if currently in room, timestamp if left';
 
--- ============================================================================
--- Optimistic Locking with Version Field (CAS pattern)
--- ============================================================================
-
--- Function: Update room member permissions with optimistic locking
--- This function implements Compare-And-Swap (CAS) pattern to prevent race conditions
--- Returns TRUE if update succeeded, FALSE if version mismatch (indicating concurrent update)
 CREATE OR REPLACE FUNCTION update_room_member_permissions_cas(
     p_room_id CHAR(12),
     p_user_id CHAR(12),
@@ -108,7 +66,6 @@ DECLARE
     rows_updated INTEGER;
     new_version BIGINT;
 BEGIN
-    -- Perform atomic CAS update: only update if version matches
     UPDATE room_members
     SET
         added_permissions = COALESCE(p_added_permissions, added_permissions),
@@ -125,7 +82,6 @@ BEGIN
     GET DIAGNOSTICS rows_updated = ROW_COUNT;
 
     IF rows_updated = 0 THEN
-        -- Version mismatch or row not found
         RETURN json_build_object(
             'success', FALSE,
             'error', 'version_mismatch',
@@ -134,7 +90,6 @@ BEGIN
         );
     END IF;
 
-    -- Success
     RETURN json_build_object(
         'success', TRUE,
         'new_version', new_version,
@@ -145,23 +100,3 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION update_room_member_permissions_cas IS
 'Update room member permissions with optimistic locking (CAS pattern). Returns success=false on version mismatch. Use in retry loop in application code.';
-
--- Example usage in Rust:
--- let mut retries = 3;
--- loop {
---     let member = get_room_member(room_id, user_id).await?;
---     let result = update_room_member_permissions_cas(
---         room_id, user_id, member.version,
---         Some(new_added), Some(new_removed), None, None
---     ).await?;
---
---     if result["success"].as_bool() == Some(true) {
---         break; // Success
---     }
---
---     retries -= 1;
---     if retries == 0 {
---         return Err("Max retries exceeded due to concurrent updates");
---     }
---     tokio::time::sleep(Duration::from_millis(50)).await;
--- }

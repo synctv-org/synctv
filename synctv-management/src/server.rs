@@ -73,6 +73,7 @@ async fn spawn_management_unix_server(
                 absolute_display_path(Path::new(&socket_path))
             )
         })?;
+        restrict_management_unix_socket_permissions(Path::new(&socket_path))?;
         info!(
             "Management gRPC server listening on unix://{}",
             absolute_display_path(Path::new(&socket_path))
@@ -103,6 +104,7 @@ where
         config.admin_api,
         config.client_api,
         config.lifecycle_controller,
+        config.config.management.auth_token.clone(),
     ))
     .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
     .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);
@@ -170,18 +172,47 @@ impl<T> AsyncReadWrite for T where
 
 #[cfg(unix)]
 fn prepare_management_unix_socket(path: &str) -> anyhow::Result<()> {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
     let socket_path = Path::new(path);
     let parent = socket_path.parent().ok_or_else(|| {
         anyhow::anyhow!("management unix socket path '{path}' must have a parent directory")
     })?;
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create management unix socket parent directory {}",
-            absolute_display_path(parent)
-        )
-    })?;
+    let parent_preexisting = match std::fs::metadata(parent) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "management unix socket parent path {} already exists and is not a directory",
+                    absolute_display_path(parent)
+                ));
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect management unix socket parent directory {}: {error}",
+                absolute_display_path(parent)
+            ));
+        }
+    };
+
+    if !parent_preexisting {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create management unix socket parent directory {}",
+                absolute_display_path(parent)
+            )
+        })?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).with_context(
+            || {
+                format!(
+                    "failed to restrict management unix socket parent directory permissions {}",
+                    absolute_display_path(parent)
+                )
+            },
+        )?;
+    }
 
     match std::fs::symlink_metadata(socket_path) {
         Ok(metadata) if metadata.file_type().is_socket() => {
@@ -211,6 +242,18 @@ fn prepare_management_unix_socket(path: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+fn restrict_management_unix_socket_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).with_context(|| {
+        format!(
+            "failed to restrict management unix socket permissions {}",
+            absolute_display_path(path)
+        )
+    })
+}
+
+#[cfg(unix)]
 fn cleanup_management_unix_socket(path: &str) {
     if let Err(error) = std::fs::remove_file(path) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -219,5 +262,165 @@ fn cleanup_management_unix_socket(path: &str) {
                 absolute_display_path(Path::new(path))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::{prepare_management_unix_socket, restrict_management_unix_socket_permissions};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tonic::transport::Server;
+    use tonic_health::pb::health_client::HealthClient;
+    use tonic_health::pb::HealthCheckRequest;
+
+    #[cfg(unix)]
+    struct TempDirGuard {
+        path: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl TempDirGuard {
+        fn new(label: &str) -> Self {
+            let base_dir = std::path::Path::new("/tmp");
+            let path = base_dir.join(format!(
+                "stv-m-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after unix epoch")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).expect("temp dir should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_management_unix_socket_restricts_parent_directory_permissions() {
+        let temp_dir = TempDirGuard::new("parent-perms");
+        let runtime_dir = temp_dir.path().join("management-runtime");
+        let socket_path = runtime_dir.join("synctv.sock");
+
+        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
+            .expect("prepare should succeed");
+
+        let metadata = std::fs::metadata(&runtime_dir).expect("runtime dir metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o700,
+            "management runtime directory must be owner-only, got {:o}",
+            mode
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions() {
+        let temp_dir = TempDirGuard::new("existing-parent-perms");
+        let runtime_dir = temp_dir.path().join("preexisting-runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("existing runtime dir should be created");
+        std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("existing runtime dir permissions should be set");
+        let socket_path = runtime_dir.join("synctv.sock");
+
+        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
+            .expect("prepare should succeed");
+
+        let metadata = std::fs::metadata(&runtime_dir).expect("runtime dir metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o755,
+            "prepare must not rewrite permissions for an existing parent directory, got {:o}",
+            mode
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn management_unix_socket_is_owner_only_after_bind() {
+        let temp_dir = TempDirGuard::new("socket-perms");
+        let socket_path = temp_dir.path().join("management.sock");
+
+        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
+            .expect("prepare should succeed");
+
+        let listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("socket should bind");
+        restrict_management_unix_socket_permissions(&socket_path)
+            .expect("socket permissions should be restricted");
+        let metadata = std::fs::metadata(&socket_path).expect("socket metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        drop(listener);
+        std::fs::remove_file(&socket_path).expect("socket cleanup");
+
+        assert_eq!(
+            mode, 0o600,
+            "management unix socket must be owner-only, got {:o}",
+            mode
+        );
+    }
+
+    #[tokio::test]
+    async fn management_health_service_remains_accessible_without_management_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("health test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("health test listener should expose local address");
+
+        let (reporter, health_service) = tonic_health::server::health_reporter();
+        reporter
+            .set_service_status("", tonic_health::ServingStatus::Serving)
+            .await;
+
+        let serve_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(health_service)
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .expect("health-only management server should serve");
+        });
+
+        let endpoint = format!("http://{addr}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("health test endpoint should be valid")
+            .connect()
+            .await
+            .expect("health test channel should connect");
+
+        let mut unauthenticated_client = HealthClient::new(channel);
+        let response = unauthenticated_client
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await
+            .expect("health check should stay available without management auth")
+            .into_inner();
+        assert_eq!(
+            response.status,
+            tonic_health::pb::health_check_response::ServingStatus::Serving as i32
+        );
+
+        serve_handle.abort();
+        let _ = serve_handle.await;
     }
 }

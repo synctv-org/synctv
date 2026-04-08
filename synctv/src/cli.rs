@@ -627,6 +627,7 @@ impl RemoteAccessArgs {
             load_dotenv: !self.global.no_dotenv,
             verbose: self.global.verbose > 0,
             resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
         }
     }
 
@@ -2283,7 +2284,7 @@ async fn execute_serve(args: ServeArgs) -> Result<()> {
     }
 
     if args.daemon && std::env::var_os(INTERNAL_DAEMON_CHILD_ENV).is_none() {
-        return spawn_daemonized_serve(&config).await;
+        return spawn_daemonized_serve(&config, &args.global).await;
     }
 
     crate::install_panic_hook(config.logging.backtrace);
@@ -2302,8 +2303,11 @@ async fn execute_serve(args: ServeArgs) -> Result<()> {
     app.run().await
 }
 
-async fn spawn_daemonized_serve(config: &synctv_core::Config) -> Result<()> {
-    let readiness_probe = daemon_readiness_probe(config);
+async fn spawn_daemonized_serve(
+    config: &synctv_core::Config,
+    global: &GlobalConfigArgs,
+) -> Result<()> {
+    let readiness_probe = daemon_readiness_probe(config, global);
     let readiness_target = daemon_readiness_probe_target(&readiness_probe);
 
     if daemon_probe_is_ready(&readiness_probe).await.is_ok() {
@@ -2380,13 +2384,29 @@ async fn spawn_daemonized_serve(config: &synctv_core::Config) -> Result<()> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DaemonReadinessProbe {
-    ManagementEndpoint(String),
+    ManagementEndpoint {
+        endpoint: String,
+        config_path: Option<String>,
+        load_dotenv: bool,
+        verbose: bool,
+    },
     ApiTcpAddress(String),
 }
 
-fn daemon_readiness_probe(config: &synctv_core::Config) -> DaemonReadinessProbe {
+fn daemon_readiness_probe(
+    config: &synctv_core::Config,
+    global: &GlobalConfigArgs,
+) -> DaemonReadinessProbe {
     if config.management.enabled {
-        DaemonReadinessProbe::ManagementEndpoint(config.management_endpoint())
+        DaemonReadinessProbe::ManagementEndpoint {
+            endpoint: config.management_endpoint(),
+            config_path: global
+                .config
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            load_dotenv: !global.no_dotenv,
+            verbose: global.verbose > 0,
+        }
     } else {
         DaemonReadinessProbe::ApiTcpAddress(daemon_local_api_probe_address(config))
     }
@@ -2394,7 +2414,7 @@ fn daemon_readiness_probe(config: &synctv_core::Config) -> DaemonReadinessProbe 
 
 fn daemon_readiness_probe_target(probe: &DaemonReadinessProbe) -> &str {
     match probe {
-        DaemonReadinessProbe::ManagementEndpoint(endpoint)
+        DaemonReadinessProbe::ManagementEndpoint { endpoint, .. }
         | DaemonReadinessProbe::ApiTcpAddress(endpoint) => endpoint,
     }
 }
@@ -2411,17 +2431,21 @@ fn daemon_local_api_probe_address(config: &synctv_core::Config) -> String {
 
 async fn daemon_probe_is_ready(probe: &DaemonReadinessProbe) -> Result<()> {
     match probe {
-        DaemonReadinessProbe::ManagementEndpoint(endpoint) => {
-            RemoteAdminSession::connect(AdminConnectionOptions {
-                endpoint: Some(endpoint.clone()),
-                config_path: None,
-                load_dotenv: false,
-                verbose: false,
-                resolved_config_endpoint: None,
-            })
-            .await
-            .map(|_| ())
-        }
+        DaemonReadinessProbe::ManagementEndpoint {
+            endpoint,
+            config_path,
+            load_dotenv,
+            verbose,
+        } => RemoteAdminSession::connect(AdminConnectionOptions {
+            endpoint: Some(endpoint.clone()),
+            config_path: config_path.clone(),
+            load_dotenv: *load_dotenv,
+            verbose: *verbose,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: true,
+        })
+        .await
+        .map(|_| ()),
         DaemonReadinessProbe::ApiTcpAddress(address) => {
             tokio::time::timeout(
                 Duration::from_secs(2),
@@ -5395,6 +5419,7 @@ fn redact_known_secret_fields(map: &mut Map<String, Value>) {
     for key in [
         "secret",
         "cluster_secret",
+        "auth_token",
         "bearer_token",
         "basic_password",
         "turn_shared_secret",
@@ -5494,6 +5519,7 @@ mod tests {
         config.redis.url = "redis://:redis-secret@redis.internal:6379/0".into();
         config.jwt.secret = "jwt-secret-123456789012345678901234".into();
         config.server.cluster_secret = "cluster-secret-value".into();
+        config.management.auth_token = "management-auth-token".into();
         config.metrics.auth.bearer_token = "metrics-bearer-token".into();
         config.metrics.auth.basic_password = "metrics-basic-password".into();
         config.email.smtp_password = "smtp-secret".into();
@@ -8009,6 +8035,7 @@ mod tests {
             "redis-secret",
             "jwt-secret-123456789012345678901234",
             "cluster-secret-value",
+            "management-auth-token",
             "metrics-bearer-token",
             "metrics-basic-password",
             "smtp-secret",
@@ -8275,23 +8302,50 @@ management:
     #[test]
     fn daemon_readiness_probe_uses_management_endpoint_when_enabled() {
         let config = synctv_core::Config::default();
+        let global = GlobalConfigArgs::default();
 
         assert_eq!(
-            daemon_readiness_probe(&config),
-            DaemonReadinessProbe::ManagementEndpoint(config.management_endpoint())
+            daemon_readiness_probe(&config, &global),
+            DaemonReadinessProbe::ManagementEndpoint {
+                endpoint: config.management_endpoint(),
+                config_path: None,
+                load_dotenv: true,
+                verbose: false,
+            }
         );
     }
 
     #[test]
     fn daemon_readiness_probe_uses_api_health_when_management_is_disabled() {
         let mut config = synctv_core::Config::default();
+        let global = GlobalConfigArgs::default();
         config.management.enabled = false;
         config.server.host = "0.0.0.0".to_string();
         config.server.port = 58080;
 
         assert_eq!(
-            daemon_readiness_probe(&config),
+            daemon_readiness_probe(&config, &global),
             DaemonReadinessProbe::ApiTcpAddress("127.0.0.1:58080".to_string())
+        );
+    }
+
+    #[test]
+    fn daemon_readiness_probe_preserves_explicit_config_context_for_management_auth() {
+        let config = synctv_core::Config::default();
+        let global = GlobalConfigArgs {
+            config: Some(PathBuf::from("/tmp/synctv-daemon-auth.yaml")),
+            no_dotenv: true,
+            verbose: 2,
+        };
+
+        assert_eq!(
+            daemon_readiness_probe(&config, &global),
+            DaemonReadinessProbe::ManagementEndpoint {
+                endpoint: config.management_endpoint(),
+                config_path: Some("/tmp/synctv-daemon-auth.yaml".to_string()),
+                load_dotenv: false,
+                verbose: true,
+            }
         );
     }
 

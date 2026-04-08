@@ -50,151 +50,6 @@ pub(crate) fn build_create_playlist_request(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        build_create_playlist_request, build_delete_playlist_request, build_move_playlist_request,
-        build_update_playlist_request,
-    };
-    use synctv_core::models::RoomId;
-
-    #[test]
-    fn build_create_playlist_request_rejects_invalid_proto_payload() {
-        let error = build_create_playlist_request(
-            &RoomId::new(),
-            crate::proto::client::CreatePlaylistRequest {
-                name: "a".repeat(256),
-                parent_id: String::new(),
-                source_provider: "alist".into(),
-                source_config: Vec::new(),
-                provider_instance_name: String::new(),
-            },
-        )
-        .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(
-                    message.contains("name") || message.contains("dynamic"),
-                    "{message}"
-                );
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_create_playlist_request_parses_dynamic_payload() {
-        let room_id = RoomId::new();
-        let request = build_create_playlist_request(
-            &room_id,
-            crate::proto::client::CreatePlaylistRequest {
-                name: "Dynamic".into(),
-                parent_id: String::new(),
-                source_provider: "alist".into(),
-                source_config: serde_json::to_vec(&serde_json::json!({"path":"/tv"})).unwrap(),
-                provider_instance_name: "alist-main".into(),
-            },
-        )
-        .expect("valid request");
-
-        assert_eq!(request.room_id, room_id);
-        assert_eq!(request.name, "Dynamic");
-        assert_eq!(request.source_provider.as_deref(), Some("alist"));
-        assert_eq!(
-            request.provider_instance_name.as_deref(),
-            Some("alist-main")
-        );
-        assert_eq!(
-            request.source_config,
-            Some(serde_json::json!({"path":"/tv"}))
-        );
-    }
-
-    #[test]
-    fn build_create_playlist_request_parses_proto_validated_parent_id() {
-        let room_id = RoomId::new();
-        let parent_id = synctv_common::snanoid!(12);
-        let request = build_create_playlist_request(
-            &room_id,
-            crate::proto::client::CreatePlaylistRequest {
-                name: "Child".into(),
-                parent_id: parent_id.clone(),
-                source_provider: String::new(),
-                source_config: Vec::new(),
-                provider_instance_name: String::new(),
-            },
-        )
-        .expect("valid request");
-
-        assert_eq!(
-            request.parent_id.as_ref().map(|id| id.as_str()),
-            Some(parent_id.as_str())
-        );
-    }
-
-    #[test]
-    fn build_update_playlist_request_rejects_long_name() {
-        let error = build_update_playlist_request(crate::proto::client::UpdatePlaylistRequest {
-            playlist_id: "playlist-1".into(),
-            name: "a".repeat(256),
-        })
-        .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("name"), "{message}");
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_move_playlist_request_requires_anchor() {
-        let error = build_move_playlist_request(crate::proto::client::MovePlaylistRequest {
-            playlist_id: "playlist-1".into(),
-            anchor: None,
-        })
-        .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("anchor"), "{message}");
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_delete_playlist_request_rejects_invalid_playlist_id() {
-        let error = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
-            playlist_id: "bad-playlist".into(),
-            force: false,
-        })
-        .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("playlist_id"), "{message}");
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_delete_playlist_request_parses_playlist_id() {
-        let playlist_id = synctv_common::snanoid!(12);
-        let request = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
-            playlist_id: playlist_id.clone(),
-            force: true,
-        })
-        .unwrap();
-
-        assert_eq!(request.0.as_str(), playlist_id);
-        assert!(request.1);
-    }
-}
-
 pub(crate) fn build_update_playlist_request(
     req: crate::proto::client::UpdatePlaylistRequest,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
@@ -596,5 +451,150 @@ impl ClientApiImpl {
             playlists: proto_playlists,
             total,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_create_playlist_request, build_delete_playlist_request, build_move_playlist_request,
+        build_update_playlist_request,
+    };
+    use synctv_core::models::RoomId;
+
+    #[test]
+    fn build_create_playlist_request_rejects_invalid_proto_payload() {
+        let error = build_create_playlist_request(
+            &RoomId::new(),
+            crate::proto::client::CreatePlaylistRequest {
+                name: "a".repeat(256),
+                parent_id: String::new(),
+                source_provider: "alist".into(),
+                source_config: Vec::new(),
+                provider_instance_name: String::new(),
+            },
+        )
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(
+                    message.contains("name") || message.contains("dynamic"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_create_playlist_request_parses_dynamic_payload() {
+        let room_id = RoomId::new();
+        let request = build_create_playlist_request(
+            &room_id,
+            crate::proto::client::CreatePlaylistRequest {
+                name: "Dynamic".into(),
+                parent_id: String::new(),
+                source_provider: "alist".into(),
+                source_config: serde_json::to_vec(&serde_json::json!({"path":"/tv"})).unwrap(),
+                provider_instance_name: "alist-main".into(),
+            },
+        )
+        .expect("valid request");
+
+        assert_eq!(request.room_id, room_id);
+        assert_eq!(request.name, "Dynamic");
+        assert_eq!(request.source_provider.as_deref(), Some("alist"));
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-main")
+        );
+        assert_eq!(
+            request.source_config,
+            Some(serde_json::json!({"path":"/tv"}))
+        );
+    }
+
+    #[test]
+    fn build_create_playlist_request_parses_proto_validated_parent_id() {
+        let room_id = RoomId::new();
+        let parent_id = synctv_common::snanoid!(12);
+        let request = build_create_playlist_request(
+            &room_id,
+            crate::proto::client::CreatePlaylistRequest {
+                name: "Child".into(),
+                parent_id: parent_id.clone(),
+                source_provider: String::new(),
+                source_config: Vec::new(),
+                provider_instance_name: String::new(),
+            },
+        )
+        .expect("valid request");
+
+        assert_eq!(
+            request.parent_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            Some(parent_id.as_str())
+        );
+    }
+
+    #[test]
+    fn build_update_playlist_request_rejects_long_name() {
+        let error = build_update_playlist_request(crate::proto::client::UpdatePlaylistRequest {
+            playlist_id: "playlist-1".into(),
+            name: "a".repeat(256),
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("name"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_move_playlist_request_requires_anchor() {
+        let error = build_move_playlist_request(crate::proto::client::MovePlaylistRequest {
+            playlist_id: "playlist-1".into(),
+            anchor: None,
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("anchor"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_delete_playlist_request_rejects_invalid_playlist_id() {
+        let error = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
+            playlist_id: "bad-playlist".into(),
+            force: false,
+        })
+        .unwrap_err();
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("playlist_id"), "{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_delete_playlist_request_parses_playlist_id() {
+        let playlist_id = synctv_common::snanoid!(12);
+        let request = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
+            playlist_id: playlist_id.clone(),
+            force: true,
+        })
+        .unwrap();
+
+        assert_eq!(request.0.as_str(), playlist_id);
+        assert!(request.1);
     }
 }

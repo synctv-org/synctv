@@ -66,23 +66,20 @@ fn normalize_dynamic_playlist_fields(
         }
     });
 
-    match normalized_provider {
-        Some(provider) => {
-            let source_config = source_config.ok_or_else(|| {
-                Error::InvalidInput("source_config is required for dynamic folders".to_string())
-            })?;
+    if let Some(provider) = normalized_provider {
+        let source_config = source_config.ok_or_else(|| {
+            Error::InvalidInput("source_config is required for dynamic folders".to_string())
+        })?;
 
-            Ok((Some(provider), Some(source_config), normalized_instance))
+        Ok((Some(provider), Some(source_config), normalized_instance))
+    } else {
+        if source_config.is_some() || normalized_instance.is_some() {
+            return Err(Error::InvalidInput(
+                "source_provider is required when setting dynamic playlist fields".to_string(),
+            ));
         }
-        None => {
-            if source_config.is_some() || normalized_instance.is_some() {
-                return Err(Error::InvalidInput(
-                    "source_provider is required when setting dynamic playlist fields".to_string(),
-                ));
-            }
 
-            Ok((None, None, None))
-        }
+        Ok((None, None, None))
     }
 }
 
@@ -1041,8 +1038,8 @@ mod tests {
             None,
         ));
         let providers_manager = Arc::new({
-            let manager = crate::service::ProvidersManager::new(provider_instance_manager);
-            manager
+            
+            crate::service::ProvidersManager::new(provider_instance_manager)
         });
         providers_manager
             .create_builtin_defaults()

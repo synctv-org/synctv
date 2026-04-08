@@ -572,7 +572,7 @@ impl MediaService {
                 prepared_source_config,
                 provider.name(),             // Provider type name
                 item.provider_instance_name, // Instance name
-                start_position + 1024.0 * (index as f64),
+                1024.0f64.mul_add(index as f64, start_position),
             );
             media_items.push(media);
         }

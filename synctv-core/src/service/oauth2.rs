@@ -423,7 +423,7 @@ impl OAuth2Service {
     }
 
     #[must_use]
-    pub fn provider_registry(&self) -> &crate::oauth2::ProviderRegistry {
+    pub const fn provider_registry(&self) -> &crate::oauth2::ProviderRegistry {
         &self.provider_registry
     }
 

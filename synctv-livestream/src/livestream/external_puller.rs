@@ -52,7 +52,7 @@ const MAX_FLV_BUFFER_SIZE: usize = 50 * 1024 * 1024;
 ///
 /// Live HTTP-FLV streams can run indefinitely, so this timeout only covers the
 /// startup phase. Ongoing liveness is enforced by the per-chunk read timeout.
-const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
 const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 

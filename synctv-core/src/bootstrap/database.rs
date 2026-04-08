@@ -126,7 +126,7 @@ async fn apply_session_settings(
     Ok(())
 }
 
-fn pg_client_min_messages_for_level(level: Level) -> &'static str {
+const fn pg_client_min_messages_for_level(level: Level) -> &'static str {
     match level {
         Level::TRACE => "notice",
         Level::DEBUG | Level::INFO | Level::WARN => "warning",

@@ -77,7 +77,7 @@ impl RtmpServer {
     /// Override the graceful shutdown waiting period before force-aborting
     /// lingering session tasks.
     #[must_use]
-    pub fn with_shutdown_grace_period(mut self, shutdown_grace_period: Duration) -> Self {
+    pub const fn with_shutdown_grace_period(mut self, shutdown_grace_period: Duration) -> Self {
         self.shutdown_grace_period = shutdown_grace_period;
         self
     }

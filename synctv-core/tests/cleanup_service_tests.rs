@@ -253,12 +253,16 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
         "Cleanup should purge the soft-deleted user in the same run"
     );
 
-    let user_still_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-        .bind(deleted_user.id.as_str())
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query deleted user");
-    assert!(!user_still_exists, "Soft-deleted user should be hard-deleted");
+    let user_still_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+            .bind(deleted_user.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to query deleted user");
+    assert!(
+        !user_still_exists,
+        "Soft-deleted user should be hard-deleted"
+    );
 
     let membership_still_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)")

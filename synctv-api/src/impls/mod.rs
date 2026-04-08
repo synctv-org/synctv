@@ -76,7 +76,7 @@ pub async fn try_publish_cluster_event(
     }
 }
 
-pub fn cluster_fanout_required(cluster_mode: bool, redis_publish_tx_configured: bool) -> bool {
+pub const fn cluster_fanout_required(cluster_mode: bool, redis_publish_tx_configured: bool) -> bool {
     cluster_mode && redis_publish_tx_configured
 }
 
@@ -263,19 +263,19 @@ define_typed_id_parser!(parse_room_id_param, synctv_core::models::RoomId);
 define_typed_id_parser!(parse_media_id_param, synctv_core::models::MediaId);
 define_typed_id_parser!(parse_playlist_id_param, synctv_core::models::PlaylistId);
 
-pub fn proto_validated_user_id(value: String) -> synctv_core::models::UserId {
+pub const fn proto_validated_user_id(value: String) -> synctv_core::models::UserId {
     synctv_core::models::UserId::from_string(value)
 }
 
-pub fn proto_validated_room_id(value: String) -> synctv_core::models::RoomId {
+pub const fn proto_validated_room_id(value: String) -> synctv_core::models::RoomId {
     synctv_core::models::RoomId::from_string(value)
 }
 
-pub fn proto_validated_media_id(value: String) -> synctv_core::models::MediaId {
+pub const fn proto_validated_media_id(value: String) -> synctv_core::models::MediaId {
     synctv_core::models::MediaId::from_string(value)
 }
 
-pub fn proto_validated_playlist_id(value: String) -> synctv_core::models::PlaylistId {
+pub const fn proto_validated_playlist_id(value: String) -> synctv_core::models::PlaylistId {
     synctv_core::models::PlaylistId::from_string(value)
 }
 

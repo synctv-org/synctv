@@ -4,11 +4,7 @@
 //! Proxy routes (including danmu) are handled by the unified proxy handler
 //! in `providers/mod.rs` via `BilibiliProvider::resolve_proxy`.
 
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, routing::post, Json, Router};
 
 use crate::http::{
     middleware::AuthUser, provider_common::provider_instance_name, validation::ValidatedQuery,

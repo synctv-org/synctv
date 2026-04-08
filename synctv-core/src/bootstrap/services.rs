@@ -156,6 +156,12 @@ fn handle_provider_invalidation_listener_result(
     Ok(())
 }
 
+fn handle_provider_manager_init_result(
+    init_result: crate::Result<()>,
+) -> Result<(), anyhow::Error> {
+    init_result.map_err(|e| anyhow::anyhow!("RemoteProviderManager initialization failed: {e}"))
+}
+
 async fn build_providers_manager(
     config: &Config,
     provider_instance_manager: Arc<RemoteProviderManager>,
@@ -440,12 +446,8 @@ pub async fn init_services_with_options(
     ));
 
     // Pre-warm cache with all enabled provider instances from database
-    if let Err(e) = provider_instance_manager.init().await {
-        tracing::error!("Failed to initialize RemoteProviderManager: {}", e);
-        tracing::error!("Continuing without remote provider instances");
-    } else {
-        info!("RemoteProviderManager initialized successfully");
-    }
+    handle_provider_manager_init_result(provider_instance_manager.init().await)?;
+    info!("RemoteProviderManager initialized successfully");
 
     // Start cross-replica cache invalidation listener
     handle_provider_invalidation_listener_result(
@@ -749,10 +751,9 @@ async fn init_oauth2_service(
             .is_none_or(str::is_empty)
         {
             return Err(anyhow::anyhow!(
-                "OAuth2 provider '{}' is missing redirect_url. \
+                "OAuth2 provider '{instance_name}' is missing redirect_url. \
                  Frontend-driven OAuth2 requires an explicit frontend/client callback URI \
-                 (for example https://app.example.com/oauth2/callback or myapp://oauth2/callback).",
-                instance_name
+                 (for example https://app.example.com/oauth2/callback or myapp://oauth2/callback)."
             ));
         }
 
@@ -783,9 +784,7 @@ async fn init_oauth2_service(
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "Failed to create OAuth2 provider '{}': {}",
-                    instance_name,
-                    e
+                    "Failed to create OAuth2 provider '{instance_name}': {e}"
                 ));
             }
         }
@@ -1140,6 +1139,25 @@ mod tests {
             false,
         )
         .expect("standalone mode may continue with local-only provider invalidation");
+    }
+
+    #[test]
+    fn test_provider_manager_init_failure_is_fatal() {
+        let err = handle_provider_manager_init_result(Err(crate::Error::Internal(
+            "provider init failed".to_string(),
+        )))
+        .expect_err("provider manager init must fail closed");
+
+        assert!(
+            err.to_string()
+                .contains("RemoteProviderManager initialization failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_provider_manager_init_success_passthrough() {
+        handle_provider_manager_init_result(Ok(())).expect("successful provider init should pass");
     }
 
     #[tokio::test]

@@ -591,7 +591,7 @@ mod tests {
         let mut state =
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
                 config: Arc::new(synctv_core::Config::default()),
-                user_service: user_service.clone(),
+                user_service,
                 user_cache: Arc::new(
                     synctv_core::cache::UserCache::new(
                         Arc::new(synctv_core::cache::NoopCacheL2),

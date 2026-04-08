@@ -836,7 +836,7 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
                     providers::live::live_proxy_routes(),
                 )
                 .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
+                    state,
                     middleware::read_rate_limit,
                 )),
         );
@@ -1756,7 +1756,10 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(legacy_route_response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            legacy_route_response.status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 
     #[tokio::test]

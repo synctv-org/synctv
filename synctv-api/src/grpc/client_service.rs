@@ -1739,7 +1739,7 @@ mod tests {
         let expected = RoomContext {
             room_id: "room1234_abx".to_string(),
         };
-        request.extensions_mut().insert(expected.clone());
+        request.extensions_mut().insert(expected);
 
         let room_context = request
             .extensions()

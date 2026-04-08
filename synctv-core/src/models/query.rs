@@ -3,8 +3,10 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SortDirection {
     Asc,
+    #[default]
     Desc,
 }
 
@@ -18,11 +20,6 @@ impl SortDirection {
     }
 }
 
-impl Default for SortDirection {
-    fn default() -> Self {
-        Self::Desc
-    }
-}
 
 impl FromStr for SortDirection {
     type Err = String;

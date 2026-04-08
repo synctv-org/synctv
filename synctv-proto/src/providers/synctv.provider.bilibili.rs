@@ -19,7 +19,7 @@ pub struct ParseRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_bilibili_ParseResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ParseResponse {
     #[prost(string, tag = "1")]
     pub title: ::prost::alloc::string::String,
@@ -244,7 +244,7 @@ impl QrLoginStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "QR_LOGIN_STATUS_UNSPECIFIED",
             Self::Expired => "QR_LOGIN_STATUS_EXPIRED",
@@ -706,7 +706,7 @@ pub mod bilibili_provider_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -714,7 +714,7 @@ pub mod bilibili_provider_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

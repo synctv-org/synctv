@@ -841,13 +841,11 @@ impl MediaRepository {
             left_room.as_str().cmp(right_room.as_str()).then_with(|| {
                 left_playlist
                     .as_ref()
-                    .map(PlaylistId::as_str)
-                    .unwrap_or("")
+                    .map_or("", PlaylistId::as_str)
                     .cmp(
                         right_playlist
                             .as_ref()
-                            .map(PlaylistId::as_str)
-                            .unwrap_or(""),
+                            .map_or("", PlaylistId::as_str),
                     )
             })
         });
@@ -893,13 +891,13 @@ impl MediaRepository {
                 if !next.is_finite() {
                     return None;
                 }
-                let start = next - Self::ORDER_STEP * (count as f64);
+                let start = Self::ORDER_STEP.mul_add(-(count as f64), next);
                 if !start.is_finite() {
                     return None;
                 }
                 let mut positions = Vec::with_capacity(count);
                 for index in 0..count {
-                    let position = start + Self::ORDER_STEP * (index as f64);
+                    let position = Self::ORDER_STEP.mul_add(index as f64, start);
                     if !position.is_finite() || position >= next {
                         return None;
                     }
@@ -913,7 +911,7 @@ impl MediaRepository {
                 }
                 let mut positions = Vec::with_capacity(count);
                 for index in 1..=count {
-                    let position = previous + Self::ORDER_STEP * (index as f64);
+                    let position = Self::ORDER_STEP.mul_add(index as f64, previous);
                     if !position.is_finite() || position <= previous {
                         return None;
                     }
@@ -1132,7 +1130,7 @@ impl MediaRepository {
             };
 
             let mut updated_media = Vec::with_capacity(moved_media.len());
-            for (media, position) in moved_media.iter().zip(positions.into_iter()) {
+            for (media, position) in moved_media.iter().zip(positions) {
                 let row = sqlx::query(
                     r"
                     UPDATE media

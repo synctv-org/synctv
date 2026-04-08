@@ -127,24 +127,21 @@ pub async fn subscribe_with_rollback_on_timeout(
     )
     .await?;
 
-    match tokio::time::timeout(timeout, result_receiver).await {
-        Ok(result) => result
-            .map_err(|_| StreamHubError {
-                value: StreamHubErrorValue::SendError,
-            })?
-            .map_err(SubscribeWithRollbackError::StreamHub),
-        Err(_) => {
-            if let Err(err) = send_event_with_backpressure_timeout(
-                sender,
-                StreamHubEvent::UnSubscribe { identifier, info },
-            )
-            .await
-            {
-                tracing::warn!("subscribe timeout rollback failed: {err}");
-            }
-
-            Err(SubscribeWithRollbackError::Timeout)
+    if let Ok(result) = tokio::time::timeout(timeout, result_receiver).await { result
+    .map_err(|_| StreamHubError {
+        value: StreamHubErrorValue::SendError,
+    })?
+    .map_err(SubscribeWithRollbackError::StreamHub) } else {
+        if let Err(err) = send_event_with_backpressure_timeout(
+            sender,
+            StreamHubEvent::UnSubscribe { identifier, info },
+        )
+        .await
+        {
+            tracing::warn!("subscribe timeout rollback failed: {err}");
         }
+
+        Err(SubscribeWithRollbackError::Timeout)
     }
 }
 

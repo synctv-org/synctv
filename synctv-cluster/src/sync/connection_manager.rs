@@ -3390,11 +3390,9 @@ impl ShutdownReport {
                 self.pending_retries.as_ref(),
                 self.disconnect_retry.as_ref(),
             ),
-            (
-                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
-                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
-                None | Some(ShutdownTaskOutcome::Completed) | Some(ShutdownTaskOutcome::Cancelled),
-            )
+            (None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
+None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
+None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled))
         )
     }
 }

@@ -432,11 +432,8 @@ async fn test_list_by_room_paginated_large_member_count() {
         .unwrap();
     // Page 4 might have remaining members if page 3 didn't get all.
     // Even if the page is empty, total should still reflect the full match set.
-    if p4.is_empty() {
-        assert_eq!(total4, expected_total);
-    } else {
-        assert_eq!(total4, expected_total);
-    }
+    let _ = p4;
+    assert_eq!(total4, expected_total);
 }
 
 #[tokio::test]

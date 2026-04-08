@@ -37,9 +37,7 @@ pub fn absolute_display_path(path: &Path) -> String {
         return path.display().to_string();
     }
 
-    std::env::current_dir()
-        .map(|cwd| cwd.join(path))
-        .unwrap_or_else(|_| path.to_path_buf())
+    std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
         .display()
         .to_string()
 }
@@ -47,14 +45,12 @@ pub fn absolute_display_path(path: &Path) -> String {
 pub fn default_management_runtime_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        return user_home_dir()
-            .map(|home| {
+        return user_home_dir().map_or_else(|| std::env::temp_dir().join("synctv").join("run"), |home| {
                 home.join("Library")
                     .join("Application Support")
                     .join("synctv")
                     .join("run")
-            })
-            .unwrap_or_else(|| std::env::temp_dir().join("synctv").join("run"));
+            });
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -149,10 +145,10 @@ fn config_file_format_for_path(path: &Path) -> Result<FileFormat, ConfigError> {
     match path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("yaml") | Some("yml") => Ok(FileFormat::Yaml),
+        Some("yaml" | "yml") => Ok(FileFormat::Yaml),
         Some("json") => Ok(FileFormat::Json),
         Some("toml") => Ok(FileFormat::Toml),
         Some(ext) => Err(ConfigError::Message(format!(
@@ -480,6 +476,7 @@ impl Default for ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct MetricsTlsConfig {
     /// Enable TLS for the dedicated metrics listener.
     pub enabled: bool,
@@ -489,29 +486,17 @@ pub struct MetricsTlsConfig {
     pub key_path: String,
 }
 
-impl Default for MetricsTlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: String::new(),
-            key_path: String::new(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MetricsAuthMode {
+    #[default]
     BearerToken,
     Basic,
     Kubernetes,
 }
 
-impl Default for MetricsAuthMode {
-    fn default() -> Self {
-        Self::BearerToken
-    }
-}
 
 impl std::str::FromStr for MetricsAuthMode {
     type Err = ConfigError;
@@ -605,16 +590,13 @@ impl Default for MetricsConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ManagementTransport {
+    #[default]
     Tcp,
     Unix,
 }
 
-impl Default for ManagementTransport {
-    fn default() -> Self {
-        Self::Tcp
-    }
-}
 
 impl std::str::FromStr for ManagementTransport {
     type Err = ConfigError;

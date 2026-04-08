@@ -422,10 +422,8 @@ async fn test_blank_provider_instance_name_is_normalized_to_null() {
         .await
         .unwrap();
 
-    let server_id = UserProviderCredential::generate_server_id_for_instance(
-        "https://alist.example.com",
-        None,
-    );
+    let server_id =
+        UserProviderCredential::generate_server_id_for_instance("https://alist.example.com", None);
     let credential =
         make_credential_with_instance(user.id.as_str(), "alist", &server_id, Some("   "));
 

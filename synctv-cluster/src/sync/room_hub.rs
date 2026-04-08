@@ -116,8 +116,7 @@ fn block_on_reliable_delivery(
         Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map(|runtime| runtime.block_on(delivery))
-            .unwrap_or(ReliableDeliveryOutcome::Unavailable),
+            .map_or(ReliableDeliveryOutcome::Unavailable, |runtime| runtime.block_on(delivery)),
     }
 }
 

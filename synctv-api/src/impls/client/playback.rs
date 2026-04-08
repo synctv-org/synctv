@@ -549,7 +549,7 @@ mod start_playback_builder_tests {
 
         assert!(parsed.media_id.is_none());
         assert_eq!(
-            parsed.playlist_id.as_ref().map(|id| id.as_str()),
+            parsed.playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
             Some(playlist_id.as_str())
         );
         assert_eq!(parsed.target, target);
@@ -618,7 +618,7 @@ mod start_playback_builder_tests {
             } => {
                 assert!(media_id.is_none());
                 assert_eq!(
-                    parsed_playlist_id.as_ref().map(|id| id.as_str()),
+                    parsed_playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
                     Some(playlist_id.as_str())
                 );
                 assert_eq!(parsed_target, target);

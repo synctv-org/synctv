@@ -392,7 +392,7 @@ impl RedisPubSub {
                     match handle.await {
                         Ok(()) => info!("Redis subscriber task completed after abort"),
                         Err(e) if e.is_cancelled() => {
-                            info!("Redis subscriber task aborted after timeout")
+                            info!("Redis subscriber task aborted after timeout");
                         }
                         Err(e) => warn!(
                             "Redis subscriber task returned join error after timeout abort: {}",

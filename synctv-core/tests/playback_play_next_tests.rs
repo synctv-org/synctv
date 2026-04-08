@@ -1467,9 +1467,9 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
     providers_manager.register_factory(
         "fake_dynamic_sensitive",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::requiring_credential_encryption(
-                instance_id,
-            )))
+            Ok(Arc::new(
+                FakeDynamicProvider::requiring_credential_encryption(instance_id),
+            ))
         }),
     );
     let providers_manager = Arc::new(providers_manager);

@@ -451,7 +451,7 @@ impl HealthMonitor {
                     match handle.await {
                         Ok(()) => tracing::info!("Health monitor task aborted cleanly"),
                         Err(e) if e.is_cancelled() => {
-                            tracing::info!("Health monitor task aborted")
+                            tracing::info!("Health monitor task aborted");
                         }
                         Err(e) => tracing::warn!("Health monitor task failed after abort: {}", e),
                     }

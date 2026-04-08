@@ -53,7 +53,7 @@ impl UserRole {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_ROLE_UNSPECIFIED",
             Self::User => "USER_ROLE_USER",
@@ -89,7 +89,7 @@ impl UserStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_STATUS_UNSPECIFIED",
             Self::Active => "USER_STATUS_ACTIVE",
@@ -127,7 +127,7 @@ impl RoomMemberRole {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_MEMBER_ROLE_UNSPECIFIED",
             Self::Guest => "ROOM_MEMBER_ROLE_GUEST",
@@ -165,7 +165,7 @@ impl MemberStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MEMBER_STATUS_UNSPECIFIED",
             Self::Active => "MEMBER_STATUS_ACTIVE",
@@ -206,7 +206,7 @@ impl RoomStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_STATUS_UNSPECIFIED",
             Self::Active => "ROOM_STATUS_ACTIVE",
@@ -241,7 +241,7 @@ impl ListSortDirection {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "LIST_SORT_DIRECTION_UNSPECIFIED",
             Self::Asc => "LIST_SORT_DIRECTION_ASC",
@@ -277,7 +277,7 @@ impl ErrorCode {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ERROR_CODE_UNSPECIFIED",
             Self::Unauthorized => "ERROR_CODE_UNAUTHORIZED",

@@ -306,6 +306,12 @@ impl RemoteProviderManager {
         let cancel = self.invalidation_cancel.child_token();
         let mut receiver = invalidation_service.subscribe();
 
+        // The shared invalidation service may already have consumed durable
+        // stream entries before this manager attaches its local broadcast
+        // receiver. Drop all cached channels now so the next access reloads the
+        // latest DB state instead of serving a stale pre-listener snapshot.
+        self.channel_cache.invalidate_all();
+
         let handle = crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
             loop {
                 tokio::select! {
@@ -370,20 +376,54 @@ impl RemoteProviderManager {
 
     /// Publish a durable cache invalidation notification so other replicas
     /// evict the stale entry for `instance_name`.
-    async fn notify_change(&self, instance_name: &str) {
+    async fn notify_change(
+        &self,
+        operation: &'static str,
+        instance_name: &str,
+    ) -> crate::Result<()> {
         let Some(ref invalidation_service) = self.cache_invalidation else {
-            return;
+            return Ok(());
         };
 
-        if let Err(e) = invalidation_service
+        invalidation_service
             .invalidate_provider_instance(instance_name)
             .await
-        {
-            tracing::warn!(
-                "Failed to publish provider change notification for '{}': {e}",
-                instance_name
-            );
+            .map_err(|e| {
+                tracing::error!(
+                    operation,
+                    instance_name,
+                    error = %e,
+                    "Failed to publish provider change notification"
+                );
+                crate::Error::ServiceUnavailable(format!(
+                    "Failed to publish provider invalidation for {operation} '{instance_name}': {e}"
+                ))
+            })
+    }
+
+    async fn restore_cached_connection(
+        &self,
+        instance_name: &str,
+        previous_connection: Option<RemoteProviderConnection>,
+    ) {
+        if let Some(connection) = previous_connection {
+            self.channel_cache
+                .insert(instance_name.to_string(), connection)
+                .await;
+        } else {
+            self.channel_cache.invalidate(instance_name).await;
         }
+    }
+
+    fn rollback_failure(
+        operation: &'static str,
+        instance_name: &str,
+        notify_error: &crate::Error,
+        rollback_error: &crate::Error,
+    ) -> crate::Error {
+        crate::Error::Internal(format!(
+            "Failed to roll back provider instance {operation} for '{instance_name}' after invalidation publish failure. publish_error: {notify_error}; rollback_error: {rollback_error}"
+        ))
     }
 
     /// Validate that an endpoint URL does not target internal/private IP addresses
@@ -653,7 +693,6 @@ impl RemoteProviderManager {
         guard: &synctv_common::ssrf::SsrfGuard,
     ) -> impl std::future::Future<Output = std::io::Result<(String, std::net::SocketAddr)>> + Send
     {
-        let address_overrides = address_overrides.clone();
         let uri = uri.clone();
         let guard = guard.clone();
         async move {
@@ -1061,7 +1100,18 @@ impl RemoteProviderManager {
         }
 
         // Notify other replicas
-        self.notify_change(&config.name).await;
+        if let Err(notify_error) = self.notify_change("add", &config.name).await {
+            if let Err(rollback_error) = self.repository.delete(&config.name).await {
+                return Err(Self::rollback_failure(
+                    "add",
+                    &config.name,
+                    &notify_error,
+                    &rollback_error,
+                ));
+            }
+            self.channel_cache.invalidate(&config.name).await;
+            return Err(notify_error);
+        }
 
         tracing::info!("Added provider instance: {}", config.name);
         Ok(())
@@ -1074,12 +1124,14 @@ impl RemoteProviderManager {
     /// 3. Replaces cached channel
     /// 4. Notifies other replicas via Redis
     pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
-        self.repository
+        let previous_config = self
+            .repository
             .get_by_name(&config.name)
             .await?
             .ok_or_else(|| {
                 crate::Error::NotFound(format!("Instance '{}' not found", config.name))
             })?;
+        let previous_connection = self.channel_cache.get(&config.name).await;
 
         Self::validate_config(&config)?;
 
@@ -1104,7 +1156,19 @@ impl RemoteProviderManager {
         }
 
         // Notify other replicas
-        self.notify_change(&config.name).await;
+        if let Err(notify_error) = self.notify_change("update", &config.name).await {
+            if let Err(rollback_error) = self.repository.update(&previous_config).await {
+                return Err(Self::rollback_failure(
+                    "update",
+                    &config.name,
+                    &notify_error,
+                    &rollback_error,
+                ));
+            }
+            self.restore_cached_connection(&config.name, previous_connection)
+                .await;
+            return Err(notify_error);
+        }
 
         tracing::info!("Updated provider instance: {}", config.name);
         Ok(())
@@ -1116,6 +1180,13 @@ impl RemoteProviderManager {
     /// 2. Invalidates cached channel
     /// 3. Notifies other replicas via Redis
     pub async fn delete(&self, name: &str) -> crate::Result<()> {
+        let previous_config = self
+            .repository
+            .get_by_name(name)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
+        let previous_connection = self.channel_cache.get(name).await;
+
         // Remove from database
         self.repository.delete(name).await?;
 
@@ -1123,7 +1194,19 @@ impl RemoteProviderManager {
         self.channel_cache.invalidate(name).await;
 
         // Notify other replicas
-        self.notify_change(name).await;
+        if let Err(notify_error) = self.notify_change("delete", name).await {
+            if let Err(rollback_error) = self.repository.create(&previous_config).await {
+                return Err(Self::rollback_failure(
+                    "delete",
+                    name,
+                    &notify_error,
+                    &rollback_error,
+                ));
+            }
+            self.restore_cached_connection(name, previous_connection)
+                .await;
+            return Err(notify_error);
+        }
 
         tracing::info!("Deleted provider instance: {}", name);
         Ok(())
@@ -1138,6 +1221,7 @@ impl RemoteProviderManager {
             .get_by_name(name)
             .await?
             .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
+        let previous_connection = self.channel_cache.get(name).await;
 
         if config.enabled {
             if Self::requires_remote_connection(&config) {
@@ -1150,7 +1234,11 @@ impl RemoteProviderManager {
             } else {
                 self.channel_cache.invalidate(&config.name).await;
             }
-            self.notify_change(name).await;
+            if let Err(notify_error) = self.notify_change("enable", name).await {
+                self.restore_cached_connection(name, previous_connection)
+                    .await;
+                return Err(notify_error);
+            }
             tracing::info!("Enabled provider instance: {}", name);
             return Ok(());
         }
@@ -1174,7 +1262,19 @@ impl RemoteProviderManager {
         }
 
         // Notify other replicas
-        self.notify_change(name).await;
+        if let Err(notify_error) = self.notify_change("enable", name).await {
+            if let Err(rollback_error) = self.repository.disable(name).await {
+                return Err(Self::rollback_failure(
+                    "enable",
+                    name,
+                    &notify_error,
+                    &rollback_error,
+                ));
+            }
+            self.restore_cached_connection(name, previous_connection)
+                .await;
+            return Err(notify_error);
+        }
 
         tracing::info!("Enabled provider instance: {}", name);
         Ok(())
@@ -1184,6 +1284,13 @@ impl RemoteProviderManager {
     ///
     /// Invalidates cached channel and notifies replicas.
     pub async fn disable(&self, name: &str) -> crate::Result<()> {
+        let previous_config = self
+            .repository
+            .get_by_name(name)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
+        let previous_connection = self.channel_cache.get(name).await;
+
         // Update database
         self.repository.disable(name).await?;
 
@@ -1191,7 +1298,23 @@ impl RemoteProviderManager {
         self.channel_cache.invalidate(name).await;
 
         // Notify other replicas
-        self.notify_change(name).await;
+        if let Err(notify_error) = self.notify_change("disable", name).await {
+            if let Err(rollback_error) = self.repository.enable(name).await {
+                return Err(Self::rollback_failure(
+                    "disable",
+                    name,
+                    &notify_error,
+                    &rollback_error,
+                ));
+            }
+            if previous_config.enabled {
+                self.restore_cached_connection(name, previous_connection)
+                    .await;
+            } else {
+                self.channel_cache.invalidate(name).await;
+            }
+            return Err(notify_error);
+        }
 
         tracing::info!("Disabled provider instance: {}", name);
         Ok(())
@@ -1203,6 +1326,8 @@ impl RemoteProviderManager {
     /// config. If the re-creation fails, the instance remains disabled so
     /// callers observe a consistent state rather than a half-connected instance.
     pub async fn reconnect(&self, name: &str) -> crate::Result<()> {
+        let previous_connection = self.channel_cache.get(name).await;
+
         // Invalidate the cached channel first
         self.channel_cache.invalidate(name).await;
 
@@ -1233,7 +1358,11 @@ impl RemoteProviderManager {
             .await;
 
         // Notify other replicas
-        self.notify_change(name).await;
+        if let Err(notify_error) = self.notify_change("reconnect", name).await {
+            self.restore_cached_connection(name, previous_connection)
+                .await;
+            return Err(notify_error);
+        }
 
         tracing::info!("Reconnected provider instance: {}", name);
         Ok(())
@@ -1272,12 +1401,9 @@ impl RemoteProviderManager {
             }
 
             // Try to get channel from cache or create it
-            let connection = match self.get(&config.name).await {
-                Some(connection) => connection,
-                None => {
-                    results.insert(config.name, false);
-                    continue;
-                }
+            let connection = if let Some(connection) = self.get(&config.name).await { connection } else {
+                results.insert(config.name, false);
+                continue;
             };
 
             let is_healthy = self
@@ -1321,8 +1447,7 @@ impl RemoteProviderManager {
             Ok(request) => request,
             Err(error) => {
                 return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Bilibili probe request build failed: {}",
-                    error
+                    "Authenticated Bilibili probe request build failed: {error}"
                 )));
             }
         };
@@ -1346,8 +1471,7 @@ impl RemoteProviderManager {
             Ok(request) => request,
             Err(error) => {
                 return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Alist probe request build failed: {}",
-                    error
+                    "Authenticated Alist probe request build failed: {error}"
                 )));
             }
         };
@@ -1368,8 +1492,7 @@ impl RemoteProviderManager {
             Ok(request) => request,
             Err(error) => {
                 return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Emby probe request build failed: {}",
-                    error
+                    "Authenticated Emby probe request build failed: {error}"
                 )));
             }
         };
@@ -1406,8 +1529,7 @@ impl RemoteProviderManager {
         match result {
             Ok(_) => Ok(()),
             Err(status) => Err(crate::Error::InvalidInput(format!(
-                "Authenticated {} probe failed for '{}': {}",
-                provider, instance_name, status
+                "Authenticated {provider} probe failed for '{instance_name}': {status}"
             ))),
         }
     }

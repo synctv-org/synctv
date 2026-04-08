@@ -158,7 +158,7 @@ pub(crate) fn validate_auth_secret(
     }
 }
 
-fn grpc_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
+const fn grpc_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
     match code {
         Code::NotFound => Some(reqwest::StatusCode::NOT_FOUND),
         Code::PermissionDenied => Some(reqwest::StatusCode::FORBIDDEN),
@@ -408,7 +408,7 @@ pub struct GrpcAlistClient {
 
 impl GrpcAlistClient {
     #[must_use]
-    pub fn new(connection: RemoteProviderConnection) -> Self {
+    pub const fn new(connection: RemoteProviderConnection) -> Self {
         Self { connection }
     }
 }
@@ -636,7 +636,7 @@ pub struct GrpcBilibiliClient {
 
 impl GrpcBilibiliClient {
     #[must_use]
-    pub fn new(connection: RemoteProviderConnection) -> Self {
+    pub const fn new(connection: RemoteProviderConnection) -> Self {
         Self { connection }
     }
 }
@@ -809,7 +809,7 @@ pub struct GrpcEmbyClient {
 
 impl GrpcEmbyClient {
     #[must_use]
-    pub fn new(connection: RemoteProviderConnection) -> Self {
+    pub const fn new(connection: RemoteProviderConnection) -> Self {
         Self { connection }
     }
 }

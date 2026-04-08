@@ -385,7 +385,7 @@ impl RoomService {
             .await?;
 
         Ok(playlists
-            .into_iter()
+            .iter()
             .map(|playlist| {
                 (
                     playlist.id.clone(),
@@ -433,7 +433,7 @@ impl RoomService {
             .await?;
 
         Ok(media
-            .into_iter()
+            .iter()
             .map(|item| {
                 (
                     item.id.clone(),
@@ -616,7 +616,7 @@ impl RoomService {
             room_repo,
             room_settings_repo,
             member_repo,
-            media_repo: media_repo.clone(),
+            media_repo,
             playlist_repo,
             playback_repo,
             chat_repo,
@@ -687,7 +687,7 @@ impl RoomService {
     }
 
     #[doc(hidden)]
-    pub fn settings_registry(&self) -> Option<&Arc<crate::service::SettingsRegistry>> {
+    pub const fn settings_registry(&self) -> Option<&Arc<crate::service::SettingsRegistry>> {
         self.settings_registry.as_ref()
     }
 
@@ -3083,7 +3083,7 @@ impl RoomService {
     }
 
     pub async fn check_membership_with_room(&self, room: &Room, user_id: &UserId) -> Result<()> {
-        self.ensure_room_creator_is_active_for_access(&room, user_id)
+        self.ensure_room_creator_is_active_for_access(room, user_id)
             .await?;
 
         if self.member_service.is_member(&room.id, user_id).await? {
@@ -3178,8 +3178,8 @@ impl RoomService {
             }
         }
 
-        if !playlist_ids.is_empty() {
-            if !has_room_permission_in_tx(
+        if !playlist_ids.is_empty()
+            && !has_room_permission_in_tx(
                 &mut tx,
                 &room_id,
                 &user_id,
@@ -3189,7 +3189,6 @@ impl RoomService {
             {
                 return Err(Error::Authorization("Permission denied".to_string()));
             }
-        }
 
         let media_items = self
             .media_repo
@@ -4072,7 +4071,7 @@ impl RoomService {
         Ok(next)
     }
 
-    fn room_guest_version_ttl_secs(&self) -> u64 {
+    const fn room_guest_version_ttl_secs(&self) -> u64 {
         Duration::hours(4).num_seconds() as u64
     }
 

@@ -291,7 +291,7 @@ struct GrpcServiceRegistrationPlan {
     health_state: GrpcHealthRegistrationState,
 }
 
-fn grpc_service_registration_plan(
+const fn grpc_service_registration_plan(
     config: &synctv_core::Config,
     email_registered: bool,
     notification_registered: bool,

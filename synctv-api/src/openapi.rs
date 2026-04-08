@@ -30,7 +30,7 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         ("bearer_auth" = [])
     )
 )]
-fn live_proxy_stream_info_doc() {}
+const fn live_proxy_stream_info_doc() {}
 
 #[allow(dead_code)]
 #[utoipa::path(
@@ -50,7 +50,7 @@ fn live_proxy_stream_info_doc() {}
         ("bearer_auth" = [])
     )
 )]
-fn live_proxy_room_streams_doc() {}
+const fn live_proxy_room_streams_doc() {}
 
 #[derive(OpenApi)]
 #[openapi(

@@ -94,7 +94,7 @@ struct UpdatingKeyGuard {
 }
 
 impl UpdatingKeyGuard {
-    fn new(updating_keys: Arc<dashmap::DashSet<String>>, key: String) -> Self {
+    const fn new(updating_keys: Arc<dashmap::DashSet<String>>, key: String) -> Self {
         Self { updating_keys, key }
     }
 }
@@ -740,7 +740,7 @@ impl SliceCache {
 
         if let Some(cr) = parsed_content_range {
             let expected_len = usize::try_from(cr.end.saturating_sub(cr.start))
-                .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {}", slice_index))?;
+                .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
             if data.len() != expected_len {
                 return Err(anyhow::anyhow!(
                     "Slice body length mismatch: got {}, expected {} from Content-Range",

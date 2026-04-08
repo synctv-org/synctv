@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn test_list_playlist_items_body_deserialize_room_root() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
         assert!(req.playlist_id.is_empty());
         assert!(req.target.is_empty());

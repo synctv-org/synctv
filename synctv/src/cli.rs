@@ -2182,37 +2182,37 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::Settings(command) => match &mut command.command {
             RoomSettingsSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
             RoomSettingsSubcommand::Update(args) => {
-                merge_remote_access_args(&mut args.remote, root)
+                merge_remote_access_args(&mut args.remote, root);
             }
             RoomSettingsSubcommand::Reset(args) => merge_remote_access_args(&mut args.remote, root),
         },
         RoomSubcommand::Member(command) => match &mut command.command {
             RoomMemberSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
             RoomMemberSubcommand::SetPermissions(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomMemberSubcommand::Kick(args) => merge_room_scoped_remote_args(&mut args.room, root),
             RoomMemberSubcommand::Ban(args) => merge_room_scoped_remote_args(&mut args.room, root),
             RoomMemberSubcommand::Unban(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
         },
         RoomSubcommand::Playback(command) => match &mut command.command {
             RoomPlaybackSubcommand::Get(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomPlaybackSubcommand::Start(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomPlaybackSubcommand::Stop(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
         },
         RoomSubcommand::Stream(command) => match &mut command.command {
             RoomStreamSubcommand::List(args) => merge_room_scoped_remote_args(&mut args.room, root),
             RoomStreamSubcommand::Get(args) => merge_room_scoped_remote_args(&mut args.room, root),
             RoomStreamSubcommand::PublishKey(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
         },
         RoomSubcommand::Batch(command) => match &mut command.command {
@@ -2357,7 +2357,7 @@ async fn spawn_daemonized_serve(
         }
 
         match daemon_probe_is_ready(&readiness_probe).await {
-            Ok(_) => {
+            Ok(()) => {
                 println!("daemon started");
                 if config.management.enabled {
                     println!("management endpoint: {readiness_target}");
@@ -2472,9 +2472,7 @@ fn daemon_log_path(config: &synctv_core::Config) -> Result<PathBuf> {
 
 fn daemon_runtime_dir(config: &synctv_core::Config) -> PathBuf {
     Path::new(&config.management.unix_socket_path)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(default_management_runtime_dir)
+        .parent().map_or_else(default_management_runtime_dir, Path::to_path_buf)
 }
 
 async fn execute_stop(args: StopArgs) -> Result<()> {
@@ -2535,7 +2533,7 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
     Ok(())
 }
 
-fn stop_stream_end_can_be_treated_as_success(
+const fn stop_stream_end_can_be_treated_as_success(
     last_stage: Option<management_proto::StopServerStage>,
 ) -> bool {
     matches!(
@@ -4153,7 +4151,7 @@ fn execute_completion(args: CompletionArgs) -> Result<()> {
         CompletionShell::Zsh => print_completion(&mut command, clap_complete::Shell::Zsh),
         CompletionShell::Fish => print_completion(&mut command, clap_complete::Shell::Fish),
         CompletionShell::PowerShell => {
-            print_completion(&mut command, clap_complete::Shell::PowerShell)
+            print_completion(&mut command, clap_complete::Shell::PowerShell);
         }
         CompletionShell::Elvish => print_completion(&mut command, clap_complete::Shell::Elvish),
     }
@@ -4187,7 +4185,7 @@ trait ToHuman {
 }
 
 impl ToHuman for String {
-    type Human = String;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         self.clone()
@@ -4195,7 +4193,7 @@ impl ToHuman for String {
 }
 
 impl ToHuman for bool {
-    type Human = bool;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4203,7 +4201,7 @@ impl ToHuman for bool {
 }
 
 impl ToHuman for i32 {
-    type Human = i32;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4211,7 +4209,7 @@ impl ToHuman for i32 {
 }
 
 impl ToHuman for i64 {
-    type Human = i64;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4219,7 +4217,7 @@ impl ToHuman for i64 {
 }
 
 impl ToHuman for u32 {
-    type Human = u32;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4227,7 +4225,7 @@ impl ToHuman for u32 {
 }
 
 impl ToHuman for u64 {
-    type Human = u64;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4235,7 +4233,7 @@ impl ToHuman for u64 {
 }
 
 impl ToHuman for f64 {
-    type Human = f64;
+    type Human = Self;
 
     fn to_human(&self) -> Self::Human {
         *self
@@ -4567,8 +4565,8 @@ impl ToHuman for synctv_proto::admin::AdminUser {
             id: self.id.clone(),
             username: self.username.clone(),
             email: self.email.clone(),
-            role: humanize_user_role(self.role as i64).unwrap_or_else(|| self.role.to_string()),
-            status: humanize_user_status(self.status as i64)
+            role: humanize_user_role(i64::from(self.role)).unwrap_or_else(|| self.role.to_string()),
+            status: humanize_user_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),
@@ -4584,7 +4582,7 @@ impl ToHuman for synctv_proto::client::Room {
             id: self.id.clone(),
             name: self.name.clone(),
             created_by: self.created_by.clone(),
-            status: humanize_room_status(self.status as i64)
+            status: humanize_room_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
             settings: parse_json_bytes(&self.settings),
             created_at: humanize_timestamp(self.created_at),
@@ -4605,7 +4603,7 @@ impl ToHuman for synctv_proto::admin::AdminRoom {
             name: self.name.clone(),
             creator_id: self.creator_id.clone(),
             creator_username: self.creator_username.clone(),
-            status: humanize_room_status(self.status as i64)
+            status: humanize_room_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
             settings: parse_json_bytes(&self.settings),
             member_count: self.member_count,
@@ -4625,7 +4623,7 @@ impl ToHuman for synctv_proto::common::RoomMember {
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
-            role: humanize_room_member_role(self.role as i64)
+            role: humanize_room_member_role(i64::from(self.role))
                 .unwrap_or_else(|| self.role.to_string()),
             permissions: self.permissions,
             added_permissions: self.added_permissions,
@@ -4651,7 +4649,7 @@ impl ToHuman for synctv_proto::admin::ProviderInstance {
             insecure_tls: self.insecure_tls,
             providers: self.providers.clone(),
             enabled: self.enabled,
-            status: humanize_provider_instance_status(self.status as i64)
+            status: humanize_provider_instance_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),

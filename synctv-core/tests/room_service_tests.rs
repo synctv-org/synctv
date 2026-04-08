@@ -347,8 +347,10 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .await
         .unwrap();
 
-    let mut settings = RoomSettings::default();
-    settings.require_approval = RequireApproval(true);
+    let settings = RoomSettings {
+        require_approval: RequireApproval(true),
+        ..Default::default()
+    };
 
     let (room, _) = room_service
         .create_room(
@@ -397,8 +399,10 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
         .await
         .unwrap();
 
-    let mut settings = RoomSettings::default();
-    settings.allow_auto_join = AllowAutoJoin(false);
+    let settings = RoomSettings {
+        allow_auto_join: AllowAutoJoin(false),
+        ..Default::default()
+    };
 
     let (room, _) = room_service
         .create_room(
@@ -441,8 +445,10 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .unwrap();
     let joiner = user_repo.create(&make_user("reject_joiner")).await.unwrap();
 
-    let mut settings = RoomSettings::default();
-    settings.require_approval = RequireApproval(true);
+    let settings = RoomSettings {
+        require_approval: RequireApproval(true),
+        ..Default::default()
+    };
 
     let (room, _) = room_service
         .create_room(

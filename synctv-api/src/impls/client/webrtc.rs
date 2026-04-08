@@ -208,7 +208,7 @@ mod tests {
             .expect_err("closed room must reject webrtc bootstrap");
         match err {
             ApiError::Authorization(message) => {
-                assert!(message.contains("not accepting new connections"))
+                assert!(message.contains("not accepting new connections"));
             }
             other => panic!("expected authorization error, got {other:?}"),
         }

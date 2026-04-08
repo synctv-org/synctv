@@ -144,9 +144,11 @@ static TEST_LOGGING: Once = Once::new();
 
 fn ensure_test_logging() {
     TEST_LOGGING.call_once(|| {
-        let mut logging = synctv_core::config::LoggingConfig::default();
-        logging.level = "debug".to_string();
-        logging.filter = Some("debug,synctv=debug,synctv_core=debug".to_string());
+        let logging = synctv_core::config::LoggingConfig {
+            level: "debug".to_string(),
+            filter: Some("debug,synctv=debug,synctv_core=debug".to_string()),
+            ..Default::default()
+        };
         synctv_core::logging::init_logging(&logging)
             .expect("test tracing subscriber should initialize");
     });
@@ -376,7 +378,7 @@ async fn wait_until_live(http_base_url: &str) {
         .build()
         .expect("HTTP client");
     let deadline = Instant::now() + Duration::from_secs(30);
-    let url = format!("{}/health/live", http_base_url);
+    let url = format!("{http_base_url}/health/live");
 
     loop {
         match client.get(&url).send().await {

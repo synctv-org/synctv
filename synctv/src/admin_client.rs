@@ -1242,7 +1242,9 @@ management:
 
         let serve_handle = tokio::spawn(async move {
             Server::builder()
-                .add_service(ManagementServiceServer::new(TestManagementService::default()))
+                .add_service(ManagementServiceServer::new(
+                    TestManagementService::default(),
+                ))
                 .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener))
                 .await
                 .expect("unix management server should serve");

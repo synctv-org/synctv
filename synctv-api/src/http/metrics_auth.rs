@@ -117,9 +117,8 @@ impl MetricsAccessController {
             return authorizer
                 .authorize(&token, path, method, metrics)
                 .await
-                .map_err(|error| {
+                .inspect_err(|&error| {
                     tracing::warn!(error = ?error, path, method, "metrics request denied");
-                    error
                 });
         }
 
@@ -336,8 +335,7 @@ impl KubernetesMetricsAuthorizer {
         let allowed = review
             .status
             .as_ref()
-            .map(|status| status.allowed)
-            .unwrap_or(false);
+            .is_some_and(|status| status.allowed);
 
         self.authorization_cache.insert(
             cache_key,
@@ -380,20 +378,28 @@ mod tests {
     use axum::http::HeaderValue;
 
     fn bearer_metrics_config(token: &str) -> MetricsConfig {
-        let mut config = MetricsConfig::default();
-        config.enabled = true;
-        config.auth.mode = MetricsAuthMode::BearerToken;
-        config.auth.bearer_token = token.to_string();
-        config
+        MetricsConfig {
+            enabled: true,
+            auth: synctv_core::config::MetricsAuthConfig {
+                mode: MetricsAuthMode::BearerToken,
+                bearer_token: token.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     fn basic_metrics_config(username: &str, password: &str) -> MetricsConfig {
-        let mut config = MetricsConfig::default();
-        config.enabled = true;
-        config.auth.mode = MetricsAuthMode::Basic;
-        config.auth.basic_username = username.to_string();
-        config.auth.basic_password = password.to_string();
-        config
+        MetricsConfig {
+            enabled: true,
+            auth: synctv_core::config::MetricsAuthConfig {
+                mode: MetricsAuthMode::Basic,
+                basic_username: username.to_string(),
+                basic_password: password.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     #[tokio::test]

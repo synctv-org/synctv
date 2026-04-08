@@ -300,7 +300,7 @@ impl PlaybackService {
         self.invalidation_service = Some(service);
     }
 
-    pub fn has_invalidation_service(&self) -> bool {
+    pub const fn has_invalidation_service(&self) -> bool {
         self.invalidation_service.is_some()
     }
 

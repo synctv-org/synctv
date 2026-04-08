@@ -2,10 +2,7 @@
 //
 // This layer now uses proto types and delegates to the impls layer for business logic
 
-use axum::{
-    extract::State,
-    Json,
-};
+use axum::{extract::State, Json};
 
 use super::{middleware::AuthUser, validation::ValidatedQuery, AppResult, AppState};
 use crate::proto::client::{GetProfileResponse, ListMyRoomsResponse};

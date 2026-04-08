@@ -427,7 +427,7 @@ impl ClusterEvent {
 
     /// Get the timestamp of this event
     #[must_use]
-    pub fn timestamp(&self) -> &DateTime<Utc> {
+    pub const fn timestamp(&self) -> &DateTime<Utc> {
         match self {
             Self::ChatMessage { timestamp, .. }
             | Self::PlaybackStateChanged { timestamp, .. }

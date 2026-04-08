@@ -520,15 +520,12 @@ async fn forward_websocket_messages<S>(
             if critical_closed {
                 tokio::select! {
                     outbound = outbound_messages.recv(), if !outbound_closed => {
-                        match outbound {
-                            Some(msg) => {
-                                prioritize_critical = true;
-                                Some(msg)
-                            }
-                            None => {
-                                outbound_closed = true;
-                                None
-                            }
+                        if let Some(msg) = outbound {
+                            prioritize_critical = true;
+                            Some(msg)
+                        } else {
+                            outbound_closed = true;
+                            None
                         }
                     }
                     else => break,
@@ -547,28 +544,22 @@ async fn forward_websocket_messages<S>(
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                         tokio::select! {
                             critical = critical_messages.recv(), if !critical_closed => {
-                                match critical {
-                                    Some(msg) => {
-                                        prioritize_critical = false;
-                                        Some(msg)
-                                    }
-                                    None => {
-                                        critical_closed = true;
-                                        prioritize_critical = false;
-                                        None
-                                    }
+                                if let Some(msg) = critical {
+                                    prioritize_critical = false;
+                                    Some(msg)
+                                } else {
+                                    critical_closed = true;
+                                    prioritize_critical = false;
+                                    None
                                 }
                             }
                             outbound = outbound_messages.recv(), if !outbound_closed => {
-                                match outbound {
-                                    Some(msg) => {
-                                        prioritize_critical = true;
-                                        Some(msg)
-                                    }
-                                    None => {
-                                        outbound_closed = true;
-                                        None
-                                    }
+                                if let Some(msg) = outbound {
+                                    prioritize_critical = true;
+                                    Some(msg)
+                                } else {
+                                    outbound_closed = true;
+                                    None
                                 }
                             }
                             else => break,
@@ -580,15 +571,12 @@ async fn forward_websocket_messages<S>(
             if outbound_closed {
                 tokio::select! {
                     critical = critical_messages.recv(), if !critical_closed => {
-                        match critical {
-                            Some(msg) => {
-                                prioritize_critical = false;
-                                Some(msg)
-                            }
-                            None => {
-                                critical_closed = true;
-                                None
-                            }
+                        if let Some(msg) = critical {
+                            prioritize_critical = false;
+                            Some(msg)
+                        } else {
+                            critical_closed = true;
+                            None
                         }
                     }
                     else => break,
@@ -607,28 +595,22 @@ async fn forward_websocket_messages<S>(
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                         tokio::select! {
                             outbound = outbound_messages.recv(), if !outbound_closed => {
-                                match outbound {
-                                    Some(msg) => {
-                                        prioritize_critical = true;
-                                        Some(msg)
-                                    }
-                                    None => {
-                                        outbound_closed = true;
-                                        prioritize_critical = true;
-                                        None
-                                    }
+                                if let Some(msg) = outbound {
+                                    prioritize_critical = true;
+                                    Some(msg)
+                                } else {
+                                    outbound_closed = true;
+                                    prioritize_critical = true;
+                                    None
                                 }
                             }
                             critical = critical_messages.recv(), if !critical_closed => {
-                                match critical {
-                                    Some(msg) => {
-                                        prioritize_critical = false;
-                                        Some(msg)
-                                    }
-                                    None => {
-                                        critical_closed = true;
-                                        None
-                                    }
+                                if let Some(msg) = critical {
+                                    prioritize_critical = false;
+                                    Some(msg)
+                                } else {
+                                    critical_closed = true;
+                                    None
                                 }
                             }
                             else => break,
@@ -903,7 +885,7 @@ struct ReservationCleanupGuard {
 }
 
 impl ReservationCleanupGuard {
-    fn new(
+    const fn new(
         connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
         reservation: HandshakeReservation,
     ) -> Self {
@@ -914,7 +896,7 @@ impl ReservationCleanupGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 }

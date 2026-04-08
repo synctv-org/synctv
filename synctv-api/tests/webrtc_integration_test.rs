@@ -342,7 +342,7 @@ mod permissions {
             300,
         );
         let brute_force =
-            BruteForceProtection::with_redis(redis_conn.clone(), redis_key_prefix.clone());
+            BruteForceProtection::with_redis(redis_conn, redis_key_prefix.clone());
         let jwt_service =
             JwtService::new("this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars")
                 .expect("JwtService");

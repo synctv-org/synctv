@@ -818,7 +818,7 @@ impl StreamMessageHandler {
             self.connection_manager
                 .unregister(&self.connection_id)
                 .await;
-            return Err(RealtimeJoinError::PermissionDenied(reason.to_string()));
+            return Err(RealtimeJoinError::PermissionDenied(reason.clone()));
         }
 
         if let Err(error) = self.cache_room_event_subscription().await {
@@ -1529,8 +1529,7 @@ impl StreamMessageHandler {
                     role: role_proto,
                     permissions,
                     status: member
-                        .map(|member| member_status_to_proto(member.status))
-                        .unwrap_or(synctv_proto::common::MemberStatus::Active as i32),
+                        .map_or(synctv_proto::common::MemberStatus::Active as i32, |member| member_status_to_proto(member.status)),
                     added_permissions: added,
                     removed_permissions: removed,
                     admin_added_permissions: admin_added,
@@ -1772,7 +1771,7 @@ impl StreamMessageHandler {
         if let Some(result) = result {
             if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
                 && should_retry_user_left_broadcast(
-                    result.clone(),
+                    result,
                     self.cluster_manager.metrics().redis_enabled,
                 )
             {
@@ -1928,7 +1927,7 @@ impl StreamMessageHandler {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.cleanup(&room_id_str).await;
-            return Err(reason.to_string());
+            return Err(reason.clone());
         }
         let member_data = match member_lookup {
             Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
@@ -4105,7 +4104,7 @@ mod tests {
             .expect("fixture room should be created");
 
         let handler = StreamMessageHandler::new(
-            room.id.clone(),
+            room.id,
             user.id.clone(),
             user.username.clone(),
             Arc::clone(&room_service),

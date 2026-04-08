@@ -163,7 +163,6 @@ fn build_notification_list_query(
         },
         sort_by: proto_notification_sort_by_to_core(req.sort_by),
         sort_direction: proto_sort_direction_to_core(req.sort_direction),
-        ..Default::default()
     })
 }
 
@@ -320,7 +319,7 @@ mod tests {
         assert_eq!(pagination.page, 1);
         assert_eq!(
             pagination.page_size,
-            synctv_core::models::DEFAULT_PAGE_SIZE as u32
+            synctv_core::models::DEFAULT_PAGE_SIZE
         );
     }
 
@@ -462,7 +461,7 @@ mod tests {
         assert_eq!(query.pagination.page, 1);
         assert_eq!(
             query.pagination.page_size,
-            synctv_core::models::DEFAULT_PAGE_SIZE as u32
+            synctv_core::models::DEFAULT_PAGE_SIZE
         );
         assert_eq!(query.is_read, Some(true));
         assert_eq!(

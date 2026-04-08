@@ -386,8 +386,7 @@ impl ClusterClient {
                 (
                     node_id,
                     format!(
-                        "aggregate timeout after {:?} while waiting for {address}",
-                        FAN_OUT_AGGREGATE_TIMEOUT
+                        "aggregate timeout after {FAN_OUT_AGGREGATE_TIMEOUT:?} while waiting for {address}"
                     ),
                 )
             }));

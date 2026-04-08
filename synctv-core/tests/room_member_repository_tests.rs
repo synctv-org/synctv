@@ -1053,7 +1053,11 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
         .unwrap();
 
     member_repo
-        .add(&make_member(room.id.clone(), viewer.id.clone(), RoomRole::Member))
+        .add(&make_member(
+            room.id.clone(),
+            viewer.id.clone(),
+            RoomRole::Member,
+        ))
         .await
         .unwrap();
 

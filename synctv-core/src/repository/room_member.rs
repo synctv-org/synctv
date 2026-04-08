@@ -555,9 +555,7 @@ impl RoomMemberRepository {
         );
         count_builder.push_bind(room_id.as_str());
         match query.status {
-            Some(MemberStatus::Banned)
-            | Some(MemberStatus::Rejected)
-            | Some(MemberStatus::Left) => {
+            Some(MemberStatus::Banned | MemberStatus::Rejected | MemberStatus::Left) => {
                 count_builder.push(" AND rm.status = ");
                 count_builder.push_bind(query.status.expect("status checked above"));
             }
@@ -601,9 +599,7 @@ impl RoomMemberRepository {
         );
         list_builder.push_bind(room_id.as_str());
         match query.status {
-            Some(MemberStatus::Banned)
-            | Some(MemberStatus::Rejected)
-            | Some(MemberStatus::Left) => {
+            Some(MemberStatus::Banned | MemberStatus::Rejected | MemberStatus::Left) => {
                 list_builder.push(" AND rm.status = ");
                 list_builder.push_bind(query.status.expect("status checked above"));
             }

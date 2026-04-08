@@ -575,7 +575,7 @@ pub struct ListRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<Room>,
@@ -759,7 +759,7 @@ pub struct GetRoomMembersRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetRoomMembersResponse {
     #[prost(message, repeated, tag = "1")]
     pub members: ::prost::alloc::vec::Vec<super::common::RoomMember>,
@@ -1571,7 +1571,7 @@ pub struct ClearPlaylistResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaBatchRequest))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct AddMediaBatchRequest {
     /// Validation: max 100 items
     #[prost(message, repeated, tag = "1")]
@@ -1789,7 +1789,7 @@ pub struct PlaybackUrl {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUrlMetadata))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct PlaybackUrlMetadata {
     /// Resolution (e.g., "1920x1080", "1280x720")
     #[prost(string, optional, tag = "1")]
@@ -1839,7 +1839,7 @@ pub struct Subtitle {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SubtitleUrl))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct SubtitleUrl {
     /// Display name (e.g., "原始", "AI翻译")
     #[prost(string, tag = "1")]
@@ -1864,7 +1864,7 @@ pub struct SubtitleUrl {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Danmaku))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct Danmaku {
     /// Display name (e.g., "Bilibili弹幕", "本地弹幕")
     #[prost(string, tag = "1")]
@@ -2363,7 +2363,7 @@ pub struct ListMyRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListMyRoomsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListMyRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<MyRoom>,
@@ -2488,7 +2488,7 @@ pub struct GetHotRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetHotRoomsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetHotRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<RoomWithStats>,
@@ -2632,7 +2632,7 @@ pub struct StreamEntry {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListRoomStreamsResponse {
     #[prost(message, repeated, tag = "1")]
     pub streams: ::prost::alloc::vec::Vec<StreamEntry>,
@@ -3153,7 +3153,7 @@ pub struct SfuMigrationStatus {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServersConfig))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct IceServersConfig {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
@@ -3194,7 +3194,7 @@ pub struct GetIceServersRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetIceServersResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetIceServersResponse {
     #[prost(message, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<IceServer>,
@@ -3373,7 +3373,7 @@ pub struct ListNotificationsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListNotificationsResponse {
     #[prost(message, repeated, tag = "1")]
     pub notifications: ::prost::alloc::vec::Vec<NotificationProto>,
@@ -3512,7 +3512,7 @@ impl ResourceAvailability {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "RESOURCE_AVAILABILITY_UNSPECIFIED",
             Self::Available => "RESOURCE_AVAILABILITY_AVAILABLE",
@@ -3544,7 +3544,7 @@ impl ResourceAvailabilityFilter {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::All => "RESOURCE_AVAILABILITY_FILTER_ALL",
             Self::Available => "RESOURCE_AVAILABILITY_FILTER_AVAILABLE",
@@ -3576,7 +3576,7 @@ impl SortDirection {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SORT_DIRECTION_UNSPECIFIED",
             Self::Asc => "SORT_DIRECTION_ASC",
@@ -3607,7 +3607,7 @@ impl RoomStreamListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_STREAM_LIST_SORT_BY_UNSPECIFIED",
             Self::MediaId => "ROOM_STREAM_LIST_SORT_BY_MEDIA_ID",
@@ -3639,7 +3639,7 @@ impl RoomMemberListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED",
             Self::JoinedAt => "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT",
@@ -3677,7 +3677,7 @@ impl RoomListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "ROOM_LIST_SORT_BY_CREATED_AT",
@@ -3715,7 +3715,7 @@ impl PlaylistListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PLAYLIST_LIST_SORT_BY_UNSPECIFIED",
             Self::Position => "PLAYLIST_LIST_SORT_BY_POSITION",
@@ -3755,7 +3755,7 @@ impl MediaListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MEDIA_LIST_SORT_BY_UNSPECIFIED",
             Self::Position => "MEDIA_LIST_SORT_BY_POSITION",
@@ -3800,7 +3800,7 @@ impl MyRoomListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MY_ROOM_LIST_SORT_BY_UNSPECIFIED",
             Self::JoinedAt => "MY_ROOM_LIST_SORT_BY_JOINED_AT",
@@ -3839,7 +3839,7 @@ impl MyRoomRelation {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MY_ROOM_RELATION_UNSPECIFIED",
             Self::All => "MY_ROOM_RELATION_ALL",
@@ -3874,7 +3874,7 @@ impl NotificationListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "NOTIFICATION_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "NOTIFICATION_LIST_SORT_BY_CREATED_AT",
@@ -3910,7 +3910,7 @@ impl ItemType {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ITEM_TYPE_UNSPECIFIED",
             Self::Playlist => "ITEM_TYPE_PLAYLIST",
@@ -3942,7 +3942,7 @@ impl PlaybackPatchState {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PLAYBACK_PATCH_STATE_UNSPECIFIED",
             Self::Playing => "PLAYBACK_PATCH_STATE_PLAYING",
@@ -3979,7 +3979,7 @@ impl SfuMigrationState {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SFU_MIGRATION_STATE_UNSPECIFIED",
             Self::Started => "SFU_MIGRATION_STATE_STARTED",
@@ -4020,7 +4020,7 @@ impl QualityAction {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "QUALITY_ACTION_UNSPECIFIED",
             Self::None => "QUALITY_ACTION_NONE",
@@ -4059,7 +4059,7 @@ impl NotificationType {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    pub const fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "NOTIFICATION_TYPE_UNSPECIFIED",
             Self::RoomInvitation => "NOTIFICATION_TYPE_ROOM_INVITATION",
@@ -4336,7 +4336,7 @@ pub mod auth_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -4344,7 +4344,7 @@ pub mod auth_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -4941,7 +4941,7 @@ pub mod user_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -4949,7 +4949,7 @@ pub mod user_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -6786,7 +6786,7 @@ pub mod room_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -6794,7 +6794,7 @@ pub mod room_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -8911,7 +8911,7 @@ pub mod public_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -8919,7 +8919,7 @@ pub mod public_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -9458,7 +9458,7 @@ pub mod email_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -9466,7 +9466,7 @@ pub mod email_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -10080,7 +10080,7 @@ pub mod notification_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -10088,7 +10088,7 @@ pub mod notification_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }
@@ -10619,7 +10619,7 @@ pub struct ListAvailableProvidersRequest {}
     feature = "openapi",
     schema(as = synctv_client_ListAvailableProvidersResponse)
 )]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListAvailableProvidersResponse {
     /// List of available OAuth2 provider instances
     #[prost(message, repeated, tag = "1")]
@@ -10689,7 +10689,7 @@ pub struct GetLinkedProvidersRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetLinkedProvidersResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetLinkedProvidersResponse {
     /// List of linked OAuth2 providers
     #[prost(message, repeated, tag = "1")]
@@ -11165,7 +11165,7 @@ pub mod o_auth2_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -11173,7 +11173,7 @@ pub mod o_auth2_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

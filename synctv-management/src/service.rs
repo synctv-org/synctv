@@ -54,10 +54,7 @@ impl ManagementAccessController {
         }
     }
 
-    pub(crate) fn authorize<T: std::fmt::Debug>(
-        &self,
-        request: &Request<T>,
-    ) -> Result<(), Status> {
+    pub(crate) fn authorize<T: std::fmt::Debug>(&self, request: &Request<T>) -> Result<(), Status> {
         let Some(expected_token) = &self.required_bearer_token else {
             return Ok(());
         };

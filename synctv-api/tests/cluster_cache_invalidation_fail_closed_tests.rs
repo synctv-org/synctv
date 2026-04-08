@@ -440,3 +440,257 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
         "unban must not clear ban state before fanout reservation"
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo.create(&make_user("room_settings_owner")).await.unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Room Settings Room".to_string(),
+            "Room for reset regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let customized = synctv_core::models::RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+        ..synctv_core::models::RoomSettings::default()
+    };
+    room_service
+        .set_room_settings(&room.id, &customized)
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_redis_publish_tx(Some(tx));
+
+    let err = client_api
+        .reset_room_settings(owner.id.as_str(), room.id.as_str())
+        .await
+        .expect_err("cluster mode must fail closed when room settings fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out RoomSettingsChanged to cluster replicas"
+    );
+
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(
+        !settings.chat_enabled.0,
+        "reset must not commit before cluster fanout capacity is reserved"
+    );
+    assert!(
+        settings.allow_guest_join.0,
+        "customized settings must remain unchanged after failed reset"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_builtin_defaults()
+        .await
+        .unwrap();
+
+    let owner = user_repo.create(&make_user("media_owner")).await.unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Media Room".to_string(),
+            "Room for media fanout regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_redis_publish_tx(Some(tx));
+
+    let err = client_api
+        .add_media(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::AddMediaRequest {
+                playlist_id: None,
+                provider: "direct_url".to_string(),
+                provider_instance_name: String::new(),
+                source_config: serde_json::to_vec(&serde_json::json!({
+                    "url": "https://example.com/media.mp4"
+                }))
+                .unwrap(),
+                title: "fanout-test-media".to_string(),
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when media add fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(err.message(), "failed to fan out MediaAdded to cluster replicas");
+    assert_eq!(
+        room_service
+            .media_service()
+            .count_room_root_media(&room.id)
+            .await
+            .unwrap(),
+        0,
+        "media add must not commit before cluster fanout capacity is reserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insufficient() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_builtin_defaults()
+        .await
+        .unwrap();
+
+    let owner = user_repo
+        .create(&make_user("media_batch_owner"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Media Batch Room".to_string(),
+            "Room for media batch fanout regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_redis_publish_tx(Some(tx));
+
+    let err = client_api
+        .add_media_batch(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::AddMediaBatchRequest {
+                items: vec![
+                    synctv_api::proto::client::AddMediaRequest {
+                        playlist_id: None,
+                        provider: "direct_url".to_string(),
+                        provider_instance_name: String::new(),
+                        source_config: serde_json::to_vec(&serde_json::json!({
+                            "url": "https://example.com/media-a.mp4"
+                        }))
+                        .unwrap(),
+                        title: "fanout-batch-a".to_string(),
+                    },
+                    synctv_api::proto::client::AddMediaRequest {
+                        playlist_id: None,
+                        provider: "direct_url".to_string(),
+                        provider_instance_name: String::new(),
+                        source_config: serde_json::to_vec(&serde_json::json!({
+                            "url": "https://example.com/media-b.mp4"
+                        }))
+                        .unwrap(),
+                        title: "fanout-batch-b".to_string(),
+                    },
+                ],
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when batch media fanout capacity is insufficient");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(err.message(), "failed to fan out MediaAdded to cluster replicas");
+    assert_eq!(
+        room_service
+            .media_service()
+            .count_room_root_media(&room.id)
+            .await
+            .unwrap(),
+        0,
+        "batch media add must not commit until all cluster fanout capacity is reserved"
+    );
+}

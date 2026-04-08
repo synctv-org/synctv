@@ -58,7 +58,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         let mut publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
-        match publishers.entry(key.clone()) {
+        match publishers.entry(key) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(vacant) => {
                 let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
@@ -88,7 +88,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         let mut publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
-        match publishers.entry(key.clone()) {
+        match publishers.entry(key) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(vacant) => {
                 let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);

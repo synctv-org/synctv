@@ -90,7 +90,7 @@ pub struct MediaStreamInfo {
     pub protocol: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct MediaSourceInfo {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
@@ -114,7 +114,7 @@ pub struct MediaSourceInfo {
     pub transcoding_url: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct Item {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -140,7 +140,7 @@ pub struct Item {
     pub collection_type: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetItemsResp {
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<Item>,
@@ -254,7 +254,7 @@ pub struct Path {
     pub path: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct FsListResp {
     #[prost(message, repeated, tag = "1")]
     pub paths: ::prost::alloc::vec::Vec<Path>,
@@ -295,7 +295,7 @@ pub struct PlaybackInfoReq {
     pub max_streaming_bitrate: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct PlaybackInfoResp {
     #[prost(string, tag = "1")]
     pub play_session_id: ::prost::alloc::string::String,
@@ -824,7 +824,7 @@ pub mod emby_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -832,7 +832,7 @@ pub mod emby_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

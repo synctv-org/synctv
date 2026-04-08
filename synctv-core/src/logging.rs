@@ -105,10 +105,10 @@ fn build_env_filter(config: &LoggingConfig) -> anyhow::Result<EnvFilter> {
 
 fn build_env_filter_spec(config: &LoggingConfig) -> anyhow::Result<String> {
     let mut filter_spec = if let Some(filter) = config.filter.as_deref().map(str::trim) {
-        if !filter.is_empty() {
-            filter.to_string()
-        } else {
+        if filter.is_empty() {
             parse_log_level(&config.level)?.to_string()
+        } else {
+            filter.to_string()
         }
     } else {
         parse_log_level(&config.level)?.to_string()

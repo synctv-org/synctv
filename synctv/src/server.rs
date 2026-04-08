@@ -379,14 +379,12 @@ where
     if let Some(state) = livestream_state.as_mut() {
         info!("Stopping livestream infrastructure...");
         let timeout_secs = livestream_shutdown_timeout_secs(budget);
-        let graceful = match tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs)).await {
-            Ok(graceful) => graceful,
-            Err(_) => {
-                warn!(
-                    "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
-                );
-                false
-            }
+        let graceful = if let Ok(graceful) = tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs))
+            .await { graceful } else {
+            warn!(
+                "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
+            );
+            false
         };
         if !graceful {
             warn!("Livestream infrastructure required force-abort or timed out during shutdown");
@@ -494,19 +492,22 @@ async fn cleanup_partial_startup(
 }
 
 async fn shutdown_after_startup_failure(
-    shutdown_tx: &watch::Sender<bool>,
-    cleanup_cancel: &tokio_util::sync::CancellationToken,
-    cleanup_handle: Option<JoinHandle<()>>,
-    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    deadline: tokio::time::Instant,
+    context: StartupFailureShutdownContext,
     component_cleanup: impl std::future::Future<Output = ()> + Send,
     coordinator: ShutdownCoordinator,
 ) {
-    cleanup_partial_startup(
+    let StartupFailureShutdownContext {
         shutdown_tx,
         cleanup_cancel,
+        cleanup_handle,
+        api_handle,
+        metrics_handle,
+        management_handle,
+        deadline,
+    } = context;
+    cleanup_partial_startup(
+        &shutdown_tx,
+        &cleanup_cancel,
         cleanup_handle,
         api_handle,
         metrics_handle,
@@ -516,6 +517,16 @@ async fn shutdown_after_startup_failure(
     .await;
     component_cleanup.await;
     coordinator.shutdown_with_deadline(deadline).await;
+}
+
+struct StartupFailureShutdownContext {
+    shutdown_tx: watch::Sender<bool>,
+    cleanup_cancel: tokio_util::sync::CancellationToken,
+    cleanup_handle: Option<JoinHandle<()>>,
+    api_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    management_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    deadline: tokio::time::Instant,
 }
 
 async fn shutdown_after_cluster_activation_failure(
@@ -742,13 +753,15 @@ impl SyncTvServer {
                         .min(STARTUP_CLEANUP_TIMEOUT);
                 let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
                 shutdown_after_startup_failure(
-                    &shutdown_tx,
-                    &cleanup_cancel,
-                    Some(cleanup_handle),
-                    None,
-                    None,
-                    None,
-                    startup_cleanup_deadline,
+                    StartupFailureShutdownContext {
+                        shutdown_tx: shutdown_tx.clone(),
+                        cleanup_cancel: cleanup_cancel.clone(),
+                        cleanup_handle: Some(cleanup_handle),
+                        api_handle: None,
+                        metrics_handle: None,
+                        management_handle: None,
+                        deadline: startup_cleanup_deadline,
+                    },
                     self.shutdown_startup_failure_components(startup_cleanup_deadline),
                     coordinator,
                 )
@@ -772,13 +785,15 @@ impl SyncTvServer {
                     let startup_cleanup_deadline =
                         tokio::time::Instant::now() + startup_cleanup_budget;
                     shutdown_after_startup_failure(
-                        &shutdown_tx,
-                        &cleanup_cancel,
-                        Some(cleanup_handle),
-                        api_handle,
-                        None,
-                        None,
-                        startup_cleanup_deadline,
+                        StartupFailureShutdownContext {
+                            shutdown_tx: shutdown_tx.clone(),
+                            cleanup_cancel: cleanup_cancel.clone(),
+                            cleanup_handle: Some(cleanup_handle),
+                            api_handle,
+                            metrics_handle: None,
+                            management_handle: None,
+                            deadline: startup_cleanup_deadline,
+                        },
                         self.shutdown_startup_failure_components(startup_cleanup_deadline),
                         coordinator,
                     )
@@ -804,13 +819,15 @@ impl SyncTvServer {
                     let startup_cleanup_deadline =
                         tokio::time::Instant::now() + startup_cleanup_budget;
                     shutdown_after_startup_failure(
-                        &shutdown_tx,
-                        &cleanup_cancel,
-                        Some(cleanup_handle),
-                        api_handle,
-                        metrics_handle,
-                        None,
-                        startup_cleanup_deadline,
+                        StartupFailureShutdownContext {
+                            shutdown_tx: shutdown_tx.clone(),
+                            cleanup_cancel: cleanup_cancel.clone(),
+                            cleanup_handle: Some(cleanup_handle),
+                            api_handle,
+                            metrics_handle,
+                            management_handle: None,
+                            deadline: startup_cleanup_deadline,
+                        },
                         self.shutdown_startup_failure_components(startup_cleanup_deadline),
                         coordinator,
                     )
@@ -1623,7 +1640,7 @@ mod tests {
         build_ws_ticket_service, cleanup_partial_startup, livestream_shutdown_timeout_secs,
         map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
         shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
-        spawn_admin_event_listener, LivestreamShutdown,
+        spawn_admin_event_listener, LivestreamShutdown, StartupFailureShutdownContext,
     };
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
@@ -1847,7 +1864,7 @@ mod tests {
         struct FlagHook(Arc<AtomicBool>);
 
         impl ShutdownHook for FlagHook {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "flag_hook"
             }
 
@@ -1872,13 +1889,15 @@ mod tests {
         coordinator.register_hook(FlagHook(Arc::clone(&hook_called)));
 
         shutdown_after_startup_failure(
-            &shutdown_tx,
-            &cleanup_cancel,
-            Some(cleanup_handle),
-            None,
-            None,
-            None,
-            tokio::time::Instant::now() + Duration::from_secs(1),
+            StartupFailureShutdownContext {
+                shutdown_tx,
+                cleanup_cancel,
+                cleanup_handle: Some(cleanup_handle),
+                api_handle: None,
+                metrics_handle: None,
+                management_handle: None,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+            },
             {
                 let component_cleanup_called = Arc::clone(&component_cleanup_called);
                 async move {
@@ -1908,7 +1927,7 @@ mod tests {
         struct PendingHook;
 
         impl ShutdownHook for PendingHook {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "pending_hook"
             }
 
@@ -1933,13 +1952,15 @@ mod tests {
 
         let start = tokio::time::Instant::now();
         shutdown_after_startup_failure(
-            &shutdown_tx,
-            &cleanup_cancel,
-            Some(cleanup_handle),
-            None,
-            None,
-            None,
-            start + Duration::from_millis(50),
+            StartupFailureShutdownContext {
+                shutdown_tx,
+                cleanup_cancel,
+                cleanup_handle: Some(cleanup_handle),
+                api_handle: None,
+                metrics_handle: None,
+                management_handle: None,
+                deadline: start + Duration::from_millis(50),
+            },
             async {},
             coordinator,
         )

@@ -69,7 +69,7 @@ pub struct ListRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_ListResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ListResponse {
     #[prost(message, repeated, tag = "1")]
     pub content: ::prost::alloc::vec::Vec<FileItem>,
@@ -160,7 +160,7 @@ pub struct GetBindsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetBindsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct GetBindsResponse {
     #[prost(message, repeated, tag = "1")]
     pub binds: ::prost::alloc::vec::Vec<BindInfo>,
@@ -503,7 +503,7 @@ pub mod alist_provider_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -511,7 +511,7 @@ pub mod alist_provider_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

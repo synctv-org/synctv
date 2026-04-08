@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use synctv_core::service::{AuditPartitionManager, AlwaysLeader};
+use synctv_core::service::{AlwaysLeader, AuditPartitionManager};
 use synctv_core_testing::create_test_pool;
 
 #[tokio::test]

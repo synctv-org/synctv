@@ -91,41 +91,38 @@ impl Drop for PublisherGuard {
             let media_id = self.media_id.clone();
             let epoch = self.epoch;
             if crate::util::try_spawn(async move {
-                match epoch {
-                    Some(epoch) => {
+                if let Some(epoch) = epoch {
+                    warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        epoch,
+                        "Cleaning up publisher registration due to auth failure"
+                    );
+                    if let Err(e) = registry
+                        .unregister_publisher_if_epoch_matches(&room_id, &media_id, epoch)
+                        .await
+                    {
                         warn!(
                             room_id = %room_id,
                             media_id = %media_id,
                             epoch,
-                            "Cleaning up publisher registration due to auth failure"
+                            error = %e,
+                            "Failed to cleanup publisher registration"
                         );
-                        if let Err(e) = registry
-                            .unregister_publisher_if_epoch_matches(&room_id, &media_id, epoch)
-                            .await
-                        {
-                            warn!(
-                                room_id = %room_id,
-                                media_id = %media_id,
-                                epoch,
-                                error = %e,
-                                "Failed to cleanup publisher registration"
-                            );
-                        }
                     }
-                    None => {
+                } else {
+                    warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        "Cleaning up publisher registration without epoch due to auth failure before epoch capture"
+                    );
+                    if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
                         warn!(
                             room_id = %room_id,
                             media_id = %media_id,
-                            "Cleaning up publisher registration without epoch due to auth failure before epoch capture"
+                            error = %e,
+                            "Failed to cleanup publisher registration without epoch"
                         );
-                        if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
-                            warn!(
-                                room_id = %room_id,
-                                media_id = %media_id,
-                                error = %e,
-                                "Failed to cleanup publisher registration without epoch"
-                            );
-                        }
                     }
                 }
             })

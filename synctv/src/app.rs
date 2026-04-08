@@ -1088,7 +1088,7 @@ impl Application {
             redis_publish_tx,
             node_registry: node_registry.clone(),
             health_monitor: health_monitor.clone(),
-            cluster_activation: node_registry.clone().zip(health_monitor.clone()).map(
+            cluster_activation: node_registry.zip(health_monitor).map(
                 |(node_registry, health_monitor)| ClusterActivation {
                     config: infra.config.clone(),
                     cluster_manager: cluster_manager.clone(),

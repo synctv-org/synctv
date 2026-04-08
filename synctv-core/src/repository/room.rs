@@ -1493,7 +1493,10 @@ mod tests {
             .unwrap();
         let active = user_repo.create(&make_user("count_active")).await.unwrap();
         let banned = user_repo.create(&make_user("count_banned")).await.unwrap();
-        let rejected = user_repo.create(&make_user("count_rejected")).await.unwrap();
+        let rejected = user_repo
+            .create(&make_user("count_rejected"))
+            .await
+            .unwrap();
 
         let room = room_repo
             .create(

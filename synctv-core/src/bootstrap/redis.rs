@@ -121,7 +121,9 @@ mod init_tests {
         assert!(
             err.to_string().contains("Connection refused")
                 || err.to_string().contains("connection refused")
-                || err.to_string().contains("failed to lookup address information")
+                || err
+                    .to_string()
+                    .contains("failed to lookup address information")
                 || err.to_string().contains("timed out")
                 || err.to_string().contains("os error"),
             "unexpected error: {err}"

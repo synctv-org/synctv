@@ -290,9 +290,7 @@ impl LiveStreamingInfrastructure {
                             room_id, media_id, e
                         );
                         return Err(anyhow::anyhow!(
-                            "Epoch validation failed for local publisher {}/{}: {e}",
-                            room_id,
-                            media_id
+                            "Epoch validation failed for local publisher {room_id}/{media_id}: {e}"
                         ));
                     }
                 }

@@ -67,6 +67,16 @@ impl TestInfra {
     }
 }
 
+fn unavailable_invalidation_service(stream_key: impl Into<String>) -> CacheInvalidationService {
+    let client =
+        redis::Client::open("redis://127.0.0.1:1").expect("unreachable redis client should build");
+    CacheInvalidationService::new(
+        Some(client),
+        "provider-test-node".to_string(),
+        stream_key.into(),
+    )
+}
+
 async fn wait_until<F, Fut>(timeout: Duration, interval: Duration, mut check: F)
 where
     F: FnMut() -> Fut,
@@ -784,6 +794,119 @@ async fn scenario_redis_invalidation_on_delete() {
     manager2.shutdown().await;
     invalidation1.stop().await;
     invalidation2.stop().await;
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_add_rolls_back_when_provider_invalidation_publish_fails() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "provider-add-rollback.test.localhost";
+    let instance =
+        make_reachable_remote_instance("provider-add-rollback", host, health_addr.port());
+    let repo = Arc::new(provider_repo(&infra.pool));
+    let manager = RemoteProviderManager::new_with_address_overrides(
+        repo.clone(),
+        Some(unavailable_invalidation_service(format!(
+            "test:provider:add-rollback:{}",
+            synctv_common::snanoid!(8)
+        ))),
+        make_test_address_overrides(host, health_addr.port()),
+    );
+
+    let err = manager
+        .add(instance.clone())
+        .await
+        .expect_err("provider add must fail closed when invalidation publish fails");
+
+    assert!(
+        matches!(
+            err,
+            synctv_core::Error::ServiceUnavailable(_) | synctv_core::Error::Internal(_)
+        ),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        repo.get_by_name(&instance.name)
+            .await
+            .expect("repository lookup should succeed")
+            .is_none(),
+        "provider row must be rolled back when invalidation publish fails"
+    );
+    assert!(
+        manager.get(&instance.name).await.is_none(),
+        "local channel cache must be cleared when add rollback occurs"
+    );
+
+    health_handle.abort();
+    let _ = health_handle.await;
+}
+
+async fn scenario_delete_rolls_back_when_provider_invalidation_publish_fails() {
+    let infra = TestInfra::new().await;
+    flush_provider_instances(&infra).await;
+    let (health_addr, health_handle) =
+        spawn_authenticated_provider_server("remote-provider-test-secret").await;
+    let host = "provider-delete-rollback.test.localhost";
+    let instance =
+        make_reachable_remote_instance("provider-delete-rollback", host, health_addr.port());
+    let repo = Arc::new(provider_repo(&infra.pool));
+    let seed_manager = RemoteProviderManager::new_with_address_overrides(
+        repo.clone(),
+        None,
+        make_test_address_overrides(host, health_addr.port()),
+    );
+    seed_manager
+        .add(instance.clone())
+        .await
+        .expect("seed provider instance should be created");
+
+    let failing_manager = RemoteProviderManager::new_with_address_overrides(
+        repo.clone(),
+        Some(unavailable_invalidation_service(format!(
+            "test:provider:delete-rollback:{}",
+            synctv_common::snanoid!(8)
+        ))),
+        make_test_address_overrides(host, health_addr.port()),
+    );
+
+    let cached_before_delete = failing_manager
+        .get(&instance.name)
+        .await
+        .expect("cached channel should exist before delete");
+    let err = failing_manager
+        .delete(&instance.name)
+        .await
+        .expect_err("provider delete must fail closed when invalidation publish fails");
+
+    assert!(
+        matches!(
+            err,
+            synctv_core::Error::ServiceUnavailable(_) | synctv_core::Error::Internal(_)
+        ),
+        "unexpected error: {err:?}"
+    );
+    let restored = repo
+        .get_by_name(&instance.name)
+        .await
+        .expect("repository lookup should succeed")
+        .expect("provider row must be restored after delete rollback");
+    assert_eq!(
+        restored.endpoint, instance.endpoint,
+        "delete rollback must restore the original provider configuration"
+    );
+    let cached_after_delete = failing_manager
+        .get(&instance.name)
+        .await
+        .expect("cached channel should be restored after delete rollback");
+    assert_eq!(
+        cached_after_delete.auth_secret(),
+        cached_before_delete.auth_secret(),
+        "delete rollback must restore the previous local cache entry"
+    );
+
     health_handle.abort();
     let _ = health_handle.await;
 }
@@ -3299,6 +3422,20 @@ async fn test_add_unreachable_remote_instance_fails_connectivity_validation() {
 async fn test_add_reachable_remote_instance_succeeds_with_connectivity_validation() {
     install_rustls_provider_once();
     scenario_add_reachable_remote_instance_succeeds_with_connectivity_validation().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_add_rolls_back_when_provider_invalidation_publish_fails() {
+    install_rustls_provider_once();
+    scenario_add_rolls_back_when_provider_invalidation_publish_fails().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Requires Docker"]
+async fn test_delete_rolls_back_when_provider_invalidation_publish_fails() {
+    install_rustls_provider_once();
+    scenario_delete_rolls_back_when_provider_invalidation_publish_fails().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

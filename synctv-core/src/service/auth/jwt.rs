@@ -396,7 +396,7 @@ impl JwtService {
         for &count in freq.values() {
             let p = count as f64 / len;
             if p > 0.0 {
-                entropy -= p * p.log2();
+                entropy = p.mul_add(-p.log2(), entropy);
             }
         }
 

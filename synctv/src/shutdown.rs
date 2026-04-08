@@ -36,7 +36,7 @@ struct AbortOnDropJoinHandle {
 }
 
 impl AbortOnDropJoinHandle {
-    fn new(handle: JoinHandle<()>) -> Self {
+    const fn new(handle: JoinHandle<()>) -> Self {
         Self {
             handle: Some(handle),
         }

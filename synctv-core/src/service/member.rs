@@ -142,6 +142,18 @@ pub struct MemberService {
     event_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn MemberEventBroadcaster>>>>,
 }
 
+pub struct AdminMemberUpdate {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub actor_username: String,
+    pub target_user_id: UserId,
+    pub role: Option<RoomRole>,
+    pub added_permissions: u64,
+    pub removed_permissions: u64,
+    pub admin_added_permissions: u64,
+    pub admin_removed_permissions: u64,
+}
+
 impl std::fmt::Debug for MemberService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemberService").finish()
@@ -149,7 +161,7 @@ impl std::fmt::Debug for MemberService {
 }
 
 impl MemberService {
-    fn uses_admin_overrides(role: RoomRole) -> bool {
+    const fn uses_admin_overrides(role: RoomRole) -> bool {
         matches!(role, RoomRole::Admin)
     }
 
@@ -561,18 +573,18 @@ impl MemberService {
     /// This is intended for the global management plane only. It preserves the
     /// same role/override invariants as the client path, but the actor is
     /// authorized by global admin/root identity outside the room permission graph.
-    pub async fn admin_update_member(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-        role: Option<RoomRole>,
-        added_permissions: u64,
-        removed_permissions: u64,
-        admin_added_permissions: u64,
-        admin_removed_permissions: u64,
-    ) -> Result<RoomMember> {
+    pub async fn admin_update_member(&self, update: AdminMemberUpdate) -> Result<RoomMember> {
+        let AdminMemberUpdate {
+            room_id,
+            actor_id,
+            actor_username,
+            target_user_id,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        } = update;
         Self::validate_assignable_permissions(added_permissions)?;
         Self::validate_assignable_permissions(removed_permissions)?;
         Self::validate_assignable_permissions(admin_added_permissions)?;
@@ -663,7 +675,7 @@ impl MemberService {
 
             self.audit_log(
                 &actor_id,
-                actor_username,
+                &actor_username,
                 AuditAction::MemberRoleUpdated,
                 AuditTargetType::Member,
                 Some(target_user_id.as_str().to_string()),
@@ -724,7 +736,7 @@ impl MemberService {
 
         self.audit_log(
             &actor_id,
-            actor_username,
+            &actor_username,
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),

@@ -183,9 +183,7 @@ fn current_test_key_namespace() -> String {
     std::env::var("NEXTEST_TEST_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::thread::current().name().map(str::to_owned))
-        .map(|value| sanitize_key_prefix_component(&value))
-        .unwrap_or_else(|| "unknown-test".to_string())
+        .or_else(|| std::thread::current().name().map(str::to_owned)).map_or_else(|| "unknown-test".to_string(), |value| sanitize_key_prefix_component(&value))
 }
 
 fn current_process_id() -> u32 {
@@ -195,9 +193,7 @@ fn current_process_id() -> u32 {
 fn current_test_run_id() -> String {
     std::env::var("NEXTEST_RUN_ID")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| sanitize_container_name(&value))
-        .unwrap_or_else(|| format!("pid-{}", current_process_id()))
+        .filter(|value| !value.trim().is_empty()).map_or_else(|| format!("pid-{}", current_process_id()), |value| sanitize_container_name(&value))
 }
 
 fn shared_container_name() -> String {
@@ -268,9 +264,7 @@ async fn resolve_host_port(container: &ContainerAsync<Redis>, internal_port: u16
         if !eps.is_empty() {
             break eps;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("Failed to resolve Redis endpoint for host {host} within 30 seconds",);
-        }
+        assert!(std::time::Instant::now() < deadline, "Failed to resolve Redis endpoint for host {host} within 30 seconds");
         _last_port_error = format!(
             "no port mapping for internal port {internal_port} (ipv4={:?}, ipv6={:?})",
             ports.map_to_host_port_ipv4(internal_port.tcp()),
@@ -333,14 +327,14 @@ fn detect_primary_ipv4_address() -> Option<String> {
     }
 }
 
-fn is_viable_host_ipv4(ip: Ipv4Addr) -> bool {
+const fn is_viable_host_ipv4(ip: Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
-    !ip.is_loopback()
-        && !ip.is_link_local()
-        && !ip.is_unspecified()
-        && !ip.is_broadcast()
+    !(ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
         // RFC 2544 benchmarking / many local proxy virtual interfaces.
-        && !(a == 198 && matches!(b, 18 | 19))
+        || (a == 198 && matches!(b, 18 | 19)))
 }
 
 fn push_candidate(candidates: &mut Vec<(String, u16)>, host: String, port: u16) {
@@ -594,7 +588,7 @@ impl SharedRedisServer {
 }
 
 impl RedisContainer {
-    fn new(shared: Arc<SharedRedisServer>) -> Self {
+    const fn new(shared: Arc<SharedRedisServer>) -> Self {
         Self {
             shared,
             cleaned_up: false,
@@ -748,9 +742,7 @@ async fn init_shared_redis_server() -> SharedRedisServer {
                     // shared container is being cleaned up or recreated.
                     if startup_error_is_retriable(&err_str) {
                         last_start_error = err_str;
-                        if std::time::Instant::now() >= start_deadline {
-                            panic!("Failed to start Redis after retries: {last_start_error}");
-                        }
+                        assert!(std::time::Instant::now() < start_deadline, "Failed to start Redis after retries: {last_start_error}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
@@ -988,7 +980,7 @@ mod tests {
     #[test]
     fn named_redis_request_uses_high_concurrency_ephemeral_tuning() {
         let request = named_redis_request("synctv-redis-test");
-        let cmd: Vec<_> = request.cmd().map(|value| value.into_owned()).collect();
+        let cmd: Vec<_> = request.cmd().map(std::borrow::Cow::into_owned).collect();
 
         assert!(
             cmd.windows(2).any(|pair| pair == ["--appendonly", "no"]),

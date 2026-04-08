@@ -729,6 +729,12 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = self.parse_room_id(room_id)?;
+        let cluster_event = crate::impls::reserve_cluster_event_publish(
+            self.redis_publish_tx.as_ref(),
+            self.config.cluster_runtime_enabled(),
+            "failed to fan out RoomSettingsChanged to cluster replicas",
+        )
+        .await?;
 
         let settings_json = self
             .room_service
@@ -736,8 +742,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation (non-blocking)
-        if let Some(ref tx) = self.redis_publish_tx {
+        if let Some(cluster_event) = cluster_event {
             let username = self
                 .user_service
                 .get_user(&uid)
@@ -745,20 +750,16 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            let _ = crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: rid,
-                        user_id: uid,
-                        username,
-                        settings_json: settings_json.as_bytes().to_vec(),
-                        timestamp: chrono::Utc::now(),
-                    },
+            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: rid,
+                    user_id: uid,
+                    username,
+                    settings_json: settings_json.as_bytes().to_vec(),
+                    timestamp: chrono::Utc::now(),
                 },
-            )
-            .await;
+            });
         }
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {

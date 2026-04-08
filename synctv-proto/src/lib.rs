@@ -32,6 +32,7 @@ pub mod common {
 }
 
 // Client API
+#[allow(clippy::large_enum_variant)]
 pub mod client {
     include!("synctv.client.rs");
 }
@@ -616,7 +617,7 @@ mod tests {
         let decoded: crate::client::CreatePlaylistRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
-        assert_eq!(decoded.source_config, br#"[1,2,3]"#.to_vec());
+        assert_eq!(decoded.source_config, br"[1,2,3]".to_vec());
         let config_json: serde_json::Value = serde_json::from_slice(&decoded.source_config)
             .expect("source_config bytes should contain JSON");
         assert_eq!(config_json, serde_json::json!([1, 2, 3]));
@@ -710,12 +711,12 @@ mod tests {
 
     #[test]
     fn http_json_client_update_room_settings_request_preserves_array_body() {
-        let json = r#"[1,2,3]"#;
+        let json = r"[1,2,3]";
 
         let decoded: crate::client::UpdateRoomSettingsRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
-        assert_eq!(decoded.settings, br#"[1,2,3]"#.to_vec());
+        assert_eq!(decoded.settings, br"[1,2,3]".to_vec());
         let settings_json: serde_json::Value =
             serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
         assert_eq!(settings_json, serde_json::json!([1, 2, 3]));
@@ -875,7 +876,7 @@ mod tests {
     #[test]
     fn http_json_move_playlist_request_defaults_missing_anchor_for_later_validation() {
         let decoded: crate::client::MovePlaylistRequest =
-            serde_json::from_str(r#"{}"#).expect("transport deserialization should succeed");
+            serde_json::from_str(r"{}").expect("transport deserialization should succeed");
 
         assert!(decoded.playlist_id.is_empty());
         assert!(decoded.anchor.is_none());

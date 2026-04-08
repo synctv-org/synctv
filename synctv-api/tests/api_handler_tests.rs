@@ -35,9 +35,11 @@ mod validated_query_extractor {
     async fn test_rejects_invalid_proto_query_via_http_extractor() {
         let app = Router::new().route(
             "/api/user/rooms",
-            get(|ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
-                Json(serde_json::json!({"page": req.page}))
-            }),
+            get(
+                |ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
+                    Json(serde_json::json!({"page": req.page}))
+                },
+            ),
         );
 
         let req = Request::builder()
@@ -58,13 +60,15 @@ mod validated_query_extractor {
     async fn test_accepts_valid_proto_query_via_http_extractor() {
         let app = Router::new().route(
             "/api/user/rooms",
-            get(|ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
-                Json(serde_json::json!({
-                    "page": req.page,
-                    "status": req.status,
-                    "relation": req.relation
-                }))
-            }),
+            get(
+                |ValidatedQuery(req): ValidatedQuery<ListMyRoomsRequest>| async move {
+                    Json(serde_json::json!({
+                        "page": req.page,
+                        "status": req.status,
+                        "relation": req.relation
+                    }))
+                },
+            ),
         );
 
         let req = Request::builder()

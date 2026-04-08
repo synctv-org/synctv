@@ -324,8 +324,7 @@ mod tests {
 
         assert_eq!(
             mode, 0o700,
-            "management runtime directory must be owner-only, got {:o}",
-            mode
+            "management runtime directory must be owner-only, got {mode:o}"
         );
     }
 
@@ -347,8 +346,7 @@ mod tests {
 
         assert_eq!(
             mode, 0o755,
-            "prepare must not rewrite permissions for an existing parent directory, got {:o}",
-            mode
+            "prepare must not rewrite permissions for an existing parent directory, got {mode:o}"
         );
     }
 
@@ -373,8 +371,7 @@ mod tests {
 
         assert_eq!(
             mode, 0o600,
-            "management unix socket must be owner-only, got {:o}",
-            mode
+            "management unix socket must be owner-only, got {mode:o}"
         );
     }
 

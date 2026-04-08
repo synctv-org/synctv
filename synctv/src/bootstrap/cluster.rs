@@ -40,7 +40,7 @@ pub async fn init_cluster_components(
 
     let registry = NodeRegistry::new(
         redis_handles.client.clone(),
-        node_id.clone(),
+        node_id,
         heartbeat_timeout_secs,
         &config.redis.key_prefix,
     )

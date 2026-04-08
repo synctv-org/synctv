@@ -2284,7 +2284,7 @@ async fn test_full_body_stale_background_revalidation_ignores_non_success_respon
     assert!(
         matches!(
             status2.as_deref(),
-            Some("STALE") | Some("HIT") | Some("UPDATING")
+            Some("STALE" | "HIT" | "UPDATING")
         ),
         "cache must retain the last successful body instead of storing a 500 response"
     );

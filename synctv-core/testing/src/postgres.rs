@@ -195,15 +195,14 @@ impl SharedPostgresServer {
 
         if let Err(err) = sqlx::query(&sql).execute(&self.admin_pool).await {
             eprintln!(
-                "warning: failed to drop postgres test database {}: {err}",
-                database_name
+                "warning: failed to drop postgres test database {database_name}: {err}"
             );
         }
     }
 }
 
 impl TestContainer {
-    fn new(shared: Arc<SharedPostgresServer>, database_name: String) -> Self {
+    const fn new(shared: Arc<SharedPostgresServer>, database_name: String) -> Self {
         Self {
             shared,
             database_name,
@@ -381,9 +380,7 @@ fn current_process_id() -> u32 {
 fn current_test_run_id() -> String {
     std::env::var("NEXTEST_RUN_ID")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| sanitize_container_name(&value))
-        .unwrap_or_else(|| format!("pid-{}", current_process_id()))
+        .filter(|value| !value.trim().is_empty()).map_or_else(|| format!("pid-{}", current_process_id()), |value| sanitize_container_name(&value))
 }
 
 fn startup_lock_name(run_id: &str) -> String {
@@ -856,8 +853,7 @@ async fn recreate_template_database(
         .expect("template database should disallow new connections");
 
     let terminate_sql = format!(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
-        template_database
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{template_database}' AND pid <> pg_backend_pid()"
     );
     sqlx::query(&terminate_sql)
         .execute(admin_pool)
@@ -1119,7 +1115,7 @@ mod tests {
     #[test]
     fn named_postgres_request_uses_ephemeral_pg18_tuning() {
         let request = named_postgres_request("postgres", "synctv-pg-test");
-        let cmd: Vec<_> = request.cmd().map(|value| value.into_owned()).collect();
+        let cmd: Vec<_> = request.cmd().map(std::borrow::Cow::into_owned).collect();
 
         assert!(
             cmd.windows(2)

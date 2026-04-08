@@ -180,8 +180,7 @@ async fn test_node_discovery_three_nodes() {
             registry_a
                 .get_all_nodes()
                 .await
-                .map(|nodes| nodes.iter().all(|node| node.node_id != "node_c"))
-                .unwrap_or(false)
+                .is_ok_and(|nodes| nodes.iter().all(|node| node.node_id != "node_c"))
         },
     )
     .await;

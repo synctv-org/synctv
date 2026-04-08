@@ -91,8 +91,7 @@ async fn discover_content_length_via_range_get(
             anyhow::anyhow!("Missing or invalid Content-Length in fallback GET response")
         }),
         status => Err(anyhow::anyhow!(
-            "Range GET fallback returned status {}",
-            status
+            "Range GET fallback returned status {status}"
         )),
     }
 }
@@ -400,8 +399,7 @@ pub(super) async fn full_body_cache_path(
             // Refresh the TTL by re-inserting.
             let (etag, last_modified) = existing_meta
                 .as_ref()
-                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
-                .unwrap_or((None, None));
+                .map_or((None, None), |meta| (meta.etag.as_deref(), meta.last_modified.as_deref()));
             let ttl = match content_type.as_deref() {
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,
@@ -480,8 +478,7 @@ async fn revalidate_stale_full_body_entry(
         {
             let (etag, last_modified) = existing_meta
                 .as_ref()
-                .map(|meta| (meta.etag.as_deref(), meta.last_modified.as_deref()))
-                .unwrap_or((None, None));
+                .map_or((None, None), |meta| (meta.etag.as_deref(), meta.last_modified.as_deref()));
             let ttl = match content_type.as_deref() {
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,

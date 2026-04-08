@@ -385,7 +385,7 @@ async fn wait_for_initial_leader(
 
         tokio::select! {
             () = cancel.cancelled() => return false,
-            _ = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
+            () = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
         }
     }
 }

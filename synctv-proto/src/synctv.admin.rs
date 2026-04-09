@@ -128,7 +128,7 @@ pub struct GetSettingsRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetSettingsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetSettingsResponse {
     #[prost(message, repeated, tag = "1")]
     pub groups: ::prost::alloc::vec::Vec<SettingsGroup>,
@@ -162,7 +162,7 @@ pub struct GetSettingsGroupResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateSettingsRequest))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateSettingsRequest {
     #[prost(string, tag = "1")]
     pub group: ::prost::alloc::string::String,
@@ -246,7 +246,7 @@ pub struct ListProviderInstancesRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListProviderInstancesResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListProviderInstancesResponse {
     #[prost(message, repeated, tag = "1")]
     pub instances: ::prost::alloc::vec::Vec<ProviderInstance>,
@@ -554,7 +554,7 @@ pub struct ListUsersRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListUsersResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListUsersResponse {
     #[prost(message, repeated, tag = "1")]
     pub users: ::prost::alloc::vec::Vec<AdminUser>,
@@ -764,7 +764,7 @@ pub struct GetUserRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetUserRoomsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetUserRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<AdminRoom>,
@@ -837,7 +837,7 @@ pub struct ListRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListRoomsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<AdminRoom>,
@@ -1123,7 +1123,7 @@ pub struct GetRoomMembersRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetRoomMembersResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomMembersResponse {
     #[prost(message, repeated, tag = "1")]
     pub members: ::prost::alloc::vec::Vec<super::common::RoomMember>,
@@ -1397,7 +1397,7 @@ pub struct ListAdminsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListAdminsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListAdminsResponse {
     #[prost(message, repeated, tag = "1")]
     pub admins: ::prost::alloc::vec::Vec<AdminUser>,
@@ -1501,7 +1501,7 @@ pub struct ActiveStreamInfo {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListActiveStreamsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListActiveStreamsResponse {
     #[prost(message, repeated, tag = "1")]
     pub streams: ::prost::alloc::vec::Vec<ActiveStreamInfo>,
@@ -1572,7 +1572,7 @@ pub struct BatchBanUsersRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_BatchBanUsersResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchBanUsersResponse {
     /// Per-user results
     #[prost(message, repeated, tag = "1")]
@@ -1603,7 +1603,7 @@ pub struct BatchDeleteUsersRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_BatchDeleteUsersResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchDeleteUsersResponse {
     /// Per-user results
     #[prost(message, repeated, tag = "1")]
@@ -1638,7 +1638,7 @@ pub struct BatchBanRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_BatchBanRoomsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchBanRoomsResponse {
     /// Per-room results
     #[prost(message, repeated, tag = "1")]
@@ -1669,7 +1669,7 @@ pub struct BatchDeleteRoomsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_BatchDeleteRoomsResponse))]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchDeleteRoomsResponse {
     /// Per-room results
     #[prost(message, repeated, tag = "1")]
@@ -1698,7 +1698,7 @@ impl ProviderInstanceStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PROVIDER_INSTANCE_STATUS_UNSPECIFIED",
             Self::Connected => "PROVIDER_INSTANCE_STATUS_CONNECTED",
@@ -1732,7 +1732,7 @@ impl SortDirection {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SORT_DIRECTION_UNSPECIFIED",
             Self::Asc => "SORT_DIRECTION_ASC",
@@ -1768,7 +1768,7 @@ impl UserListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "USER_LIST_SORT_BY_CREATED_AT",
@@ -1810,7 +1810,7 @@ impl RoomListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "ROOM_LIST_SORT_BY_CREATED_AT",
@@ -1848,7 +1848,7 @@ impl RoomMemberListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED",
             Self::JoinedAt => "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT",
@@ -1886,7 +1886,7 @@ impl ProviderInstanceListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED",
             Self::Name => "PROVIDER_INSTANCE_LIST_SORT_BY_NAME",
@@ -1925,7 +1925,7 @@ impl ActiveStreamListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED",
             Self::StartedAt => "ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT",
@@ -3733,7 +3733,7 @@ pub mod admin_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -3741,7 +3741,7 @@ pub mod admin_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

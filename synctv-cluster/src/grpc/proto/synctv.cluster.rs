@@ -70,7 +70,7 @@ pub struct GetUserOnlineStatusRequest {
     #[prost(string, repeated, tag = "1")]
     pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetUserOnlineStatusResponse {
     #[prost(message, repeated, tag = "1")]
     pub statuses: ::prost::alloc::vec::Vec<UserOnlineStatus>,
@@ -93,7 +93,7 @@ pub struct GetRoomConnectionsRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomConnectionsResponse {
     #[prost(message, repeated, tag = "1")]
     pub connections: ::prost::alloc::vec::Vec<RoomConnection>,
@@ -122,7 +122,7 @@ impl NodeStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unknown => "NODE_STATUS_UNKNOWN",
             Self::Active => "NODE_STATUS_ACTIVE",
@@ -464,7 +464,7 @@ pub mod cluster_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -472,7 +472,7 @@ pub mod cluster_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

@@ -687,7 +687,7 @@ pub struct GetSettingsGroupRequest {
     pub group: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateSettingsRequest {
     #[prost(string, tag = "1")]
     pub group: ::prost::alloc::string::String,
@@ -772,7 +772,7 @@ impl UserRole {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_ROLE_UNSPECIFIED",
             Self::User => "USER_ROLE_USER",
@@ -806,7 +806,7 @@ impl UserStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_STATUS_UNSPECIFIED",
             Self::Active => "USER_STATUS_ACTIVE",
@@ -842,7 +842,7 @@ impl RoomStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_STATUS_UNSPECIFIED",
             Self::Active => "ROOM_STATUS_ACTIVE",
@@ -876,7 +876,7 @@ impl ShutdownMode {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SHUTDOWN_MODE_UNSPECIFIED",
             Self::Graceful => "SHUTDOWN_MODE_GRACEFUL",
@@ -912,7 +912,7 @@ impl StopServerStage {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "STOP_SERVER_STAGE_UNSPECIFIED",
             Self::Ready => "STOP_SERVER_STAGE_READY",
@@ -956,7 +956,7 @@ impl SortDirection {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SORT_DIRECTION_UNSPECIFIED",
             Self::Asc => "SORT_DIRECTION_ASC",
@@ -990,7 +990,7 @@ impl UserListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "USER_LIST_SORT_BY_CREATED_AT",
@@ -1030,7 +1030,7 @@ impl RoomListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_LIST_SORT_BY_UNSPECIFIED",
             Self::CreatedAt => "ROOM_LIST_SORT_BY_CREATED_AT",
@@ -1066,7 +1066,7 @@ impl RoomMemberListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_MEMBER_LIST_SORT_BY_UNSPECIFIED",
             Self::JoinedAt => "ROOM_MEMBER_LIST_SORT_BY_JOINED_AT",
@@ -1102,7 +1102,7 @@ impl PlaylistListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PLAYLIST_LIST_SORT_BY_UNSPECIFIED",
             Self::Position => "PLAYLIST_LIST_SORT_BY_POSITION",
@@ -1140,7 +1140,7 @@ impl MediaListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MEDIA_LIST_SORT_BY_UNSPECIFIED",
             Self::Position => "MEDIA_LIST_SORT_BY_POSITION",
@@ -1183,7 +1183,7 @@ impl RelatedRoomListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "RELATED_ROOM_LIST_SORT_BY_UNSPECIFIED",
             Self::JoinedAt => "RELATED_ROOM_LIST_SORT_BY_JOINED_AT",
@@ -1221,7 +1221,7 @@ impl ProviderInstanceListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED",
             Self::Name => "PROVIDER_INSTANCE_LIST_SORT_BY_NAME",
@@ -1258,7 +1258,7 @@ impl ActiveStreamListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED",
             Self::StartedAt => "ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT",
@@ -1293,7 +1293,7 @@ impl RoomStreamListSortBy {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_STREAM_LIST_SORT_BY_UNSPECIFIED",
             Self::MediaId => "ROOM_STREAM_LIST_SORT_BY_MEDIA_ID",
@@ -3866,7 +3866,7 @@ pub mod management_service_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -3874,7 +3874,7 @@ pub mod management_service_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

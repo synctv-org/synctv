@@ -8,6 +8,10 @@ metadata:
 {{- $messagingRateLimits := .Values.config.messagingRateLimits | default dict }}
 data:
   synctv.yaml: |
+    {{ if .Values.config.dataDir }}
+    data_dir: {{ .Values.config.dataDir | quote }}
+    {{ end }}
+
     time:
       timezone: {{ .Values.config.time.timezone | default "" | quote }}
 
@@ -78,6 +82,16 @@ data:
       format: {{ .Values.config.logging.format | quote }}
       {{- if .Values.config.logging.filePath }}
       file_path: {{ .Values.config.logging.filePath | quote }}
+      {{- end }}
+      {{- if .Values.config.logging.filter }}
+      filter: {{ .Values.config.logging.filter | quote }}
+      {{- end }}
+      backtrace: {{ .Values.config.logging.backtrace | default false }}
+
+    cache:
+      proxy_slice_file_backend_enabled: {{ .Values.config.cache.proxySliceFileBackendEnabled | default false }}
+      {{- if .Values.config.cache.proxySliceFileCacheDir }}
+      proxy_slice_file_cache_dir: {{ .Values.config.cache.proxySliceFileCacheDir | quote }}
       {{- end }}
 
     livestream:

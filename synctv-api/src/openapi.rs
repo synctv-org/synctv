@@ -60,6 +60,7 @@ const fn live_proxy_room_streams_doc() {}
         public::get_public_settings,
         auth::register,
         auth::login,
+        auth::request_email_login,
         auth::refresh_token,
         auth::logout,
         ticket::create_ticket,

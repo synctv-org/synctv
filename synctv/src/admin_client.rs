@@ -12,6 +12,7 @@ const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct AdminConnectionOptions {
     pub endpoint: Option<String>,
     pub config_path: Option<String>,
+    pub data_dir: Option<String>,
     pub load_dotenv: bool,
     pub verbose: bool,
     pub resolved_config_endpoint: Option<String>,
@@ -130,11 +131,13 @@ fn parse_admin_endpoint(raw: &str) -> Result<AdminEndpoint> {
 
 fn resolve_management_endpoint_from_config(
     config_path: Option<&str>,
+    data_dir: Option<&str>,
     load_dotenv: bool,
     verbose: bool,
 ) -> Result<String> {
     let config = load_config_with_options(&LoadConfigOptions {
         config_path: config_path.map(str::to_string),
+        data_dir: data_dir.map(str::to_string),
         load_dotenv,
         validate: false,
         verbose,
@@ -180,6 +183,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
 
     let config = load_config_with_options(&LoadConfigOptions {
         config_path: options.config_path.clone(),
+        data_dir: options.data_dir.clone(),
         load_dotenv: options.load_dotenv,
         validate: false,
         verbose: options.verbose,
@@ -213,6 +217,7 @@ fn resolve_candidate_endpoints(options: &AdminConnectionOptions) -> Result<Vec<S
 
     Ok(vec![resolve_management_endpoint_from_config(
         options.config_path.as_deref(),
+        options.data_dir.as_deref(),
         options.load_dotenv,
         options.verbose,
     )?])
@@ -834,6 +839,7 @@ mod tests {
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -845,6 +851,32 @@ mod tests {
             vec![format!(
                 "unix://{}",
                 default_management_unix_socket_path().display()
+            )]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_candidate_endpoints_uses_explicit_data_dir_for_default_unix_socket() {
+        let dir = tempdir().expect("temp dir should be created");
+        let data_dir = dir.path().join("state");
+
+        let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
+            endpoint: None,
+            config_path: None,
+            data_dir: Some(data_dir.to_string_lossy().to_string()),
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .expect("data_dir-derived admin endpoint should resolve");
+
+        assert_eq!(
+            endpoints,
+            vec![format!(
+                "unix://{}",
+                data_dir.join("run").join("synctv.sock").display()
             )]
         );
     }
@@ -866,6 +898,7 @@ management:
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -884,6 +917,7 @@ management:
         let error = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
             config_path: Some(missing_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -920,6 +954,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint.clone()),
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -977,6 +1012,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1043,6 +1079,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1109,6 +1146,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1161,6 +1199,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1209,6 +1248,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint.clone()),
             config_path: Some(missing_config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1254,6 +1294,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,
@@ -1307,6 +1348,7 @@ management:
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             verbose: false,
             resolved_config_endpoint: None,

@@ -822,6 +822,78 @@ async fn test_login_unverified_email_allowed_when_not_required() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_accepts_email_identifier_with_password() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+
+    let username = format!("email_login_user_{}", synctv_common::snanoid!(6));
+    let email = format!("{username}@example.com");
+
+    let (_user, access, refresh) = service
+        .register(
+            username.clone(),
+            Some(email.clone()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    assert!(access.is_some(), "registration should issue access token");
+    assert!(refresh.is_some(), "registration should issue refresh token");
+
+    let (logged_in_user, access_token, refresh_token) = service
+        .login(email, "StrongPass1".to_string(), None)
+        .await
+        .expect("Email identifier login should succeed");
+
+    assert_eq!(logged_in_user.username, username);
+    assert!(!access_token.is_empty());
+    assert!(!refresh_token.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_email_identifier_uses_same_brute_force_bucket_for_failures_and_checks() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+
+    let username = format!("email_lockout_user_{}", synctv_common::snanoid!(6));
+    let email = format!("{username}@example.com");
+
+    service
+        .register(
+            username,
+            Some(email.clone()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    for _ in 0..5 {
+        let error = service
+            .login(email.clone(), "WrongPass1".to_string(), None)
+            .await
+            .expect_err("wrong password should fail");
+        assert!(
+            matches!(error, Error::Authentication(ref message) if message == "Authentication failed"),
+            "unexpected error after wrong password attempt: {error:?}"
+        );
+    }
+
+    let error = service
+        .login(email, "StrongPass1".to_string(), None)
+        .await
+        .expect_err("account bucket should be locked after repeated failures");
+    assert!(
+        matches!(error, Error::Authentication(ref message) if message.contains("Too many failed login attempts")),
+        "expected brute-force lockout, got: {error:?}"
+    );
+}
+
 // ============================================================================
 // S2.5: Account enumeration prevention tests (HIGH #13)
 // ============================================================================

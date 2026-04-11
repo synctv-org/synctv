@@ -251,6 +251,16 @@ topologySpread:
 ## All field names match the Rust Config struct in synctv-core/src/config.rs
 ## ============================================================================
 config:
+  ## Shared root directory for runtime-owned local files.
+  ## It rebases relative:
+  ## - management.unix_socket_path
+  ## - logging.file_path
+  ## - livestream.hls_storage_path
+  ## - cache.proxy_slice_file_cache_dir
+  ## It does NOT rebase *_file secrets or metrics TLS cert/key paths.
+  ## Leave empty to use SyncTV's built-in platform/container defaults.
+  dataDir: ""
+
   ## TimeConfig
   time:
     ## IANA timezone name. Leave empty to fall back to SYNCTV_TIME_TIMEZONE, TZ,
@@ -308,10 +318,19 @@ config:
   logging:
     level: "info"
     format: "json"
+    filePath: ""
+    filter: ""
+    backtrace: false
+
+  ## CacheConfig
+  cache:
+    proxySliceFileBackendEnabled: false
+    proxySliceFileCacheDir: ""
 
   ## LivestreamConfig
   livestream:
     rtmpPort: 1935
+    publicRtmpHost: ""
     gopCacheSize: 2
     streamTimeoutSeconds: 300
     cleanupCheckIntervalSeconds: 60
@@ -319,6 +338,12 @@ config:
     pullInitialBackoffMs: 1000
     pullMaxBackoffMs: 30000
     maxFlvTagSizeBytes: 10485760
+    gopCacheMaxMemoryMb: 100
+    hlsMemoryMaxMb: 0
+    hlsSharedStorage: false
+    hlsStoragePath: ""
+    flvMaxConnectionDurationSeconds: 86400
+    flvWriteTimeoutSeconds: 30
 
   ## ClusterChannelConfig (matches code defaults)
   cluster:

@@ -1,6 +1,7 @@
 //! Configuration loading
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::io::ErrorKind;
 
 use crate::{
@@ -12,6 +13,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct LoadConfigOptions {
     pub config_path: Option<String>,
+    pub data_dir: Option<String>,
     pub load_dotenv: bool,
     pub validate: bool,
     pub verbose: bool,
@@ -37,11 +39,12 @@ pub fn load_dotenv(verbose: bool) -> Result<()> {
 /// 2. platform default search paths with extension priority
 ///    `synctv.yaml`, `synctv.yml`, `synctv.json`, `synctv.toml`
 ///    for each location (for example current directory, user config dir,
-///    macOS `~/Library/Application Support/synctv/`, `/etc/synctv/`, `/config/`)
+///    macOS `~/.synctv/`, Linux `/etc/synctv/`, `/config/`)
 /// 4. Fall back to environment variables only
 pub fn load_config() -> Result<Config> {
     load_config_with_options(&LoadConfigOptions {
         config_path: None,
+        data_dir: None,
         load_dotenv: true,
         validate: true,
         verbose: false,
@@ -68,12 +71,17 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
                 .map(|path| path.display().to_string())
         });
 
+    let env: HashMap<String, String> = std::env::vars().collect();
     let config = if let Some(path) = discovered_config_path {
         let display_path = absolute_display_path(std::path::Path::new(&path));
         if options.verbose {
             eprintln!("Loading config from {display_path}");
         }
-        match Config::from_file(&path) {
+        match Config::load_with_env_map_and_data_dir_override(
+            Some(&path),
+            &env,
+            options.data_dir.as_deref(),
+        ) {
             Ok(cfg) => {
                 if options.verbose {
                     eprintln!("Successfully loaded {display_path}");
@@ -108,7 +116,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         if options.verbose {
             eprintln!("No config file found, using environment variables");
         }
-        Config::from_env()?
+        Config::load_with_env_map_and_data_dir_override(None, &env, options.data_dir.as_deref())?
     };
 
     set_default_timezone_name(&config.time.timezone).map_err(|error| {
@@ -354,6 +362,7 @@ server:
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             validate: true,
             verbose: false,
@@ -379,6 +388,7 @@ jwt:
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             validate: false,
             verbose: false,
@@ -409,6 +419,7 @@ management:
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: None,
+            data_dir: None,
             load_dotenv: false,
             validate: false,
             verbose: false,
@@ -437,6 +448,7 @@ jwt:
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
             load_dotenv: false,
             validate: false,
             verbose: false,
@@ -445,5 +457,61 @@ jwt:
 
         assert_eq!(config.time.timezone, "Asia/Shanghai");
         assert_eq!(default_timezone_name(), "Asia/Shanghai");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_load_config_with_options_resolves_default_management_socket_from_cli_data_dir() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let data_dir = dir.path().join("state");
+
+        let config = load_config_with_options(&LoadConfigOptions {
+            config_path: None,
+            data_dir: Some(data_dir.to_string_lossy().to_string()),
+            load_dotenv: false,
+            validate: false,
+            verbose: false,
+        })
+        .expect("cli data_dir should be applied to default runtime paths");
+
+        assert_eq!(
+            std::path::Path::new(&config.management.data_dir),
+            data_dir.as_path()
+        );
+        assert_eq!(
+            std::path::Path::new(&config.management.unix_socket_path),
+            data_dir.join("run").join("synctv.sock").as_path()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_load_config_with_options_cli_data_dir_overrides_env_data_dir() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().expect("temp dir should be created");
+        let cli_data_dir = dir.path().join("cli-state");
+        let _env = EnvVarGuard::set(
+            "SYNCTV_DATA_DIR",
+            dir.path().join("env-state").display().to_string(),
+        );
+
+        let config = load_config_with_options(&LoadConfigOptions {
+            config_path: None,
+            data_dir: Some(cli_data_dir.to_string_lossy().to_string()),
+            load_dotenv: false,
+            validate: false,
+            verbose: false,
+        })
+        .expect("cli data_dir should override SYNCTV_DATA_DIR");
+
+        assert_eq!(
+            std::path::Path::new(&config.management.data_dir),
+            cli_data_dir.as_path()
+        );
+        assert_eq!(
+            std::path::Path::new(&config.management.unix_socket_path),
+            cli_data_dir.join("run").join("synctv.sock").as_path()
+        );
     }
 }

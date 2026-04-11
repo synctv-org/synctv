@@ -75,6 +75,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .flatten()
     .collect::<Vec<_>>();
     for field in [
+        ".synctv.client.LoginRequest.username",
+        ".synctv.client.LoginRequest.password",
+        ".synctv.client.LoginRequest.email",
+        ".synctv.client.LoginRequest.email_token",
         ".synctv.client.GetRoomRequest.room_id",
         ".synctv.client.JoinRoomRequest.room_id",
         ".synctv.admin.GetUserRoomsRequest.user_id",

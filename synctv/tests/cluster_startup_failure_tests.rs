@@ -109,7 +109,7 @@ fn cluster_test_config() -> Config {
         time: TimeConfig::default(),
         metrics: synctv_core::config::MetricsConfig::default(),
         management: synctv_core::config::ManagementConfig {
-            enabled: true,
+            enabled: false,
             ..synctv_core::config::ManagementConfig::default()
         },
         database: DatabaseConfig::default(),

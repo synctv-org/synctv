@@ -1064,11 +1064,54 @@ mod tests {
             .await
             .expect("builtin providers should initialize");
 
-        PlaylistService::new(
+        let mut service = PlaylistService::new(
             PlaylistRepository::new(pool.clone()),
             test_permission_service(&pool),
             providers_manager,
-        )
+        );
+        service.set_credential_repo(Arc::new(UserProviderCredentialRepository::new(pool)));
+        service
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_requires_credential_repo_wiring() {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let providers_manager = Arc::new(crate::service::ProvidersManager::new(
+            provider_instance_manager,
+        ));
+        providers_manager
+            .create_builtin_defaults()
+            .await
+            .expect("builtin providers should initialize");
+
+        let service = PlaylistService::new(
+            PlaylistRepository::new(pool.clone()),
+            test_permission_service(&pool),
+            providers_manager,
+        );
+
+        let err = service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &UserId::new(),
+                "alist".to_string(),
+                serde_json::json!({"path": "/movies", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                Some("alist".to_string()),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::ServiceUnavailable(message) => {
+                assert!(message.contains("requires credential repository wiring"));
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
+        }
     }
 
     #[tokio::test]

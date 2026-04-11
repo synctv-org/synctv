@@ -2,15 +2,16 @@
 
 use crate::{models::UserId, service::email_token::EmailTokenType, Error, Result};
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 /// Email token record
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EmailToken {
-    pub id: String,
+    pub id: i64,
     pub token: String,
     pub user_id: UserId,
-    pub token_type: String,
+    pub token_type: i16,
     pub expires_at: chrono::DateTime<Utc>,
     pub used_at: Option<chrono::DateTime<Utc>>,
     pub created_at: chrono::DateTime<Utc>,
@@ -23,6 +24,11 @@ pub struct EmailTokenRepository {
 }
 
 impl EmailTokenRepository {
+    fn hash_token(token: &str) -> String {
+        let digest = Sha256::digest(token.as_bytes());
+        hex::encode(digest)
+    }
+
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -40,12 +46,12 @@ impl EmailTokenRepository {
             r"
             INSERT INTO email_tokens (token, user_id, token_type, expires_at, created_at)
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-            RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
         )
-        .bind(token)
+        .bind(Self::hash_token(token))
         .bind(user_id.as_str())
-        .bind(token_type.as_str())
+        .bind(token_type.as_i16())
         .bind(expires_at)
         .fetch_one(&self.pool)
         .await
@@ -54,16 +60,68 @@ impl EmailTokenRepository {
         Ok(t)
     }
 
-    /// Get token by token string
-    pub async fn get(&self, token: &str) -> Result<Option<EmailToken>> {
+    /// Atomically create or replace the current unused token for a user/type.
+    pub async fn create_or_replace_unused(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> Result<EmailToken> {
+        let mut tx = self.pool.begin().await.map_err(Error::Database)?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), $2)")
+            .bind(user_id.as_str())
+            .bind(i32::from(token_type.as_i16()))
+            .execute(&mut *tx)
+            .await
+            .map_err(Error::Database)?;
+
+        sqlx::query(
+            r"
+            DELETE FROM email_tokens
+            WHERE user_id = $1
+              AND token_type = $2
+              AND used_at IS NULL
+            ",
+        )
+        .bind(user_id.as_str())
+        .bind(token_type.as_i16())
+        .execute(&mut *tx)
+        .await
+        .map_err(Error::Database)?;
+
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            SELECT id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            INSERT INTO email_tokens (token, user_id, token_type, expires_at, created_at)
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+            RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
+            ",
+        )
+        .bind(Self::hash_token(token))
+        .bind(user_id.as_str())
+        .bind(token_type.as_i16())
+        .bind(expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(Error::Database)?;
+
+        tx.commit().await.map_err(Error::Database)?;
+
+        Ok(t)
+    }
+
+    /// Get token by token string
+    pub async fn get(&self, token: &str) -> Result<Option<EmailToken>> {
+        let token_hash = Self::hash_token(token);
+        let t = sqlx::query_as::<_, EmailToken>(
+            r"
+            SELECT id, token, user_id, token_type, expires_at, used_at, created_at
             FROM email_tokens
             WHERE token = $1
             ",
         )
-        .bind(token)
+        .bind(token_hash)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -77,16 +135,17 @@ impl EmailTokenRepository {
     /// conditions where two concurrent requests both try to consume the same
     /// token.
     pub async fn mark_as_used(&self, token: &str) -> Result<EmailToken> {
+        let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
             UPDATE email_tokens
             SET used_at = CURRENT_TIMESTAMP
             WHERE token = $1
               AND used_at IS NULL
-            RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
         )
-        .bind(token)
+        .bind(token_hash)
         .fetch_optional(&self.pool)
         .await
         .map_err(Error::Database)?;
@@ -109,6 +168,7 @@ impl EmailTokenRepository {
         token: &str,
         token_type: EmailTokenType,
     ) -> Result<Option<EmailToken>> {
+        let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
             UPDATE email_tokens
@@ -117,11 +177,11 @@ impl EmailTokenRepository {
               AND token_type = $2
               AND used_at IS NULL
               AND expires_at > CURRENT_TIMESTAMP
-            RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
         )
-        .bind(token)
-        .bind(token_type.as_str())
+        .bind(token_hash)
+        .bind(token_type.as_i16())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -138,6 +198,7 @@ impl EmailTokenRepository {
         token_type: EmailTokenType,
         expected_user_id: &UserId,
     ) -> Result<Option<EmailToken>> {
+        let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
             UPDATE email_tokens
@@ -147,11 +208,11 @@ impl EmailTokenRepository {
               AND user_id = $3
               AND used_at IS NULL
               AND expires_at > CURRENT_TIMESTAMP
-            RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
+            RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
         )
-        .bind(token)
-        .bind(token_type.as_str())
+        .bind(token_hash)
+        .bind(token_type.as_i16())
         .bind(expected_user_id.as_str())
         .fetch_optional(&self.pool)
         .await?;
@@ -172,7 +233,33 @@ impl EmailTokenRepository {
             ",
         )
         .bind(user_id.as_str())
-        .bind(token_type.as_str())
+        .bind(token_type.as_i16())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::Database)?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete a specific unused token if it still belongs to the user and type.
+    pub async fn delete_unused_token(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM email_tokens
+            WHERE token = $1
+              AND user_id = $2
+              AND token_type = $3
+              AND used_at IS NULL
+            ",
+        )
+        .bind(Self::hash_token(token))
+        .bind(user_id.as_str())
+        .bind(token_type.as_i16())
         .execute(&self.pool)
         .await
         .map_err(Error::Database)?;

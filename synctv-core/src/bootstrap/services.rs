@@ -112,10 +112,33 @@ pub struct Services {
     pub credential_encryption: Option<crate::service::CredentialEncryption>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct InitServicesOptions {
     pub provider_test_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_hex_key_override: Option<String>,
+    pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+}
+
+impl std::fmt::Debug for InitServicesOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitServicesOptions")
+            .field(
+                "provider_test_address_overrides",
+                &self.provider_test_address_overrides,
+            )
+            .field(
+                "credential_encryption_hex_key_override",
+                &self
+                    .credential_encryption_hex_key_override
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field(
+                "password_hasher_override",
+                &self.password_hasher_override.as_ref().map(|_| "<injected>"),
+            )
+            .finish()
+    }
 }
 
 impl Services {
@@ -370,6 +393,9 @@ pub async fn init_services_with_options(
         brute_force.clone(),
     );
     user_service.set_cache_invalidation(cache_invalidation.clone());
+    if let Some(password_hasher) = options.password_hasher_override.as_ref() {
+        user_service.set_password_hasher(Arc::clone(password_hasher));
+    }
 
     // Upgrade refresh token rate limiter to Redis-backed when available.
     // This ensures the refresh rate limit is enforced globally across all replicas
@@ -495,6 +521,9 @@ pub async fn init_services_with_options(
     });
     if let Some(ref encryption) = credential_encryption_for_services {
         room_service.set_media_credential_encryption(encryption.clone());
+    }
+    if let Some(password_hasher) = options.password_hasher_override.as_ref() {
+        room_service.set_password_hasher(Arc::clone(password_hasher));
     }
     info!("RoomService initialized");
 
@@ -1013,13 +1042,10 @@ fn init_credential_encryption(
     }
 }
 
-/// Initialize Email service (optional - requires SMTP configuration)
-///
-/// When `redis_client` is provided, uses Redis-backed verification code storage
-/// for multi-node safety. Otherwise falls back to in-memory storage.
+/// Initialize Email service (optional - requires SMTP configuration).
 fn init_email_service(
     config: &Config,
-    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    _redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
 ) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
@@ -1036,24 +1062,7 @@ fn init_email_service(
         use_tls: config.email.use_tls,
     };
 
-    let cluster_mode = config.cluster_runtime_enabled();
-
-    let result = match (cluster_mode, redis_conn) {
-        (true, Some(shared_conn)) => {
-            info!("Email verification code store: Redis (cluster mode)");
-            EmailService::with_redis(Some(email_config), shared_conn)
-        }
-        (true, None) => unreachable!(
-            "cluster.enabled=true requires Redis and is validated before service initialization"
-        ),
-        (false, Some(shared_conn)) => {
-            info!("Email verification code store: Redis (multi-node safe)");
-            EmailService::with_redis(Some(email_config), shared_conn)
-        }
-        (false, None) => EmailService::new(Some(email_config)),
-    };
-
-    match result {
+    match EmailService::new(Some(email_config)) {
         Ok(service) => Ok(Some(Arc::new(service))),
         Err(e) => {
             error!("Failed to initialize email service: {}", e);
@@ -1158,6 +1167,22 @@ mod tests {
     #[test]
     fn test_provider_manager_init_success_passthrough() {
         handle_provider_manager_init_result(Ok(())).expect("successful provider init should pass");
+    }
+
+    #[test]
+    fn test_init_email_service_is_independent_of_redis_backend_choice() {
+        let mut config = Config::default();
+        config.email.smtp_host = "smtp.example.com".to_string();
+        config.email.smtp_port = 587;
+        config.email.smtp_username = "user".to_string();
+        config.email.smtp_password = "password".to_string();
+        config.email.from_email = "noreply@example.com".to_string();
+        config.email.from_name = "SyncTV".to_string();
+        config.email.use_tls = true;
+
+        let standalone = init_email_service(&config, None).expect("standalone email service");
+        let standalone = standalone.expect("email service");
+        assert!(standalone.is_configured());
     }
 
     #[tokio::test]

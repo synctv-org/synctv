@@ -1,11 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
-use std::mem::ManuallyDrop;
 use std::net::{SocketAddr, TcpListener};
-use std::process::Command as StdCommand;
 use std::sync::Arc;
-use std::sync::{LazyLock, Once};
+use std::sync::Once;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{stream, StreamExt};
@@ -13,7 +11,8 @@ use prost::Message;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use synctv::app::{Application, ApplicationBuildOptions};
-use synctv_core::config::{default_management_unix_socket_path, Config};
+use synctv_core::config::Config;
+use synctv_core::service::auth::TestPasswordHasher;
 use synctv_core_testing::{
     create_test_database_url_with_label, start_redis_url_with_label, test_redis_key_prefix,
     RedisContainer, TestContainer,
@@ -21,8 +20,6 @@ use synctv_core_testing::{
 use synctv_management::proto as management_proto;
 use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
 use synctv_proto::client::{server_message, ServerMessage};
-use tokio::runtime::Runtime;
-use tokio::sync::OnceCell;
 use tokio_tungstenite::tungstenite;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Server;
@@ -130,16 +127,40 @@ fn configure_management_unix_socket_with_auth_token(
     config.management.auth_token = auth_token.to_string();
 }
 
-// ---------------------------------------------------------------------------
-// Shared server: all full_stack tests reuse ONE Application instance.
-// The server starts on first access and runs until the process exits.
-// ---------------------------------------------------------------------------
+#[cfg(unix)]
+fn isolated_default_management_socket(
+    root: &std::path::Path,
+) -> (std::path::PathBuf, Vec<(String, String)>) {
+    isolated_default_management_socket_impl(root)
+}
 
-/// Dedicated tokio runtime for the shared server.
-/// Created synchronously via `LazyLock`, lives for the process lifetime.
-/// The server runs here independently of individual `#[tokio::test]` runtimes.
-static DEDICATED_RT: LazyLock<Runtime> =
-    LazyLock::new(|| Runtime::new().expect("shared test server runtime"));
+#[cfg(target_os = "macos")]
+fn isolated_default_management_socket_impl(
+    root: &std::path::Path,
+) -> (std::path::PathBuf, Vec<(String, String)>) {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("isolated home dir should be created");
+    (
+        home.join(".synctv").join("run").join("synctv.sock"),
+        vec![("HOME".to_string(), home.display().to_string())],
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn isolated_default_management_socket_impl(
+    root: &std::path::Path,
+) -> (std::path::PathBuf, Vec<(String, String)>) {
+    let runtime_dir = root.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("isolated runtime dir should be created");
+    (
+        runtime_dir.join("synctv").join("synctv.sock"),
+        vec![(
+            "XDG_RUNTIME_DIR".to_string(),
+            runtime_dir.display().to_string(),
+        )],
+    )
+}
+
 static TEST_LOGGING: Once = Once::new();
 
 fn ensure_test_logging() {
@@ -154,102 +175,108 @@ fn ensure_test_logging() {
     });
 }
 
-struct SharedServer {
+struct TestServer {
     api_base_url: String,
     management_base_url: String,
     provider_probe_endpoint: String,
     provider_probe_secret: String,
-    // ManuallyDrop: prevent Drop at process exit.
-    // The OS cleans up when the process exits; avoids hanging on server task join.
-    _postgres: ManuallyDrop<TestContainer>,
-    _redis: ManuallyDrop<RedisContainer>,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    server_handle: tokio::task::JoinHandle<()>,
+    provider_probe_handle: tokio::task::JoinHandle<()>,
+    _postgres: TestContainer,
+    _redis: RedisContainer,
 }
 
-static SHARED_SERVER: OnceCell<SharedServer> = OnceCell::const_new();
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        self.server_handle.abort();
+        self.provider_probe_handle.abort();
+    }
+}
 
-/// Returns a reference to the lazily-initialized shared server.
-/// The first call builds the Application and waits for health checks.
-/// Subsequent calls return immediately.
-async fn shared_server() -> &'static SharedServer {
+async fn start_test_server() -> TestServer {
     ensure_test_logging();
-    SHARED_SERVER
-        .get_or_init(|| async {
-            let (postgres, database_url) =
-                create_test_database_url_with_label("synctv_e2e_shared", "full-stack-shared").await;
-            let (redis, redis_url) = start_redis_url_with_label("full-stack-shared").await;
-            let api_port = reserve_local_port();
-            let management_port = reserve_local_port();
-            let rtmp_port = reserve_local_port();
-            let provider_probe_addr =
-                spawn_authenticated_provider_server(PROVIDER_PROBE_SECRET).await;
-            let config = test_config(
-                database_url,
-                redis_url,
-                api_port,
-                management_port,
-                rtmp_port,
-            );
+    let suffix = unique_test_suffix();
+    let database_name = format!("synctv_e2e_{suffix}");
+    let container_label = format!("full-stack-{suffix}");
+    let (postgres, database_url) =
+        create_test_database_url_with_label(&database_name, &container_label).await;
+    let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let (provider_probe_addr, provider_probe_handle) =
+        spawn_authenticated_provider_server(PROVIDER_PROBE_SECRET).await;
+    let config = test_config(
+        database_url,
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+    );
 
-            // Spawn build + run on the dedicated runtime.
-            // The JoinHandle is intentionally discarded — the server runs
-            // independently until the process exits.
-            let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
-            DEDICATED_RT.spawn(async move {
-                let app = Box::pin(Application::build_with_options(
-                    config,
-                    ApplicationBuildOptions {
-                        provider_test_address_overrides: HashMap::from([(
-                            provider_probe_host,
-                            provider_probe_addr,
-                        )]),
-                        credential_encryption_hex_key_override: Some(
-                            TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-                        ),
-                    },
-                ))
-                .await
-                .expect("shared application build");
-                // `pending()` means the server never receives a shutdown signal.
-                Box::pin(app.run_with_shutdown_signal(std::future::pending())).await
-            });
+    let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
+    let app = Box::pin(Application::build_with_options(
+        config,
+        ApplicationBuildOptions {
+            provider_test_address_overrides: HashMap::from([(
+                provider_probe_host,
+                provider_probe_addr,
+            )]),
+            credential_encryption_hex_key_override: Some(
+                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
+            ),
+            password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
+        },
+    ))
+    .await
+    .expect("test application build");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_handle = tokio::spawn(async move {
+        let _ = Box::pin(app.run_with_shutdown_signal(async move {
+            let _ = shutdown_rx.await;
+        }))
+        .await;
+    });
 
-            let api_base_url = format!("http://127.0.0.1:{api_port}");
-            let management_base_url = format!("http://127.0.0.1:{management_port}");
-            let provider_probe_endpoint = format!(
-                "http://{PROVIDER_PROBE_HOST}:{}",
-                provider_probe_addr.port()
-            );
+    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    let management_base_url = format!("http://127.0.0.1:{management_port}");
+    let provider_probe_endpoint = format!(
+        "http://{PROVIDER_PROBE_HOST}:{}",
+        provider_probe_addr.port()
+    );
 
-            wait_until_live(&api_base_url).await;
-            wait_until_grpc_ready(&api_base_url).await;
-            wait_until_grpc_ready(&management_base_url).await;
+    wait_until_live(&api_base_url).await;
+    wait_until_grpc_ready(&api_base_url).await;
+    wait_until_grpc_ready(&management_base_url).await;
 
-            SharedServer {
-                api_base_url,
-                management_base_url,
-                provider_probe_endpoint,
-                provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
-                _postgres: ManuallyDrop::new(postgres),
-                _redis: ManuallyDrop::new(redis),
-            }
-        })
-        .await
+    TestServer {
+        api_base_url,
+        management_base_url,
+        provider_probe_endpoint,
+        provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
+        shutdown_tx: Some(shutdown_tx),
+        server_handle,
+        provider_probe_handle,
+        _postgres: postgres,
+        _redis: redis,
+    }
 }
 
-async fn spawn_authenticated_provider_server(auth_secret: &str) -> SocketAddr {
-    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+async fn spawn_authenticated_provider_server(
+    auth_secret: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let auth_secret = auth_secret.to_string();
-    DEDICATED_RT.spawn(async move {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("provider auth test server should bind to an ephemeral port");
-        let addr = listener
-            .local_addr()
-            .expect("provider auth test server should expose a local address");
-        addr_tx
-            .send(addr)
-            .expect("provider auth test server address receiver should be alive");
-
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider auth test server should bind to an ephemeral port");
+    let addr = listener
+        .local_addr()
+        .expect("provider auth test server should expose a local address");
+    let handle = tokio::spawn(async move {
         let (reporter, health_service) = tonic_health::server::health_reporter();
         reporter
             .set_service_status("", tonic_health::ServingStatus::Serving)
@@ -268,11 +295,8 @@ async fn spawn_authenticated_provider_server(auth_secret: &str) -> SocketAddr {
             .expect("provider auth test server should run");
     });
 
-    let addr = addr_rx
-        .await
-        .expect("provider auth test server should publish its local address");
     wait_until_grpc_ready(&format!("http://127.0.0.1:{}", addr.port())).await;
-    addr
+    (addr, handle)
 }
 
 #[derive(Clone)]
@@ -469,121 +493,6 @@ async fn wait_until_unix_grpc_ready(socket_path: &std::path::Path) {
     }
 }
 
-#[cfg(unix)]
-struct DefaultManagementSocketGuard {
-    path: std::path::PathBuf,
-    backup_dir: Option<tempfile::TempDir>,
-    backup_path: Option<std::path::PathBuf>,
-}
-
-#[cfg(unix)]
-impl DefaultManagementSocketGuard {
-    async fn acquire() -> anyhow::Result<Option<Self>> {
-        use std::os::unix::fs::FileTypeExt;
-
-        let path = default_management_unix_socket_path();
-
-        if tokio::net::UnixStream::connect(&path).await.is_ok() {
-            eprintln!(
-                "skipping default management socket e2e because {} is already in use",
-                path.display()
-            );
-            return Ok(None);
-        }
-
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_socket() => {
-                let backup_dir = tempfile::tempdir().map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to create backup dir for default management socket test: {error}"
-                    )
-                })?;
-                let backup_path = backup_dir.path().join("synctv.sock.backup");
-                std::fs::rename(&path, &backup_path).map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to move stale default management socket {} aside: {error}",
-                        path.display()
-                    )
-                })?;
-
-                Ok(Some(Self {
-                    path,
-                    backup_dir: Some(backup_dir),
-                    backup_path: Some(backup_path),
-                }))
-            }
-            Ok(_) => {
-                eprintln!(
-                    "skipping default management socket e2e because {} exists and is not a socket",
-                    path.display()
-                );
-                Ok(None)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(parent) = path.parent() {
-                    if let Err(mkdir_error) = std::fs::create_dir_all(parent) {
-                        if mkdir_error.kind() == std::io::ErrorKind::PermissionDenied
-                            || mkdir_error.raw_os_error() == Some(30)
-                        {
-                            eprintln!(
-                                "skipping default management socket e2e because {} is not writable: {}",
-                                parent.display(),
-                                mkdir_error
-                            );
-                            return Ok(None);
-                        }
-
-                        return Err(anyhow::anyhow!(
-                            "failed to create default management socket directory {}: {mkdir_error}",
-                            parent.display()
-                        ));
-                    }
-                }
-
-                Ok(Some(Self {
-                    path,
-                    backup_dir: None,
-                    backup_path: None,
-                }))
-            }
-            Err(error) => Err(anyhow::anyhow!(
-                "failed to inspect default management socket path {}: {error}",
-                path.display()
-            )),
-        }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-#[cfg(unix)]
-impl Drop for DefaultManagementSocketGuard {
-    fn drop(&mut self) {
-        if let Some(backup_path) = self.backup_path.as_ref() {
-            if let Err(error) = std::fs::remove_file(&self.path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!(
-                        "failed to remove test-created default management socket {} during restore: {error}",
-                        self.path.display()
-                    );
-                }
-            }
-
-            if let Err(error) = std::fs::rename(backup_path, &self.path) {
-                eprintln!(
-                    "failed to restore original default management socket {} from {}: {error}",
-                    self.path.display(),
-                    backup_path.display()
-                );
-            }
-        }
-
-        let _ = self.backup_dir.take();
-    }
-}
-
 async fn grpc_health_status(
     grpc_base_url: &str,
     service: &str,
@@ -607,7 +516,7 @@ async fn grpc_health_status(
     }
 }
 
-fn run_synctv_remote_cli(server: &SharedServer, args: &[&str]) -> std::process::Output {
+async fn run_synctv_remote_cli(server: &TestServer, args: &[&str]) -> std::process::Output {
     let mut structured_args = args.to_vec();
     structured_args.extend(["--output", "json"]);
     run_synctv_cli_with_env(
@@ -620,16 +529,11 @@ fn run_synctv_remote_cli(server: &SharedServer, args: &[&str]) -> std::process::
             ("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN),
         ],
     )
+    .await
 }
 
-fn run_synctv_cli_with_env(args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
-    let binary = synctv_binary_path();
-    let mut command = StdCommand::new(binary);
-    command.args(args);
-    for (name, value) in envs {
-        command.env(name, value);
-    }
-    command.output().expect("synctv CLI process should start")
+async fn run_synctv_cli_with_env(args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    run_synctv_cli_with_env_async(args, envs).await
 }
 
 async fn run_synctv_cli_with_env_async(
@@ -649,6 +553,11 @@ async fn run_synctv_cli_with_env_async(
     tokio::time::timeout(Duration::from_secs(90), async move {
         let mut command = tokio::process::Command::new(binary);
         command.args(&owned_args);
+        command.env_remove("SYNCTV_CONFIG_PATH");
+        command.env_remove("SYNCTV_MANAGEMENT_ENDPOINT");
+        command.env_remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        command.env_remove("XDG_CONFIG_HOME");
+        command.env_remove("XDG_RUNTIME_DIR");
         for (name, value) in owned_envs {
             command.env(name, value);
         }
@@ -874,7 +783,7 @@ async fn recv_grpc_server_message_skip_membership(
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_health_endpoints_report_live_and_ready() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -901,7 +810,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(ready_body["details"]["redis"], "healthy");
     assert_eq!(ready_body["details"]["ws_ticket"], "healthy (redis)");
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -916,7 +825,7 @@ async fn full_stack_management_exposes_only_remote_admin_surface() {
     use synctv_management::proto::management_service_server::ManagementServiceServer;
     use synctv_management::service::ManagementServiceImpl;
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     assert_eq!(
         grpc_health_status(&server.management_base_url, "").await,
@@ -979,7 +888,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::{ListPlaylistItemsRequest, ListPlaylistsRequest, LoginRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect auth gRPC client");
@@ -987,13 +896,15 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .login(LoginRequest {
             username: "admin".to_string(),
             password: "StrongPwd12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("bootstrap root login should succeed")
         .into_inner();
 
     let room_create = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "room",
             "create",
@@ -1003,7 +914,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--description",
             "cli remote room lifecycle e2e",
         ],
-    );
+    )
+    .await;
     assert!(
         room_create.status.success(),
         "room create via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1018,7 +930,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .to_string();
     assert_eq!(room_create_body["room"]["name"], "CLI managed room");
 
-    let playlist_list = run_synctv_remote_cli(server, &["playlist", "list", "--room-id", &room_id]);
+    let playlist_list =
+        run_synctv_remote_cli(&server, &["playlist", "list", "--room-id", &room_id]).await;
     assert!(
         playlist_list.status.success(),
         "playlist list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1027,7 +940,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     );
 
     let media_add = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "media",
             "add",
@@ -1042,7 +955,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--title",
             "CLI E2E Media",
         ],
-    );
+    )
+    .await;
     assert!(
         media_add.status.success(),
         "media add via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1057,7 +971,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .to_string();
 
     let media_add_second = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "media",
             "add-url",
@@ -1069,7 +983,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--title",
             "CLI E2E Media Second",
         ],
-    );
+    )
+    .await;
     assert!(
         media_add_second.status.success(),
         "second media add-url via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1084,7 +999,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .to_string();
 
     let media_reorder = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "media",
             "move",
@@ -1095,7 +1010,8 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--media-id",
             &media_two_id,
         ],
-    );
+    )
+    .await;
     assert!(
         media_reorder.status.success(),
         "media move via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1183,7 +1099,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{CreateRoomRequest, LoginRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let username = format!("cli_user_{suffix}");
     let email = format!("cli-user-{suffix}@example.com");
@@ -1196,13 +1112,15 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .login(LoginRequest {
             username: "admin".to_string(),
             password: "StrongPwd12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("public auth login for bootstrap root should succeed")
         .into_inner();
 
     let create_user = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "user",
             "create",
@@ -1212,7 +1130,8 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
             "--password",
             "CliUserPass12345!",
         ],
-    );
+    )
+    .await;
     assert!(
         create_user.status.success(),
         "user create via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1268,7 +1187,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("created room")
         .id;
 
-    let room_get = run_synctv_remote_cli(server, &["room", "get", &room_id]);
+    let room_get = run_synctv_remote_cli(&server, &["room", "get", &room_id]).await;
     assert!(
         room_get.status.success(),
         "room get via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1289,7 +1208,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{CreateRoomRequest, LoginRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let room_name = format!("CLI Ban Room {suffix}");
 
@@ -1300,6 +1219,8 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .login(LoginRequest {
             username: "admin".to_string(),
             password: "StrongPwd12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("public auth login for bootstrap root should succeed")
@@ -1327,9 +1248,10 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .id;
 
     let room_ban = run_synctv_remote_cli(
-        server,
+        &server,
         &["room", "ban", &room_id, "--reason", "CLI moderation test"],
-    );
+    )
+    .await;
     assert!(
         room_ban.status.success(),
         "room ban via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1341,7 +1263,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     assert_eq!(room_ban_body["room"]["id"], room_id);
     assert_eq!(room_ban_body["room"]["is_banned"], true);
 
-    let room_unban = run_synctv_remote_cli(server, &["room", "unban", &room_id]);
+    let room_unban = run_synctv_remote_cli(&server, &["room", "unban", &room_id]).await;
     assert!(
         room_unban.status.success(),
         "room unban via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1379,7 +1301,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{CreateRoomRequest, LoginRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
@@ -1389,6 +1311,8 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .login(LoginRequest {
             username: "admin".to_string(),
             password: "StrongPwd12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("public auth login for bootstrap root should succeed")
@@ -1415,7 +1339,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("created room")
         .id;
 
-    let settings_get = run_synctv_remote_cli(server, &["room", "settings", "get", &room_id]);
+    let settings_get = run_synctv_remote_cli(&server, &["room", "settings", "get", &room_id]).await;
     assert!(
         settings_get.status.success(),
         "room settings get via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1434,7 +1358,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("settings JSON should encode");
 
     let settings_update = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "room",
             "settings",
@@ -1443,7 +1367,8 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
             "--settings-json",
             &updated_settings_json,
         ],
-    );
+    )
+    .await;
     assert!(
         settings_update.status.success(),
         "room settings update via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1471,7 +1396,8 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
     assert_eq!(updated_settings_json["chat_enabled"], false);
     assert_eq!(updated_settings_json["allow_guest_join"], true);
 
-    let settings_reset = run_synctv_remote_cli(server, &["room", "settings", "reset", &room_id]);
+    let settings_reset =
+        run_synctv_remote_cli(&server, &["room", "settings", "reset", &room_id]).await;
     assert!(
         settings_reset.status.success(),
         "room settings reset via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1497,13 +1423,13 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let username = format!("cli_admin_{suffix}");
     let email = format!("cli-admin-{suffix}@example.com");
 
     let create_user = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "user",
             "create",
@@ -1513,7 +1439,8 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
             "--password",
             "CliAdminPass12345!",
         ],
-    );
+    )
+    .await;
     assert!(
         create_user.status.success(),
         "user create via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1528,9 +1455,10 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
         .to_string();
 
     let add_admin = run_synctv_remote_cli(
-        server,
+        &server,
         &["user", "admin", "grant", "--user-id", &created_user_id],
-    );
+    )
+    .await;
     assert!(
         add_admin.status.success(),
         "user admin add via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1545,7 +1473,7 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
         Some(synctv_proto::common::UserRole::Admin as i64)
     );
 
-    let list_admins = run_synctv_remote_cli(server, &["user", "admin", "list"]);
+    let list_admins = run_synctv_remote_cli(&server, &["user", "admin", "list"]).await;
     assert!(
         list_admins.status.success(),
         "user admin list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1564,9 +1492,10 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
     );
 
     let remove_admin = run_synctv_remote_cli(
-        server,
+        &server,
         &["user", "admin", "revoke", "--user-id", &created_user_id],
-    );
+    )
+    .await;
     assert!(
         remove_admin.status.success(),
         "user admin remove via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1602,9 +1531,10 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstrap_root() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
-    let ban_root = run_synctv_remote_cli(server, &["user", "ban", "admin", "--reason", "e2e"]);
+    let ban_root =
+        run_synctv_remote_cli(&server, &["user", "ban", "admin", "--reason", "e2e"]).await;
     assert!(
         ban_root.status.success(),
         "user ban via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1618,7 +1548,7 @@ async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstr
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
-    let unban_root = run_synctv_remote_cli(server, &["user", "unban", "admin"]);
+    let unban_root = run_synctv_remote_cli(&server, &["user", "unban", "admin"]).await;
     assert!(
         unban_root.status.success(),
         "user unban via CLI should succeed even when the target is the only bootstrap root\nstdout:\n{}\nstderr:\n{}",
@@ -1636,9 +1566,9 @@ async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstr
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
-    let settings_list = run_synctv_remote_cli(server, &["settings", "list"]);
+    let settings_list = run_synctv_remote_cli(&server, &["settings", "list"]).await;
     assert!(
         settings_list.status.success(),
         "settings list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1656,7 +1586,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
         "CLI settings list output should include server group: {settings_list_body}"
     );
 
-    let settings_get = run_synctv_remote_cli(server, &["settings", "get", "server"]);
+    let settings_get = run_synctv_remote_cli(&server, &["settings", "get", "server"]).await;
     assert!(
         settings_get.status.success(),
         "settings get via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1669,7 +1599,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     assert_eq!(settings_get_body["settings"]["signup_enabled"], true);
 
     let settings_update = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "settings",
             "update",
@@ -1679,7 +1609,8 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
             "--set",
             "max_rooms_per_user=42",
         ],
-    );
+    )
+    .await;
     assert!(
         settings_update.status.success(),
         "settings update via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1714,7 +1645,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     assert_eq!(server_group_settings["signup_enabled"], false);
     assert_eq!(server_group_settings["max_rooms_per_user"], 42);
 
-    let system_stats = run_synctv_remote_cli(server, &["system", "stats"]);
+    let system_stats = run_synctv_remote_cli(&server, &["system", "stats"]).await;
     assert!(
         system_stats.status.success(),
         "system stats via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1735,7 +1666,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_without_config() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let system_stats = run_synctv_cli_with_env(
         &[
@@ -1747,7 +1678,8 @@ async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_with
             "json",
         ],
         &[("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN)],
-    );
+    )
+    .await;
     assert!(
         system_stats.status.success(),
         "system stats via CLI explicit endpoint should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1768,9 +1700,9 @@ async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_with
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_system_stats_works_when_bootstrap_root_username_differs() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
-    let system_stats = run_synctv_remote_cli(server, &["system", "stats"]);
+    let system_stats = run_synctv_remote_cli(&server, &["system", "stats"]).await;
     assert!(
         system_stats.status.success(),
         "system stats via CLI should succeed when bootstrap root username differs\nstdout:\n{}\nstderr:\n{}",
@@ -1791,12 +1723,12 @@ async fn full_stack_cli_system_stats_works_when_bootstrap_root_username_differs(
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let provider_name = format!("local-provider-{suffix}");
 
     let provider_add = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "provider",
             "create",
@@ -1807,7 +1739,8 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
             "--comment",
             "local-only provider lifecycle e2e",
         ],
-    );
+    )
+    .await;
     assert!(
         provider_add.status.success(),
         "provider add via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1824,9 +1757,10 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
     );
 
     let provider_list_filtered = run_synctv_remote_cli(
-        server,
+        &server,
         &["provider", "list", "--provider-type", "custom_local"],
-    );
+    )
+    .await;
     assert!(
         provider_list_filtered.status.success(),
         "provider list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1845,7 +1779,7 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
     );
 
     let provider_update = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "provider",
             "update",
@@ -1859,7 +1793,8 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
             "--timeout-seconds",
             "25",
         ],
-    );
+    )
+    .await;
     assert!(
         provider_update.status.success(),
         "provider update via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1878,7 +1813,8 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
     );
     assert_eq!(provider_update_body["instance"]["timeout_seconds"], 25);
 
-    let provider_disable = run_synctv_remote_cli(server, &["provider", "disable", &provider_name]);
+    let provider_disable =
+        run_synctv_remote_cli(&server, &["provider", "disable", &provider_name]).await;
     assert!(
         provider_disable.status.success(),
         "provider disable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1889,7 +1825,8 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
         .expect("CLI provider disable output should be JSON");
     assert_eq!(provider_disable_body["instance"]["enabled"], false);
 
-    let provider_enable = run_synctv_remote_cli(server, &["provider", "enable", &provider_name]);
+    let provider_enable =
+        run_synctv_remote_cli(&server, &["provider", "enable", &provider_name]).await;
     assert!(
         provider_enable.status.success(),
         "provider enable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1931,7 +1868,8 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
     assert!(persisted_provider.enabled);
     assert_eq!(persisted_provider.timeout_seconds, 25);
 
-    let provider_delete = run_synctv_remote_cli(server, &["provider", "delete", &provider_name]);
+    let provider_delete =
+        run_synctv_remote_cli(&server, &["provider", "delete", &provider_name]).await;
     assert!(
         provider_delete.status.success(),
         "provider delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1943,9 +1881,10 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
     assert_eq!(provider_delete_body["success"], true);
 
     let provider_list_after_delete = run_synctv_remote_cli(
-        server,
+        &server,
         &["provider", "list", "--provider-type", "custom_archive"],
-    );
+    )
+    .await;
     assert!(
         provider_list_after_delete.status.success(),
         "provider list after delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -1968,7 +1907,7 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let provider_name = format!("remote-provider-{suffix}");
     let provider_config_json = serde_json::to_string(&json!({
@@ -1977,7 +1916,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     .expect("provider config JSON should encode");
 
     let provider_add = run_synctv_remote_cli(
-        server,
+        &server,
         &[
             "provider",
             "create",
@@ -1990,7 +1929,8 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
             "--config-json",
             &provider_config_json,
         ],
-    );
+    )
+    .await;
     assert!(
         provider_add.status.success(),
         "remote provider add via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2004,7 +1944,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     assert_eq!(provider_add_body["instance"]["providers"], json!(["alist"]));
 
     let provider_list_filtered =
-        run_synctv_remote_cli(server, &["provider", "list", "--provider-type", "alist"]);
+        run_synctv_remote_cli(&server, &["provider", "list", "--provider-type", "alist"]).await;
     assert!(
         provider_list_filtered.status.success(),
         "remote provider list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2023,7 +1963,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
 
     let provider_reconnect =
-        run_synctv_remote_cli(server, &["provider", "reconnect", &provider_name]);
+        run_synctv_remote_cli(&server, &["provider", "reconnect", &provider_name]).await;
     assert!(
         provider_reconnect.status.success(),
         "remote provider reconnect via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2031,7 +1971,8 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         String::from_utf8_lossy(&provider_reconnect.stderr),
     );
 
-    let provider_disable = run_synctv_remote_cli(server, &["provider", "disable", &provider_name]);
+    let provider_disable =
+        run_synctv_remote_cli(&server, &["provider", "disable", &provider_name]).await;
     assert!(
         provider_disable.status.success(),
         "remote provider disable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2042,7 +1983,8 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         .expect("CLI remote provider disable output should be JSON");
     assert_eq!(provider_disable_body["instance"]["enabled"], false);
 
-    let provider_enable = run_synctv_remote_cli(server, &["provider", "enable", &provider_name]);
+    let provider_enable =
+        run_synctv_remote_cli(&server, &["provider", "enable", &provider_name]).await;
     assert!(
         provider_enable.status.success(),
         "remote provider enable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2083,7 +2025,8 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         "remote provider should stay persisted and enabled after reconnect/disable/enable lifecycle"
     );
 
-    let provider_delete = run_synctv_remote_cli(server, &["provider", "delete", &provider_name]);
+    let provider_delete =
+        run_synctv_remote_cli(&server, &["provider", "delete", &provider_name]).await;
     assert!(
         provider_delete.status.success(),
         "remote provider delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2177,19 +2120,20 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without_overrides() {
-    let Some(socket_guard) = DefaultManagementSocketGuard::acquire()
-        .await
-        .expect("default management socket guard should inspect the default path")
-    else {
-        return;
-    };
-
-    let (postgres, database_url) = create_test_database_url_with_label(
-        "synctv_e2e_default_unix",
-        "full-stack-management-default-unix",
-    )
-    .await;
-    let (redis, redis_url) = start_redis_url_with_label("full-stack-management-default-unix").await;
+    #[cfg(target_os = "macos")]
+    let socket_root = tempfile::Builder::new()
+        .prefix("stv")
+        .tempdir_in("/tmp")
+        .expect("isolated default socket root should be created under /tmp");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let socket_root = tempfile::tempdir().expect("isolated default socket root should be created");
+    let (default_socket_path, cli_envs) = isolated_default_management_socket(socket_root.path());
+    let suffix = unique_test_suffix();
+    let database_name = format!("synctv_e2e_default_unix_{suffix}");
+    let container_label = format!("full-stack-management-default-unix-{suffix}");
+    let (postgres, database_url) =
+        create_test_database_url_with_label(&database_name, &container_label).await;
+    let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
     let api_port = reserve_local_port();
     let management_port = reserve_local_port();
     let rtmp_port = reserve_local_port();
@@ -2201,7 +2145,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
         management_port,
         rtmp_port,
     );
-    config.management = synctv_core::config::ManagementConfig::default();
+    configure_management_unix_socket(&mut config, &default_socket_path);
     config.management.enable_reflection = false;
 
     let app = Box::pin(Application::build_with_options(
@@ -2226,10 +2170,17 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
     wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(socket_guard.path()).await;
+    wait_until_unix_grpc_ready(&default_socket_path).await;
 
-    let system_stats =
-        run_synctv_cli_with_env_async(&["system", "stats", "--output", "json"], &[]).await;
+    let cli_env_refs = cli_envs
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    let system_stats = run_synctv_cli_with_env_async(
+        &["system", "stats", "--output", "json", "--no-dotenv"],
+        &cli_env_refs,
+    )
+    .await;
     assert!(
         system_stats.status.success(),
         "system stats via CLI default unix socket should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2252,7 +2203,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
         .expect("default unix management server task should join");
     server_result.expect("default unix management server should shut down cleanly");
 
-    drop(socket_guard);
+    drop(socket_root);
     drop(postgres);
     drop(redis);
 }
@@ -2566,7 +2517,7 @@ async fn full_stack_cli_serve_daemon_starts_background_server_and_stop_shuts_it_
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let client = test_http_client();
 
     let owner_register = post_json(
@@ -2709,13 +2660,13 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
         .expect("usage string")
         .contains(&format!("/ws/rooms/{room_id}?ticket=")));
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
-    let server = shared_server().await;
+    let server = start_test_server().await;
     let client = test_http_client();
 
     let register = post_json(
@@ -2819,7 +2770,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
         other => panic!("expected reused ticket to be rejected with HTTP 401, got: {other:?}"),
     }
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -2829,7 +2780,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{GetProfileRequest, LoginRequest, RegisterRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -2853,6 +2804,8 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
         .login(LoginRequest {
             username: "grpc_user".to_string(),
             password: "GrpcPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("grpc login should succeed")
@@ -2883,7 +2836,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
     assert_eq!(user.username, "grpc_user");
     assert_eq!(user.email, "grpc-user@example.com");
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -2893,7 +2846,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{CreateRoomRequest, LoginRequest, RegisterRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -2910,6 +2863,8 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         .login(LoginRequest {
             username: "grpc_room_owner".to_string(),
             password: "GrpcRoomPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("grpc login should succeed")
@@ -2950,7 +2905,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.member_count, 0);
     assert_eq!(room.id.len(), 12);
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -2964,7 +2919,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         RegisterRequest,
     };
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -2982,6 +2937,8 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .login(LoginRequest {
             username: "grpc_owner".to_string(),
             password: "GrpcOwnerPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("owner login should succeed")
@@ -2999,6 +2956,8 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .login(LoginRequest {
             username: "grpc_member".to_string(),
             password: "GrpcMemberPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("member login should succeed")
@@ -3093,7 +3052,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
     assert_eq!(fetched_room.name, "gRPC metadata room");
     assert_eq!(fetched_room.description, "room-scoped grpc e2e");
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -3109,7 +3068,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         RegisterRequest,
     };
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -3126,6 +3085,8 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .login(LoginRequest {
             username: "grpc_stream_owner".to_string(),
             password: "GrpcStreamOwnerPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("owner login should succeed")
@@ -3143,6 +3104,8 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .login(LoginRequest {
             username: "grpc_stream_member".to_string(),
             password: "GrpcStreamMemberPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("member login should succeed")
@@ -3240,7 +3203,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         other => panic!("expected HeartbeatAck, got: {other:?}"),
     }
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -3250,7 +3213,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::{ClientMessage, LoginRequest, RegisterRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -3267,6 +3230,8 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
         .login(LoginRequest {
             username: "grpc_stream_missing_join".to_string(),
             password: "GrpcStreamMissingJoinPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("login should succeed")
@@ -3292,7 +3257,7 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
         "unexpected error message: {error}"
     );
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }
 
 #[tokio::test]
@@ -3303,7 +3268,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     use synctv_proto::client::user_service_client::UserServiceClient;
     use synctv_proto::client::{ClientMessage, CreateRoomRequest, LoginRequest, RegisterRequest};
 
-    let server = shared_server().await;
+    let server = start_test_server().await;
 
     let mut auth_client = AuthServiceClient::connect(server.api_base_url.clone())
         .await
@@ -3321,6 +3286,8 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .login(LoginRequest {
             username: "grpc_stream_owner_only".to_string(),
             password: "GrpcStreamOwnerOnlyPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("owner login should succeed")
@@ -3338,6 +3305,8 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .login(LoginRequest {
             username: "grpc_stream_outsider".to_string(),
             password: "GrpcStreamOutsiderPass12345!".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         })
         .await
         .expect("outsider login should succeed")
@@ -3389,5 +3358,5 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         "unexpected membership denial: {error}"
     );
 
-    // shared server — no per-test shutdown
+    // per-test isolated server
 }

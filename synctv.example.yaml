@@ -73,6 +73,12 @@ metrics:
   enabled: false
   host: "0.0.0.0"
   port: 9090
+  # tls:
+  #   enabled: true
+  #   # Static input files: relative cert/key paths stay relative to this config file.
+  #   # They are NOT rebased through data_dir.
+  #   cert_path: "./tls/metrics.crt"
+  #   key_path: "./tls/metrics.key"
   auth:
     # Authentication mode for /metrics: bearer_token, basic, kubernetes
     mode: "bearer_token"
@@ -89,8 +95,10 @@ management:
   # TCP transport REQUIRES auth_token; startup fails if it is empty.
   # Unix transport also supports auth_token, but defaults to empty and may rely on
   # owner-only socket permissions instead.
-  # Leave unix_socket_path unset to use the platform default runtime directory.
+  # Runtime-owned local paths use the top-level `data_dir` root shown below.
+  # Leave unix_socket_path unset to use the platform default under data_dir/run/.
   # Environment variables:
+  #   SYNCTV_DATA_DIR=/var/lib/synctv
   #   SYNCTV_MANAGEMENT_ENABLED=true
   #   SYNCTV_MANAGEMENT_TRANSPORT=unix
   #   SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH=/path/to/synctv.sock
@@ -99,11 +107,25 @@ management:
   enabled: true
   transport: "unix"
   port: 50052
+  # Relative unix_socket_path values are resolved from data_dir.
   # unix_socket_path: "/absolute/path/to/synctv.sock"
   # auth_token: "replace-with-a-random-secret"
+  # auth_token_file is a static config input. Relative paths stay relative to this config file.
   # auth_token_file: "/run/secrets/management_auth_token"
   # Reflection can be configured independently from the public API gRPC listener.
   enable_reflection: false
+
+# `data_dir` is the shared root for runtime-owned local files.
+# It affects relative:
+#   - management.unix_socket_path
+#   - logging.file_path
+#   - livestream.hls_storage_path
+#   - cache.proxy_slice_file_cache_dir
+# It does NOT affect:
+#   - *_file secret paths (they stay relative to this config file)
+#   - metrics.tls.cert_path / metrics.tls.key_path
+# CLI `--data-dir` and env `SYNCTV_DATA_DIR` override this value.
+# data_dir: "/var/lib/synctv"
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -181,6 +203,8 @@ jwt:
   # REQUIRED in production. Generate with: openssl rand -base64 32
   # Minimum 32 characters with high entropy (at least 16 unique characters).
   secret: ""
+  # secret_file is a static config input. Relative paths stay relative to this config file,
+  # not data_dir.
   # secret_file: "/run/secrets/jwt_secret"
   access_token_duration_hours: 1
   refresh_token_duration_days: 30
@@ -192,7 +216,15 @@ jwt:
 logging:
   level: "info"
   format: "pretty"
+  # Relative file_path values are treated as runtime-owned output and resolved from data_dir.
   # file_path: "/var/log/synctv/app.log"
+
+cache:
+  # Enable persisted proxy slice files on local/shared storage.
+  proxy_slice_file_backend_enabled: false
+  # Relative proxy_slice_file_cache_dir values are resolved from data_dir.
+  # Leave empty to use the built-in default under data_dir/cache/proxy-slice when enabled.
+  # proxy_slice_file_cache_dir: "cache/proxy-slice"
 
 livestream:
   rtmp_port: 1935
@@ -212,6 +244,9 @@ livestream:
   # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
   # been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
   gop_cache_max_memory_mb: 100
+  # Relative hls_storage_path values are resolved from data_dir.
+  # This is runtime-owned storage, unlike *_file secrets or metrics TLS files.
+  # hls_storage_path: "livestream/hls"
 
 # ============================================================================
 # Email Configuration (SMTP)
@@ -225,6 +260,7 @@ email:
   smtp_port: 587
   smtp_username: ""
   smtp_password: ""  # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  # smtp_password_file is a static config input. Relative paths stay relative to this config file.
   # smtp_password_file: "/run/secrets/smtp_password"
   from_email: ""
   from_name: "SyncTV"

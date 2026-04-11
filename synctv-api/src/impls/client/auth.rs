@@ -74,10 +74,34 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
+        let has_username = !req.username.trim().is_empty();
+        let has_email = !req.email.trim().is_empty();
+        if has_username == has_email {
+            return Err(ApiError::InvalidInput(
+                "Provide exactly one of username or email".to_string(),
+            ));
+        }
+        if req.password.is_empty() {
+            return Err(ApiError::InvalidInput("Password is required".to_string()));
+        }
+        if !req.email_token.is_empty() {
+            return Err(ApiError::InvalidInput(
+                "email_token cannot be combined with password login".to_string(),
+            ));
+        }
+
+        let identifier = if has_email {
+            crate::http::validation::validate_email(&req.email)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+        } else {
+            crate::http::validation::validate_username(&req.username)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+        };
+
         // Login user (returns tuple: (User, access_token, refresh_token))
         let (user, access_token, refresh_token) = self
             .user_service
-            .login(req.username, req.password, client_ip)
+            .login(identifier, req.password, client_ip)
             .await
             .map_err(ApiError::from)?;
 

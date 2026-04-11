@@ -79,6 +79,18 @@ metrics:
     # basic_password: ""
     # basic_password_file: "/run/secrets/metrics_basic_password"
 
+# `data_dir` is the shared root for runtime-owned local files.
+# It affects relative:
+#   - management.unix_socket_path
+#   - logging.file_path
+#   - livestream.hls_storage_path
+#   - cache.proxy_slice_file_cache_dir
+# It does NOT affect:
+#   - *_file secret paths (they stay relative to this config file)
+#   - metrics.tls.cert_path / metrics.tls.key_path
+# CLI `--data-dir` and env `SYNCTV_DATA_DIR` override this value.
+# data_dir: "/var/lib/synctv"
+
 management:
   # Local-only management daemon transport used by the `synctv` CLI for remote lifecycle commands.
   # Unix-like platforms default to a Unix domain socket for daemon-style local access.
@@ -86,10 +98,12 @@ management:
   # TCP transport REQUIRES auth_token; startup fails if it is empty.
   # Unix transport also supports auth_token, but defaults to empty and may rely on
   # owner-only socket permissions instead.
-  # Leave unix_socket_path unset to use the platform default runtime directory.
+  # Runtime-owned local paths use the top-level `data_dir` root shown above.
+  # Leave unix_socket_path unset to use the platform default under data_dir/run/.
   enabled: true
   transport: "unix"
   port: 50052
+  # Relative unix_socket_path values are resolved from data_dir.
   # unix_socket_path: "/absolute/path/to/synctv.sock"
   # auth_token: "replace-with-a-random-secret"
   # auth_token_file: "/run/secrets/management_auth_token"

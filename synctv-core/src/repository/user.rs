@@ -163,7 +163,7 @@ impl UserRepository {
             r"
             SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
             FROM users
-            WHERE email = $1 AND deleted_at IS NULL
+            WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL
             ",
         )
         .bind(email)

@@ -64,10 +64,7 @@ pub use content_filter::{ContentFilter, ContentFilterError};
 pub use credential_encryption::CredentialEncryption;
 pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{DistributedLock, LockGuard, MigrationLock, PgAdvisoryMigrationLock};
-pub use email::{
-    mask_email, EmailConfig, EmailService, InMemoryVerificationCodeStore,
-    RedisVerificationCodeStore, VerificationCodeStore,
-};
+pub use email::{mask_email, EmailConfig, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::{EmailTokenService, EmailTokenType};
 pub use global_settings::{

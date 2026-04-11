@@ -7,7 +7,7 @@ use axum::{extract::State, Json};
 use super::{AppError, AppResult, AppState};
 use crate::proto::client::{
     LoginRequest, LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterRequest, RegisterResponse,
+    RegisterRequest, RegisterResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
 };
 
 /// Extract the real client IP from a request.
@@ -56,7 +56,7 @@ pub async fn register(
     Ok(Json(response))
 }
 
-/// Login with username and password
+/// Login with username+password, email+password, or email+login-token.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -79,14 +79,80 @@ pub async fn login(
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
     let client_ip = extract_client_ip(&state.config, connect_info.0, &headers);
+    let response = if req.email_token.is_empty() {
+        state
+            .client_api
+            .login(req, Some(client_ip))
+            .await
+            .map_err(super::error::map_api_error)?
+    } else if req.password.is_empty()
+        && !req.email.trim().is_empty()
+        && req.username.trim().is_empty()
+    {
+        let result = require_email_api(&state)?
+            .confirm_email_login(&req.email, &req.email_token, Some(client_ip))
+            .await
+            .map_err(super::error::map_api_error)?;
 
-    let response = state
-        .client_api
-        .login(req, Some(client_ip))
+        LoginResponse {
+            user: Some(crate::impls::client::user_to_proto(&result.user)),
+            access_token: result.access_token,
+            refresh_token: result.refresh_token,
+        }
+    } else {
+        return Err(AppError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Email login token requires email only and cannot be combined with username or password.",
+        ));
+    };
+
+    Ok(Json(response))
+}
+
+fn email_api_unavailable_error() -> AppError {
+    AppError::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "Email service is not available on this server.",
+    )
+}
+
+fn require_email_api(
+    state: &AppState,
+) -> Result<&std::sync::Arc<crate::impls::EmailApiImpl>, AppError> {
+    state
+        .email_api
+        .as_ref()
+        .ok_or_else(email_api_unavailable_error)
+}
+
+/// Request a passwordless email login code.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/email/request",
+        tag = "Auth",
+        request_body = RequestEmailLoginRequest,
+        responses(
+            (status = 200, description = "Email login request accepted", body = RequestEmailLoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn request_email_login(
+    State(state): State<AppState>,
+    Json(req): Json<RequestEmailLoginRequest>,
+) -> AppResult<Json<RequestEmailLoginResponse>> {
+    let email_api = require_email_api(&state)?;
+    let result = email_api
+        .request_email_login(&req.email)
         .await
         .map_err(super::error::map_api_error)?;
 
-    Ok(Json(response))
+    Ok(Json(RequestEmailLoginResponse {
+        message: result.message,
+    }))
 }
 
 /// Refresh access token using refresh token.
@@ -192,6 +258,8 @@ mod tests {
         let req = LoginRequest {
             username: "testuser".to_string(),
             password: "securepass123".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         };
         assert_eq!(req.username, "testuser");
         assert_eq!(req.password, "securepass123");
@@ -202,6 +270,8 @@ mod tests {
         let req = LoginRequest {
             username: "testuser".to_string(),
             password: "mypassword".to_string(),
+            email: String::new(),
+            email_token: String::new(),
         };
         let json = serde_json::to_string(&req).expect("serialize");
         let deserialized: LoginRequest = serde_json::from_str(&json).expect("deserialize");
@@ -224,6 +294,17 @@ mod tests {
         let json = serde_json::to_string(&req).expect("serialize");
         let deserialized: RefreshTokenRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.refresh_token, req.refresh_token);
+    }
+
+    #[test]
+    fn test_request_email_login_request_roundtrip() {
+        let req = RequestEmailLoginRequest {
+            email: "user@example.com".to_string(),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let deserialized: RequestEmailLoginRequest =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.email, req.email);
     }
 
     // ========== Error Mapping Tests ==========
@@ -268,12 +349,13 @@ mod tests {
     }
 
     #[test]
-    fn test_login_request_missing_field_fails() {
-        // LoginRequest requires both username and password via serde
+    fn test_login_request_missing_fields_default_to_empty_strings() {
         let json = r#"{"username":"user"}"#;
-        let result: Result<LoginRequest, _> = serde_json::from_str(json);
-        // serde derive requires all fields; missing password causes deserialization failure
-        assert!(result.is_err());
+        let req: LoginRequest = serde_json::from_str(json).expect("deserialize with defaults");
+        assert_eq!(req.username, "user");
+        assert!(req.password.is_empty());
+        assert!(req.email.is_empty());
+        assert!(req.email_token.is_empty());
     }
 
     #[test]

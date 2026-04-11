@@ -1,7 +1,7 @@
 // HTTP error handling
 
 use axum::{
-    http::StatusCode,
+    http::{header::RETRY_AFTER, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -20,6 +20,7 @@ pub struct AppError {
     /// Optional application-level error code from `impls::error_codes`.
     /// When set, this is included in the JSON error response for programmatic handling.
     pub error_code: Option<i32>,
+    pub retry_after_seconds: Option<u64>,
 }
 
 impl AppError {
@@ -28,6 +29,7 @@ impl AppError {
             status,
             message: message.into(),
             error_code: None,
+            retry_after_seconds: None,
         }
     }
 
@@ -45,6 +47,12 @@ impl AppError {
 
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self::new(StatusCode::TOO_MANY_REQUESTS, message)
+    }
+
+    pub fn too_many_requests_with_retry(message: impl Into<String>, retry_after: u64) -> Self {
+        let mut error = Self::new(StatusCode::TOO_MANY_REQUESTS, message);
+        error.retry_after_seconds = Some(retry_after);
+        error
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
@@ -97,9 +105,9 @@ impl AppError {
 
     #[must_use]
     pub fn rate_limited(retry_after: u64) -> Self {
-        Self::new(
-            StatusCode::TOO_MANY_REQUESTS,
+        Self::too_many_requests_with_retry(
             format!("Too many requests. Please try again in {retry_after} seconds."),
+            retry_after,
         )
     }
 
@@ -161,15 +169,20 @@ impl std::error::Error for AppError {}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = self.status;
+        let Self {
+            status,
+            message,
+            error_code,
+            retry_after_seconds,
+        } = self;
 
         // For server-side failures, sanitize details while preserving retryability /
         // upstream failure semantics for native clients.
         let error_message = if status.is_server_error() {
             tracing::error!(
                 status = status.as_u16(),
-                original_message = %self.message,
-                error_code = ?self.error_code,
+                original_message = %message,
+                error_code = ?error_code,
                 "Server error response"
             );
 
@@ -182,7 +195,7 @@ impl IntoResponse for AppError {
                 _ => "Internal server error".to_string(),
             }
         } else {
-            self.message
+            message
         };
 
         let request_id = crate::http::middleware::CURRENT_REQUEST_ID
@@ -192,11 +205,18 @@ impl IntoResponse for AppError {
         let body = Json(ApiErrorResponse {
             error: error_message,
             status: status.as_u16().into(),
-            code: self.error_code,
+            code: error_code,
             request_id,
         });
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        if let Some(retry_after_seconds) = retry_after_seconds {
+            if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                response.headers_mut().insert(RETRY_AFTER, value);
+            }
+        }
+
+        response
     }
 }
 
@@ -348,7 +368,13 @@ impl From<crate::impls::ApiError> for AppError {
             ErrorKind::PermissionDenied => Self::forbidden(msg),
             ErrorKind::AlreadyExists => Self::conflict(msg),
             ErrorKind::InvalidArgument => Self::bad_request(msg),
-            ErrorKind::RateLimited => Self::too_many_requests(msg),
+            ErrorKind::RateLimited => {
+                if let Some(retry_after_seconds) = err.retry_after_seconds() {
+                    Self::too_many_requests_with_retry(msg, retry_after_seconds)
+                } else {
+                    Self::too_many_requests(msg)
+                }
+            }
             ErrorKind::ServiceUnavailable => Self::service_unavailable(),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
@@ -877,6 +903,22 @@ mod tests {
         assert_eq!(
             app_err.error_code,
             Some(crate::impls::error_codes::RESOURCE_EXHAUSTED)
+        );
+        assert_eq!(app_err.retry_after_seconds, None);
+    }
+
+    #[tokio::test]
+    async fn test_from_api_error_rate_limited_with_retry_sets_header() {
+        let app_err = AppError::from(crate::impls::ApiError::RateLimitedWithRetry {
+            message: "too many requests".to_string(),
+            retry_after_seconds: 17,
+        });
+        let response = app_err.into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get(RETRY_AFTER).unwrap(),
+            &HeaderValue::from_static("17")
         );
     }
 

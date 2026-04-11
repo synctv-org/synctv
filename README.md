@@ -95,9 +95,27 @@ cargo run --bin synctv -- serve
 
 HTTP/REST and public gRPC share a single API port, defaulting to `0.0.0.0:8080`.
 The management daemon default endpoint is platform-specific:
-- Linux / other Unix: `unix://$XDG_RUNTIME_DIR/synctv/synctv.sock` when `XDG_RUNTIME_DIR` is set, otherwise `unix:///run/synctv/synctv.sock`
-- macOS: `unix://$HOME/Library/Application Support/synctv/run/synctv.sock`
+- Linux / other Unix: `unix://$XDG_STATE_HOME/synctv/run/synctv.sock` when `XDG_STATE_HOME` is set, otherwise `unix://$HOME/.local/state/synctv/run/synctv.sock`
+- macOS: `unix://$HOME/.synctv/run/synctv.sock`
 - Windows: `http://127.0.0.1:50052`
+
+Runtime-owned local files can be relocated with `--data-dir`, `SYNCTV_DATA_DIR`, or
+top-level config `data_dir`.
+
+`data_dir` applies to runtime-owned local paths:
+- default management Unix socket path and relative `management.unix_socket_path`
+- relative `logging.file_path`
+- relative `livestream.hls_storage_path`
+- relative `cache.proxy_slice_file_cache_dir`
+
+`data_dir` does not rebase static input files:
+- `*_file` secret references such as `jwt.secret_file`, `management.auth_token_file`,
+  `oauth2.providers.*.client_secret_file`, or provider credential `_file` fields
+- `metrics.tls.cert_path` and `metrics.tls.key_path`
+
+Absolute paths are always used as-is. Relative `data_dir` from config files is resolved
+relative to the config file directory; `--data-dir` and `SYNCTV_DATA_DIR` are resolved
+relative to the current working directory.
 
 On platforms without Unix Domain Socket support, `management.transport: unix` is rejected during
 configuration validation instead of silently falling back.
@@ -221,11 +239,27 @@ grpcurl -plaintext -d '{
 
 Configuration can be provided via:
 1. Environment variables (highest priority): `SYNCTV_SECTION_KEY`
-2. Config file (YAML only), searched in platform-aware default locations such as:
+2. Config file (`.yaml`, `.yml`, `.json`, `.toml`), searched in platform-aware default locations such as:
    `./synctv.yaml`, Linux `$XDG_CONFIG_HOME/synctv/synctv.yaml` or `~/.config/synctv/synctv.yaml`,
-   macOS `~/Library/Application Support/synctv/synctv.yaml`, `/etc/synctv/synctv.yaml`,
+   macOS `~/.synctv/synctv.yaml`, Linux `/etc/synctv/synctv.yaml`,
    `/config/synctv.yaml`
 3. Defaults (lowest priority)
+
+`data_dir` can also be set via CLI `--data-dir`, environment `SYNCTV_DATA_DIR`, or
+top-level config `data_dir`.
+
+It affects only runtime-owned local paths:
+- `management.unix_socket_path`
+- `logging.file_path`
+- `livestream.hls_storage_path`
+- `cache.proxy_slice_file_cache_dir`
+
+It does not affect static config inputs:
+- `*_file` secrets remain relative to the config file directory
+- `metrics.tls.cert_path` and `metrics.tls.key_path` remain relative to the config file directory
+
+Absolute paths are preserved. Relative runtime-owned paths are resolved against the
+effective data directory.
 
 **Comprehensive Configuration File**
 
@@ -243,6 +277,8 @@ View the complete file: [`synctv.example.yaml`](/Volumes/workspace/rust/synctv/s
 **Quick Example** (minimal configuration):
 
 ```yaml
+data_dir: "/var/lib/synctv"
+
 server:
   host: "0.0.0.0"
   port: 8080

@@ -39,15 +39,15 @@ use crate::proto::client::{
     ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest,
     LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
     RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    RejectMemberRequest, RejectMemberResponse, RequestPasswordResetRequest,
-    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage, SetPasswordRequest,
-    SetPasswordResponse, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
-    SetUsernameResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
-    UnbanMemberRequest, UnbanMemberResponse, UpdateMemberPermissionsRequest,
-    UpdateMemberPermissionsResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    RejectMemberRequest, RejectMemberResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
+    ResetRoomSettingsResponse, SendVerificationEmailRequest, SendVerificationEmailResponse,
+    ServerMessage, SetPasswordRequest, SetPasswordResponse, SetRoomPasswordRequest,
+    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
+    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -165,8 +165,7 @@ pub struct ClientServiceConfig {
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub connection_manager: ConnectionManager,
-    pub email_service: Option<Arc<synctv_core::service::EmailService>>,
-    pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
@@ -186,8 +185,7 @@ pub struct ClientServiceImpl {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     connection_manager: Arc<ConnectionManager>,
-    email_service: Option<Arc<synctv_core::service::EmailService>>,
-    email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+    email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -195,15 +193,9 @@ pub struct ClientServiceImpl {
 }
 
 impl ClientServiceImpl {
-    fn email_service_unavailable_error() -> crate::impls::ApiError {
+    fn email_api_unavailable_error() -> crate::impls::ApiError {
         crate::impls::ApiError::ServiceUnavailable(
             "Email service is not available on this server.".to_string(),
-        )
-    }
-
-    fn email_token_service_unavailable_error() -> crate::impls::ApiError {
-        crate::impls::ApiError::ServiceUnavailable(
-            "Email verification service is not available on this server.".to_string(),
         )
     }
 
@@ -218,8 +210,7 @@ impl ClientServiceImpl {
         rate_limit_config: RateLimitConfig,
         content_filter: ContentFilter,
         connection_manager: ConnectionManager,
-        email_service: Option<Arc<synctv_core::service::EmailService>>,
-        email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+        email_api: Option<Arc<crate::impls::EmailApiImpl>>,
         _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         config: Arc<synctv_core::Config>,
@@ -234,8 +225,7 @@ impl ClientServiceImpl {
             rate_limit_config: Arc::new(rate_limit_config),
             content_filter: Arc::new(content_filter),
             connection_manager: Arc::new(connection_manager),
-            email_service,
-            email_token_service,
+            email_api,
             client_api,
             config,
             notification_service: None,
@@ -255,8 +245,7 @@ impl ClientServiceImpl {
             rate_limit_config: Arc::new(config.rate_limit_config),
             content_filter: Arc::new(config.content_filter),
             connection_manager: Arc::new(config.connection_manager),
-            email_service: config.email_service,
-            email_token_service: config.email_token_service,
+            email_api: config.email_api,
             client_api: config.client_api,
             config: config.config,
             notification_service: config.notification_service,
@@ -264,22 +253,11 @@ impl ClientServiceImpl {
         }
     }
 
-    /// Build an `EmailApiImpl` from the configured services, or return an error
-    fn email_api(&self) -> Result<crate::impls::EmailApiImpl, crate::impls::ApiError> {
-        let email_service = self
-            .email_service
+    /// Resolve the shared `EmailApiImpl`, or return an error when email is not configured.
+    fn email_api(&self) -> Result<&Arc<crate::impls::EmailApiImpl>, crate::impls::ApiError> {
+        self.email_api
             .as_ref()
-            .ok_or_else(Self::email_service_unavailable_error)?;
-        let email_token_service = self
-            .email_token_service
-            .as_ref()
-            .ok_or_else(Self::email_token_service_unavailable_error)?;
-
-        Ok(crate::impls::EmailApiImpl::new(
-            self.user_service.clone(),
-            email_service.clone(),
-            email_token_service.clone(),
-        ))
+            .ok_or_else(Self::email_api_unavailable_error)
     }
 
     /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor).
@@ -336,12 +314,48 @@ impl AuthService for ClientServiceImpl {
     ) -> Result<Response<LoginResponse>, Status> {
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
-        let response = self
-            .client_api
-            .login(req, client_ip)
-            .await
-            .map_err(map_api_error)?;
+        let response = if req.email_token.is_empty() {
+            self.client_api
+                .login(req, client_ip)
+                .await
+                .map_err(map_api_error)?
+        } else if req.password.is_empty()
+            && !req.email.trim().is_empty()
+            && req.username.trim().is_empty()
+        {
+            let email_api = self.email_api().map_err(map_email_flow_error)?;
+            let result = email_api
+                .confirm_email_login(&req.email, &req.email_token, client_ip)
+                .await
+                .map_err(map_email_flow_error)?;
+
+            LoginResponse {
+                user: Some(crate::impls::client::user_to_proto(&result.user)),
+                access_token: result.access_token,
+                refresh_token: result.refresh_token,
+            }
+        } else {
+            return Err(Status::invalid_argument(
+                "Email token login requires email only and cannot be combined with username or password.",
+            ));
+        };
         Ok(Response::new(response))
+    }
+
+    async fn request_email_login(
+        &self,
+        request: Request<RequestEmailLoginRequest>,
+    ) -> Result<Response<RequestEmailLoginResponse>, Status> {
+        let req = request.into_inner();
+        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let result = email_api
+            .request_email_login(&req.email)
+            .await
+            .map_err(map_email_flow_error)?;
+
+        Ok(Response::new(RequestEmailLoginResponse {
+            message: result.message,
+        }))
     }
 
     async fn refresh_token(
@@ -1490,8 +1504,8 @@ mod tests {
     }
 
     #[test]
-    fn test_email_service_missing_maps_to_service_unavailable() {
-        let err = ClientServiceImpl::email_service_unavailable_error();
+    fn test_email_api_missing_maps_to_service_unavailable() {
+        let err = ClientServiceImpl::email_api_unavailable_error();
         assert!(matches!(
             err.classify(),
             crate::impls::ErrorKind::ServiceUnavailable
@@ -1499,19 +1513,6 @@ mod tests {
         assert_eq!(
             err.message(),
             "Email service is not available on this server."
-        );
-    }
-
-    #[test]
-    fn test_email_token_service_missing_maps_to_service_unavailable() {
-        let err = ClientServiceImpl::email_token_service_unavailable_error();
-        assert!(matches!(
-            err.classify(),
-            crate::impls::ErrorKind::ServiceUnavailable
-        ));
-        assert_eq!(
-            err.message(),
-            "Email verification service is not available on this server."
         );
     }
 

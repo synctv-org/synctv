@@ -10,7 +10,10 @@ use chrono::{Duration, Utc};
 use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
     repository::{EmailTokenRepository, UserRepository},
-    service::email_token::{EmailTokenService, EmailTokenType},
+    service::{
+        email_token::{EmailTokenService, EmailTokenType},
+        EmailConfig, EmailService,
+    },
 };
 use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
@@ -56,16 +59,25 @@ async fn test_create_and_get_token() {
         .await
         .unwrap();
 
-    assert_eq!(created.token, token_str);
+    assert_ne!(
+        created.token, token_str,
+        "email tokens must never be stored in plaintext"
+    );
     assert_eq!(created.user_id, user.id);
-    assert_eq!(created.token_type, "email_verification");
+    assert_eq!(
+        created.token_type,
+        EmailTokenType::EmailVerification.as_i16()
+    );
     assert!(created.used_at.is_none());
 
     // Get the token
     let fetched = token_repo.get(&token_str).await.unwrap();
     assert!(fetched.is_some());
     let fetched = fetched.unwrap();
-    assert_eq!(fetched.token, token_str);
+    assert_ne!(
+        fetched.token, token_str,
+        "repository lookup should hash the raw token before querying"
+    );
     assert_eq!(fetched.user_id, user.id);
 }
 
@@ -220,10 +232,13 @@ async fn test_cleanup_expired_tokens() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_6")).await.unwrap();
-
-    // Create some expired tokens
+    // Create expired unused tokens for distinct users so each row respects the
+    // "one unused token per user + type" invariant enforced by the DB.
     for i in 0..3 {
+        let user = user_repo
+            .create(&make_user(&format!("token_user_6_{i}")))
+            .await
+            .unwrap();
         let token_str = synctv_common::snanoid!(32);
         let expires_at = Utc::now() - Duration::hours(i + 1);
         token_repo
@@ -237,13 +252,18 @@ async fn test_cleanup_expired_tokens() {
             .unwrap();
     }
 
-    // Create one valid token
+    let valid_user = user_repo
+        .create(&make_user("token_user_6_valid"))
+        .await
+        .unwrap();
+
+    // Create one valid token that must survive cleanup
     let valid_token = synctv_common::snanoid!(32);
     let valid_expires = Utc::now() + Duration::hours(24);
     token_repo
         .create(
             &valid_token,
-            &user.id,
+            &valid_user.id,
             EmailTokenType::EmailVerification,
             valid_expires,
         )
@@ -267,28 +287,76 @@ async fn test_delete_user_tokens() {
     let token_repo = EmailTokenRepository::new(pool.clone());
 
     let user = user_repo.create(&make_user("token_user_7")).await.unwrap();
+    let expires_at = Utc::now() + Duration::hours(24);
 
-    // Create multiple unused tokens
-    for _ in 0..3 {
-        let token_str = synctv_common::snanoid!(32);
-        let expires_at = Utc::now() + Duration::hours(24);
-        token_repo
-            .create(
-                &token_str,
-                &user.id,
-                EmailTokenType::EmailVerification,
-                expires_at,
-            )
-            .await
-            .unwrap();
-    }
+    let used_verification_token = synctv_common::snanoid!(32);
+    token_repo
+        .create(
+            &used_verification_token,
+            &user.id,
+            EmailTokenType::EmailVerification,
+            expires_at,
+        )
+        .await
+        .unwrap();
+    token_repo
+        .mark_as_used(&used_verification_token)
+        .await
+        .unwrap();
 
-    // Delete all verification tokens for user
+    let active_verification_token = synctv_common::snanoid!(32);
+    token_repo
+        .create(
+            &active_verification_token,
+            &user.id,
+            EmailTokenType::EmailVerification,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+    let password_reset_token = synctv_common::snanoid!(32);
+    token_repo
+        .create(
+            &password_reset_token,
+            &user.id,
+            EmailTokenType::PasswordReset,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+    // Delete current unused verification tokens for the user.
     let deleted = token_repo
         .delete_user_tokens(&user.id, EmailTokenType::EmailVerification)
         .await
         .unwrap();
-    assert_eq!(deleted, 3);
+    assert_eq!(deleted, 1);
+
+    assert!(
+        token_repo
+            .get(&active_verification_token)
+            .await
+            .unwrap()
+            .is_none(),
+        "delete_user_tokens should remove the active unused token",
+    );
+    assert!(
+        token_repo
+            .get(&used_verification_token)
+            .await
+            .unwrap()
+            .is_some(),
+        "delete_user_tokens should not remove already-used historical tokens",
+    );
+    assert!(
+        token_repo
+            .get(&password_reset_token)
+            .await
+            .unwrap()
+            .is_some(),
+        "delete_user_tokens should not remove other token types",
+    );
 }
 
 #[tokio::test]
@@ -299,6 +367,143 @@ async fn test_get_nonexistent_token() {
 
     let result = token_repo.get("nonexistent_token_value").await.unwrap();
     assert!(result.is_none());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_repo = EmailTokenRepository::new(pool.clone());
+
+    let user = user_repo
+        .create(&make_user("token_unique_invariant"))
+        .await
+        .unwrap();
+    let expires_at = Utc::now() + Duration::hours(24);
+
+    token_repo
+        .create(
+            "first-raw-token",
+            &user.id,
+            EmailTokenType::EmailVerification,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+    let second = token_repo
+        .create(
+            "second-raw-token",
+            &user.id,
+            EmailTokenType::EmailVerification,
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(second.user_id, user.id);
+    assert_eq!(
+        second.token_type,
+        EmailTokenType::EmailVerification.as_i16()
+    );
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+    )
+    .bind(user.id.as_str())
+    .bind(EmailTokenType::EmailVerification.as_i16())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        remaining, 2,
+        "repository create should allow multiple unused tokens for the same user and type",
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_failed_verification_email_send_does_not_leave_valid_token() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool);
+
+    let user = user_repo
+        .create(&make_user("token_send_failure"))
+        .await
+        .unwrap();
+    let email = user.email.clone().unwrap();
+    let email_service = EmailService::new(Some(EmailConfig {
+        smtp_host: "127.0.0.1".to_string(),
+        smtp_port: 9,
+        smtp_username: "test".to_string(),
+        smtp_password: "test".to_string(),
+        from_email: "noreply@example.com".to_string(),
+        from_name: "SyncTV".to_string(),
+        use_tls: false,
+    }))
+    .unwrap();
+
+    let result = email_service
+        .send_verification_email(&email, &token_service, &user.id)
+        .await;
+    assert!(result.is_err(), "SMTP failure should surface as an error");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+    )
+    .bind(user.id.as_str())
+    .bind(EmailTokenType::EmailVerification.as_i16())
+    .fetch_one(user_repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "failed email delivery must not leave an unused verification token behind"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_invalidating_old_token_does_not_remove_newer_replacement() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool);
+
+    let user = user_repo
+        .create(&make_user("token_specific_invalidation"))
+        .await
+        .unwrap();
+
+    let first_token = token_service
+        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+    let second_token = token_service
+        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    token_service
+        .invalidate_specific_token(&first_token, &user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    assert!(
+        token_service
+            .validate_token(&second_token, EmailTokenType::EmailVerification)
+            .await
+            .is_ok(),
+        "cleaning up a superseded token must not remove the current replacement",
+    );
+    assert!(
+        token_service
+            .validate_token(&first_token, EmailTokenType::EmailVerification)
+            .await
+            .is_err(),
+        "the superseded token should stay invalid",
+    );
 }
 
 // ============================================================================

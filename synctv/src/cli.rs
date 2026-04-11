@@ -9,9 +9,9 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use synctv_core::bootstrap::{load_config_with_options, LoadConfigOptions};
+use synctv_core::config::absolute_display_path;
 #[cfg(test)]
 use synctv_core::config::default_management_unix_socket_path;
-use synctv_core::config::{absolute_display_path, default_management_runtime_dir};
 use synctv_core::time as app_time;
 use synctv_management::proto as management_proto;
 
@@ -82,6 +82,12 @@ pub struct GlobalConfigArgs {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
+    /// Shared local data directory for runtime-owned files such as the
+    /// management socket, daemon log, HLS storage, and proxy slice cache.
+    /// Does not rebase static inputs like `*_file` secrets or metrics TLS files.
+    #[arg(long, global = true)]
+    pub data_dir: Option<PathBuf>,
+
     /// Do not load .env before resolving configuration.
     #[arg(long, global = true, default_value_t = false)]
     pub no_dotenv: bool,
@@ -95,6 +101,10 @@ impl GlobalConfigArgs {
     pub fn load_options(&self, validate: bool) -> LoadConfigOptions {
         LoadConfigOptions {
             config_path: self.config.as_ref().map(|path| path.display().to_string()),
+            data_dir: self
+                .data_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
             load_dotenv: !self.no_dotenv,
             validate,
             verbose: self.verbose > 0,
@@ -104,6 +114,7 @@ impl GlobalConfigArgs {
     fn merged_with_parent(&self, parent: &Self) -> Self {
         Self {
             config: self.config.clone().or_else(|| parent.config.clone()),
+            data_dir: self.data_dir.clone().or_else(|| parent.data_dir.clone()),
             no_dotenv: self.no_dotenv || parent.no_dotenv,
             verbose: self.verbose.max(parent.verbose),
         }
@@ -168,7 +179,9 @@ impl RemoteCliContext {
     }
 
     fn initialize_output_state(&self) -> Result<()> {
-        let _ = self.config.config()?;
+        if self.explicit_endpoint.is_none() {
+            let _ = self.config.config()?;
+        }
         Ok(())
     }
 
@@ -181,7 +194,6 @@ impl RemoteCliContext {
     fn resolved_config_endpoint(&self) -> Result<Option<String>> {
         match self.resolved_config_endpoint.get_or_init(|| {
             if self.explicit_endpoint.is_some() {
-                let _ = self.config.config().map_err(|error| error.to_string())?;
                 Ok(None)
             } else {
                 let config = self.config.config().map_err(|error| error.to_string())?;
@@ -622,6 +634,11 @@ impl RemoteAccessArgs {
             config_path: self
                 .global
                 .config
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            data_dir: self
+                .global
+                .data_dir
                 .as_ref()
                 .map(|path| path.display().to_string()),
             load_dotenv: !self.global.no_dotenv,
@@ -2390,6 +2407,7 @@ enum DaemonReadinessProbe {
     ManagementEndpoint {
         endpoint: String,
         config_path: Option<String>,
+        data_dir: Option<String>,
         load_dotenv: bool,
         verbose: bool,
     },
@@ -2405,6 +2423,10 @@ fn daemon_readiness_probe(
             endpoint: config.management_endpoint(),
             config_path: global
                 .config
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            data_dir: global
+                .data_dir
                 .as_ref()
                 .map(|path| path.display().to_string()),
             load_dotenv: !global.no_dotenv,
@@ -2437,11 +2459,13 @@ async fn daemon_probe_is_ready(probe: &DaemonReadinessProbe) -> Result<()> {
         DaemonReadinessProbe::ManagementEndpoint {
             endpoint,
             config_path,
+            data_dir,
             load_dotenv,
             verbose,
         } => RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint.clone()),
             config_path: config_path.clone(),
+            data_dir: data_dir.clone(),
             load_dotenv: *load_dotenv,
             verbose: *verbose,
             resolved_config_endpoint: None,
@@ -2474,9 +2498,7 @@ fn daemon_log_path(config: &synctv_core::Config) -> Result<PathBuf> {
 }
 
 fn daemon_runtime_dir(config: &synctv_core::Config) -> PathBuf {
-    Path::new(&config.management.unix_socket_path)
-        .parent()
-        .map_or_else(default_management_runtime_dir, Path::to_path_buf)
+    Path::new(&config.management.data_dir).join("run")
 }
 
 async fn execute_stop(args: StopArgs) -> Result<()> {
@@ -3384,13 +3406,15 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
         PlaylistSubcommand::Move(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let anchor = match (args.before_playlist_id, args.after_playlist_id) {
-                (Some(id), None) => Some(
-                    management_proto::move_playlist_request::Anchor::BeforePlaylistId(id),
+                (Some(id), None) => {
+                    Some(management_proto::move_playlist_request::Anchor::BeforePlaylistId(id))
+                }
+                (None, Some(id)) => {
+                    Some(management_proto::move_playlist_request::Anchor::AfterPlaylistId(id))
+                }
+                _ => bail!(
+                    "playlist move requires exactly one of --before-playlist-id or --after-playlist-id"
                 ),
-                (None, Some(id)) => Some(
-                    management_proto::move_playlist_request::Anchor::AfterPlaylistId(id),
-                ),
-                _ => bail!("playlist move requires exactly one of --before-playlist-id or --after-playlist-id"),
             };
             let response = management_unary_call!(
                 session,
@@ -5558,6 +5582,18 @@ mod tests {
         let cli = Cli::parse_from(["synctv", "serve", "--daemon"]);
         match cli.command {
             Commands::Serve(args) => assert!(args.daemon),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_global_data_dir() {
+        let cli = Cli::parse_from(["synctv", "--data-dir", "/tmp/synctv-state", "serve"]);
+        match cli.command {
+            Commands::Serve(args) => assert_eq!(
+                args.global.data_dir,
+                Some(PathBuf::from("/tmp/synctv-state"))
+            ),
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
@@ -8275,6 +8311,7 @@ management:
         let args = RemoteAccessArgs {
             global: GlobalConfigArgs {
                 config: Some(config_path.clone()),
+                data_dir: None,
                 no_dotenv: true,
                 verbose: 0,
             },
@@ -8305,6 +8342,33 @@ management:
     }
 
     #[test]
+    fn remote_cli_context_with_explicit_endpoint_does_not_require_local_config() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let missing_config_path = dir.path().join("missing-synctv.yaml");
+        let args = RemoteAccessArgs {
+            global: GlobalConfigArgs {
+                config: Some(missing_config_path),
+                data_dir: None,
+                no_dotenv: true,
+                verbose: 0,
+            },
+            endpoint: Some("http://127.0.0.1:50052".to_string()),
+            output: RemoteOutputFormat::Human,
+        };
+        let context = RemoteCliContext::new(&args);
+
+        context
+            .initialize_output_state()
+            .expect("explicit endpoint mode should not require loading local config");
+        assert_eq!(
+            context
+                .resolved_config_endpoint()
+                .expect("explicit endpoint mode should not resolve a config endpoint"),
+            None
+        );
+    }
+
+    #[test]
     fn daemon_readiness_probe_uses_management_endpoint_when_enabled() {
         let config = synctv_core::Config::default();
         let global = GlobalConfigArgs::default();
@@ -8314,6 +8378,7 @@ management:
             DaemonReadinessProbe::ManagementEndpoint {
                 endpoint: config.management_endpoint(),
                 config_path: None,
+                data_dir: None,
                 load_dotenv: true,
                 verbose: false,
             }
@@ -8339,6 +8404,7 @@ management:
         let config = synctv_core::Config::default();
         let global = GlobalConfigArgs {
             config: Some(PathBuf::from("/tmp/synctv-daemon-auth.yaml")),
+            data_dir: Some(PathBuf::from("/tmp/synctv-state")),
             no_dotenv: true,
             verbose: 2,
         };
@@ -8348,9 +8414,22 @@ management:
             DaemonReadinessProbe::ManagementEndpoint {
                 endpoint: config.management_endpoint(),
                 config_path: Some("/tmp/synctv-daemon-auth.yaml".to_string()),
+                data_dir: Some("/tmp/synctv-state".to_string()),
                 load_dotenv: false,
                 verbose: true,
             }
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_dir_uses_data_dir_not_socket_parent() {
+        let mut config = synctv_core::Config::default();
+        config.management.data_dir = "/tmp/synctv-state".to_string();
+        config.management.unix_socket_path = "/tmp/other-socket-dir/management.sock".to_string();
+
+        assert_eq!(
+            daemon_runtime_dir(&config),
+            PathBuf::from("/tmp/synctv-state/run")
         );
     }
 

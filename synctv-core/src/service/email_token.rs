@@ -24,6 +24,7 @@ use crate::{
 pub enum EmailTokenType {
     EmailVerification,
     PasswordReset,
+    EmailLogin,
 }
 
 impl EmailTokenType {
@@ -32,6 +33,16 @@ impl EmailTokenType {
         match self {
             Self::EmailVerification => "email_verification",
             Self::PasswordReset => "password_reset",
+            Self::EmailLogin => "email_login",
+        }
+    }
+
+    #[must_use]
+    pub const fn as_i16(self) -> i16 {
+        match self {
+            Self::EmailVerification => 1,
+            Self::PasswordReset => 2,
+            Self::EmailLogin => 3,
         }
     }
 
@@ -40,7 +51,13 @@ impl EmailTokenType {
         match self {
             Self::EmailVerification => Duration::hours(24), // 24 hours
             Self::PasswordReset => Duration::hours(1),      // 1 hour
+            Self::EmailLogin => Duration::minutes(15),      // 15 minutes
         }
+    }
+
+    #[must_use]
+    pub const fn keeps_multiple_unused_tokens(self) -> bool {
+        matches!(self, Self::EmailLogin)
     }
 }
 
@@ -125,9 +142,9 @@ impl EmailTokenService {
     ///
     /// # Token Invalidation
     ///
-    /// Invalidates any existing tokens of the same type for this user before
-    /// creating a new one. This ensures only one valid token per user per
-    /// purpose at any time, preventing token accumulation attacks.
+    /// Atomically replaces any existing unused token of the same type for this
+    /// user while creating a new one. This ensures only one valid token per
+    /// user per purpose at any time, without exposing callers to a delete/insert race.
     pub async fn generate_token(
         &self,
         user_id: &UserId,
@@ -161,20 +178,20 @@ impl EmailTokenService {
             }
         }
 
-        // Invalidate any existing tokens of this type for the user first
-        // This ensures only one valid token per user per purpose
-        self.repository
-            .delete_user_tokens(user_id, token_type)
-            .await?;
-
         // Generate random token
         let token = synctv_common::snanoid!(64);
 
         let expires_at = Utc::now() + token_type.expiration_duration();
 
-        self.repository
-            .create(&token, user_id, token_type, expires_at)
-            .await?;
+        if token_type.keeps_multiple_unused_tokens() {
+            self.repository
+                .create(&token, user_id, token_type, expires_at)
+                .await?;
+        } else {
+            self.repository
+                .create_or_replace_unused(&token, user_id, token_type, expires_at)
+                .await?;
+        }
 
         debug!(
             "Generated {} token for user {}",
@@ -247,6 +264,26 @@ impl EmailTokenService {
         Ok(())
     }
 
+    /// Invalidate a specific unused token without touching newer replacements.
+    pub async fn invalidate_specific_token(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+    ) -> Result<()> {
+        self.repository
+            .delete_unused_token(token, user_id, token_type)
+            .await?;
+
+        debug!(
+            "Invalidated specific {} token for user {}",
+            token_type.as_str(),
+            user_id.as_str()
+        );
+
+        Ok(())
+    }
+
     /// Cleanup expired tokens
     pub async fn cleanup_expired(&self) -> Result<usize> {
         let count = self.repository.cleanup_expired().await?;
@@ -265,15 +302,25 @@ mod tests {
     fn test_token_type_expiration() {
         let email_verify = EmailTokenType::EmailVerification;
         let password_reset = EmailTokenType::PasswordReset;
+        let email_login = EmailTokenType::EmailLogin;
 
         assert_eq!(email_verify.as_str(), "email_verification");
         assert_eq!(password_reset.as_str(), "password_reset");
+        assert_eq!(email_login.as_str(), "email_login");
+        assert_eq!(email_verify.as_i16(), 1);
+        assert_eq!(password_reset.as_i16(), 2);
+        assert_eq!(email_login.as_i16(), 3);
 
         // Email verification: 24 hours
         assert_eq!(email_verify.expiration_duration(), Duration::hours(24));
 
         // Password reset: 1 hour
         assert_eq!(password_reset.expiration_duration(), Duration::hours(1));
+
+        // Email login: 15 minutes
+        assert_eq!(email_login.expiration_duration(), Duration::minutes(15));
+        assert!(email_login.keeps_multiple_unused_tokens());
+        assert!(!email_verify.keeps_multiple_unused_tokens());
     }
 
     #[tokio::test]

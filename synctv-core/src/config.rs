@@ -49,29 +49,23 @@ pub fn absolute_display_path(path: &Path) -> String {
         .to_string()
 }
 
-pub fn default_management_runtime_dir() -> PathBuf {
+pub fn default_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         return user_home_dir().map_or_else(
-            || std::env::temp_dir().join("synctv").join("run"),
-            |home| {
-                home.join("Library")
-                    .join("Application Support")
-                    .join("synctv")
-                    .join("run")
-            },
+            || std::env::temp_dir().join("synctv"),
+            |home| home.join(".synctv"),
         );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return absolute_env_path("XDG_RUNTIME_DIR")
+        return absolute_env_path("XDG_STATE_HOME")
             .map(|dir| dir.join("synctv"))
             .or_else(|| {
-                user_home_dir()
-                    .map(|home| home.join(".local").join("state").join("synctv").join("run"))
+                user_home_dir().map(|home| home.join(".local").join("state").join("synctv"))
             })
-            .unwrap_or_else(|| std::env::temp_dir().join("synctv").join("run"));
+            .unwrap_or_else(|| std::env::temp_dir().join("synctv"));
     }
 
     #[cfg(windows)]
@@ -81,12 +75,15 @@ pub fn default_management_runtime_dir() -> PathBuf {
             .filter(|path| path.is_absolute())
             .or_else(|| user_home_dir().map(|home| home.join("AppData").join("Local")))
             .unwrap_or_else(std::env::temp_dir)
-            .join("synctv")
-            .join("run");
+            .join("synctv");
     }
 
     #[allow(unreachable_code)]
-    std::env::temp_dir().join("synctv").join("run")
+    std::env::temp_dir().join("synctv")
+}
+
+pub fn default_management_runtime_dir() -> PathBuf {
+    default_data_dir().join("run")
 }
 
 pub fn default_management_unix_socket_path() -> PathBuf {
@@ -99,14 +96,7 @@ pub fn default_config_search_paths() -> Vec<PathBuf> {
 
     #[cfg(target_os = "macos")]
     if let Some(home) = user_home_dir() {
-        push_config_path_variants(
-            &mut paths,
-            &home
-                .join("Library")
-                .join("Application Support")
-                .join("synctv")
-                .join("synctv"),
-        );
+        push_config_path_variants(&mut paths, &home.join(".synctv").join("synctv"));
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -180,20 +170,18 @@ fn join_config_key_path(parent: &str, key: &str) -> String {
     }
 }
 
-fn resolve_config_file_reference_path(config_path: &Path, reference: &str) -> PathBuf {
+fn resolve_config_file_reference_path(base_dir: &Path, reference: &str) -> PathBuf {
     let reference_path = Path::new(reference);
     if reference_path.is_absolute() {
         reference_path.to_path_buf()
     } else {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(reference_path)
+        base_dir.join(reference_path)
     }
 }
 
 fn load_config_string_from_file(
     config_path: &Path,
+    base_dir: &Path,
     key_path: &str,
     reference: &str,
 ) -> Result<String, ConfigError> {
@@ -205,7 +193,7 @@ fn load_config_string_from_file(
         )));
     }
 
-    let resolved_path = resolve_config_file_reference_path(config_path, trimmed_reference);
+    let resolved_path = resolve_config_file_reference_path(base_dir, trimmed_reference);
     let contents = std::fs::read_to_string(&resolved_path).map_err(|error| {
         ConfigError::Message(format!(
             "failed to read config file reference '{key_path}_file' from {}: {error}",
@@ -214,6 +202,53 @@ fn load_config_string_from_file(
     })?;
 
     Ok(contents.trim().to_string())
+}
+
+fn inject_top_level_data_dir_alias(
+    parsed_value: &mut serde_json::Value,
+) -> Result<(), ConfigError> {
+    let Some(root) = parsed_value.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(data_dir) = root.remove("data_dir") else {
+        return Ok(());
+    };
+
+    if !data_dir.is_string() {
+        return Err(ConfigError::Message(
+            "config key 'data_dir' must be a string path".to_string(),
+        ));
+    }
+
+    let management = root
+        .entry("management")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(management_obj) = management.as_object_mut() else {
+        return Err(ConfigError::Message(
+            "config key 'management' must be a table/object when data_dir is set".to_string(),
+        ));
+    };
+    management_obj
+        .entry("data_dir".to_string())
+        .or_insert(data_dir);
+    Ok(())
+}
+
+fn resolve_relative_path_from(reference: &str, base_dir: &Path) -> PathBuf {
+    let path = Path::new(reference.trim());
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
+}
+
+fn default_runtime_socket_relative_path() -> PathBuf {
+    PathBuf::from("run").join("synctv.sock")
+}
+
+fn default_proxy_slice_cache_relative_path() -> PathBuf {
+    PathBuf::from("cache").join("proxy-slice")
 }
 
 fn is_secret_like_provider_key(base_key: &str) -> bool {
@@ -251,6 +286,7 @@ fn resolve_secret_file_references_in_json_value(
     value: &mut serde_json::Value,
     config_path: &Path,
     current_path: &str,
+    config_base_dir: &Path,
 ) -> Result<(), ConfigError> {
     match value {
         serde_json::Value::Object(map) => {
@@ -283,8 +319,12 @@ fn resolve_secret_file_references_in_json_value(
 
                 if supports_secret_file_reference(current_path, base_key) {
                     let key_path = join_config_key_path(current_path, base_key);
-                    let resolved_value =
-                        load_config_string_from_file(config_path, &key_path, file_reference)?;
+                    let resolved_value = load_config_string_from_file(
+                        config_path,
+                        config_base_dir,
+                        &key_path,
+                        file_reference,
+                    )?;
                     map.insert(
                         base_key.to_string(),
                         serde_json::Value::String(resolved_value),
@@ -300,13 +340,19 @@ fn resolve_secret_file_references_in_json_value(
                         child,
                         config_path,
                         &join_config_key_path(current_path, &key),
+                        config_base_dir,
                     )?;
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                resolve_secret_file_references_in_json_value(item, config_path, current_path)?;
+                resolve_secret_file_references_in_json_value(
+                    item,
+                    config_path,
+                    current_path,
+                    config_base_dir,
+                )?;
             }
         }
         _ => {}
@@ -491,8 +537,14 @@ pub struct MetricsTlsConfig {
     /// Enable TLS for the dedicated metrics listener.
     pub enabled: bool,
     /// PEM-encoded certificate chain served by the metrics listener.
+    ///
+    /// Relative paths stay anchored to the config file directory (or the
+    /// current working directory when loading only from env), not `data_dir`.
     pub cert_path: String,
     /// PEM-encoded private key for the metrics listener.
+    ///
+    /// Relative paths stay anchored to the config file directory (or the
+    /// current working directory when loading only from env), not `data_dir`.
     pub key_path: String,
 }
 
@@ -623,6 +675,16 @@ impl std::str::FromStr for ManagementTransport {
 #[serde(default)]
 pub struct ManagementConfig {
     pub enabled: bool,
+    /// Shared root directory for runtime-owned local files.
+    ///
+    /// This affects default runtime paths and relative overrides for
+    /// `management.unix_socket_path`, `logging.file_path`,
+    /// `livestream.hls_storage_path`, and
+    /// `cache.proxy_slice_file_cache_dir`.
+    ///
+    /// It does not rebase static input files such as `*_file` secrets or
+    /// `metrics.tls.cert_path` / `metrics.tls.key_path`.
+    pub data_dir: String,
     pub transport: ManagementTransport,
     pub port: u16,
     pub unix_socket_path: String,
@@ -634,6 +696,7 @@ impl Default for ManagementConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            data_dir: default_data_dir().display().to_string(),
             transport: if cfg!(unix) {
                 ManagementTransport::Unix
             } else {
@@ -651,6 +714,7 @@ impl std::fmt::Debug for ManagementConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManagementConfig")
             .field("enabled", &self.enabled)
+            .field("data_dir", &self.data_dir)
             .field("transport", &self.transport)
             .field("port", &self.port)
             .field("unix_socket_path", &self.unix_socket_path)
@@ -929,6 +993,10 @@ pub struct LoggingConfig {
     pub format: String, // "json" or "pretty"
     pub filter: Option<String>,
     pub backtrace: bool,
+    /// Optional log file path.
+    ///
+    /// Relative paths are treated as runtime-owned output and resolved against
+    /// the effective `data_dir`.
     pub file_path: Option<String>,
 }
 
@@ -988,6 +1056,7 @@ pub struct LivestreamConfig {
     /// Used for validation: paths that are obviously local-only (e.g. /tmp/)
     /// trigger a stronger warning in cluster mode even when `hls_shared_storage=true`.
     /// If empty, the default in-memory storage is used.
+    /// Relative paths are resolved against the effective `data_dir`.
     pub hls_storage_path: String,
     /// Maximum HTTP-FLV connection duration in seconds.
     ///
@@ -1227,12 +1296,21 @@ impl Config {
         config_file: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        Self::load_with_env(config_file, env)
+        Self::load_with_env(config_file, env, None)
+    }
+
+    pub fn load_with_env_map_and_data_dir_override(
+        config_file: Option<&str>,
+        env: &HashMap<String, String>,
+        data_dir_override: Option<&str>,
+    ) -> Result<Self, ConfigError> {
+        Self::load_with_env(config_file, env, data_dir_override)
     }
 
     fn load_with_env(
         config_file: Option<&str>,
         env: &HashMap<String, String>,
+        data_dir_override: Option<&str>,
     ) -> Result<Self, ConfigError> {
         let seen_env_keys = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
         if config_file.is_some() && env.contains_key("SYNCTV_CONFIG_PATH") {
@@ -1244,7 +1322,6 @@ impl Config {
             seen_env_keys.borrow_mut().insert(name.to_string());
             env.get(name).cloned()
         };
-
         let mut config = match config_file {
             Some(path) if Path::new(path).exists() => Self::load_config_file(path)?,
             _ => Self::default(),
@@ -1255,6 +1332,13 @@ impl Config {
         // cannot distinguish nesting from underscores within field names.
         // Instead, every SYNCTV_ env var is mapped explicitly here.
         config.apply_env_overrides_with(&get_env)?;
+        config.resolve_owned_local_paths(
+            config_file
+                .filter(|path| Path::new(path).exists())
+                .map(Path::new),
+            env.contains_key("SYNCTV_DATA_DIR"),
+            data_dir_override,
+        );
         config.resolve_time_defaults_with(&get_env)?;
         Self::emit_unknown_synctv_env_var_warnings(env, &seen_env_keys.into_inner());
 
@@ -1310,7 +1394,9 @@ impl Config {
                 ));
             }
         };
-        resolve_secret_file_references_in_json_value(&mut parsed_value, path, "")?;
+        inject_top_level_data_dir_alias(&mut parsed_value)?;
+        let config_base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        resolve_secret_file_references_in_json_value(&mut parsed_value, path, "", config_base_dir)?;
         let normalized_contents = serde_json::to_string(&parsed_value)
             .map_err(|error| ConfigError::Message(error.to_string()))?;
         Self::deserialize_config_contents(&normalized_contents, FileFormat::Json)
@@ -1661,6 +1747,9 @@ impl Config {
 
         // -- Time --
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
+
+        // -- Shared local state root --
+        env_override_str("SYNCTV_DATA_DIR", &mut self.management.data_dir);
 
         // -- Server --
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
@@ -2117,6 +2206,14 @@ impl Config {
             "SYNCTV_CACHE_PERMISSION_CACHE_TTL_SECONDS",
             &mut self.cache.permission_cache_ttl_seconds,
         )?;
+        env_override_bool(
+            "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED",
+            &mut self.cache.proxy_slice_file_backend_enabled,
+        )?;
+        env_override_str(
+            "SYNCTV_CACHE_PROXY_SLICE_FILE_CACHE_DIR",
+            &mut self.cache.proxy_slice_file_cache_dir,
+        );
 
         // -- HTTP Rate Limits --
         env_override_parse(
@@ -2227,6 +2324,110 @@ impl Config {
         )?;
 
         Ok(())
+    }
+
+    fn resolve_owned_local_paths(
+        &mut self,
+        config_file: Option<&Path>,
+        data_dir_from_env: bool,
+        data_dir_override: Option<&str>,
+    ) {
+        let config_base_dir = config_file.and_then(Path::parent).map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            Path::to_path_buf,
+        );
+        let runtime_base_dir = if data_dir_override.is_some() || data_dir_from_env {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            config_base_dir.clone()
+        };
+
+        let data_dir = data_dir_override
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| resolve_relative_path_from(value, &runtime_base_dir))
+            .or_else(|| {
+                let configured = self.management.data_dir.trim();
+                if configured.is_empty() {
+                    None
+                } else if Path::new(configured).is_absolute() {
+                    Some(PathBuf::from(configured))
+                } else {
+                    Some(resolve_relative_path_from(configured, &runtime_base_dir))
+                }
+            })
+            .unwrap_or_else(default_data_dir);
+        self.management.data_dir = data_dir.display().to_string();
+
+        let default_socket_path = default_management_unix_socket_path();
+        let socket_path = self.management.unix_socket_path.trim();
+        let socket_uses_default =
+            socket_path.is_empty() || Path::new(socket_path) == default_socket_path;
+        self.management.unix_socket_path = if socket_uses_default {
+            data_dir
+                .join(default_runtime_socket_relative_path())
+                .display()
+                .to_string()
+        } else {
+            resolve_relative_path_from(socket_path, &data_dir)
+                .display()
+                .to_string()
+        };
+
+        self.logging.file_path = self
+            .logging
+            .file_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                resolve_relative_path_from(value, &data_dir)
+                    .display()
+                    .to_string()
+            });
+
+        let cert_path = self.metrics.tls.cert_path.trim();
+        self.metrics.tls.cert_path = if cert_path.is_empty() {
+            String::new()
+        } else {
+            resolve_relative_path_from(cert_path, &config_base_dir)
+                .display()
+                .to_string()
+        };
+
+        let key_path = self.metrics.tls.key_path.trim();
+        self.metrics.tls.key_path = if key_path.is_empty() {
+            String::new()
+        } else {
+            resolve_relative_path_from(key_path, &config_base_dir)
+                .display()
+                .to_string()
+        };
+
+        let hls_storage_path = self.livestream.hls_storage_path.trim();
+        self.livestream.hls_storage_path = if hls_storage_path.is_empty() {
+            String::new()
+        } else {
+            resolve_relative_path_from(hls_storage_path, &data_dir)
+                .display()
+                .to_string()
+        };
+
+        let proxy_slice_cache_dir = self.cache.proxy_slice_file_cache_dir.trim();
+        self.cache.proxy_slice_file_cache_dir = if proxy_slice_cache_dir.is_empty() {
+            if self.cache.proxy_slice_file_backend_enabled {
+                data_dir
+                    .join(default_proxy_slice_cache_relative_path())
+                    .display()
+                    .to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            resolve_relative_path_from(proxy_slice_cache_dir, &data_dir)
+                .display()
+                .to_string()
+        };
     }
 
     fn resolve_time_defaults_with(
@@ -2583,6 +2784,12 @@ impl Config {
                     }
                 }
                 ManagementTransport::Unix => {
+                    if self.management.data_dir.trim().is_empty() {
+                        errors.push("management.data_dir must not be empty".to_string());
+                    } else if !Path::new(&self.management.data_dir).is_absolute() {
+                        errors.push("management.data_dir must be an absolute path".to_string());
+                    }
+
                     if self.management.unix_socket_path.trim().is_empty() {
                         errors.push(
                             "management.unix_socket_path must not be empty when transport=unix"
@@ -2837,6 +3044,18 @@ impl Config {
                  Configure a shared filesystem mount path accessible by every replica."
                     .to_string(),
             );
+        }
+
+        if self.cache.proxy_slice_file_backend_enabled {
+            if self.cache.proxy_slice_file_cache_dir.trim().is_empty() {
+                errors.push(
+                    "cache.proxy_slice_file_cache_dir must not be empty when cache.proxy_slice_file_backend_enabled=true"
+                        .to_string(),
+                );
+            } else if !Path::new(&self.cache.proxy_slice_file_cache_dir).is_absolute() {
+                errors
+                    .push("cache.proxy_slice_file_cache_dir must be an absolute path".to_string());
+            }
         }
 
         // Validate: cluster mode requires a Redis backend to be configured.
@@ -3295,6 +3514,12 @@ pub struct CacheConfig {
     pub permission_cache_capacity: u64,
     /// Permission cache TTL in seconds (reserved for future use)
     pub permission_cache_ttl_seconds: u64,
+    /// Whether the proxy slice cache should persist entries to disk.
+    pub proxy_slice_file_backend_enabled: bool,
+    /// Root directory for persisted proxy slice cache entries.
+    ///
+    /// Relative paths are resolved against the effective `data_dir`.
+    pub proxy_slice_file_cache_dir: String,
 }
 
 impl Default for CacheConfig {
@@ -3307,6 +3532,8 @@ impl Default for CacheConfig {
             username_cache_ttl_seconds: 3600, // 1 hour
             permission_cache_capacity: 1000,
             permission_cache_ttl_seconds: 300,
+            proxy_slice_file_backend_enabled: false,
+            proxy_slice_file_cache_dir: String::new(),
         }
     }
 }
@@ -4013,6 +4240,8 @@ jwt:
         let temp_dir = tempdir().expect("temp dir should be created");
         let config_dir = temp_dir.path().join("config");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        let data_dir = config_dir.join("state");
+        std::fs::create_dir_all(&data_dir).expect("data dir should be created");
 
         std::fs::write(config_dir.join("jwt.secret"), "jwt-secret-from-file\n")
             .expect("jwt secret file should be written");
@@ -4048,6 +4277,7 @@ jwt:
         std::fs::write(
             &config_path,
             r#"
+data_dir: "./state"
 server:
   cluster_secret_file: "./cluster.secret"
 management:
@@ -4094,6 +4324,198 @@ bootstrap:
             "turn-shared-secret-from-file"
         );
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
+    }
+
+    #[test]
+    fn test_data_dir_override_does_not_rebase_typed_secret_file_references() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_dir = temp_dir.path().join("config");
+        let override_data_dir = temp_dir.path().join("override-state");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        std::fs::create_dir_all(&override_data_dir).expect("override data dir should be created");
+
+        std::fs::write(
+            config_dir.join("jwt.secret"),
+            "jwt-secret-from-config-dir\n",
+        )
+        .expect("jwt secret file should be written");
+
+        let config_path = config_dir.join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret_file: "./jwt.secret"
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::load_with_env_map_and_data_dir_override(
+            Some(config_path.to_str().expect("utf-8 path")),
+            &HashMap::new(),
+            Some(override_data_dir.to_str().expect("utf-8 path")),
+        )
+        .expect("data_dir override should not change secret file lookup");
+
+        assert_eq!(config.jwt.secret, "jwt-secret-from-config-dir");
+    }
+
+    #[test]
+    fn test_from_file_resolves_owned_local_paths_relative_to_data_dir() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_dir = temp_dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        let config_path = config_dir.join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+data_dir: "./state"
+management:
+  transport: "unix"
+  unix_socket_path: "sockets/admin.sock"
+metrics:
+  tls:
+    cert_path: "tls/metrics.crt"
+    key_path: "tls/metrics.key"
+cache:
+  proxy_slice_file_backend_enabled: true
+  proxy_slice_file_cache_dir: "proxy-cache"
+logging:
+  file_path: "logs/server.log"
+livestream:
+  hls_storage_path: "hls"
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect("config file with data_dir should load");
+        let expected_data_dir = config_dir.join("state");
+
+        assert_eq!(Path::new(&config.management.data_dir), expected_data_dir);
+        assert_eq!(
+            Path::new(&config.management.unix_socket_path),
+            expected_data_dir.join("sockets").join("admin.sock")
+        );
+        assert_eq!(
+            config.logging.file_path.as_deref().map(Path::new),
+            Some(expected_data_dir.join("logs").join("server.log").as_path())
+        );
+        assert_eq!(
+            Path::new(&config.metrics.tls.cert_path),
+            config_dir.join("tls").join("metrics.crt")
+        );
+        assert_eq!(
+            Path::new(&config.metrics.tls.key_path),
+            config_dir.join("tls").join("metrics.key")
+        );
+        assert!(config.cache.proxy_slice_file_backend_enabled);
+        assert_eq!(
+            Path::new(&config.cache.proxy_slice_file_cache_dir),
+            expected_data_dir.join("proxy-cache")
+        );
+        assert_eq!(
+            Path::new(&config.livestream.hls_storage_path),
+            expected_data_dir.join("hls")
+        );
+    }
+
+    #[test]
+    fn test_collect_unknown_config_file_keys_ignores_top_level_data_dir() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+data_dir: "./state"
+management:
+  transport: "unix"
+"#,
+        )
+        .expect("config file should be written");
+
+        let unknown_keys =
+            Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
+                .expect("top-level data_dir alias should deserialize cleanly");
+
+        assert!(
+            unknown_keys.is_empty(),
+            "top-level data_dir alias should not be reported as unknown: {unknown_keys:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
+        let cwd = std::env::current_dir().expect("current dir should resolve");
+        let env = HashMap::from([
+            ("SYNCTV_DATA_DIR".to_string(), "var/synctv".to_string()),
+            (
+                "SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH".to_string(),
+                "ops/management.sock".to_string(),
+            ),
+            (
+                "SYNCTV_LOGGING_FILE_PATH".to_string(),
+                "logs/server.log".to_string(),
+            ),
+            (
+                "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH".to_string(),
+                "livestream/hls".to_string(),
+            ),
+            (
+                "SYNCTV_METRICS_TLS_CERT_PATH".to_string(),
+                "tls/metrics.crt".to_string(),
+            ),
+            (
+                "SYNCTV_METRICS_TLS_KEY_PATH".to_string(),
+                "tls/metrics.key".to_string(),
+            ),
+        ]);
+
+        let config = Config::from_env_map(&env).expect("env-backed config should load");
+        let expected_data_dir = cwd.join("var").join("synctv");
+
+        assert_eq!(Path::new(&config.management.data_dir), expected_data_dir);
+        assert_eq!(
+            Path::new(&config.management.unix_socket_path),
+            expected_data_dir.join("ops").join("management.sock")
+        );
+        assert_eq!(
+            config.logging.file_path.as_deref().map(Path::new),
+            Some(expected_data_dir.join("logs").join("server.log").as_path())
+        );
+        assert_eq!(
+            Path::new(&config.metrics.tls.cert_path),
+            cwd.join("tls").join("metrics.crt")
+        );
+        assert_eq!(
+            Path::new(&config.metrics.tls.key_path),
+            cwd.join("tls").join("metrics.key")
+        );
+        assert_eq!(
+            Path::new(&config.livestream.hls_storage_path),
+            expected_data_dir.join("livestream").join("hls")
+        );
+    }
+
+    #[test]
+    fn test_from_env_map_resolves_proxy_slice_cache_dir_relative_to_data_dir() {
+        let cwd = std::env::current_dir().expect("current dir should resolve");
+        let env = HashMap::from([
+            ("SYNCTV_DATA_DIR".to_string(), "var/synctv".to_string()),
+            (
+                "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED".to_string(),
+                "true".to_string(),
+            ),
+        ]);
+
+        let config = Config::from_env_map(&env).expect("env-backed config should load");
+        let expected_data_dir = cwd.join("var").join("synctv");
+
+        assert!(config.cache.proxy_slice_file_backend_enabled);
+        assert_eq!(
+            Path::new(&config.cache.proxy_slice_file_cache_dir),
+            expected_data_dir.join("cache").join("proxy-slice")
+        );
     }
 
     #[test]
@@ -4604,6 +5026,43 @@ jwt:
 
         assert_eq!(config.management_endpoint(), "http://127.0.0.1:50099");
         assert_eq!(config.management_bind_target(), "127.0.0.1:50099");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_default_management_unix_socket_path_uses_home_hidden_runtime_dir_on_macos() {
+        let socket_path = default_management_unix_socket_path();
+        let home = user_home_dir().expect("macOS test environment should expose HOME");
+        assert_eq!(
+            socket_path,
+            home.join(".synctv").join("run").join("synctv.sock")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_default_data_dir_uses_home_hidden_dir_on_macos() {
+        let data_dir = default_data_dir();
+        let home = user_home_dir().expect("macOS test environment should expose HOME");
+
+        assert_eq!(data_dir, home.join(".synctv"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_default_config_search_paths_use_home_hidden_config_dir_on_macos() {
+        let home = user_home_dir().expect("macOS test environment should expose HOME");
+        let expected = [
+            home.join(".synctv").join("synctv.yaml"),
+            home.join(".synctv").join("synctv.yml"),
+            home.join(".synctv").join("synctv.json"),
+            home.join(".synctv").join("synctv.toml"),
+        ];
+        let paths = default_config_search_paths();
+        assert!(
+            expected.iter().all(|path| paths.contains(path)),
+            "macOS default config search paths should include ~/.synctv variants, got: {paths:?}"
+        );
     }
 
     #[test]

@@ -111,6 +111,76 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
+    fn normalize_login_identifier(identifier: &str) -> String {
+        let trimmed = identifier.trim();
+        if trimmed.contains('@') {
+            trimmed.to_ascii_lowercase()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    async fn get_by_login_identifier(&self, identifier: &str) -> Result<Option<User>> {
+        let normalized = Self::normalize_login_identifier(identifier);
+        if normalized.contains('@') {
+            self.repository.get_by_email(&normalized).await
+        } else {
+            self.repository.get_by_username(&normalized).await
+        }
+    }
+
+    async fn complete_authenticated_login(
+        &self,
+        user: User,
+        brute_force_key: &str,
+        client_ip: Option<std::net::IpAddr>,
+    ) -> Result<(User, String, String)> {
+        if let Err(error) = self.validate_user_access(&user) {
+            if let Err(bf_err) = self
+                .brute_force
+                .record_failure(brute_force_key, client_ip)
+                .await
+            {
+                tracing::warn!(error = %bf_err, "Failed to record login failure for brute-force tracking");
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = self.brute_force.reset(brute_force_key).await {
+            tracing::warn!(error = %error, "Failed to reset brute-force counter after successful login");
+        }
+        if let Some(ip) = client_ip {
+            if let Err(error) = self.brute_force.reset_ip(&ip).await {
+                tracing::warn!(error = %error, "Failed to reset IP brute-force counter after successful login");
+            }
+        }
+
+        let access_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Access, user.password_version)?;
+        let refresh_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+
+        Ok((user, access_token, refresh_token))
+    }
+
+    pub async fn login_with_verified_email(
+        &self,
+        user_id: &UserId,
+        brute_force_key: &str,
+        client_ip: Option<std::net::IpAddr>,
+    ) -> Result<(User, String, String)> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+
+        self.complete_authenticated_login(user, brute_force_key, client_ip)
+            .await
+    }
+
     async fn query_owned_room_ids_in_tx(
         &self,
         user_id: &UserId,
@@ -1026,17 +1096,21 @@ impl UserService {
     /// - "Account banned/pending/deleted" → Both username and IP tracking (prevents enumeration)
     pub async fn login(
         &self,
-        username: String,
+        identifier: String,
         password: String,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
+        let normalized_identifier = Self::normalize_login_identifier(&identifier);
+
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
         // distributed attacks while also saving CPU on locked accounts.
-        self.brute_force.check_allowed(&username, client_ip).await?;
+        self.brute_force
+            .check_allowed(&normalized_identifier, client_ip)
+            .await?;
 
-        // Get user by username
-        let maybe_user = self.repository.get_by_username(&username).await?;
+        // Get user by username or email.
+        let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
 
         // Track whether user existed for differentiated failure recording (Task #74)
         let user_existed = maybe_user.is_some();
@@ -1070,7 +1144,9 @@ impl UserService {
                 // - Wrong password for existing user: Record both username and IP
                 let record_result = if user_existed {
                     // User existed but wrong password - record both username and IP
-                    self.brute_force.record_failure(&username, client_ip).await
+                    self.brute_force
+                        .record_failure(&normalized_identifier, client_ip)
+                        .await
                 } else {
                     // User didn't exist - only record IP-level failure
                     self.brute_force.record_ip_failure(client_ip).await
@@ -1082,35 +1158,8 @@ impl UserService {
             }
         };
 
-        // Check user status and email verification (shared with refresh_token)
-        if let Err(e) = self.validate_user_access(&user) {
-            // Record failure (account is locked/deleted but attacker shouldn't know)
-            // Use both username and IP tracking to prevent enumeration
-            if let Err(bf_err) = self.brute_force.record_failure(&username, client_ip).await {
-                tracing::warn!(error = %bf_err, "Failed to record login failure for brute-force tracking");
-            }
-            return Err(e);
-        }
-
-        // Successful login: reset brute-force counters (username + IP)
-        if let Err(e) = self.brute_force.reset(&username).await {
-            tracing::warn!(error = %e, "Failed to reset brute-force counter after successful login");
-        }
-        if let Some(ip) = client_ip {
-            if let Err(e) = self.brute_force.reset_ip(&ip).await {
-                tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful login");
-            }
-        }
-
-        // Generate JWT tokens (role will be fetched from DB on each request)
-        let access_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
-
-        Ok((user, access_token, refresh_token))
+        self.complete_authenticated_login(user, &normalized_identifier, client_ip)
+            .await
     }
 
     /// Issue an access/refresh token pair for the local management plane.
@@ -1140,42 +1189,8 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        // Check user status (generic message to prevent user enumeration)
-        if user.is_deleted()
-            || user.status == crate::models::UserStatus::Banned
-            || user.status == crate::models::UserStatus::Pending
-            || user.status == crate::models::UserStatus::Rejected
-        {
-            // Record failure so repeated attempts against locked accounts are throttled
-            if let Err(e) = self
-                .brute_force
-                .record_failure(provider_user_id, client_ip)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to record OAuth2 login failure for brute-force tracking");
-            }
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-
-        // Successful OAuth2 login: reset brute-force counters (provider user ID + IP)
-        if let Err(e) = self.brute_force.reset(provider_user_id).await {
-            tracing::warn!(error = %e, "Failed to reset brute-force counter after successful OAuth2 login");
-        }
-        if let Some(ip) = client_ip {
-            if let Err(e) = self.brute_force.reset_ip(&ip).await {
-                tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful OAuth2 login");
-            }
-        }
-
-        // Generate JWT tokens
-        let access_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
-
-        Ok((user, access_token, refresh_token))
+        self.complete_authenticated_login(user, provider_user_id, client_ip)
+            .await
     }
 
     /// Refresh access token with **Refresh Token Rotation**.
@@ -2639,6 +2654,35 @@ mod tests {
         // Verify IP counter is now reset
         let (ip_count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
         assert_eq!(ip_count_after, 0, "IP counter should be reset");
+    }
+
+    #[tokio::test]
+    async fn test_password_login_uses_same_brute_force_key_for_check_and_record() {
+        use crate::cache::KeyBuilder;
+
+        let prefix = "test_password_login_key_consistency";
+        let key_builder = KeyBuilder::new(prefix);
+        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
+        let identifier = "user@example.com";
+        let client_ip = Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+
+        for _ in 0..5 {
+            brute_force
+                .record_failure(identifier, client_ip)
+                .await
+                .unwrap();
+        }
+
+        let prefixed_identifier_key = key_builder.login_attempts(identifier);
+        let (attempts, _) = brute_force
+            .username_tracker()
+            .get_attempts(&prefixed_identifier_key)
+            .await
+            .unwrap();
+        assert_eq!(attempts, 5, "identifier bucket should accumulate failures");
+
+        let result = brute_force.check_allowed(identifier, client_ip).await;
+        assert!(result.is_err(), "same identifier bucket should be checked");
     }
 
     // ========== register_with_executor signup_need_review Tests ==========

@@ -1021,6 +1021,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_email_health_reports_configuration_only() {
+        let unconfigured = synctv_core::service::EmailService::new(None).expect("email service");
+        assert_eq!(check_email_health(&unconfigured), "not configured");
+
+        let configured =
+            synctv_core::service::EmailService::new(Some(synctv_core::service::EmailConfig {
+                smtp_host: "smtp.example.com".to_string(),
+                smtp_port: 587,
+                smtp_username: "user".to_string(),
+                smtp_password: "password".to_string(),
+                from_email: "noreply@example.com".to_string(),
+                from_name: "SyncTV".to_string(),
+                use_tls: true,
+            }))
+            .expect("email service");
+        assert_eq!(check_email_health(&configured), "configured");
+    }
+
     /// M18: Verify that cgroup memory check is attempted on Linux.
     /// On non-containerized Linux, it should fall back to /proc/meminfo.
     #[cfg(target_os = "linux")]

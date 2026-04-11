@@ -349,6 +349,16 @@ pub fn validate_password(password: &str) -> ValidationResult<()> {
     Ok(())
 }
 
+/// Validate a login identifier that may be either a username or an email address.
+pub fn validate_login_identifier(identifier: &str) -> ValidationResult<String> {
+    let trimmed = identifier.trim();
+    if trimmed.contains('@') {
+        validate_email(trimmed)
+    } else {
+        validate_username(trimmed)
+    }
+}
+
 /// Validate room name
 pub fn validate_room_name(name: &str) -> ValidationResult<String> {
     let sanitized = sanitize_string(name);
@@ -1066,6 +1076,16 @@ mod tests {
         assert!(validate_password("admin123").is_ok()); // Not exact match to any entry
         assert!(validate_password("passw0rd").is_err()); // Leet-speak variant in list
         assert!(validate_password("Passw0rd").is_err()); // Case-insensitive match
+    }
+
+    #[test]
+    fn test_validate_login_identifier() {
+        assert_eq!(
+            validate_login_identifier(" user@example.com ").unwrap(),
+            "user@example.com"
+        );
+        assert_eq!(validate_login_identifier("user_name").unwrap(), "user_name");
+        assert!(validate_login_identifier("bad email@").is_err());
     }
 
     #[test]

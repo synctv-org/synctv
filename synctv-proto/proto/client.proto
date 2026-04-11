@@ -15,6 +15,7 @@ import "proto/common.proto";
 service AuthService {
     rpc Register(RegisterRequest) returns (RegisterResponse);
     rpc Login(LoginRequest) returns (LoginResponse);
+    rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
     rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 }
 
@@ -249,15 +250,20 @@ message RegisterResponse {
 }
 
 // SECURITY: password is transmitted as plaintext. TLS MUST be used.
+// Provide exactly one login identifier: `username` or `email`.
+// Provide exactly one credential: `password` or `email_token`.
 message LoginRequest {
     string username = 1 [(buf.validate.field).string = {
-        min_len: 3,
-        max_len: 50,
-        pattern: "^[\\p{L}\\p{N}_-]+$"
+        max_len: 50
     }];
     string password = 2 [(buf.validate.field).string = {
-        min_len: 8,
         max_len: 128
+    }];
+    string email = 3 [(buf.validate.field).string = {
+        max_len: 254
+    }];
+    string email_token = 4 [(buf.validate.field).string = {
+        max_len: 255
     }];
 }
 
@@ -265,6 +271,14 @@ message LoginResponse {
     User user = 1;
     string access_token = 2;
     string refresh_token = 3;
+}
+
+message RequestEmailLoginRequest {
+    string email = 1;
+}
+
+message RequestEmailLoginResponse {
+    string message = 1;
 }
 
 message RefreshTokenRequest {

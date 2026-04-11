@@ -10,15 +10,14 @@
 //!
 //! These endpoints apply two layers of rate limiting:
 //! 1. **Per-IP** (via `auth_rate_limit` middleware): 5 req/min shared with other auth endpoints.
-//! 2. **Per-email** (handler-level): 3 requests per hour per email address, preventing
-//!    email spam and user enumeration even when the attacker rotates IPs.
+//! 2. **Per-email** (inside shared `EmailApiImpl`): 3 requests per hour per email address,
+//!    preventing email spam and user enumeration even when the attacker rotates IPs.
 //!
 //! The per-IP middleware limit is applied externally in `register_all_routes`.
-//! The per-email limit is checked inside the handlers that actually send emails
-//! (`send_verification_email` and `request_password_reset`).
+//! The per-email limit is enforced by the shared `EmailApiImpl`, so HTTP and gRPC
+//! use the exact same application-layer behavior.
 
 use axum::{extract::State, response::Json, routing::post, Router};
-use synctv_core::service::rate_limit::RateLimitError;
 
 use crate::http::{AppError, AppResult, AppState};
 use crate::impls::EmailApiImpl;
@@ -28,12 +27,7 @@ use crate::proto::client::{
     SendVerificationEmailRequest, SendVerificationEmailResponse,
 };
 
-/// Per-email rate limit: 3 requests per hour.
-/// Prevents email spam even when the attacker rotates source IPs.
-const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;
-const EMAIL_ADDR_WINDOW_SECONDS: u64 = 3600;
-
-fn email_service_unavailable_error() -> AppError {
+fn email_api_unavailable_error() -> AppError {
     AppError::new(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         "Email service is not available on this server.",
@@ -47,46 +41,15 @@ fn email_token_service_unavailable_error() -> AppError {
     )
 }
 
-/// Build an `EmailApiImpl` from `AppState`, or return an error if email is not configured.
-fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
-    let email_service = state
-        .email_service
-        .as_ref()
-        .ok_or_else(email_service_unavailable_error)?;
-
-    // Use the shared EmailTokenService from AppState (created once at startup)
-    let email_token_service = state
-        .email_token_service
-        .as_ref()
-        .ok_or_else(email_token_service_unavailable_error)?;
-
-    Ok(EmailApiImpl::new(
-        state.user_service.clone(),
-        email_service.clone(),
-        email_token_service.clone(),
-    ))
-}
-
-/// Check per-email rate limit. Returns an `AppError` with 429 and Retry-After
-/// if the limit is exceeded.
-async fn check_email_rate_limit(state: &AppState, email: &str) -> Result<(), AppError> {
-    // Normalize email: lowercase and trim whitespace to prevent bypass
-    let normalized = email.to_lowercase().trim().to_string();
-    let key = format!("email:addr:{normalized}");
-    match state
-        .rate_limiter
-        .check_rate_limit(&key, EMAIL_ADDR_MAX_REQUESTS, EMAIL_ADDR_WINDOW_SECONDS)
-        .await
-    {
-        Ok(()) => Ok(()),
-        Err(RateLimitError::RateLimitExceeded {
-            retry_after_seconds,
-        }) => Err(AppError::rate_limited(retry_after_seconds)),
-        Err(_) => {
-            // Unexpected backend error - fail closed
-            Err(AppError::rate_limited(1))
+/// Resolve the shared `EmailApiImpl` from `AppState`, or return an error if email is not configured.
+fn require_email_api(state: &AppState) -> Result<&std::sync::Arc<EmailApiImpl>, AppError> {
+    state.email_api.as_ref().ok_or_else(|| {
+        if state.email_token_service.is_none() {
+            email_token_service_unavailable_error()
+        } else {
+            email_api_unavailable_error()
         }
-    }
+    })
 }
 
 /// Create email-related routes
@@ -124,9 +87,6 @@ pub async fn send_verification_email(
     State(state): State<AppState>,
     Json(req): Json<SendVerificationEmailRequest>,
 ) -> AppResult<Json<SendVerificationEmailResponse>> {
-    // Per-email rate limit (handler-level, in addition to per-IP middleware)
-    check_email_rate_limit(&state, &req.email).await?;
-
     let email_api = require_email_api(&state)?;
 
     let result = email_api
@@ -197,9 +157,6 @@ pub async fn request_password_reset(
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
-    // Per-email rate limit (handler-level, in addition to per-IP middleware)
-    check_email_rate_limit(&state, &req.email).await?;
-
     let email_api = require_email_api(&state)?;
 
     let result = email_api
@@ -253,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_email_service_missing_is_service_unavailable() {
-        let err = email_service_unavailable_error();
+        let err = email_api_unavailable_error();
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             err.message,

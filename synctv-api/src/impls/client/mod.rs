@@ -41,6 +41,7 @@ use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::{RoomService, UserService};
 
 // Re-export public items from convert module
+pub(crate) use convert::user_to_proto;
 pub use convert::{
     media_to_proto, proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
 };

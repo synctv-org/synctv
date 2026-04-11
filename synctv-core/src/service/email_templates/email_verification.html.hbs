@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Your Email - SyncTV</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .email-container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 {
+            color: #4F46E5;
+            margin: 0;
+            font-size: 32px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        h2 {
+            color: #1F2937;
+            margin-top: 0;
+        }
+        .verification-code {
+            background-color: #EEF2FF;
+            border: 2px dashed #4F46E5;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            margin: 30px 0;
+        }
+        .code {
+            font-size: 32px;
+            font-weight: bold;
+            color: #4F46E5;
+            letter-spacing: 8px;
+            font-family: 'Courier New', monospace;
+        }
+        .expiry {
+            color: #6B7280;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        .footer {
+            text-align: center;
+            color: #6B7280;
+            font-size: 12px;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #E5E7EB;
+        }
+        .warning {
+            background-color: #FEF3C7;
+            border-left: 4px solid #F59E0B;
+            padding: 12px;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="logo">
+            <h1>🎬 SyncTV</h1>
+        </div>
+
+        <div class="content">
+            <h2>Welcome to SyncTV!</h2>
+            <p>Thank you for creating an account. Please verify your email address to get started.</p>
+
+            <div class="verification-code">
+                <div class="code">{{token}}</div>
+                <div class="expiry">This code will expire in {{expires_in}}</div>
+            </div>
+
+            <p>Enter this verification code in the app to complete your registration.</p>
+
+            <div class="warning">
+                <strong>Security Notice:</strong> If you didn't create a SyncTV account, please ignore this email. Your email address will not be used without verification.
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>© SyncTV. All rights reserved.</p>
+            <p>This is an automated message, please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>

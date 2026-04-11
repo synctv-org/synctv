@@ -27,6 +27,7 @@ use synctv_core::{
     },
     cache::{CacheInvalidationService, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
+    service::auth::PasswordHasherService,
     Config,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
@@ -102,10 +103,33 @@ pub struct Application {
     shutdown: ShutdownCoordinator,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ApplicationBuildOptions {
     pub provider_test_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_hex_key_override: Option<String>,
+    pub password_hasher_override: Option<Arc<dyn PasswordHasherService>>,
+}
+
+impl std::fmt::Debug for ApplicationBuildOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApplicationBuildOptions")
+            .field(
+                "provider_test_address_overrides",
+                &self.provider_test_address_overrides,
+            )
+            .field(
+                "credential_encryption_hex_key_override",
+                &self
+                    .credential_encryption_hex_key_override
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field(
+                "password_hasher_override",
+                &self.password_hasher_override.as_ref().map(|_| "<injected>"),
+            )
+            .finish()
+    }
 }
 
 const fn cluster_runtime_enabled(config: &Config) -> bool {
@@ -640,6 +664,7 @@ impl Application {
                 credential_encryption_hex_key_override: options
                     .credential_encryption_hex_key_override
                     .clone(),
+                password_hasher_override: options.password_hasher_override.clone(),
             },
         )
         .await?;

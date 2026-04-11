@@ -546,6 +546,10 @@ pub enum ApiError {
     AlreadyExists(String),
     InvalidInput(String),
     RateLimited(String),
+    RateLimitedWithRetry {
+        message: String,
+        retry_after_seconds: u64,
+    },
     ServiceUnavailable(String),
     Internal(String),
 }
@@ -652,7 +656,7 @@ impl ApiError {
             Self::Authorization(_) => ErrorKind::PermissionDenied,
             Self::AlreadyExists(_) => ErrorKind::AlreadyExists,
             Self::InvalidInput(_) => ErrorKind::InvalidArgument,
-            Self::RateLimited(_) => ErrorKind::RateLimited,
+            Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
             Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
             Self::Internal(_) => ErrorKind::Internal,
         }
@@ -670,6 +674,18 @@ impl ApiError {
             | Self::RateLimited(msg)
             | Self::ServiceUnavailable(msg)
             | Self::Internal(msg) => msg,
+            Self::RateLimitedWithRetry { message, .. } => message,
+        }
+    }
+
+    #[must_use]
+    pub const fn retry_after_seconds(&self) -> Option<u64> {
+        match self {
+            Self::RateLimitedWithRetry {
+                retry_after_seconds,
+                ..
+            } => Some(*retry_after_seconds),
+            _ => None,
         }
     }
 
@@ -1236,6 +1252,13 @@ mod tests {
 
         let err = ApiError::Internal("boom".to_string());
         assert!(matches!(err.classify(), ErrorKind::Internal));
+
+        let err = ApiError::RateLimitedWithRetry {
+            message: "too fast".to_string(),
+            retry_after_seconds: 30,
+        };
+        assert!(matches!(err.classify(), ErrorKind::RateLimited));
+        assert_eq!(err.retry_after_seconds(), Some(30));
     }
 
     #[test]
@@ -1247,6 +1270,10 @@ mod tests {
             ApiError::AlreadyExists("user already exists".into()),
             ApiError::InvalidInput("username is required".into()),
             ApiError::RateLimited("room at capacity".into()),
+            ApiError::RateLimitedWithRetry {
+                message: "email rate limited".into(),
+                retry_after_seconds: 42,
+            },
             ApiError::ServiceUnavailable("backend unavailable".into()),
             ApiError::Internal("internal details".into()),
         ];

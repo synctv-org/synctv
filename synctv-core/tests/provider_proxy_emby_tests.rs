@@ -311,7 +311,10 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
                 headers.get("X-Subtitle-Token").map(String::as_str),
                 Some("subtitle-secret")
             );
-            assert!(!headers.contains_key("X-Emby-Token"));
+            assert_eq!(
+                headers.get("X-Emby-Token").map(String::as_str),
+                Some("api-key-123")
+            );
         }
         other => panic!("Expected FetchAndForward, got {other:?}"),
     }

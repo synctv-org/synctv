@@ -8,6 +8,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use reqwest::Client;
 use sqlx::PgPool;
 use std::future::Future;
 use std::io::BufReader;
@@ -136,15 +137,41 @@ impl SharedProviderPlaybackRuntime {
 }
 
 fn build_proxy_slice_cache_config(
+    config: &Config,
     _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
 ) -> synctv_proxy::slice_cache::SliceCacheConfig {
+    let backend = if config.cache.proxy_slice_file_backend_enabled {
+        synctv_proxy::slice_cache::CacheBackendConfig::File {
+            cache_dir: std::path::PathBuf::from(&config.cache.proxy_slice_file_cache_dir),
+            dir_levels: (2, 2),
+        }
+    } else {
+        synctv_proxy::slice_cache::CacheBackendConfig::Memory
+    };
+
     synctv_proxy::slice_cache::SliceCacheConfig {
         // Runtime enablement is decided per request from SettingsRegistry.
         // Keep the cache engine itself available so toggling the setting does
         // not require a process restart.
         enabled: true,
+        backend,
         ..synctv_proxy::slice_cache::SliceCacheConfig::default()
     }
+}
+
+async fn build_proxy_slice_cache(
+    config: &Config,
+    settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
+    proxy_http_client: Client,
+) -> anyhow::Result<Arc<synctv_proxy::slice_cache::SliceCache>> {
+    let slice_cache_config = build_proxy_slice_cache_config(config, settings_registry);
+    let cache = synctv_proxy::slice_cache::SliceCache::try_new_with_client(
+        slice_cache_config,
+        proxy_http_client,
+    )
+    .await
+    .context("failed to initialize proxy slice cache backend")?;
+    Ok(Arc::new(cache))
 }
 
 fn build_management_client_api(
@@ -1328,10 +1355,12 @@ impl SyncTvServer {
             is_cluster_mode,
         )?;
         let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
-        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-            build_proxy_slice_cache_config(&self.services.settings_registry),
+        let proxy_slice_cache = build_proxy_slice_cache(
+            &self.config,
+            &self.services.settings_registry,
             proxy_http_client.clone(),
-        ));
+        )
+        .await?;
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
             synctv_api::http::RouterConfig {
@@ -1460,10 +1489,12 @@ impl SyncTvServer {
             is_cluster_mode,
         )?;
         let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
-        let proxy_slice_cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-            build_proxy_slice_cache_config(&self.services.settings_registry),
+        let proxy_slice_cache = build_proxy_slice_cache(
+            &self.config,
+            &self.services.settings_registry,
             proxy_http_client.clone(),
-        ));
+        )
+        .await?;
 
         let (_, http_state) = synctv_api::http::create_router_with_state_from_config(
             synctv_api::http::RouterConfig {
@@ -2005,12 +2036,38 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_slice_cache_runtime_toggle_keeps_engine_available() {
         let registry = test_settings_registry();
-        let config = build_proxy_slice_cache_config(&registry);
+        let config = build_proxy_slice_cache_config(&Config::default(), &registry);
 
         assert!(
             config.enabled,
             "proxy slice cache engine must stay available so runtime settings can enable caching without restart"
         );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_slice_cache_config_uses_file_backend_when_enabled() {
+        let registry = test_settings_registry();
+        let mut config = Config::default();
+        config.cache.proxy_slice_file_backend_enabled = true;
+        config.cache.proxy_slice_file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
+
+        let slice_cache_config = build_proxy_slice_cache_config(&config, &registry);
+
+        match slice_cache_config.backend {
+            synctv_proxy::slice_cache::CacheBackendConfig::File {
+                cache_dir,
+                dir_levels,
+            } => {
+                assert_eq!(
+                    cache_dir,
+                    std::path::PathBuf::from("/tmp/synctv-proxy-cache")
+                );
+                assert_eq!(dir_levels, (2, 2));
+            }
+            synctv_proxy::slice_cache::CacheBackendConfig::Memory => {
+                panic!("expected file backend")
+            }
+        }
     }
 
     #[tokio::test]

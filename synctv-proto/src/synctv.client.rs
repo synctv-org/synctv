@@ -223,6 +223,8 @@ pub struct RegisterResponse {
     pub refresh_token: ::prost::alloc::string::String,
 }
 /// SECURITY: password is transmitted as plaintext. TLS MUST be used.
+/// Provide exactly one login identifier: `username` or `email`.
+/// Provide exactly one credential: `password` or `email_token`.
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.LoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -232,9 +234,17 @@ pub struct RegisterResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub username: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub password: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    #[serde(default)]
+    pub email: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    #[serde(default)]
+    pub email_token: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.LoginResponse")]
@@ -250,6 +260,28 @@ pub struct LoginResponse {
     pub access_token: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub refresh_token: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.RequestEmailLoginRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestEmailLoginRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RequestEmailLoginRequest {
+    #[prost(string, tag = "1")]
+    pub email: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.RequestEmailLoginResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestEmailLoginResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RequestEmailLoginResponse {
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RefreshTokenRequest")]
@@ -4225,6 +4257,32 @@ pub mod auth_service_client {
                 .insert(GrpcMethod::new("synctv.client.AuthService", "Login"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn request_email_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RequestEmailLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RequestEmailLoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/RequestEmailLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "RequestEmailLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn refresh_token(
             &mut self,
             request: impl tonic::IntoRequest<super::RefreshTokenRequest>,
@@ -4275,6 +4333,13 @@ pub mod auth_service_server {
             &self,
             request: tonic::Request<super::LoginRequest>,
         ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
+        async fn request_email_login(
+            &self,
+            request: tonic::Request<super::RequestEmailLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RequestEmailLoginResponse>,
+            tonic::Status,
+        >;
         async fn refresh_token(
             &self,
             request: tonic::Request<super::RefreshTokenRequest>,
@@ -4439,6 +4504,52 @@ pub mod auth_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/RequestEmailLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct RequestEmailLoginSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::RequestEmailLoginRequest>
+                    for RequestEmailLoginSvc<T> {
+                        type Response = super::RequestEmailLoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RequestEmailLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::request_email_login(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RequestEmailLoginSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

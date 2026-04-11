@@ -704,43 +704,58 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let rate_limiter_for_provider = rate_limiter.clone();
     let shared_content_filter_for_provider = Arc::new(content_filter.clone());
 
-    // Build the shared ClientApiImpl for gRPC handlers
-    let client_api = Arc::new(
-        crate::impls::ClientApiImpl::new(
-            user_service.clone(),
-            room_service.clone(),
-            Arc::new(connection_manager.clone()),
-            Arc::new(config.clone()),
-            publish_key_service,
-            jwt_service.clone(),
-            live_streaming_infrastructure.clone(),
-            providers_manager_for_client.clone(),
-            settings_registry.clone(),
-        )
-        .with_redis_publish_tx(redis_publish_tx.clone())
-        .with_redis_conn(redis_conn.clone())
-        .with_rate_limiter(rate_limiter.clone())
-        .with_credential_encryption(credential_encryption.clone())
-        .with_credential_repo(user_provider_credential_repository.clone())
-        .with_signing_key(proxy_signing_key.clone())
-        .with_provider_stores(provider_stores.clone()),
-    );
-
-    // Wire in the resolved STUN URL if the built-in STUN server started successfully
-    let client_api = if let Some(stun_url) = builtin_stun_url {
-        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_builtin_stun_url(stun_url))
+    // Reuse shared HTTP impl instances when available so application-layer logic
+    // stays transport-agnostic. Otherwise build each impl once for gRPC startup
+    // and inject it into the transport wrappers.
+    let client_api = if let Some(shared_http_app_state) = shared_http_app_state.as_ref() {
+        shared_http_app_state.client_api.clone()
     } else {
-        client_api
-    };
+        let client_api = Arc::new(
+            crate::impls::ClientApiImpl::new(
+                user_service.clone(),
+                room_service.clone(),
+                Arc::new(connection_manager.clone()),
+                Arc::new(config.clone()),
+                publish_key_service,
+                jwt_service.clone(),
+                live_streaming_infrastructure.clone(),
+                providers_manager_for_client.clone(),
+                settings_registry.clone(),
+            )
+            .with_redis_publish_tx(redis_publish_tx.clone())
+            .with_redis_conn(redis_conn.clone())
+            .with_rate_limiter(rate_limiter.clone())
+            .with_credential_encryption(credential_encryption.clone())
+            .with_credential_repo(user_provider_credential_repository.clone())
+            .with_signing_key(proxy_signing_key.clone())
+            .with_provider_stores(provider_stores.clone()),
+        );
 
-    // Wire in the TURN health checker
-    let client_api = if turn_health_checker.is_some() {
-        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_turn_health_checker(turn_health_checker.clone()))
-    } else {
-        client_api
+        let client_api = if let Some(stun_url) = builtin_stun_url {
+            let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+            Arc::new(inner.with_builtin_stun_url(stun_url))
+        } else {
+            client_api
+        };
+
+        if turn_health_checker.is_some() {
+            let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+            Arc::new(inner.with_turn_health_checker(turn_health_checker.clone()))
+        } else {
+            client_api
+        }
     };
+    let email_api = shared_http_app_state
+        .as_ref()
+        .and_then(|state| state.email_api.clone())
+        .or_else(|| {
+            crate::impls::email::build_shared_email_api(
+                user_service.clone(),
+                email_service.clone(),
+                email_token_service.clone(),
+                rate_limiter.clone(),
+            )
+        });
 
     let rate_limiter_for_layer = rate_limiter.clone();
     let cluster_manager_for_rt = cluster_manager.clone();
@@ -759,8 +774,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         rate_limit_config: rate_limit_config.clone(),
         content_filter,
         connection_manager,
-        email_service,
-        email_token_service,
+        email_api,
         settings_registry: settings_registry.clone(),
         providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),
@@ -777,23 +791,28 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     });
     let live_streaming_infrastructure_for_admin = live_streaming_infrastructure.clone();
 
-    let admin_api = Arc::new(
-        crate::impls::AdminApiImpl::new(
-            room_service.clone(),
-            user_service_for_admin.clone(),
-            settings_service.clone(),
-            settings_registry.clone(),
-            email_svc_for_admin_api,
-            Arc::new(connection_manager_for_provider.clone()),
-            provider_instance_manager,
-            live_streaming_infrastructure_for_admin,
-            publish_key_service_for_client.clone(),
-            Arc::new(config.clone()),
-            redis_publish_tx.clone(),
-            audit_service.clone(),
-        )
-        .with_provider_stores(provider_stores.clone()),
-    );
+    let admin_api = shared_http_app_state
+        .as_ref()
+        .and_then(|state| state.admin_api.clone())
+        .unwrap_or_else(|| {
+            Arc::new(
+                crate::impls::AdminApiImpl::new(
+                    room_service.clone(),
+                    user_service_for_admin.clone(),
+                    settings_service.clone(),
+                    settings_registry.clone(),
+                    email_svc_for_admin_api,
+                    Arc::new(connection_manager_for_provider.clone()),
+                    provider_instance_manager,
+                    live_streaming_infrastructure_for_admin,
+                    publish_key_service_for_client.clone(),
+                    Arc::new(config.clone()),
+                    redis_publish_tx.clone(),
+                    audit_service.clone(),
+                )
+                .with_provider_stores(provider_stores.clone()),
+            )
+        });
 
     let admin_service = AdminServiceImpl::new(
         user_service_for_admin,
@@ -944,7 +963,10 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let notif_svc = notification_service
             .expect("notification service presence must match registration plan");
         let notification_interceptor = auth_interceptor.clone();
-        let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()));
+        let notification_api = shared_http_app_state
+            .as_ref()
+            .and_then(|state| state.notification_api.clone())
+            .unwrap_or_else(|| Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone())));
         let notif_impl = NotificationServiceImpl::new(notification_api);
         routes.add_service(tonic::codegen::InterceptedService::new(
             NotificationServiceServer::new(notif_impl).with_message_size_limit(max_message_size),
@@ -1037,10 +1059,15 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let oauth2_svc =
             oauth2_service.expect("oauth2 service presence must match registration plan");
         let oauth2_auth_interceptor = auth_interceptor.clone();
-        let oauth2_api = Arc::new(crate::impls::OAuth2ApiImpl::new(
-            oauth2_svc,
-            user_service.clone(),
-        ));
+        let oauth2_api = shared_http_app_state
+            .as_ref()
+            .and_then(|state| state.oauth2_api.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::impls::OAuth2ApiImpl::new(
+                    oauth2_svc,
+                    user_service.clone(),
+                ))
+            });
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
             oauth2_api,
             Arc::new(config.clone()),
@@ -1162,6 +1189,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 ),
                 client_api: client_api.clone(),
                 admin_api: None,
+                email_api: None,
                 notification_api: None,
                 oauth2_api: None,
                 bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(

@@ -238,6 +238,7 @@ pub struct AppState {
     // Unified API implementation layer
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     // H-2: Provider ApiImpls stored once in AppState (not created per-request)
@@ -390,6 +391,12 @@ fn build_app_state(config: RouterConfig) -> AppState {
             .with_provider_stores(provider_stores.clone()),
         )
     });
+    let email_api = crate::impls::email::build_shared_email_api(
+        config.user_service.clone(),
+        config.email_service.clone(),
+        config.email_token_service.clone(),
+        config.rate_limiter.clone(),
+    );
 
     // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
     let notification_api = config
@@ -470,6 +477,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         guest_token_validator,
         client_api,
         admin_api,
+        email_api,
         notification_api,
         oauth2_api,
         bilibili_api,
@@ -521,6 +529,7 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/email/request", post(auth::request_email_login))
         .route("/api/auth/refresh", post(auth::refresh_token))
         .route(
             "/api/oauth2/{provider}/exchange",

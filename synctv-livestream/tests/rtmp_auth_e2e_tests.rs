@@ -22,10 +22,10 @@ use synctv_livestream::{AuthCallback, AuthPublishRewrite};
 /// Tracks callback invocations for testing
 #[derive(Debug, Default)]
 struct CallbackTracker {
-    publish_count: AtomicUsize,
-    unpublish_count: AtomicUsize,
-    play_count: AtomicUsize,
-    rollback_count: AtomicUsize,
+    publishes: AtomicUsize,
+    unpublishes: AtomicUsize,
+    plays: AtomicUsize,
+    rollbacks: AtomicUsize,
 }
 
 impl CallbackTracker {
@@ -34,19 +34,19 @@ impl CallbackTracker {
     }
 
     fn publish_calls(&self) -> usize {
-        self.publish_count.load(Ordering::SeqCst)
+        self.publishes.load(Ordering::SeqCst)
     }
 
     fn unpublish_calls(&self) -> usize {
-        self.unpublish_count.load(Ordering::SeqCst)
+        self.unpublishes.load(Ordering::SeqCst)
     }
 
     fn play_calls(&self) -> usize {
-        self.play_count.load(Ordering::SeqCst)
+        self.plays.load(Ordering::SeqCst)
     }
 
     fn rollback_calls(&self) -> usize {
-        self.rollback_count.load(Ordering::SeqCst)
+        self.rollbacks.load(Ordering::SeqCst)
     }
 }
 
@@ -105,7 +105,7 @@ impl AuthCallback for MockRtmpAuthCallback {
         _stream_name: &str,
         _query: Option<&str>,
     ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
-        self.tracker.publish_count.fetch_add(1, Ordering::SeqCst);
+        self.tracker.publishes.fetch_add(1, Ordering::SeqCst);
 
         // Simulate JWT validation
         if !self.should_authenticate {
@@ -154,13 +154,13 @@ impl AuthCallback for MockRtmpAuthCallback {
         _stream_name: &str,
         _query: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.tracker.play_count.fetch_add(1, Ordering::SeqCst);
+        self.tracker.plays.fetch_add(1, Ordering::SeqCst);
         // RTMP play is always disabled in this implementation
         Err("RTMP pull is disabled. Use HTTP-FLV or HLS endpoints for playback.".into())
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        self.tracker.unpublish_count.fetch_add(1, Ordering::SeqCst);
+        self.tracker.unpublishes.fetch_add(1, Ordering::SeqCst);
 
         // Cleanup registry entry
         if let Err(e) = self
@@ -173,7 +173,7 @@ impl AuthCallback for MockRtmpAuthCallback {
     }
 
     async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        self.tracker.rollback_count.fetch_add(1, Ordering::SeqCst);
+        self.tracker.rollbacks.fetch_add(1, Ordering::SeqCst);
 
         // Cleanup registry entry on failure
         if let Err(e) = self

@@ -73,6 +73,31 @@ const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 /// Can be overridden via `ClusterChannelConfig::stream_max_length`.
 const DEFAULT_MAX_STREAM_LENGTH: usize = 10000;
 
+/// Maximum number of failed events to buffer for retry after reconnection.
+const MAX_RETRY_BUFFER: usize = 10_000;
+
+/// Maximum number of critical events to buffer separately.
+const MAX_CRITICAL_BUFFER: usize = 5_000;
+
+/// Warning threshold for critical buffer (50% of `MAX_CRITICAL_BUFFER`).
+const CRITICAL_BUFFER_WARN_THRESHOLD: usize = 2_500;
+
+/// Warning threshold for normal buffer (80% of `MAX_RETRY_BUFFER`).
+const BUFFER_WARN_THRESHOLD: usize = retry_buffer_warn_threshold(MAX_RETRY_BUFFER);
+
+const fn retry_buffer_warn_threshold(max_retry_buffer: usize) -> usize {
+    max_retry_buffer.saturating_mul(4) / 5
+}
+
+const fn retry_buffer_high_threshold(max_retry_buffer: usize) -> usize {
+    max_retry_buffer.saturating_mul(9) / 10
+}
+
+#[cfg(test)]
+fn u128_to_u64_saturating(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 // ---- Unified Pub/Sub channel naming ----
 //
 // Both admin and room events use the same channel naming scheme and are published
@@ -94,7 +119,7 @@ const DEFAULT_MAX_STREAM_LENGTH: usize = 10000;
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
-use synctv_core::cache::CacheInvalidationService;
+use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
 
@@ -123,8 +148,8 @@ impl BufferPressureState {
             retry_buffer_size: Arc::new(AtomicUsize::new(0)),
             critical_buffer_size: Arc::new(AtomicUsize::new(0)),
             max_retry_buffer,
-            warn_threshold: (max_retry_buffer as f64 * 0.8) as usize,
-            high_threshold: (max_retry_buffer as f64 * 0.9) as usize,
+            warn_threshold: retry_buffer_warn_threshold(max_retry_buffer),
+            high_threshold: retry_buffer_high_threshold(max_retry_buffer),
         }
     }
 
@@ -207,6 +232,13 @@ impl PublishBackpressure {
     pub fn critical_buffer_size(&self) -> usize {
         self.state.critical_buffer_size.load(Ordering::Relaxed)
     }
+}
+
+enum SelectResult {
+    Message(redis::Msg),
+    LifecycleEvent(RoomLifecycleEvent),
+    CursorRefresh,
+    StreamEnded,
 }
 
 /// Redis Pub/Sub service for cross-node event synchronization
@@ -435,23 +467,6 @@ impl RedisPubSub {
         let cancel_publisher = self.cancel_token.clone();
         let stream_max_length = self.stream_max_length;
 
-        /// Maximum number of failed events to buffer for retry after reconnection.
-        /// Prevents unbounded memory growth during prolonged Redis outages.
-        /// Set to 10000 to reduce the chance of dropping critical events during
-        /// sustained outages.
-        const MAX_RETRY_BUFFER: usize = 10000;
-
-        /// Maximum number of critical events to buffer separately.
-        /// Beyond this threshold, the oldest critical events are dropped
-        /// to prevent OOM during prolonged Redis outages.
-        const MAX_CRITICAL_BUFFER: usize = 5000;
-
-        /// Warning threshold for critical buffer (50% of MAX_CRITICAL_BUFFER)
-        const CRITICAL_BUFFER_WARN_THRESHOLD: usize = 2500;
-
-        /// Warning threshold for normal buffer (80% of MAX_RETRY_BUFFER)
-        const BUFFER_WARN_THRESHOLD: usize = (MAX_RETRY_BUFFER as f64 * 0.8) as usize;
-
         // Create shared buffer pressure state for backpressure signaling
         let buffer_pressure_state = BufferPressureState::new(MAX_RETRY_BUFFER);
         let backpressure = PublishBackpressure {
@@ -534,48 +549,6 @@ impl RedisPubSub {
                 // Reset buffer warning flag on successful reconnection
                 buffer_warn_logged = false;
 
-                // Helper function to retry a batch of events, returning failed ones
-                async fn retry_batch(
-                    batch: Vec<PublishRequest>,
-                    conn: &mut redis::aio::MultiplexedConnection,
-                    node_id: &str,
-                    key_prefix: &str,
-                    stream_max_length: usize,
-                ) -> (Vec<PublishRequest>, usize) {
-                    let mut failed = Vec::new();
-                    let mut success_count = 0;
-                    for req in batch {
-                        let event_type = req.event.event_type();
-                        match RedisPubSub::publish_event(
-                            conn,
-                            node_id,
-                            key_prefix,
-                            req.event.clone(),
-                            stream_max_length,
-                        )
-                        .await
-                        {
-                            Ok(subscribers) => {
-                                success_count += 1;
-                                debug!(
-                                    event_type = event_type,
-                                    subscribers = subscribers,
-                                    "Retried event published to Redis"
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    event_type = event_type,
-                                    "Retry publish failed, will retry after next reconnect"
-                                );
-                                failed.push(req);
-                            }
-                        }
-                    }
-                    (failed, success_count)
-                }
-
                 // CRITICAL EVENTS: Always retry first (highest priority)
                 if !critical_retry_buffer.is_empty() {
                     let critical_batch = std::mem::take(&mut critical_retry_buffer);
@@ -584,7 +557,7 @@ impl RedisPubSub {
                         critical_count = critical_batch.len(),
                         "Retrying critical events after reconnection"
                     );
-                    let (failed, _success_count) = retry_batch(
+                    let (failed, _success_count) = retry_publish_batch(
                         critical_batch,
                         &mut conn,
                         &node_id,
@@ -620,7 +593,7 @@ impl RedisPubSub {
                         buffered_count = buffered.len(),
                         "Retrying buffered events after reconnection"
                     );
-                    let (failed, _success_count) = retry_batch(
+                    let (failed, _success_count) = retry_publish_batch(
                         buffered,
                         &mut conn,
                         &node_id,
@@ -1252,14 +1225,14 @@ impl RedisPubSub {
                         // falling back. Use "0" (stream beginning within catchup
                         // window) instead of "$" so events are not silently skipped.
                         let mut retry_ok = false;
-                        for retry in 1..=3 {
+                        for retry in 1_u64..=3 {
                             warn!(
                                 error = %e,
                                 stream_key = %stream_key,
                                 attempt = retry,
                                 "Failed to catch up on historical events, retrying"
                             );
-                            tokio::time::sleep(Duration::from_millis(500 * retry as u64)).await;
+                            tokio::time::sleep(Duration::from_millis(500_u64 * retry)).await;
                             match self
                                 .read_missed_events_from(stream_key, &catchup_start_id)
                                 .await
@@ -1442,13 +1415,6 @@ impl RedisPubSub {
 
         loop {
             let mut stream = pubsub.on_message();
-
-            enum SelectResult {
-                Message(redis::Msg),
-                LifecycleEvent(RoomLifecycleEvent),
-                CursorRefresh,
-                StreamEnded,
-            }
 
             let result = tokio::select! {
                 biased;
@@ -1874,7 +1840,6 @@ impl RedisPubSub {
                         // PlaybackState is a separate moka cache; invalidate it
                         // directly via the CacheInvalidationService.
                         if let Some(ref cache_svc) = self.cache_invalidation {
-                            use synctv_core::cache::InvalidationMessage;
                             if let Err(e) =
                                 cache_svc.broadcast_local(InvalidationMessage::PlaybackState {
                                     room_id: room_id.as_str().to_string(),
@@ -1938,7 +1903,7 @@ impl RedisPubSub {
             }
 
             // Broadcast to local subscribers
-            let sent_count = self.message_hub.broadcast(&room_id, event);
+            let sent_count = self.message_hub.broadcast(&room_id, &event);
 
             debug!(
                 room_id = %room_id.as_str(),
@@ -1958,7 +1923,6 @@ impl RedisPubSub {
         let Some(ref cache_svc) = self.cache_invalidation else {
             return;
         };
-        use synctv_core::cache::InvalidationMessage;
         for target in targets {
             let msg = match target {
                 CacheTarget::User { user_id } => InvalidationMessage::User {
@@ -2216,7 +2180,7 @@ impl RedisPubSub {
             for sk in reply.keys {
                 for entry in sk.ids {
                     batch_count += 1;
-                    cursor = entry.id.clone();
+                    cursor.clone_from(&entry.id);
 
                     let channel = entry
                         .map
@@ -2299,6 +2263,47 @@ pub struct PublishRequest {
     pub event: ClusterEvent,
 }
 
+async fn retry_publish_batch(
+    batch: Vec<PublishRequest>,
+    conn: &mut redis::aio::MultiplexedConnection,
+    node_id: &str,
+    key_prefix: &str,
+    stream_max_length: usize,
+) -> (Vec<PublishRequest>, usize) {
+    let mut failed = Vec::new();
+    let mut success_count = 0;
+    for req in batch {
+        let event_type = req.event.event_type();
+        match RedisPubSub::publish_event(
+            conn,
+            node_id,
+            key_prefix,
+            req.event.clone(),
+            stream_max_length,
+        )
+        .await
+        {
+            Ok(subscribers) => {
+                success_count += 1;
+                debug!(
+                    event_type = event_type,
+                    subscribers = subscribers,
+                    "Retried event published to Redis"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    event_type = event_type,
+                    "Retry publish failed, will retry after next reconnect"
+                );
+                failed.push(req);
+            }
+        }
+    }
+    (failed, success_count)
+}
+
 /// Envelope for events published to Redis
 /// Includes `node_id` to avoid echo (each node ignores its own events)
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -2312,6 +2317,34 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use synctv_core::models::id::UserId;
+
+    async fn publish_until_received<F>(
+        publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,
+        rx: &mut tokio::sync::mpsc::Receiver<ClusterEvent>,
+        make_event: F,
+        timeout_label: &str,
+    ) -> ClusterEvent
+    where
+        F: Fn() -> ClusterEvent,
+    {
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+
+        loop {
+            publish_tx
+                .send(PublishRequest {
+                    event: make_event(),
+                })
+                .await
+                .expect("publish should succeed");
+
+            match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await {
+                Ok(Some(event)) => return event,
+                Ok(None) => panic!("channel closed unexpectedly"),
+                Err(_error) if tokio::time::Instant::now() < deadline => {}
+                Err(error) => panic!("timeout waiting for {timeout_label} message: {error}"),
+            }
+        }
+    }
 
     #[test]
     fn test_event_envelope_serialization() {
@@ -2355,7 +2388,7 @@ mod tests {
         for _ in 0..512 {
             let sent = message_hub.broadcast(
                 &room_id,
-                ClusterEvent::ChatMessage {
+                &ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
                     room_id: room_id.clone(),
                     user_id: user_id.clone(),
@@ -2695,7 +2728,8 @@ mod tests {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_millis();
+        let now_ms = u128_to_u64_saturating(now_ms);
 
         let expected_start = now_ms.saturating_sub(300_000);
         let diff = timestamp_ms.abs_diff(expected_start);
@@ -2736,7 +2770,8 @@ mod tests {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_millis();
+        let now_ms = u128_to_u64_saturating(now_ms);
 
         let expected_start = now_ms.saturating_sub(60_000);
         let diff = timestamp_ms.abs_diff(expected_start);
@@ -2904,34 +2939,6 @@ mod tests {
         // Start both PubSub instances
         let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await.unwrap();
         let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await.unwrap();
-
-        async fn publish_until_received(
-            publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,
-            rx: &mut tokio::sync::mpsc::Receiver<ClusterEvent>,
-            make_event: impl Fn() -> ClusterEvent,
-            timeout_label: &str,
-        ) -> ClusterEvent {
-            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-
-            loop {
-                publish_tx
-                    .send(PublishRequest {
-                        event: make_event(),
-                    })
-                    .await
-                    .expect("publish should succeed");
-
-                match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await
-                {
-                    Ok(Some(event)) => return event,
-                    Ok(None) => {
-                        panic!("channel closed unexpectedly")
-                    }
-                    Err(_) if tokio::time::Instant::now() < deadline => continue,
-                    Err(_) => panic!("timeout waiting for {timeout_label} message"),
-                }
-            }
-        }
 
         // Wait for subscriber loops to be ready. Keep a small initial pause, but
         // rely on eventual publish+receive retries below instead of fixed sleeps.

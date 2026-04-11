@@ -75,9 +75,7 @@ impl EmailApiImpl {
             .await
             .map_err(map_email_user_lookup_error)?;
 
-        let user = if let Some(u) = user {
-            u
-        } else {
+        let Some(user) = user else {
             // Add random delay to prevent timing side-channel that leaks
             // whether an account exists based on response time differences.
             let delay_ms = rand::random_range(100u64..500u64);

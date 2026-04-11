@@ -62,9 +62,8 @@ async fn test_critical_events_high_priority() {
 
         match tokio::time::timeout(Duration::from_millis(750), room_rx.recv()).await {
             Ok(Some(event)) if event.event_type() == "permission_changed" => break event,
-            Ok(Some(_)) => {}
+            Ok(Some(_)) | Err(_) => {}
             Ok(None) => panic!("Channel closed"),
-            Err(_) => {}
         }
 
         assert!(

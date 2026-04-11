@@ -82,7 +82,7 @@ impl ContentFilter {
         // Sanitize HTML/XSS
         let sanitized = if self.strip_html {
             // Strip all HTML tags for maximum safety
-            self.strip_all_html(trimmed)
+            Self::strip_all_html(trimmed)
         } else {
             // Allow safe HTML subset (links, bold, italic)
             clean(trimmed)
@@ -131,7 +131,7 @@ impl ContentFilter {
         }
 
         // Always strip HTML for danmaku (security + readability)
-        let sanitized = self.strip_all_html(trimmed);
+        let sanitized = Self::strip_all_html(trimmed);
 
         // Check for sensitive words
         if let Some(ref words) = self.sensitive_words {
@@ -152,7 +152,7 @@ impl ContentFilter {
     ///
     /// Uses ammonia with an empty allowed-tags set, which removes ALL HTML
     /// elements and attributes, decodes entities, and produces plain text.
-    fn strip_all_html(&self, text: &str) -> String {
+    fn strip_all_html(text: &str) -> String {
         Builder::default()
             .tags(HashSet::new())
             .tag_attributes(HashMap::new())
@@ -187,7 +187,7 @@ impl ContentFilter {
         }
 
         // Strip HTML (just in case, though validation above should catch it)
-        let sanitized = self.strip_all_html(trimmed);
+        let sanitized = Self::strip_all_html(trimmed);
 
         Ok(sanitized)
     }

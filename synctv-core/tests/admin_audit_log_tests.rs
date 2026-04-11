@@ -223,7 +223,11 @@ async fn test_audit_log_multiple_actions_same_actor() {
             .await
             .expect("Query should succeed");
 
-    assert_eq!(count, actions.len() as i64, "All actions should be logged");
+    assert_eq!(
+        count,
+        i64::try_from(actions.len()).expect("action count should fit in i64"),
+        "All actions should be logged"
+    );
 
     // Verify unique IDs for each log
     let ids: Vec<(i64,)> = sqlx::query_as(

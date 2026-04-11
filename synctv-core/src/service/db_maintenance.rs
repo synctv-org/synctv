@@ -21,6 +21,10 @@ use super::{cleanup::CleanupConfig, LeaderCheck, SettingsRegistry};
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
 
+fn u32_to_i32(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 /// Unified database maintenance service.
 ///
 /// Calls the SQL maintenance functions that exist in migrations but were
@@ -68,16 +72,16 @@ impl DatabaseMaintenanceService {
             .unwrap_or(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS)
     }
 
-    const fn notification_retention_days(&self) -> i32 {
-        self.config.notification_retention_days as i32
+    fn notification_retention_days(&self) -> i32 {
+        u32_to_i32(self.config.notification_retention_days)
     }
 
-    const fn notification_max_retention_days(&self) -> i32 {
-        self.config.notification_max_retention_days as i32
+    fn notification_max_retention_days(&self) -> i32 {
+        u32_to_i32(self.config.notification_max_retention_days)
     }
 
-    const fn expired_credential_buffer_hours(&self) -> i32 {
-        self.config.expired_credential_buffer_hours as i32
+    fn expired_credential_buffer_hours(&self) -> i32 {
+        u32_to_i32(self.config.expired_credential_buffer_hours)
     }
 
     /// Delete expired email tokens.

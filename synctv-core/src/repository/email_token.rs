@@ -192,7 +192,7 @@ impl EmailTokenRepository {
         .await
         .map_err(Error::Database)?;
 
-        Ok(result.rows_affected() as usize)
+        Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
     }
 }
 

@@ -202,10 +202,15 @@ async fn test_repo_version_increments_sequentially() {
     assert_eq!(state.version, 0);
 
     // Multiple sequential updates
-    for i in 1..=5 {
-        state.current_time = i as f64 * 10.0;
+    for (expected_version, current_time) in [10.0, 20.0, 30.0, 40.0, 50.0].into_iter().enumerate() {
+        state.current_time = current_time;
         state = playback_repo.update(&state).await.unwrap();
-        assert_eq!(state.version, i, "Version should be {i}");
+        assert_eq!(
+            state.version,
+            i64::try_from(expected_version + 1).expect("version index should fit in i64"),
+            "Version should be {}",
+            expected_version + 1
+        );
     }
 }
 

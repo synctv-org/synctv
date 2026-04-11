@@ -27,6 +27,18 @@ pub struct RoomRepository {
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
     "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL AND u.status = 1)";
 
+fn pagination_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn count_i64_to_i32(count: i64) -> Result<i32> {
+    i32::try_from(count).map_err(|_| {
+        crate::Error::Internal(format!(
+            "Count {count} exceeds i32::MAX; pagination contract violated"
+        ))
+    })
+}
+
 impl RoomRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -209,7 +221,7 @@ impl RoomRepository {
     fn bind_filters_scalar<'q>(
         qb: sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments>,
         query: &'q RoomListQuery,
-        search_pattern: &'q Option<String>,
+        search_pattern: Option<&'q String>,
     ) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments> {
         let qb = match search_pattern {
             Some(pattern) => qb.bind(pattern),
@@ -227,7 +239,7 @@ impl RoomRepository {
     fn bind_filters<'q, O>(
         qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
         query: &'q RoomListQuery,
-        search_pattern: &'q Option<String>,
+        search_pattern: Option<&'q String>,
     ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
     where
         O: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
@@ -257,18 +269,21 @@ impl RoomRepository {
 
     /// List rooms with pagination and filters
     pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
         let wb = Self::build_room_list_conditions(query);
 
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
         let count_sql = format!("SELECT COUNT(*) as count FROM rooms r WHERE {count_where}");
-        let count: i64 =
-            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
-                .fetch_one(&self.pool)
-                .await?;
+        let count: i64 = Self::bind_filters_scalar(
+            sqlx::query_scalar(&count_sql),
+            query,
+            search_pattern.as_ref(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
@@ -283,7 +298,7 @@ impl RoomRepository {
         let list_qb = sqlx::query_as::<_, Room>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, &search_pattern)
+        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, search_pattern.as_ref())
             .fetch_all(&self.pool)
             .await?;
 
@@ -292,8 +307,8 @@ impl RoomRepository {
 
     /// List only rooms whose creator is still active.
     pub async fn list_accessible(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
         let wb = Self::build_room_list_conditions(query);
 
@@ -301,10 +316,13 @@ impl RoomRepository {
         let count_sql = format!(
             "SELECT COUNT(*) as count FROM rooms r WHERE {count_where} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}"
         );
-        let count: i64 =
-            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
-                .fetch_one(&self.pool)
-                .await?;
+        let count: i64 = Self::bind_filters_scalar(
+            sqlx::query_scalar(&count_sql),
+            query,
+            search_pattern.as_ref(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         let (list_where, _) = wb.build(3);
         let order_by = Self::build_order_by(query);
@@ -318,7 +336,7 @@ impl RoomRepository {
         let list_qb = sqlx::query_as::<_, Room>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, &search_pattern)
+        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, search_pattern.as_ref())
             .fetch_all(&self.pool)
             .await?;
 
@@ -331,8 +349,8 @@ impl RoomRepository {
         user_id: &UserId,
         query: &RoomListQuery,
     ) -> Result<(Vec<Room>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
         let wb = Self::build_room_list_conditions(query);
         let relation_sql = "(r.created_by = $1 OR EXISTS (
@@ -352,7 +370,7 @@ impl RoomRepository {
         let count: i64 = Self::bind_filters_scalar(
             sqlx::query_scalar(&count_sql).bind(user_id.as_str()),
             query,
-            &search_pattern,
+            search_pattern.as_ref(),
         )
         .fetch_one(&self.pool)
         .await?;
@@ -372,7 +390,7 @@ impl RoomRepository {
                 .bind(limit)
                 .bind(offset),
             query,
-            &search_pattern,
+            search_pattern.as_ref(),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -385,18 +403,21 @@ impl RoomRepository {
         &self,
         query: &RoomListQuery,
     ) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
         let wb = Self::build_room_list_conditions(query);
 
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
         let count_sql = format!("SELECT COUNT(DISTINCT r.id) FROM rooms r WHERE {count_where}");
-        let count: i64 =
-            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
-                .fetch_one(&self.pool)
-                .await?;
+        let count: i64 = Self::bind_filters_scalar(
+            sqlx::query_scalar(&count_sql),
+            query,
+            search_pattern.as_ref(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
@@ -481,7 +502,7 @@ impl RoomRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count as i32)
+        count_i64_to_i32(count)
     }
 
     /// Get rooms created by a specific user
@@ -490,8 +511,8 @@ impl RoomRepository {
         creator_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<Room>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(pagination.limit());
+        let offset = pagination_u64_to_i64(pagination.offset());
 
         // Get total count
         let count: i64 = sqlx::query_scalar(
@@ -526,8 +547,8 @@ impl RoomRepository {
         creator_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(pagination.limit());
+        let offset = pagination_u64_to_i64(pagination.offset());
 
         // Get total count
         let count: i64 = sqlx::query_scalar(

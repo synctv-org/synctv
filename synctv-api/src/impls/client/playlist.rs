@@ -14,6 +14,28 @@ use super::convert::playlist_to_proto_with_availability;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+const DEFAULT_PLAYLIST_PAGE_SIZE: i32 = 50;
+const MAX_PLAYLIST_PAGE_SIZE: i32 = 100;
+
+fn i64_to_i32_api(value: i64, field: &str) -> Result<i32, ApiError> {
+    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn page_i32_to_usize(value: i32, field: &str) -> Result<usize, ApiError> {
+    let non_negative = u32::try_from(value)
+        .map_err(|_| ApiError::InvalidInput(format!("{field} must be non-negative")))?;
+    usize::try_from(non_negative)
+        .map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
+}
+
+fn usize_to_u32_api(value: usize, field: &str) -> Result<u32, ApiError> {
+    u32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u32::MAX")))
+}
+
+fn usize_to_i64_api(value: usize, field: &str) -> Result<i64, ApiError> {
+    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
+}
+
 pub(crate) fn build_create_playlist_request(
     room_id: &synctv_core::models::RoomId,
     req: crate::proto::client::CreatePlaylistRequest,
@@ -117,7 +139,7 @@ impl ClientApiImpl {
         req: crate::proto::client::CreatePlaylistRequest,
     ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership and add media permission
         self.room_service
@@ -145,7 +167,8 @@ impl ClientApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .unwrap_or(0);
+        let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::CreatePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
@@ -161,7 +184,7 @@ impl ClientApiImpl {
         req: crate::proto::client::UpdatePlaylistRequest,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
         self.room_service
@@ -189,7 +212,8 @@ impl ClientApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .unwrap_or(0);
+        let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
@@ -205,7 +229,7 @@ impl ClientApiImpl {
         req: crate::proto::client::MovePlaylistRequest,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         self.room_service
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
@@ -231,7 +255,8 @@ impl ClientApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .unwrap_or(0);
+        let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::MovePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
@@ -270,7 +295,7 @@ impl ClientApiImpl {
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let pid = crate::impls::parse_playlist_id_param(playlist_id, "playlist_id")?;
 
         // Check membership
@@ -298,14 +323,16 @@ impl ClientApiImpl {
             .playlist_service()
             .count_children(&pid)
             .await
-            .map_err(ApiError::from)? as i32;
+            .map_err(ApiError::from)?;
+        let child_folder_count = i64_to_i32_api(child_folder_count, "child folder count")?;
 
         let media_count = self
             .room_service
             .media_service()
             .count_playlist_media(&pid)
             .await
-            .unwrap_or(0) as i32;
+            .unwrap_or(0);
+        let media_count = i64_to_i32_api(media_count, "playlist media count")?;
 
         Ok(crate::proto::client::GetPlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
@@ -331,7 +358,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before returning playlist data
         self.room_service
@@ -339,15 +366,11 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        // Pagination defaults and limits
-        const DEFAULT_PAGE_SIZE: i32 = 50;
-        const MAX_PAGE_SIZE: i32 = 100;
-
-        let page = req.page.max(1) as usize;
+        let page = page_i32_to_usize(req.page.max(1), "page")?;
         let page_size = if req.page_size <= 0 {
-            DEFAULT_PAGE_SIZE as usize
+            page_i32_to_usize(DEFAULT_PLAYLIST_PAGE_SIZE, "page_size")?
         } else {
-            req.page_size.min(MAX_PAGE_SIZE) as usize
+            page_i32_to_usize(req.page_size.min(MAX_PLAYLIST_PAGE_SIZE), "page_size")?
         };
         let search = (!req.search.is_empty()).then(|| req.search.to_ascii_lowercase());
         let source_provider = (!req.source_provider.is_empty()).then_some(req.source_provider);
@@ -389,8 +412,8 @@ impl ClientApiImpl {
         };
         let query = synctv_core::models::PlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(page as u32),
-                Some(page_size as u32),
+                Some(usize_to_u32_api(page, "page")?),
+                Some(usize_to_u32_api(page_size, "page_size")?),
             ),
             search,
             source_provider,
@@ -412,7 +435,8 @@ impl ClientApiImpl {
             .room_service
             .count_client_playlists(&rid, parent_id.as_ref(), &query)
             .await
-            .map_err(ApiError::from)? as i32;
+            .map_err(ApiError::from)?;
+        let total = i64_to_i32_api(total, "playlist total")?;
         let offset = (page - 1) * page_size;
         let playlists = self
             .room_service
@@ -420,8 +444,8 @@ impl ClientApiImpl {
                 &rid,
                 parent_id.as_ref(),
                 &query,
-                page_size as i64,
-                offset as i64,
+                usize_to_i64_api(page_size, "page_size")?,
+                usize_to_i64_api(offset, "offset")?,
             )
             .await
             .map_err(ApiError::from)?;
@@ -441,11 +465,17 @@ impl ClientApiImpl {
         let proto_playlists: Vec<_> = playlists
             .iter()
             .map(|entry| {
-                let item_count =
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
-                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+                let item_count = i64_to_i32_api(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                    "playlist item count",
+                )?;
+                Ok(playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                ))
             })
-            .collect();
+            .collect::<std::result::Result<Vec<_>, ApiError>>()?;
 
         Ok(crate::proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,
@@ -532,7 +562,10 @@ mod tests {
         .expect("valid request");
 
         assert_eq!(
-            request.parent_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            request
+                .parent_id
+                .as_ref()
+                .map(synctv_core::models::PlaylistId::as_str),
             Some(parent_id.as_str())
         );
     }

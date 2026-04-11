@@ -16,6 +16,17 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool, TestContainer};
 
+fn assert_f64_eq(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < f64::EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -147,7 +158,7 @@ async fn test_create_media_basic() {
     let created = media_repo.create(&media).await.unwrap();
 
     assert_eq!(created.name, "test_video.mp4");
-    assert_eq!(created.position, 0.0);
+    assert_f64_eq(created.position, 0.0);
     assert_eq!(created.source_provider, "direct_url");
     assert_eq!(created.playlist_id, Some(ctx.root_playlist.id));
     assert_eq!(created.room_id, ctx.room.id);
@@ -509,7 +520,7 @@ async fn test_get_next_append_position_with_tx_empty_playlist_returns_order_step
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(next_pos, 1024.0);
+    assert_f64_eq(next_pos, 1024.0);
 }
 
 #[tokio::test]
@@ -548,7 +559,7 @@ async fn test_get_next_append_position_with_tx_existing_items() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(next_pos, 5120.0);
+    assert_f64_eq(next_pos, 5120.0);
 }
 
 // ============================================================================
@@ -581,7 +592,7 @@ async fn test_create_batch_chunked_inserts_all() {
         .unwrap();
     assert_eq!(playlist_items.len(), 5);
     for (i, item) in playlist_items.iter().enumerate() {
-        assert_eq!(item.position, i as f64);
+        assert_f64_eq(item.position, usize_to_f64(i));
     }
 }
 
@@ -927,13 +938,17 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         "All positions should be unique, got duplicates: {successful_positions:?}"
     );
 
+    let expected_positions: Vec<f64> = (1..=num_concurrent)
+        .map(|n| usize_to_f64(n) * 1024.0)
+        .collect();
     assert_eq!(
-        sorted_positions,
-        (1..=num_concurrent)
-            .map(|n| (n as f64) * 1024.0)
-            .collect::<Vec<_>>(),
+        sorted_positions.len(),
+        expected_positions.len(),
         "Positions should follow sparse append ordering"
     );
+    for (actual, expected) in sorted_positions.iter().zip(expected_positions) {
+        assert_f64_eq(*actual, expected);
+    }
 }
 
 #[tokio::test]

@@ -421,7 +421,7 @@ async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<S
 struct WebSocketStream {
     receiver: futures::stream::SplitStream<axum::extract::ws::WebSocket>,
     sender: WebSocketMessageSender,
-    _is_alive: Arc<std::sync::atomic::AtomicBool>,
+    is_alive: Arc<std::sync::atomic::AtomicBool>,
     /// Raw channel for sending WebSocket control frames (Ping)
     raw_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
 }
@@ -451,7 +451,7 @@ impl StreamMessage for WebSocketStream {
     }
 
     fn is_alive(&self) -> bool {
-        self._is_alive.load(std::sync::atomic::Ordering::Relaxed)
+        self.is_alive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn ping(&self) -> Result<(), String> {
@@ -646,14 +646,16 @@ async fn forward_websocket_messages<S>(
 /// not silently dropped.
 const fn is_critical_message(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
-    match &message.message {
-        Some(Message::PlaybackState(_)) => true, // Playback state sync
-        Some(Message::PlayingChanged(_)) => true, // Playing media changed
-        Some(Message::Error(_)) => true,         // kick/ban/room deleted arrive as Error
-        Some(Message::PermissionChanged(_)) => true, // Permission changes must be delivered
-        Some(Message::RoomSettings(_)) => true,  // Room settings sync
-        _ => false,
-    }
+    matches!(
+        &message.message,
+        Some(
+            Message::PlaybackState(_)
+                | Message::PlayingChanged(_)
+                | Message::Error(_)
+                | Message::PermissionChanged(_)
+                | Message::RoomSettings(_)
+        )
+    )
 }
 
 const fn requires_state_resync(message: &ServerMessage) -> bool {
@@ -924,7 +926,7 @@ impl HandshakeReservation {
     }
 }
 
-async fn reserve_websocket_upgrade_slots(
+fn reserve_websocket_upgrade_slots(
     connection_manager: &synctv_cluster::sync::ConnectionManager,
     room_id: &RoomId,
     user_id: &UserId,
@@ -989,8 +991,7 @@ async fn prepare_websocket_upgrade(
     validate_websocket_runtime_dependencies(state)?;
     let username = load_websocket_username(state, &user_id).await?;
     let connection_id = StreamMessageHandler::generate_connection_id(&user_id);
-    let reservation =
-        reserve_websocket_upgrade_slots(&state.connection_manager, &rid, &user_id).await?;
+    let reservation = reserve_websocket_upgrade_slots(&state.connection_manager, &rid, &user_id)?;
 
     Ok(PreparedWebSocketUpgrade {
         room_id: rid,
@@ -1156,7 +1157,7 @@ async fn handle_socket(
     let mut stream = WebSocketStream {
         receiver: ws_receiver,
         sender: ws_sender,
-        _is_alive: is_alive,
+        is_alive,
         raw_sender: raw_sender_for_ping,
     };
 
@@ -2004,7 +2005,6 @@ mod tests {
 
         let reservation =
             reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
-                .await
                 .expect("handshake should reserve websocket capacity");
 
         let ticket = ws_ticket_service
@@ -2055,7 +2055,6 @@ mod tests {
         let room_id = RoomId::from_string("room-ticket-timeout".to_string());
         let reservation =
             reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
-                .await
                 .expect("handshake should reserve websocket capacity");
 
         let prepared = PreparedWebSocketUpgrade {

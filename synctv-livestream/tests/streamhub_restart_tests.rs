@@ -564,7 +564,8 @@ async fn test_restart_count_decrements_on_successful_exit() {
 
     // Verify we haven't hit the limit
     assert!(
-        (restart_count.load(Ordering::SeqCst) as u32) < HUB_MAX_RESTARTS,
+        u32::try_from(restart_count.load(Ordering::SeqCst)).expect("restart count must fit in u32")
+            < HUB_MAX_RESTARTS,
         "Should be below max restarts limit"
     );
 }

@@ -158,7 +158,7 @@ async fn test_health_monitor_start_and_shutdown() {
         .await;
 
     let monitor = HealthMonitor::new(registry, 60);
-    let handle = monitor.start().await.unwrap();
+    let handle = monitor.start().unwrap();
     monitor.set_join_handle(handle);
 
     // Let it run briefly

@@ -7,6 +7,7 @@
 pub mod slice_cache;
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::time::Duration;
 
 use axum::{
@@ -14,6 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
+use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
 
 /// Maximum response body size for proxied media (256 MB).
@@ -88,10 +90,10 @@ pub struct ProxyConfig<'a> {
 }
 
 /// Apply provider headers and defaults (User-Agent, Referer) to a request builder.
-pub fn apply_provider_headers(
+pub fn apply_provider_headers<S: BuildHasher>(
     mut request: reqwest::RequestBuilder,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &HashMap<String, String, S>,
 ) -> Result<reqwest::RequestBuilder, anyhow::Error> {
     let mut has_user_agent = false;
     let mut has_referer = false;
@@ -449,33 +451,31 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // Stream the body with cumulative size enforcement to prevent upstream servers
     // from sending unlimited data (e.g. with chunked transfer encoding or lying Content-Length).
     // Returns `None` after the first size-exceeded error to terminate the stream immediately.
-    use futures::StreamExt;
-    let body_stream = proxy_response.bytes_stream().scan((0usize, false), |(total, exceeded), chunk| {
-        if *exceeded {
-            return futures::future::ready(None);
-        }
-        match chunk {
-            Ok(data) => {
-                *total += data.len();
-                if *total > MAX_PROXY_BODY_SIZE {
-                    *exceeded = true;
-                    futures::future::ready(Some(Err(std::io::Error::other(
-                        format!(
-                            "Response body exceeded size limit ({} bytes, max {MAX_PROXY_BODY_SIZE})",
-                            *total
-                        ),
-                    ))))
-                } else {
-                    // `data` is already a `Bytes` which is cheaply cloneable (Arc-backed),
-                    // but we own it here so no clone is needed at all.
-                    futures::future::ready(Some(Ok(data)))
+    let body_stream =
+        proxy_response
+            .bytes_stream()
+            .scan((0usize, false), |(total, exceeded), chunk| {
+                if *exceeded {
+                    return futures::future::ready(None);
                 }
-            }
-            Err(e) => futures::future::ready(Some(Err(std::io::Error::other(
-                e,
-            )))),
-        }
-    });
+                match chunk {
+                    Ok(data) => {
+                        *total += data.len();
+                        if *total > MAX_PROXY_BODY_SIZE {
+                            *exceeded = true;
+                            futures::future::ready(Some(Err(std::io::Error::other(
+                                format!(
+                                    "Response body exceeded size limit ({} bytes, max {MAX_PROXY_BODY_SIZE})",
+                                    *total
+                                ),
+                            ))))
+                        } else {
+                            futures::future::ready(Some(Ok(data)))
+                        }
+                    }
+                    Err(e) => futures::future::ready(Some(Err(std::io::Error::other(e)))),
+                }
+            });
     let body = Body::from_stream(body_stream);
 
     builder
@@ -485,10 +485,10 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
 /// Fetch a remote M3U8, rewrite its URLs so segments proxy through
 /// `proxy_base`, and return the rewritten content.
-pub async fn proxy_m3u8_and_rewrite(
+pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
     client: &reqwest::Client,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &HashMap<String, String, S>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
     let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
@@ -1011,7 +1011,7 @@ async fn send_with_redirect_validation_inner(
     let mut response = client
         .execute(built)
         .await
-        .map_err(classify_reqwest_error)?;
+        .map_err(|error| classify_reqwest_error(&error))?;
 
     let mut hops = 0usize;
     while response.status().is_redirection()
@@ -1064,7 +1064,10 @@ async fn send_with_redirect_validation_inner(
         }
 
         drop(response);
-        response = redirect_req.send().await.map_err(classify_reqwest_error)?;
+        response = redirect_req
+            .send()
+            .await
+            .map_err(|error| classify_reqwest_error(&error))?;
     }
 
     Ok(ProxyResponse {
@@ -1073,7 +1076,7 @@ async fn send_with_redirect_validation_inner(
     })
 }
 
-fn classify_reqwest_error(error: reqwest::Error) -> anyhow::Error {
+fn classify_reqwest_error(error: &reqwest::Error) -> anyhow::Error {
     let message = error.to_string();
     let proxy_error = if error.is_timeout() {
         ProxyError::Timeout(message)
@@ -1592,9 +1595,8 @@ mod tests {
         let request = client.get(format!("{}/start", server.uri()));
 
         let result = send_with_redirect_validation(&client, request).await;
-        let err = match result {
-            Ok(_) => panic!("redirect to blocked loopback must fail"),
-            Err(err) => err,
+        let Err(err) = result else {
+            panic!("redirect to blocked loopback must fail");
         };
         let proxy_err = err
             .downcast_ref::<ProxyError>()
@@ -1614,9 +1616,8 @@ mod tests {
             .expect("client should build");
         let request = client.get("http://127.0.0.1:12345/private");
 
-        let err = match send_with_redirect_validation(&client, request).await {
-            Ok(_) => panic!("initial loopback target must fail before network IO"),
-            Err(err) => err,
+        let Err(err) = send_with_redirect_validation(&client, request).await else {
+            panic!("initial loopback target must fail before network IO");
         };
         let proxy_err = err
             .downcast_ref::<ProxyError>()

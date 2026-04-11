@@ -247,7 +247,11 @@ fn test_compute_needed_slices_multiple_slices() {
 fn test_compute_needed_slices_cross_boundary() {
     // Range 1MB-3MB with slice_size=2MB needs slices 0 and 1
     let mb: u64 = 1024 * 1024;
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(mb, 3 * mb - 1, 2 * mb as usize);
+    let slices = synctv_proxy::slice_cache::compute_needed_slices(
+        mb,
+        3 * mb - 1,
+        2 * usize::try_from(mb).expect("megabyte constant must fit in usize"),
+    );
     assert_eq!(slices, vec![0, 1]);
 }
 
@@ -255,8 +259,11 @@ fn test_compute_needed_slices_cross_boundary() {
 fn test_compute_needed_slices_exact_boundary() {
     // Range starts exactly at slice boundary
     let mb: u64 = 1024 * 1024;
-    let slices =
-        synctv_proxy::slice_cache::compute_needed_slices(2 * mb, 4 * mb - 1, 2 * mb as usize);
+    let slices = synctv_proxy::slice_cache::compute_needed_slices(
+        2 * mb,
+        4 * mb - 1,
+        2 * usize::try_from(mb).expect("megabyte constant must fit in usize"),
+    );
     assert_eq!(slices, vec![1]);
 }
 
@@ -1555,16 +1562,16 @@ fn test_parse_content_range_basic() {
 fn test_parse_content_range_large_media_range() {
     let cr = parse_content_range("bytes 0-2097151/10485760").unwrap();
     assert_eq!(cr.start, 0);
-    assert_eq!(cr.end, 2097152);
-    assert_eq!(cr.complete_length, Some(10485760));
+    assert_eq!(cr.end, 2_097_152);
+    assert_eq!(cr.complete_length, Some(10_485_760));
 }
 
 #[test]
 fn test_parse_content_range_middle_range() {
     let cr = parse_content_range("bytes 2097152-4194303/10485760").unwrap();
-    assert_eq!(cr.start, 2097152);
-    assert_eq!(cr.end, 4194304);
-    assert_eq!(cr.complete_length, Some(10485760));
+    assert_eq!(cr.start, 2_097_152);
+    assert_eq!(cr.end, 4_194_304);
+    assert_eq!(cr.complete_length, Some(10_485_760));
 }
 
 #[test]
@@ -2282,10 +2289,7 @@ async fn test_full_body_stale_background_revalidation_ignores_non_success_respon
     let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body2.as_ref(), b"version-1");
     assert!(
-        matches!(
-            status2.as_deref(),
-            Some("STALE" | "HIT" | "UPDATING")
-        ),
+        matches!(status2.as_deref(), Some("STALE" | "HIT" | "UPDATING")),
         "cache must retain the last successful body instead of storing a 500 response"
     );
 }

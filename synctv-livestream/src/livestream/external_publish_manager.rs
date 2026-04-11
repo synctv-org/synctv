@@ -311,9 +311,9 @@ impl ExternalPublishManager {
 
         // Register as publisher in Redis now that the stream is confirmed running.
         // If registration fails, stop the stream to avoid running unregistered.
-        const REGISTRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        let registry_timeout = std::time::Duration::from_secs(5);
         let register_result = tokio::time::timeout(
-            REGISTRY_TIMEOUT,
+            registry_timeout,
             self.registry.try_register_publisher(
                 room_id,
                 media_id,
@@ -326,7 +326,7 @@ impl ExternalPublishManager {
         .map_err(|_| {
             crate::error::StreamError::RegistryError(format!(
                 "Registry registration timed out after {}s for {room_id}/{media_id}",
-                REGISTRY_TIMEOUT.as_secs()
+                registry_timeout.as_secs()
             ))
         })
         .and_then(|r| {

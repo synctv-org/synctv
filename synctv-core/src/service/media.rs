@@ -24,6 +24,24 @@ use std::sync::Arc;
 /// This limit prevents `DoS` attacks and ensures reasonable resource usage
 /// for bulk operations like add, delete, and reorder.
 const MAX_BATCH_SIZE: usize = 100;
+/// Limit `source_config` storage size to prevent unbounded JSONB growth.
+const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
+/// Leave sparse gaps between inserted media positions to reduce renumbering.
+const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
+
+fn batch_media_position(index: usize, start_position: f64) -> f64 {
+    let index = u32::try_from(index).unwrap_or(u32::MAX);
+    MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position)
+}
+
+fn provider_requires_credential_repo(provider_name: &str) -> bool {
+    matches!(
+        provider_name,
+        crate::provider::AlistProvider::NAME
+            | crate::provider::BilibiliProvider::NAME
+            | crate::provider::EmbyProvider::NAME
+    )
+}
 
 /// Request to add a media item
 ///
@@ -90,6 +108,16 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
+    fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
+        if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
+            return Err(Error::ServiceUnavailable(format!(
+                "Provider '{provider_name}' requires credential repository wiring"
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn resolve_media_provider(
         &self,
         source_provider: &str,
@@ -263,6 +291,7 @@ impl MediaService {
         let provider = self
             .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
             .await?;
+        self.ensure_provider_credential_repo(provider.name())?;
 
         // Validate source_config using provider trait method
         let mut ctx = ProviderContext::new("synctv")
@@ -282,7 +311,6 @@ impl MediaService {
 
         // Validate source_config size to prevent storage bloat
         // Limit: 1MB max (JSONB can grow large with embedded metadata)
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
         let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
         if config_size > MAX_SOURCE_CONFIG_SIZE {
             return Err(Error::InvalidInput(format!(
@@ -384,6 +412,7 @@ impl MediaService {
         let provider = self
             .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
             .await?;
+        self.ensure_provider_credential_repo(provider.name())?;
 
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(admin_user_id.as_str())
@@ -400,7 +429,6 @@ impl MediaService {
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
         let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
         if config_size > MAX_SOURCE_CONFIG_SIZE {
             return Err(Error::InvalidInput(format!(
@@ -523,6 +551,7 @@ impl MediaService {
             let provider = self
                 .resolve_media_provider(&item.source_provider, &item.provider_instance_name)
                 .await?;
+            self.ensure_provider_credential_repo(provider.name())?;
 
             // Validate source_config using provider trait method
             provider
@@ -572,7 +601,7 @@ impl MediaService {
                 prepared_source_config,
                 provider.name(),             // Provider type name
                 item.provider_instance_name, // Instance name
-                1024.0f64.mul_add(index as f64, start_position),
+                batch_media_position(index, start_position),
             );
             media_items.push(media);
         }
@@ -707,7 +736,6 @@ impl MediaService {
                         attempt = attempt + 1,
                         "Concurrent media edit detected, retrying"
                     );
-                    continue;
                 }
                 Ok(None) => {
                     return Err(Error::Internal(
@@ -787,7 +815,7 @@ impl MediaService {
 
                     return Ok(updated_media);
                 }
-                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => continue,
+                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {}
                 Ok(None) => {
                     return Err(Error::Internal(format!(
                         "Media edit failed: concurrent modification after {} retries for media_id={}",
@@ -1376,6 +1404,7 @@ impl MediaService {
         }
 
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
             Error::InvalidInput(format!(
                 "Provider {provider_name} does not support dynamic folders"
@@ -1422,6 +1451,7 @@ impl MediaService {
         }
 
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
             Error::InvalidInput(format!(
                 "Provider {provider_name} does not support dynamic folders"
@@ -1540,6 +1570,7 @@ impl MediaService {
 
         // Get provider
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
 
         // Check if provider implements DynamicFolder trait
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
@@ -1592,6 +1623,7 @@ impl MediaService {
         }
 
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
 
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
             Error::InvalidInput(format!(
@@ -1648,6 +1680,7 @@ impl MediaService {
         }
 
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
 
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
             Error::InvalidInput(format!(
@@ -1700,6 +1733,7 @@ impl MediaService {
         }
 
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
 
         let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
             Error::InvalidInput(format!(

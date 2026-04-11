@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use synctv_common::time as common_time;
 
+const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024;
+const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+const DANGEROUS_CIDR_RANGES: &[&str] = &["0.0.0.0/0", "::/0", "0.0.0.0/0,::/0"];
+const ALLOWED_DISCOVERY_MODES: &[&str] = &["redis", "static", "k8s_dns"];
+const ALLOWED_LEADER_ELECTION_MODES: &[&str] = &["redis", "k8s_lease"];
+
 fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -37,7 +43,8 @@ pub fn absolute_display_path(path: &Path) -> String {
         return path.display().to_string();
     }
 
-    std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    std::env::current_dir()
+        .map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
         .display()
         .to_string()
 }
@@ -45,12 +52,15 @@ pub fn absolute_display_path(path: &Path) -> String {
 pub fn default_management_runtime_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        return user_home_dir().map_or_else(|| std::env::temp_dir().join("synctv").join("run"), |home| {
+        return user_home_dir().map_or_else(
+            || std::env::temp_dir().join("synctv").join("run"),
+            |home| {
                 home.join("Library")
                     .join("Application Support")
                     .join("synctv")
                     .join("run")
-            });
+            },
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -432,11 +442,11 @@ pub struct ServerConfig {
     pub enable_reflection: bool,
     /// Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
     /// When set, X-Forwarded-For/X-Real-IP headers are only trusted from these addresses.
-    /// Example: ["10.0.0.0/8", "192.168.0.0/16"] for internal load balancers.
+    /// Example: `["10.0.0.0/8", "192.168.0.0/16"]` for internal load balancers.
     /// If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
     pub trusted_proxies: Vec<String>,
     /// CORS allowed origins. Must be set to specific domains.
-    /// Example: ["<https://app.example.com>", "<https://admin.example.com>"]
+    /// Example: `["https://app.example.com", "https://admin.example.com"]`
     pub cors_allowed_origins: Vec<String>,
     /// Shared secret for authenticating cluster gRPC calls between nodes.
     /// When set, all inter-node gRPC requests must include this secret in the
@@ -486,7 +496,6 @@ pub struct MetricsTlsConfig {
     pub key_path: String,
 }
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -496,7 +505,6 @@ pub enum MetricsAuthMode {
     Basic,
     Kubernetes,
 }
-
 
 impl std::str::FromStr for MetricsAuthMode {
     type Err = ConfigError;
@@ -596,7 +604,6 @@ pub enum ManagementTransport {
     Tcp,
     Unix,
 }
-
 
 impl std::str::FromStr for ManagementTransport {
     type Err = ConfigError;
@@ -2544,8 +2551,6 @@ impl Config {
         }
 
         // Validate gRPC max message size (prevent OOM attacks)
-        const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB minimum
-        const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024; // 1 GB maximum
         if self.server.grpc_max_message_size_bytes < MIN_GRPC_MESSAGE_SIZE {
             errors.push(format!(
                 "server.grpc_max_message_size_bytes ({}) must be at least {} (1 MB)",
@@ -2600,26 +2605,20 @@ impl Config {
         }
 
         // Validate trusted_proxies CIDR format
-        // List of dangerous CIDR ranges that should never be trusted
-        const DANGEROUS_CIDR_RANGES: &[&str] = &[
-            "0.0.0.0/0",      // All IPv4 addresses
-            "::/0",           // All IPv6 addresses
-            "0.0.0.0/0,::/0", // Combined IPv4+IPv6 (sometimes seen in configs)
-        ];
-
         for (i, proxy) in self.server.trusted_proxies.iter().enumerate() {
             // Check for dangerous overly-broad CIDR ranges first
             let proxy_normalized = proxy.replace(' ', "").to_lowercase();
-            for dangerous in DANGEROUS_CIDR_RANGES {
-                if proxy_normalized == dangerous.replace(' ', "").to_lowercase() {
-                    errors.push(format!(
-                        "server.trusted_proxies[{i}] '{proxy}' is a dangerous configuration \
-                         that trusts ALL IP addresses. This allows IP spoofing attacks via \
-                         X-Forwarded-For headers. Use specific IP ranges (e.g., '10.0.0.0/8', \
-                         '172.16.0.0/12', '192.168.0.0/16') for your trusted proxies/_load balancers."
-                    ));
-                    continue;
-                }
+            if DANGEROUS_CIDR_RANGES
+                .iter()
+                .any(|dangerous| proxy_normalized == dangerous.replace(' ', "").to_lowercase())
+            {
+                errors.push(format!(
+                    "server.trusted_proxies[{i}] '{proxy}' is a dangerous configuration \
+                     that trusts ALL IP addresses. This allows IP spoofing attacks via \
+                     X-Forwarded-For headers. Use specific IP ranges (e.g., '10.0.0.0/8', \
+                     '172.16.0.0/12', '192.168.0.0/16') for your trusted proxies/_load balancers."
+                ));
+                continue;
             }
 
             // Also check if a CIDR covers all addresses (e.g., "0.0.0.0/0" parsed)
@@ -2814,9 +2813,6 @@ impl Config {
                 }
             }
         }
-
-        const ALLOWED_DISCOVERY_MODES: &[&str] = &["redis", "static", "k8s_dns"];
-        const ALLOWED_LEADER_ELECTION_MODES: &[&str] = &["redis", "k8s_lease"];
 
         if !ALLOWED_DISCOVERY_MODES.contains(&self.cluster.discovery_mode.as_str()) {
             errors.push(format!(
@@ -3199,7 +3195,7 @@ pub struct ClusterChannelConfig {
     /// Static peer addresses for non-K8s / non-Redis cluster discovery.
     /// When configured, each peer is periodically health-checked via gRPC
     /// and registered into the `NodeRegistry` if alive.
-    /// Example: ["host1:50051", "host2:50051"]
+    /// Example: `["host1:50051", "host2:50051"]`
     pub peers: Vec<String>,
 
     /// How far back (in seconds) to replay Redis Stream events when a new node

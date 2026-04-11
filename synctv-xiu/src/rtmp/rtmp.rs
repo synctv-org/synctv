@@ -226,7 +226,9 @@ mod tests {
                 ) => {}
             Ok(Ok(_)) => panic!("client connection should be closed after shutdown"),
             Ok(Err(err)) => panic!("unexpected read error after shutdown: {err}"),
-            Err(_) => panic!("stuck RTMP session was not force-closed after shutdown"),
+            Err(timeout_err) => {
+                panic!("stuck RTMP session was not force-closed after shutdown: {timeout_err}")
+            }
         }
     }
 }

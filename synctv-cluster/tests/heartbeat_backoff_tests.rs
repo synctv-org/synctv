@@ -112,14 +112,12 @@ async fn test_heartbeat_reregistration_has_backoff() {
 
     // Verify initial backoff state
     assert!(
-        !registry.is_in_reregister_backoff().await,
+        !registry.is_in_reregister_backoff(),
         "Should not be in backoff initially"
     );
 
     // Set a backoff period for testing
-    registry
-        .set_reregister_backoff_for_test(Duration::from_millis(200))
-        .await;
+    registry.set_reregister_backoff_for_test(Duration::from_millis(200));
 
     // Delete the key to simulate expiry
     let mut conn = connect_redis_with_retry(&redis_client).await;
@@ -140,7 +138,7 @@ async fn test_heartbeat_reregistration_has_backoff() {
 
     // Verify we're in backoff
     assert!(
-        registry.is_in_reregister_backoff().await,
+        registry.is_in_reregister_backoff(),
         "Should be in backoff period"
     );
 
@@ -160,7 +158,7 @@ async fn test_heartbeat_reregistration_has_backoff() {
 
     // Verify not in backoff anymore
     assert!(
-        !registry.is_in_reregister_backoff().await,
+        !registry.is_in_reregister_backoff(),
         "Should not be in backoff after successful re-registration"
     );
 }
@@ -192,7 +190,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     // Verify initial state: not in backoff
     assert!(
-        !registry.is_in_reregister_backoff().await,
+        !registry.is_in_reregister_backoff(),
         "Should not be in backoff initially"
     );
 
@@ -205,7 +203,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     // Still not in backoff (heartbeat succeeded)
     assert!(
-        !registry.is_in_reregister_backoff().await,
+        !registry.is_in_reregister_backoff(),
         "Should not be in backoff after successful heartbeat"
     );
 
@@ -227,7 +225,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     // After successful re-registration, backoff should still be at initial value (1s)
     // and last_attempt should be updated
-    let backoff = registry.current_reregister_backoff().await;
+    let backoff = registry.current_reregister_backoff();
     assert_eq!(
         backoff,
         std::time::Duration::from_secs(1),
@@ -244,7 +242,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
     }
 
     // Backoff should remain at initial value
-    let backoff = registry.current_reregister_backoff().await;
+    let backoff = registry.current_reregister_backoff();
     assert_eq!(
         backoff,
         std::time::Duration::from_secs(1),
@@ -292,7 +290,7 @@ async fn test_backoff_increases_exponentially() {
         let _ = registry.heartbeat().await;
 
         // Get current backoff duration
-        let backoff = registry.current_reregister_backoff().await;
+        let backoff = registry.current_reregister_backoff();
         backoff_durations.push(backoff);
 
         // Simulate waiting (for test, we just record the backoff)
@@ -339,7 +337,7 @@ async fn test_backoff_resets_after_recovery() {
     let key = "recovery:cluster:nodes:recovery-node";
 
     // Initial backoff should be 1 second
-    let initial_backoff = registry.current_reregister_backoff().await;
+    let initial_backoff = registry.current_reregister_backoff();
     assert_eq!(
         initial_backoff,
         std::time::Duration::from_secs(1),
@@ -354,19 +352,14 @@ async fn test_backoff_resets_after_recovery() {
         .expect("DEL should succeed");
 
     // Set a test backoff so the first heartbeat doesn't immediately re-register
-    registry
-        .set_reregister_backoff_for_test(Duration::from_millis(100))
-        .await;
+    registry.set_reregister_backoff_for_test(Duration::from_millis(100));
 
     // First heartbeat should skip re-registration due to backoff
     let result = registry.heartbeat().await.expect("heartbeat should return");
     assert_eq!(result, HeartbeatResult::NeedReregistration);
 
     // Backoff should be active
-    assert!(
-        registry.is_in_reregister_backoff().await,
-        "Should be in backoff"
-    );
+    assert!(registry.is_in_reregister_backoff(), "Should be in backoff");
 
     // Wait for backoff to expire
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -379,7 +372,7 @@ async fn test_backoff_resets_after_recovery() {
     assert_eq!(result, HeartbeatResult::Ok);
 
     // After successful re-registration, backoff should be reset to initial value
-    let backoff_after = registry.current_reregister_backoff().await;
+    let backoff_after = registry.current_reregister_backoff();
     assert_eq!(
         backoff_after,
         std::time::Duration::from_secs(1),
@@ -396,7 +389,7 @@ async fn test_backoff_resets_after_recovery() {
     }
 
     // Backoff should still be at initial value
-    let final_backoff = registry.current_reregister_backoff().await;
+    let final_backoff = registry.current_reregister_backoff();
     assert_eq!(
         final_backoff,
         std::time::Duration::from_secs(1),

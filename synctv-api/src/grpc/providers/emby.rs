@@ -124,10 +124,12 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
+        let req = request.get_ref();
         let auth_context = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+        let instance_name = extract_instance_name(&req.instance_name);
 
         tracing::info!(
             "gRPC Emby get binds request for user: {}",
@@ -139,6 +141,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             &auth_context.user_id,
             synctv_core::provider::EmbyProvider::NAME,
             "emby_user_id",
+            instance_name.as_deref(),
         )
         .await
         .map_err(map_api_error)?;

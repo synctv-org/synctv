@@ -69,6 +69,26 @@ fn system_time_to_unix_secs(now: SystemTime) -> u64 {
         .as_secs()
 }
 
+fn u64_to_usize_saturating(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn i64_to_usize_saturating(value: i64) -> usize {
+    usize::try_from(value).unwrap_or_default()
+}
+
+fn i64_to_u64_saturating(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or_default()
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
     fn from(info: &ConnectionInfo) -> Self {
         let now = SystemTime::now();
@@ -461,7 +481,8 @@ impl ConnectionManager {
     fn connection_lifecycle_lock(&self, connection_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         connection_id.hash(&mut hasher);
-        let index = (hasher.finish() as usize) % self.connection_lifecycle_locks.len();
+        let shard_count = u64::try_from(self.connection_lifecycle_locks.len()).unwrap_or(u64::MAX);
+        let index = u64_to_usize_saturating(hasher.finish() % shard_count);
         Arc::clone(&self.connection_lifecycle_locks[index])
     }
 
@@ -935,7 +956,7 @@ impl ConnectionManager {
     /// broadcast channel is temporarily full. If the send fails, the signal
     /// is stored in `pending_disconnects` and will be retried by the background
     /// task spawned in `new()`.
-    fn send_disconnect_signal(&self, signal: DisconnectSignal) {
+    fn send_disconnect_signal(&self, signal: &DisconnectSignal) {
         // First try to send directly
         if self.disconnect_tx.send(signal.clone()).is_ok() {
             // Signal sent successfully
@@ -1139,7 +1160,8 @@ impl ConnectionManager {
             connection_id = %connection_id,
             "Forcing connection disconnect"
         );
-        self.send_disconnect_signal(DisconnectSignal::Connection(connection_id.to_string()));
+        let signal = DisconnectSignal::Connection(connection_id.to_string());
+        self.send_disconnect_signal(&signal);
     }
 
     /// Force disconnect all connections for a user
@@ -1153,7 +1175,8 @@ impl ConnectionManager {
             connection_count = conn_count,
             "Forcing disconnect of all user connections"
         );
-        self.send_disconnect_signal(DisconnectSignal::User(user_id.clone()));
+        let signal = DisconnectSignal::User(user_id.clone());
+        self.send_disconnect_signal(&signal);
     }
 
     /// Force disconnect all connections in a room
@@ -1167,7 +1190,8 @@ impl ConnectionManager {
             connection_count = conn_count,
             "Forcing disconnect of all room connections"
         );
-        self.send_disconnect_signal(DisconnectSignal::Room(room_id.clone()));
+        let signal = DisconnectSignal::Room(room_id.clone());
+        self.send_disconnect_signal(&signal);
     }
 
     /// Force disconnect a specific user from a specific room
@@ -1180,10 +1204,11 @@ impl ConnectionManager {
             room_id = %room_id.as_str(),
             "Forcing disconnect of user from room"
         );
-        self.send_disconnect_signal(DisconnectSignal::UserFromRoom {
+        let signal = DisconnectSignal::UserFromRoom {
             user_id: user_id.clone(),
             room_id: room_id.clone(),
-        });
+        };
+        self.send_disconnect_signal(&signal);
     }
 
     /// Check if a user can accept a new connection (without registering)
@@ -1510,8 +1535,9 @@ impl ConnectionManager {
         if is_first_connection_for_user {
             synctv_core::metrics::http::USERS_ONLINE.inc();
         }
-        synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
-            .set(self.total_connections.load(Ordering::Relaxed) as i64);
+        synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(usize_to_i64_saturating(
+            self.total_connections.load(Ordering::Relaxed),
+        ));
 
         info!(
             connection_id = %connection_id,
@@ -1684,7 +1710,8 @@ impl ConnectionManager {
                 .await;
         }
 
-        synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(self.room_connections.len() as i64);
+        synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS
+            .set(usize_to_i64_saturating(self.room_connections.len()));
 
         debug!(
             connection_id = %connection_id,
@@ -1853,10 +1880,11 @@ impl ConnectionManager {
             if user_went_offline {
                 synctv_core::metrics::http::USERS_ONLINE.dec();
             }
-            synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
-                .set(self.total_connections.load(Ordering::Relaxed) as i64);
+            synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(usize_to_i64_saturating(
+                self.total_connections.load(Ordering::Relaxed),
+            ));
             synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS
-                .set(self.room_connections.len() as i64);
+                .set(usize_to_i64_saturating(self.room_connections.len()));
 
             info!(
                 connection_id = %connection_id,
@@ -1953,7 +1981,7 @@ impl ConnectionManager {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = format!("{}connections:total", self.redis_key_prefix);
             match conn.get::<_, Option<i64>>(&redis_key).await {
-                Ok(Some(count)) if count > 0 => return Ok(count as usize),
+                Ok(Some(count)) if count > 0 => return Ok(i64_to_usize_saturating(count)),
                 Ok(_) => return Ok(0),
                 Err(e) => {
                     warn!("Failed to read distributed total connection count from Redis: {e}");
@@ -1999,7 +2027,7 @@ impl ConnectionManager {
                 room_id.as_str()
             );
             match conn.get::<_, Option<i64>>(&redis_key).await {
-                Ok(Some(count)) if count > 0 => return Ok(count as usize),
+                Ok(Some(count)) if count > 0 => return Ok(i64_to_usize_saturating(count)),
                 Ok(_) => return Ok(0),
                 Err(e) => {
                     warn!("Failed to read distributed room connection count from Redis: {e}");
@@ -2040,7 +2068,7 @@ impl ConnectionManager {
                 Ok(values) => {
                     return Ok(values
                         .into_iter()
-                        .map(|v| v.filter(|&c| c > 0).unwrap_or(0) as usize)
+                        .map(|v| i64_to_usize_saturating(v.filter(|&c| c > 0).unwrap_or(0)))
                         .collect());
                 }
                 Err(e) => {
@@ -2310,10 +2338,10 @@ impl ConnectionManager {
 
         match result {
             Ok(refreshed) => {
-                success_count = refreshed as u64;
+                success_count = usize_to_u64_saturating(refreshed);
             }
             Err(e) => {
-                failure_count = total_keys as u64;
+                failure_count = usize_to_u64_saturating(total_keys);
                 warn!("Failed to refresh TTLs via Lua script ({total_keys} keys): {e}");
             }
         }
@@ -2346,7 +2374,8 @@ impl ConnectionManager {
             synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.set(0);
         }
 
-        let total_refreshed = (counter_keys.len() + metadata_keys.len()) as i64;
+        let total_refreshed =
+            usize_to_i64_saturating(counter_keys.len().saturating_add(metadata_keys.len()));
         synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED.set(total_refreshed);
 
         if !counter_keys.is_empty() || !metadata_keys.is_empty() {
@@ -2452,11 +2481,11 @@ impl ConnectionManager {
             script_invocation
                 .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
                 .arg(CONNECTION_METADATA_TTL_SECONDS)
-                .arg(batch_counter_count as i64)
-                .arg(batch_metadata_count as i64);
+                .arg(usize_to_i64_saturating(batch_counter_count))
+                .arg(usize_to_i64_saturating(batch_metadata_count));
 
             let refreshed: i64 = script_invocation.invoke_async(conn).await?;
-            total_refreshed += refreshed as usize;
+            total_refreshed += i64_to_usize_saturating(refreshed);
 
             debug!(
                 batch_size = batch_keys.len(),
@@ -2544,7 +2573,7 @@ impl ConnectionManager {
         for (key, local_count) in &user_counts {
             let script_result: Result<Vec<i64>, _> = sync_script
                 .key(key)
-                .arg(*local_count as i64)
+                .arg(usize_to_i64_saturating(*local_count))
                 .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
                 .invoke_async(conn)
                 .await;
@@ -2577,7 +2606,7 @@ impl ConnectionManager {
         for (key, local_count) in &room_counts {
             let script_result: Result<Vec<i64>, _> = sync_script
                 .key(key)
-                .arg(*local_count as i64)
+                .arg(usize_to_i64_saturating(*local_count))
                 .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
                 .invoke_async(conn)
                 .await;
@@ -2607,7 +2636,7 @@ impl ConnectionManager {
 
         let script_result: Result<Vec<i64>, _> = sync_script
             .key(&total_key)
-            .arg(local_total as i64)
+            .arg(usize_to_i64_saturating(local_total))
             .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
             .invoke_async(conn)
             .await;
@@ -2655,15 +2684,13 @@ impl ConnectionManager {
                         for redis_key in keys {
                             let is_known = user_counts.contains_key(&redis_key)
                                 || room_counts.contains_key(&redis_key);
-                            if is_known {
-                                continue;
+                            if !is_known {
+                                // Never zero a distributed counter based only on this
+                                // node's local view. Another replica may still own the
+                                // corresponding active connections. Stale cleanup is
+                                // handled by TTL expiry and targeted metadata/index
+                                // reconciliation elsewhere.
                             }
-
-                            // Never zero a distributed counter based only on this
-                            // node's local view. Another replica may still own the
-                            // corresponding active connections. Stale cleanup is
-                            // handled by TTL expiry and targeted metadata/index
-                            // reconciliation elsewhere.
                         }
 
                         if cursor == 0 {
@@ -2753,7 +2780,11 @@ impl ConnectionManager {
             match serde_json::to_string(&persistent) {
                 Ok(json_data) => {
                     let result: Result<(), _> = conn
-                        .set_ex(&key, json_data, CONNECTION_METADATA_TTL_SECONDS as u64)
+                        .set_ex(
+                            &key,
+                            json_data,
+                            i64_to_u64_saturating(CONNECTION_METADATA_TTL_SECONDS),
+                        )
                         .await;
 
                     match result {
@@ -3293,7 +3324,7 @@ impl ConnectionManager {
             .await
             .map_err(|e| format!("Redis INCR+EXPIRE script failed: {e}"))?;
 
-        Ok(count <= max as i64)
+        Ok(count <= usize_to_i64_saturating(max))
     }
 
     /// Decrement a Redis counter atomically (best-effort, errors are logged but not propagated).
@@ -3390,9 +3421,11 @@ impl ShutdownReport {
                 self.pending_retries.as_ref(),
                 self.disconnect_retry.as_ref(),
             ),
-            (None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
-None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
-None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled))
+            (
+                None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
+                None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled),
+                None | Some(ShutdownTaskOutcome::Completed | ShutdownTaskOutcome::Cancelled)
+            )
         )
     }
 }
@@ -5205,15 +5238,17 @@ mod tests {
                         return (container, client, conn, prefix.to_string());
                     }
                     Err(error) => {
-                        if tokio::time::Instant::now() >= deadline {
-                            panic!("Redis test container did not become ready in time: {error}");
-                        }
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "Redis test container did not become ready in time: {error}"
+                        );
                     }
                 },
                 Err(error) => {
-                    if tokio::time::Instant::now() >= deadline {
-                        panic!("Failed to create Redis ConnectionManager: {error}");
-                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "Failed to create Redis ConnectionManager: {error}"
+                    );
                 }
             }
 

@@ -150,7 +150,9 @@ where
             batch_singleflight: SingleFlight::new(),
             key_epochs: Arc::new(DashMap::new()),
             global_epoch: Arc::new(AtomicU64::new(0)),
-            max_epoch_entries: l1_max_capacity as usize * 2,
+            max_epoch_entries: usize::try_from(l1_max_capacity)
+                .unwrap_or(usize::MAX / 2)
+                .saturating_mul(2),
         })
     }
 
@@ -527,7 +529,7 @@ where
     ///
     /// Useful for testing or manual cache clearing.
     /// Note: L2 cache is not cleared.
-    pub async fn clear_l1(&self) {
+    pub fn clear_l1(&self) {
         self.l1_cache.invalidate_all();
         tracing::debug!(cache_type = %self.cache_type, "L1 cache cleared");
     }
@@ -685,7 +687,7 @@ fn add_ttl_jitter(ttl_seconds: u64) -> u64 {
         return 0;
     }
 
-    let jitter_range = (ttl_seconds as f64 * 0.1) as u64; // +-10%
+    let jitter_range = ttl_seconds / 10; // +-10%
     if jitter_range == 0 {
         return ttl_seconds;
     }
@@ -820,7 +822,7 @@ mod tests {
         cache.set(&k1, make_value("alice")).await.unwrap();
         cache.set(&k2, make_value("bob")).await.unwrap();
 
-        cache.clear_l1().await;
+        cache.clear_l1();
 
         assert!(cache.get(&k1).await.unwrap().is_none());
         assert!(cache.get(&k2).await.unwrap().is_none());

@@ -638,8 +638,7 @@ mod tests {
         let new_user_id = UserId::from_string("user-new".to_string());
 
         let old_publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &old_user_id)
             .expect("old publish key");
 
         let result = auth
@@ -731,8 +730,7 @@ mod tests {
         let new_user_id = UserId::from_string("user-new".to_string());
 
         let old_publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &old_user_id)
             .expect("old publish key");
         auth.on_publish(
             room_id.as_str(),
@@ -756,8 +754,7 @@ mod tests {
             .expect("test setup should remove first publisher");
 
         let new_publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), new_user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &new_user_id)
             .expect("new publish key");
         auth.on_publish(
             room_id.as_str(),
@@ -818,8 +815,7 @@ mod tests {
         let new_user_id = UserId::from_string("user-new".to_string());
 
         let old_publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), old_user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &old_user_id)
             .expect("old publish key");
         auth.on_publish(
             room_id.as_str(),
@@ -843,8 +839,7 @@ mod tests {
             .expect("test setup should remove first publisher");
 
         let new_publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), new_user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &new_user_id)
             .expect("new publish key");
         auth.on_publish(
             room_id.as_str(),
@@ -898,8 +893,7 @@ mod tests {
         let user_id = UserId::from_string("user-cleanup".to_string());
 
         let publish = publish_key_service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .expect("publish key");
 
         registry.set_fail_get_publisher(true);

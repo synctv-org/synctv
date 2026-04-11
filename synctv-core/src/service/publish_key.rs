@@ -53,6 +53,23 @@ pub struct PublishClaims {
     pub jti: String,
 }
 
+fn unix_timestamp_now() -> Result<i64> {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
+            .as_secs(),
+    )
+    .map_err(|_| Error::Internal("Time error: unix timestamp overflow".to_string()))
+}
+
+fn cache_ttl_secs(token_ttl_hours: i64) -> u64 {
+    u64::try_from(token_ttl_hours)
+        .unwrap_or_default()
+        .saturating_mul(3600)
+        .saturating_add(300)
+}
+
 // ============================================================================
 // JtiStore trait
 // ============================================================================
@@ -281,13 +298,13 @@ impl JtiStore for InMemoryJtiStore {
         // If the operation was `Nop`, the entry already existed (replay).
         // If it was `Put`, we just claimed it (first use).
         match entry {
-            moka::ops::compute::CompResult::Unchanged(_) => Ok(false),
-            moka::ops::compute::CompResult::Inserted(_) => Ok(true),
             // StillNone happens when Op::Nop is returned and there was no entry,
             // but our logic never returns Nop when entry is None, so this is unreachable.
-            moka::ops::compute::CompResult::StillNone(_) => Ok(true),
-            moka::ops::compute::CompResult::ReplacedWith(_) => Ok(true),
-            moka::ops::compute::CompResult::Removed(_) => Ok(false),
+            moka::ops::compute::CompResult::Inserted(_)
+            | moka::ops::compute::CompResult::StillNone(_)
+            | moka::ops::compute::CompResult::ReplacedWith(_) => Ok(true),
+            moka::ops::compute::CompResult::Unchanged(_)
+            | moka::ops::compute::CompResult::Removed(_) => Ok(false),
         }
     }
 
@@ -332,10 +349,7 @@ impl PublishKeyService {
         let claims: PublishClaims = serde_json::from_value(claims_value)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
-            .as_secs() as i64;
+        let now = unix_timestamp_now()?;
 
         if now > claims.exp {
             return Err(Error::Authentication("Token has expired".to_string()));
@@ -351,7 +365,10 @@ impl PublishKeyService {
     }
 
     async fn claim_publish_key(&self, claims: &PublishClaims) -> Result<()> {
-        let ttl_secs = (claims.exp - claims.iat).max(0) as u64 + 300;
+        let ttl_secs = (claims.exp - claims.iat)
+            .max(0)
+            .cast_unsigned()
+            .saturating_add(300);
         if !self.jti_store.try_claim(&claims.jti, ttl_secs).await? {
             return Err(Error::Authentication(
                 "Publish key has already been used (single-use token)".to_string(),
@@ -404,9 +421,7 @@ impl PublishKeyService {
     /// Create a new publish key service (local-only JTI deduplication)
     #[must_use]
     pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64)
-            .saturating_mul(3600)
-            .saturating_add(300);
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
         let store = Arc::new(InMemoryJtiStore::new(cache_ttl_secs));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
@@ -429,9 +444,7 @@ impl PublishKeyService {
         conn: redis::aio::ConnectionManager,
         key_prefix: String,
     ) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64)
-            .saturating_mul(3600)
-            .saturating_add(300);
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
         let store = Arc::new(RedisJtiStore::new(conn, key_prefix, cache_ttl_secs));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
@@ -452,9 +465,7 @@ impl PublishKeyService {
         shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: String,
     ) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64)
-            .saturating_mul(3600)
-            .saturating_add(300);
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
         let store = Arc::new(RedisJtiStore::new_shared(
             shared_conn,
             key_prefix,
@@ -474,9 +485,7 @@ impl PublishKeyService {
         shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: String,
     ) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64)
-            .saturating_mul(3600)
-            .saturating_add(300);
+        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
         let store = Arc::new(RedisJtiStore::new_shared_fail_closed(
             shared_conn,
             key_prefix,
@@ -486,16 +495,13 @@ impl PublishKeyService {
     }
 
     /// Generate a publish key for RTMP streaming
-    pub async fn generate_publish_key(
+    pub fn generate_publish_key(
         &self,
-        room_id: RoomId,
-        media_id: MediaId,
-        user_id: UserId,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
     ) -> Result<PublishKey> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
-            .as_secs() as i64;
+        let now = unix_timestamp_now()?;
 
         let exp = now + (self.token_ttl_hours * 3600);
 
@@ -631,8 +637,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         assert!(!key.token.is_empty());
@@ -650,14 +655,10 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id, media_id, user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = unix_timestamp_now().unwrap();
 
         let expected_exp = now + (2 * 3600);
         let diff = (key.expires_at - expected_exp).abs();
@@ -675,8 +676,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let claims = service.validate_publish_key(&key.token).await.unwrap();
@@ -708,8 +708,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service1
-            .generate_publish_key(room_id, media_id, user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let result = service2.validate_publish_key(&key.token).await;
@@ -724,8 +723,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let returned_user_id = service
@@ -745,8 +743,7 @@ mod tests {
         let wrong_room_id = RoomId::new();
 
         let key = service
-            .generate_publish_key(room_id, media_id.clone(), user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let result = service
@@ -769,8 +766,7 @@ mod tests {
         let wrong_media_id = MediaId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id, user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let result = service
@@ -793,8 +789,7 @@ mod tests {
         let wrong_room_id = RoomId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let first_attempt = service
@@ -824,8 +819,7 @@ mod tests {
         let wrong_media_id = MediaId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let first_attempt = service
@@ -896,8 +890,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id, media_id, user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let result = service.validate_publish_key(&key.token).await;
@@ -923,12 +916,10 @@ mod tests {
         let user_id = UserId::new();
 
         let key1 = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
         let key2 = service
-            .generate_publish_key(room_id, media_id, user_id)
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         assert_ne!(key1.token, key2.token);
@@ -1012,8 +1003,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         // Validator that simulates a banned user
@@ -1043,8 +1033,7 @@ mod tests {
         let user_id = UserId::new();
 
         let key = service
-            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-            .await
+            .generate_publish_key(&room_id, &media_id, &user_id)
             .unwrap();
 
         let result = service

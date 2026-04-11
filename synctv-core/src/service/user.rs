@@ -18,6 +18,10 @@ use crate::{
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
+fn nonnegative_i64_to_u64(value: i64) -> u64 {
+    u64::try_from(value.max(0)).unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RefreshRateLimitConfig {
     requests: u32,
@@ -491,12 +495,7 @@ impl UserService {
         ))
     }
 
-    fn log_username_cache_write_failure(
-        &self,
-        user_id: &UserId,
-        operation: &'static str,
-        error: &Error,
-    ) {
+    fn log_username_cache_write_failure(user_id: &UserId, operation: &'static str, error: &Error) {
         tracing::warn!(
             error = %error,
             user_id = %user_id.as_str(),
@@ -512,12 +511,11 @@ impl UserService {
         operation: &'static str,
     ) {
         if let Err(error) = self.username_cache.set(user_id, username).await {
-            self.log_username_cache_write_failure(user_id, operation, &error);
+            Self::log_username_cache_write_failure(user_id, operation, &error);
         }
     }
 
     pub(crate) fn oauth2_username_candidates(
-        &self,
         provider_user_id: &str,
         username: &str,
     ) -> Result<(String, Vec<String>)> {
@@ -537,7 +535,7 @@ impl UserService {
             sanitized_username
         };
 
-        self.validate_username(&base_username)?;
+        Self::validate_username(&base_username)?;
 
         let max_attempts = 10;
         let mut candidates = Vec::with_capacity(max_attempts);
@@ -567,7 +565,7 @@ impl UserService {
         operation: &'static str,
     ) {
         if let Err(error) = self.invalidate_username_cache(user_id).await {
-            self.log_username_cache_write_failure(user_id, operation, &error);
+            Self::log_username_cache_write_failure(user_id, operation, &error);
         }
     }
 
@@ -734,7 +732,7 @@ impl UserService {
             .await?;
 
         // Validate input - record failures for validation errors (potential attacks)
-        if let Err(e) = self.validate_username(&username) {
+        if let Err(e) = Self::validate_username(&username) {
             if let Err(err) = self
                 .brute_force
                 .record_failure("__registration__", client_ip)
@@ -745,7 +743,7 @@ impl UserService {
             return Err(e);
         }
         if let Some(ref email) = email {
-            if let Err(e) = self.validate_email(email) {
+            if let Err(e) = Self::validate_email(email) {
                 if let Err(err) = self
                     .brute_force
                     .record_failure("__registration__", client_ip)
@@ -911,9 +909,9 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        self.validate_username(&username)?;
+        Self::validate_username(&username)?;
         if let Some(ref email) = email {
-            self.validate_email(email)?;
+            Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
         let password_hash = self.password_hasher.hash_password(&password).await?;
@@ -975,9 +973,9 @@ impl UserService {
         role: Option<crate::models::UserRole>,
         status: Option<crate::models::UserStatus>,
     ) -> Result<User> {
-        self.validate_username(&username)?;
+        Self::validate_username(&username)?;
         if let Some(ref email) = email {
-            self.validate_email(email)?;
+            Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
 
@@ -1267,7 +1265,7 @@ impl UserService {
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
                 let now = chrono::Utc::now().timestamp();
-                let remaining_ttl = (claims.exp - now).max(60) as u64;
+                let remaining_ttl = nonnegative_i64_to_u64((claims.exp - now).max(60));
 
                 // Atomic operation: returns true if key already existed (replay detected)
                 let already_existed = self
@@ -1435,7 +1433,7 @@ impl UserService {
         }
 
         if let Some(ref username) = new_username {
-            self.validate_username(username)?;
+            Self::validate_username(username)?;
         }
         if let Some(ref password) = new_password {
             self.validate_password(password)?;
@@ -1579,11 +1577,8 @@ impl UserService {
             .repository
             .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?;
-        let user = match user {
-            Some(user) => user,
-            None => {
-                return Err(Error::InvalidInput("User is already deleted".to_string()));
-            }
+        let Some(user) = user else {
+            return Err(Error::InvalidInput("User is already deleted".to_string()));
         };
 
         let (cleanup, deleted_room_ids, membership_room_ids, mut modified_rooms) = self
@@ -1831,7 +1826,7 @@ impl UserService {
         email: Option<&str>,
     ) -> Result<User> {
         let (base_username, candidates) =
-            self.oauth2_username_candidates(provider_user_id, username)?;
+            Self::oauth2_username_candidates(provider_user_id, username)?;
         // Generate a random password (OAuth2 users don't need password login)
         let random_password = synctv_common::snanoid!(32);
         let user_email = email.map(std::string::ToString::to_string);
@@ -1875,10 +1870,7 @@ impl UserService {
                     return Ok(created_user);
                 }
                 Err(Error::AlreadyExists(ref msg))
-                    if msg.contains("username") || msg.contains("Username") =>
-                {
-                    continue;
-                }
+                    if msg.contains("username") || msg.contains("Username") => {}
                 Err(e) => return Err(e),
             }
         }
@@ -1890,14 +1882,14 @@ impl UserService {
     }
 
     /// Validate username using production-grade validator
-    fn validate_username(&self, username: &str) -> Result<()> {
+    fn validate_username(username: &str) -> Result<()> {
         crate::validation::UsernameValidator::new()
             .validate(username)
             .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
     /// Validate email using regex-based validator
-    fn validate_email(&self, email: &str) -> Result<()> {
+    fn validate_email(email: &str) -> Result<()> {
         let email = email.trim();
         if email.is_empty() {
             return Err(Error::InvalidInput("Email cannot be empty".to_string()));
@@ -1998,7 +1990,7 @@ impl UserService {
     ///
     /// Used by `OAuth2` token response to report the correct `expires_in` value.
     #[must_use]
-    pub const fn access_token_duration_seconds(&self) -> i64 {
+    pub fn access_token_duration_seconds(&self) -> i64 {
         self.jwt_service.access_token_duration_seconds()
     }
 

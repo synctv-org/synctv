@@ -489,7 +489,8 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
 
                 // Modify a different setting based on iteration
                 let mut updated = settings.clone();
-                updated.max_members = MaxMembers(50 + i as u64); // Different value for each task
+                updated.max_members =
+                    MaxMembers(50 + u64::try_from(i).expect("task index should be non-negative")); // Different value for each task
 
                 // Try to update with optimistic locking
                 match repo_clone

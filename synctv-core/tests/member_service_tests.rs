@@ -20,11 +20,32 @@ use synctv_core::{
     repository::{RoomMemberRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        member::MemberEventBroadcaster,
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
+struct TimingMockBroadcaster {
+    broadcast_time: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+}
+
+impl MemberEventBroadcaster for TimingMockBroadcaster {
+    fn broadcast_kick_from_room(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+        _user_id: &synctv_core::models::UserId,
+        _reason: &str,
+    ) {
+        *self.broadcast_time.lock().unwrap() = Some(std::time::Instant::now());
+    }
+
+    fn broadcast_kick_user(&self, _user_id: &synctv_core::models::UserId, _reason: &str) {
+        // Not used in this test
+    }
+}
+
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -938,8 +959,6 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
-    use synctv_core::service::member::MemberEventBroadcaster;
-
     // This test uses a custom MemberService with a mock broadcaster
     // to verify that the 100ms propagation delay is included
 
@@ -973,25 +992,6 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
 
     // Track broadcast timing
     let broadcast_time = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
-
-    struct TimingMockBroadcaster {
-        broadcast_time: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
-    }
-
-    impl MemberEventBroadcaster for TimingMockBroadcaster {
-        fn broadcast_kick_from_room(
-            &self,
-            _room_id: &synctv_core::models::RoomId,
-            _user_id: &synctv_core::models::UserId,
-            _reason: &str,
-        ) {
-            *self.broadcast_time.lock().unwrap() = Some(std::time::Instant::now());
-        }
-
-        fn broadcast_kick_user(&self, _user_id: &synctv_core::models::UserId, _reason: &str) {
-            // Not used in this test
-        }
-    }
 
     let broadcaster = Arc::new(TimingMockBroadcaster {
         broadcast_time: broadcast_time.clone(),

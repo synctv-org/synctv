@@ -9,6 +9,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
+use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
@@ -80,8 +81,6 @@ async fn test_client_session_handshake_timeout_no_response() {
         .await
         .unwrap();
 
-    // Create a simple IO wrapper similar to what ClientSession uses
-    use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
     let mut io = TcpIO::new(stream);
 
     // Verify that read_timeout actually times out
@@ -109,7 +108,6 @@ async fn test_bytesio_timeout_mechanism() {
         .await
         .unwrap();
 
-    use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
     let mut io = TcpIO::new(stream);
 
     // Test with 1 second timeout

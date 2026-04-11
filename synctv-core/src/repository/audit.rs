@@ -110,9 +110,9 @@ impl AuditLogRepository {
         Self::push_filters(&mut list_builder, query, effective_from);
 
         list_builder.push(" ORDER BY created_at DESC LIMIT ");
-        list_builder.push_bind(query.page.limit() as i64);
+        list_builder.push_bind(query.page.limit().cast_signed());
         list_builder.push(" OFFSET ");
-        list_builder.push_bind(query.page.offset() as i64);
+        list_builder.push_bind(query.page.offset().cast_signed());
 
         let rows = list_builder
             .build_query_as::<AuditLogRow>()

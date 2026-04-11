@@ -25,7 +25,9 @@ pub fn read_uev(bit_reader: &mut BitsReader) -> Result<u32, H264Error> {
         }
     }
     let code_num = (1 << leading_zeros_bits) - 1 + bit_reader.read_n_bits(leading_zeros_bits)?;
-    Ok(code_num as u32)
+    u32::try_from(code_num).map_err(|_| H264Error {
+        value: H264ErrorValue::ExpGolombCodeNumOutOfRange(code_num),
+    })
 }
 
 // ISO_IEC_14496-10-AVC-2012.pdf, page 229.
@@ -34,7 +36,9 @@ pub fn read_sev(bit_reader: &mut BitsReader) -> Result<i32, H264Error> {
 
     let negative: i64 = if code_num % 2 == 0 { -1 } else { 1 };
     let se_value = (i64::from(code_num) + 1) / 2 * negative;
-    Ok(se_value as i32)
+    i32::try_from(se_value).map_err(|_| H264Error {
+        value: H264ErrorValue::ExpGolombSignedValueOutOfRange(se_value),
+    })
 }
 
 #[cfg(test)]

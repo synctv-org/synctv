@@ -345,6 +345,18 @@ fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
 /// additional traffic to prevent OOM or performance degradation.
 const MEMORY_UNHEALTHY_THRESHOLD_PERCENT: f64 = 90.0;
 
+fn memory_usage_percent(used_bytes: u64, total_bytes: u64) -> Option<f64> {
+    if total_bytes == 0 {
+        return None;
+    }
+
+    let scaled_percent =
+        (u128::from(used_bytes) * 10_000 + u128::from(total_bytes / 2)) / u128::from(total_bytes);
+    let scaled_percent = u32::try_from(scaled_percent).ok()?;
+
+    Some(f64::from(scaled_percent) / 100.0)
+}
+
 /// Check system memory health.
 ///
 /// Returns memory usage information and health status.
@@ -405,7 +417,7 @@ fn check_cgroup_memory() -> Option<MemoryHealth> {
         return None;
     }
 
-    let usage_percent = (current as f64 / limit as f64) * 100.0;
+    let usage_percent = memory_usage_percent(current, limit)?;
     let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
         "unhealthy"
     } else {
@@ -457,7 +469,7 @@ fn check_proc_meminfo() -> Option<MemoryHealth> {
     }
 
     let used_kb = total_kb.saturating_sub(available_kb);
-    let usage_percent = (used_kb as f64 / total_kb as f64) * 100.0;
+    let usage_percent = memory_usage_percent(used_kb, total_kb)?;
     let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
         "unhealthy"
     } else {
@@ -532,7 +544,7 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
     // On macOS, "free + inactive" is roughly equivalent to available memory
     let available_bytes = (free_pages + inactive_pages) * page_size;
     let used_bytes = total_bytes.saturating_sub(available_bytes);
-    let usage_percent = (used_bytes as f64 / total_bytes as f64) * 100.0;
+    let usage_percent = memory_usage_percent(used_bytes, total_bytes)?.min(100.0);
 
     let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
         "unhealthy"
@@ -555,11 +567,20 @@ pub async fn prometheus_metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    match state
+    #[cfg(feature = "k8s")]
+    let auth_result = state
         .metrics_access_controller
         .authorize(&state.config.metrics, &headers, "/metrics", "GET")
-        .await
-    {
+        .await;
+    #[cfg(not(feature = "k8s"))]
+    let auth_result = state.metrics_access_controller.authorize(
+        &state.config.metrics,
+        &headers,
+        "/metrics",
+        "GET",
+    );
+
+    match auth_result {
         Ok(()) => {}
         Err(crate::http::metrics_auth::MetricsAccessError::Unauthorized) => {
             return (
@@ -830,7 +851,21 @@ mod tests {
     #[test]
     fn test_memory_threshold_constant() {
         // Verify the threshold is set at 90%
-        assert_eq!(MEMORY_UNHEALTHY_THRESHOLD_PERCENT, 90.0);
+        assert_eq!(
+            MEMORY_UNHEALTHY_THRESHOLD_PERCENT.to_bits(),
+            90.0f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn test_memory_usage_percent_handles_large_totals_without_u32_truncation() {
+        let total_bytes = 16 * 1024 * 1024 * 1024_u64;
+        let used_bytes = 8 * 1024 * 1024 * 1024_u64;
+
+        let usage_percent =
+            memory_usage_percent(used_bytes, total_bytes).expect("non-zero total memory");
+
+        assert!((usage_percent - 50.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

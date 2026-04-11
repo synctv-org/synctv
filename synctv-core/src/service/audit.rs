@@ -345,10 +345,10 @@ impl AuditService {
                     target_str,
                     &actor_id,
                     &actor_username,
-                    &target_id,
+                    target_id.as_deref(),
                     &details,
-                    &ip_address,
-                    &user_agent,
+                    ip_address.as_deref(),
+                    user_agent.as_deref(),
                     created_at,
                 )
                 .await
@@ -380,10 +380,10 @@ impl AuditService {
             target_str,
             &actor_id,
             &actor_username,
-            &target_id,
+            target_id.as_deref(),
             &details,
-            &ip_address,
-            &user_agent,
+            ip_address.as_deref(),
+            user_agent.as_deref(),
             created_at,
         )
         .await?;
@@ -406,10 +406,10 @@ impl AuditService {
         target_str: &str,
         actor_id: &str,
         actor_username: &str,
-        target_id: &Option<String>,
+        target_id: Option<&str>,
         details: &serde_json::Value,
-        ip_address: &Option<String>,
-        user_agent: &Option<String>,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
         created_at: DateTime<Utc>,
     ) -> Result<()> {
         let query = r"
@@ -770,7 +770,7 @@ pub struct AuditFlushHandle {
     join_handle: Option<tokio::task::JoinHandle<()>>,
     /// Sender kept alive to control channel lifetime. Dropping it causes the
     /// background receiver loop to terminate after draining remaining items.
-    _cancel: tokio::sync::watch::Sender<bool>,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
     /// Guards against sending the shutdown signal more than once (e.g. when
     /// both `shutdown()` and `Drop` are executed for the same handle).
     has_signaled: AtomicBool,
@@ -834,7 +834,7 @@ impl AuditFlushHandle {
 
         Self {
             join_handle: Some(join_handle),
-            _cancel: cancel_tx,
+            cancel_tx,
             has_signaled: AtomicBool::new(false),
         }
     }
@@ -852,7 +852,7 @@ impl AuditFlushHandle {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            let _ = self._cancel.send(true);
+            let _ = self.cancel_tx.send(true);
             true
         } else {
             false
@@ -1401,7 +1401,7 @@ mod tests {
     fn test_log_token_issued_details_structure() {
         let jti = "jti_abc123";
         let token_type = "access";
-        let expires_at = 1735689600i64;
+        let expires_at = 1_735_689_600_i64;
 
         let details = serde_json::json!({
             "token_type": token_type,
@@ -1411,7 +1411,7 @@ mod tests {
 
         assert_eq!(details["token_type"], "access");
         assert_eq!(details["jti"], "jti_abc123");
-        assert_eq!(details["expires_at"], 1735689600);
+        assert_eq!(details["expires_at"], 1_735_689_600);
     }
 
     #[test]
@@ -1514,7 +1514,7 @@ mod tests {
                 "alice".to_string(),
                 "access",
                 "jti_abc123".to_string(),
-                1735689600,
+                1_735_689_600,
                 Some("192.168.1.1".to_string()),
                 Some("Mozilla/5.0".to_string()),
             )

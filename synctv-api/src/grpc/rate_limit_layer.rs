@@ -126,7 +126,6 @@ fn grpc_status_code_to_label(code: &str) -> &'static str {
     match code {
         "0" => "ok",
         "1" => "cancelled",
-        "2" => "unknown",
         "3" => "invalid_argument",
         "4" => "deadline_exceeded",
         "5" => "not_found",
@@ -141,7 +140,7 @@ fn grpc_status_code_to_label(code: &str) -> &'static str {
 }
 
 fn rate_limit_error_response(
-    err: RateLimitError,
+    err: &RateLimitError,
     service_label: &str,
     method_label: &str,
 ) -> http::Response<AxumBody> {
@@ -203,7 +202,6 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("UserService") => Some(user_service_tier(method_name)),
         Some("RoomService") => Some(room_service_tier(method_name)),
         Some("AdminService") => Some(GrpcRateLimitTier::Admin),
-        Some("PublicService") => Some(GrpcRateLimitTier::Read),
         Some("NotificationService") => Some(notification_service_tier(method_name)),
         Some("OAuth2Service") => Some(oauth2_service_tier(method_name)),
         // Provider services
@@ -211,11 +209,12 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("BilibiliProviderService") => Some(bilibili_provider_tier(method_name)),
         Some("EmbyProviderService") => Some(emby_provider_tier(method_name)),
         // Internal infrastructure services are explicitly exempt.
-        Some("ClusterService" | "StreamRelayService" | "Health" | "ServerReflection") => None,
+        Some("ClusterService" | "StreamRelayService" | "Health" | "ServerReflection") | None => {
+            None
+        }
         // Unknown services default to the conservative read tier so newly added
         // business RPCs cannot silently bypass rate limiting.
         Some(_) => Some(GrpcRateLimitTier::Read),
-        None => None,
     }
 }
 
@@ -272,7 +271,6 @@ fn oauth2_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
         Some("GetAuthorizationUrl" | "ListAvailableProviders" | "GetLinkedProviders") => {
             GrpcRateLimitTier::Read
         }
-        Some("ExchangeAuthorizationCode") => GrpcRateLimitTier::Auth,
         Some("GetAuthorizationUrlForBind" | "UnlinkProvider") => GrpcRateLimitTier::Write,
         _ => GrpcRateLimitTier::Auth,
     }
@@ -498,7 +496,7 @@ where
                     "gRPC distributed rate limit rejected request"
                 );
                 return Ok(rate_limit_error_response(
-                    err,
+                    &err,
                     &service_label,
                     &method_label,
                 ));

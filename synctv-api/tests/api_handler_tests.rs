@@ -1345,7 +1345,7 @@ mod error_response_format {
             "Response for {expected_status} must contain 'status' field"
         );
         assert_eq!(
-            json["status"].as_u64().unwrap() as u16,
+            u16::try_from(json["status"].as_u64().unwrap()).expect("status must fit in u16"),
             expected_status.as_u16(),
             "Status field must match HTTP status for {expected_status}"
         );

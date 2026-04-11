@@ -167,7 +167,9 @@ impl<T> Page<T> {
         let total_pages = if params.page_size == 0 {
             0
         } else {
-            ((total as f64) / f64::from(params.page_size)).ceil() as u32
+            let page_size = u64::from(params.page_size);
+            let page_count = total.saturating_add(page_size - 1) / page_size;
+            u32::try_from(page_count).unwrap_or(u32::MAX)
         };
 
         Self {

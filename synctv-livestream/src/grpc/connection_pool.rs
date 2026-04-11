@@ -74,7 +74,9 @@ impl CircuitBreakerState {
     /// so that the result is always >= 1. This avoids collision with the
     /// sentinel value 0 which means "circuit closed".
     fn now_ms(&self) -> u64 {
-        (self.epoch.elapsed().as_millis() as u64).saturating_add(1)
+        u64::try_from(self.epoch.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
     }
 
     fn record_success(&self) {

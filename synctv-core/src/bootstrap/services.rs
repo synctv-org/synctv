@@ -26,6 +26,16 @@ use crate::{
     Config,
 };
 
+const WEAK_JWT_SECRETS: &[&str] = &[
+    "change-me-in-production",
+    "secret",
+    "password",
+    "jwt-secret",
+    "changeme",
+    "test",
+    "default",
+];
+
 /// Container for all initialized services
 #[derive(Clone)]
 pub struct Services {
@@ -267,10 +277,12 @@ pub async fn init_services_with_options(
     info!("Cache L2 backend: {}", cache_l2.backend_name());
 
     // Initialize username cache (using config values)
+    let username_cache_capacity = usize::try_from(config.cache.username_cache_capacity)
+        .expect("username cache capacity should fit into usize");
     let username_cache = UsernameCache::new(
         cache_l2.clone(),
         format!("{}username:", config.redis.key_prefix),
-        config.cache.username_cache_capacity as usize,
+        username_cache_capacity,
         config.cache.username_cache_ttl_seconds,
     )
     .with_invalidation_service(cache_invalidation.clone());
@@ -525,7 +537,7 @@ pub async fn init_services_with_options(
     let settings_service = SettingsService::new(settings_repo, pool.clone());
     settings_service.initialize().await?;
     info!("Settings service initialized with {} groups", {
-        settings_service.get_all().await.map_or(0, |g| g.len())
+        settings_service.get_all().map_or(0, |g| g.len())
     });
 
     // Start PostgreSQL LISTEN for hot reload (with CancellationToken for graceful shutdown)
@@ -539,7 +551,7 @@ pub async fn init_services_with_options(
     // Initialize Settings registry
     info!("Initializing Settings registry...");
     let settings_registry = SettingsRegistry::new(settings_service.clone());
-    settings_registry.init(settings_cancel.clone()).await?;
+    settings_registry.init(settings_cancel.clone())?;
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
@@ -760,11 +772,9 @@ async fn init_oauth2_service(
         // Use factory to create provider with full config
         match provider_registry.create_provider(&provider_type, &full_config) {
             Ok(provider) => {
-                let provider_enum = if let Some(p) =
+                let Some(provider_enum) =
                     crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type)
-                {
-                    p
-                } else {
+                else {
                     warn!(
                         "Skipping unknown OAuth2 provider type '{}' for instance '{}'",
                         provider_type, instance_name
@@ -811,16 +821,7 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
         ));
     }
 
-    const WEAK_SECRETS: &[&str] = &[
-        "change-me-in-production",
-        "secret",
-        "password",
-        "jwt-secret",
-        "changeme",
-        "test",
-        "default",
-    ];
-    if WEAK_SECRETS.contains(&config.jwt.secret.as_str()) {
+    if WEAK_JWT_SECRETS.contains(&config.jwt.secret.as_str()) {
         warn!("Using a well-known JWT secret! This is insecure for production use.");
         warn!("Please set SYNCTV_JWT_SECRET to a strong random value.");
     }
@@ -926,8 +927,7 @@ enum PublishKeyBackendMode {
 
 const fn publish_key_backend_mode(cluster_mode: bool, has_redis: bool) -> PublishKeyBackendMode {
     match (cluster_mode, has_redis) {
-        (true, true) => PublishKeyBackendMode::RedisFailClosed,
-        (true, false) => PublishKeyBackendMode::RedisFailClosed,
+        (true, _) => PublishKeyBackendMode::RedisFailClosed,
         (false, true) => PublishKeyBackendMode::RedisBestEffort,
         (_, false) => PublishKeyBackendMode::Memory,
     }
@@ -993,8 +993,8 @@ fn init_credential_encryption(
             // Try file first, then env var
             SecretLoader::load_with_fallback(
                 "credential_encryption_key",
-                SecretSource::File("/run/secrets/credential_encryption_key"),
-                SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
+                &SecretSource::File("/run/secrets/credential_encryption_key"),
+                &SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
             )
             .ok()?
         }

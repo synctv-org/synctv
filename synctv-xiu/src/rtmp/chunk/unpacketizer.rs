@@ -155,17 +155,14 @@ impl ChunkUnpacketizer {
         loop {
             match self.read_chunk() {
                 Ok(chunk) => {
-                    match chunk {
-                        UnpackResult::ChunkInfo(chunk_info) => {
-                            let msg_type_id = chunk_info.message_header.msg_type_id;
-                            chunks.push(chunk_info);
+                    if let UnpackResult::ChunkInfo(chunk_info) = chunk {
+                        let msg_type_id = chunk_info.message_header.msg_type_id;
+                        chunks.push(chunk_info);
 
-                            //if the chunk_size is changed, then break and update chunk_size
-                            if msg_type_id == msg_type_id::SET_CHUNK_SIZE {
-                                break;
-                            }
+                        //if the chunk_size is changed, then break and update chunk_size
+                        if msg_type_id == msg_type_id::SET_CHUNK_SIZE {
+                            break;
                         }
-                        _ => continue,
                     }
                 }
                 Err(err) => {

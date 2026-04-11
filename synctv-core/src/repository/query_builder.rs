@@ -72,10 +72,13 @@ impl WhereClauseBuilder {
     /// The number of bound parameters this builder will consume.
     #[must_use]
     pub fn param_count(&self) -> u32 {
-        self.conditions
-            .iter()
-            .filter(|c| matches!(c, Condition::Parameterized { .. }))
-            .count() as u32
+        u32::try_from(
+            self.conditions
+                .iter()
+                .filter(|c| matches!(c, Condition::Parameterized { .. }))
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     /// Render the WHERE clause body (conditions joined with ` AND `).

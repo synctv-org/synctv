@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext, ProxyServices},
+    sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     EmbyProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
 };
@@ -187,12 +188,14 @@ async fn test_subtitle_by_index_0() {
                 language: "zh-CN".to_string(),
                 name: "Chinese".to_string(),
                 url: "https://emby.example.com/Videos/123/Subtitles/0/Stream.srt".to_string(),
+                headers: HashMap::new(),
                 format: "srt".to_string(),
             },
             SubtitleTrack {
                 language: "en-US".to_string(),
                 name: "English".to_string(),
                 url: "https://emby.example.com/Videos/123/Subtitles/1/Stream.srt".to_string(),
+                headers: HashMap::new(),
                 format: "srt".to_string(),
             },
         ],
@@ -235,12 +238,14 @@ async fn test_subtitle_by_index_1() {
                 language: "zh-CN".to_string(),
                 name: "Chinese".to_string(),
                 url: "https://emby.example.com/sub0.srt".to_string(),
+                headers: HashMap::new(),
                 format: "srt".to_string(),
             },
             SubtitleTrack {
                 language: "en-US".to_string(),
                 name: "English".to_string(),
                 url: "https://emby.example.com/sub1.srt".to_string(),
+                headers: HashMap::new(),
                 format: "srt".to_string(),
             },
         ],
@@ -268,6 +273,156 @@ async fn test_subtitle_by_index_1() {
 }
 
 #[tokio::test]
+async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
+    let store = new_store();
+    let vp = make_versioned(
+        "ehdr",
+        "https://emby.example.com/Videos/123/stream.mp4",
+        emby_headers(),
+        vec![SubtitleTrack {
+            language: "zh-CN".to_string(),
+            name: "Chinese".to_string(),
+            url: "https://emby.example.com/subtitle.srt".to_string(),
+            headers: HashMap::from([(
+                "X-Subtitle-Token".to_string(),
+                "subtitle-secret".to_string(),
+            )]),
+            format: "srt".to_string(),
+        }],
+        3600,
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path: "ehdr/subtitle/0",
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/emby",
+        verified_claims: None,
+    };
+    let action = p.resolve_proxy(&ctx).await.unwrap();
+    match action {
+        ProxyAction::FetchAndForward { url, headers } => {
+            assert_eq!(url, "https://emby.example.com/subtitle.srt");
+            assert_eq!(
+                headers.get("X-Subtitle-Token").map(String::as_str),
+                Some("subtitle-secret")
+            );
+            assert!(!headers.contains_key("X-Emby-Token"));
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
+    let store = new_store();
+    let signing_key = synctv_core::service::ProxySigningKey::derive_from(
+        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+    );
+    let version = "emode";
+    let mut result = PlaybackResult {
+        playback_infos: HashMap::from([
+            (
+                "source_a".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://emby.example.com/Videos/123/a.mp4".to_string()],
+                    format: "mp4".to_string(),
+                    headers: emby_headers(),
+                    subtitles: vec![SubtitleTrack {
+                        language: "zh-CN".to_string(),
+                        name: "Chinese".to_string(),
+                        url: "https://emby.example.com/subtitles/a-zh.srt".to_string(),
+                        headers: HashMap::new(),
+                        format: "srt".to_string(),
+                    }],
+                    expires_at: None,
+                    cors_proxy_required: true,
+                },
+            ),
+            (
+                "source_b".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://emby.example.com/Videos/123/b.mp4".to_string()],
+                    format: "mp4".to_string(),
+                    headers: emby_headers(),
+                    subtitles: vec![SubtitleTrack {
+                        language: "en-US".to_string(),
+                        name: "English".to_string(),
+                        url: "https://emby.example.com/subtitles/b-en.srt".to_string(),
+                        headers: HashMap::new(),
+                        format: "srt".to_string(),
+                    }],
+                    expires_at: None,
+                    cors_proxy_required: true,
+                },
+            ),
+        ]),
+        default_mode: "source_a".to_string(),
+        metadata: HashMap::new(),
+    };
+    let stored = VersionedPlayback {
+        version: version.to_string(),
+        result: result.clone(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+    };
+    store_versioned(&store, &stored).await;
+
+    sign_playback_urls(
+        &mut result,
+        "emby",
+        version,
+        &signing_key,
+        "room-1",
+        "user-1",
+        chrono::Utc::now().timestamp() + 3600,
+    );
+
+    let subtitle_url = result.playback_infos["source_b"].subtitles[0].url.clone();
+    let sub_path_with_query = subtitle_url
+        .strip_prefix("/api/providers/proxy/emby/")
+        .expect("signed subtitle url should use emby proxy prefix");
+    let sub_path = urlencoding::decode(
+        sub_path_with_query
+            .split('?')
+            .next()
+            .expect("signed subtitle url should include sub_path"),
+    )
+    .expect("signed subtitle path should be valid percent-encoding");
+    let sub_path = sub_path
+        .split('?')
+        .next()
+        .expect("decoded subtitle path should still be present");
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path,
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/emby",
+        verified_claims: None,
+    };
+
+    let action = p
+        .resolve_proxy(&ctx)
+        .await
+        .expect("signed subtitle path should resolve to the same playback mode");
+
+    match action {
+        ProxyAction::FetchAndForward { url, headers } => {
+            assert_eq!(url, "https://emby.example.com/subtitles/b-en.srt");
+            assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_subtitle_index_out_of_range() {
     let store = new_store();
     let vp = make_versioned(
@@ -278,6 +433,7 @@ async fn test_subtitle_index_out_of_range() {
             language: "zh-CN".to_string(),
             name: "Chinese".to_string(),
             url: "https://emby.example.com/sub0.srt".to_string(),
+            headers: HashMap::new(),
             format: "srt".to_string(),
         }],
         3600,

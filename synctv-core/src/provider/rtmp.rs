@@ -34,7 +34,6 @@ impl RtmpProvider {
     }
 
     fn build_live_proxy_action(
-        &self,
         rest: &str,
         versioned: &VersionedPlayback,
         verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
@@ -166,7 +165,7 @@ impl ProviderProxy for RtmpProvider {
             .split_once('/')
             .ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
-        self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 
@@ -318,7 +317,6 @@ mod tests {
         use crate::service::proxy_signature::ProxyUrlClaims;
         use std::collections::HashMap;
 
-        let provider = RtmpProvider::new();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
@@ -338,9 +336,8 @@ mod tests {
             user_id: "user1".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 30,
         };
-        let action = provider
-            .build_live_proxy_action("stream", &versioned, Some(&claims))
-            .unwrap();
+        let action =
+            RtmpProvider::build_live_proxy_action("stream", &versioned, Some(&claims)).unwrap();
         match action {
             ProxyAction::LiveFlv {
                 user_id,
@@ -359,7 +356,6 @@ mod tests {
         use crate::provider::store::VersionedPlayback;
         use std::collections::HashMap;
 
-        let provider = RtmpProvider::new();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
@@ -373,9 +369,7 @@ mod tests {
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let err = provider
-            .build_live_proxy_action("stream", &versioned, None)
-            .unwrap_err();
+        let err = RtmpProvider::build_live_proxy_action("stream", &versioned, None).unwrap_err();
         assert!(matches!(err, ProviderError::ApiError(_)));
     }
 }

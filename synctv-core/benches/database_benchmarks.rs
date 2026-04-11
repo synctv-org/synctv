@@ -261,7 +261,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 room_id: room.id.clone(),
                 creator_id: None,
                 name: format!("media_{media_count}_{i}"),
-                position: i as f64,
+                position: f64::from(i),
                 source_provider: "direct_url".to_string(),
                 source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                 provider_instance_name: String::new(),
@@ -322,7 +322,9 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
         let _playlist = rt.block_on(playlist_repo.create(&playlist)).unwrap();
 
         let bench_id = BenchmarkId::new("media", batch_size);
-        group.throughput(Throughput::Elements(batch_size as u64));
+        group.throughput(Throughput::Elements(
+            u64::try_from(batch_size).unwrap_or_default(),
+        ));
 
         group.bench_with_input(bench_id, &batch_size, |b, &batch_size| {
             b.iter_custom(|iters| {
@@ -342,7 +344,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                                 room_id: room_id.clone(),
                                 creator_id: None,
                                 name: format!("batch_media_{i}"),
-                                position: i as f64,
+                                position: f64::from(i),
                                 source_provider: "direct_url".to_string(),
                                 source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
                                 provider_instance_name: String::new(),

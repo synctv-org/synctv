@@ -152,7 +152,7 @@ pub const DEFAULT_MAX_TOTAL_BYTES: usize = 500 * 1024 * 1024;
 /// within their stream, reducing global pressure.
 #[derive(Clone)]
 pub struct Gops {
-    gops: VecDeque<Gop>,
+    entries: VecDeque<Gop>,
     size: usize,
     /// Maximum total bytes across all GOPs. When exceeded, oldest GOP is evicted.
     max_total_bytes: usize,
@@ -174,7 +174,7 @@ impl Gops {
     #[must_use]
     pub fn new(size: usize, max_total_bytes: Option<usize>) -> Self {
         Self {
-            gops: VecDeque::from([Gop::new()]),
+            entries: VecDeque::from([Gop::new()]),
             size,
             max_total_bytes: max_total_bytes.unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
             current_total_bytes: 0,
@@ -196,7 +196,7 @@ impl Gops {
     /// Get the number of currently cached GOPs.
     #[must_use]
     pub fn gop_count(&self) -> usize {
-        self.gops.len()
+        self.entries.len()
     }
 
     /// Get the configured maximum number of GOPs (size limit).
@@ -208,15 +208,15 @@ impl Gops {
     /// Evict the oldest GOP from this stream, updating per-stream and global counters.
     /// Returns the number of bytes evicted, or 0 if nothing could be evicted.
     fn evict_oldest_gop(&mut self, reason: &str) -> usize {
-        if self.gops.len() <= 1 {
+        if self.entries.len() <= 1 {
             return 0;
         }
-        if let Some(evicted) = self.gops.pop_front() {
+        if let Some(evicted) = self.entries.pop_front() {
             let evicted_bytes = evicted.memory_bytes();
             self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted_bytes);
             tracing::warn!(
                 evicted_bytes,
-                remaining_gops = self.gops.len(),
+                remaining_gops = self.entries.len(),
                 stream_bytes = self.current_total_bytes,
                 max_total_bytes = self.max_total_bytes,
                 reason,
@@ -236,24 +236,26 @@ impl Gops {
         if is_key_frame {
             // Freeze the current back GOP before pushing a new one,
             // so it's ready for zero-copy clone.
-            if let Some(back) = self.gops.back_mut() {
+            if let Some(back) = self.entries.back_mut() {
                 back.freeze();
             }
-            if self.gops.len() == self.size {
+            if self.entries.len() == self.size {
                 self.evict_oldest_gop("GOP count limit reached");
             }
-            self.gops.push_back(Gop::new());
+            self.entries.push_back(Gop::new());
         }
 
         // Check memory limit BEFORE adding the frame to keep accounting precise.
         let frame_bytes = Gop::frame_memory_size(&data);
-        while self.current_total_bytes + frame_bytes > self.max_total_bytes && self.gops.len() > 1 {
+        while self.current_total_bytes + frame_bytes > self.max_total_bytes
+            && self.entries.len() > 1
+        {
             if self.evict_oldest_gop("per-stream memory limit (pre-frame)") == 0 {
                 break;
             }
         }
 
-        if let Some(gop) = self.gops.back_mut() {
+        if let Some(gop) = self.entries.back_mut() {
             // Only update total bytes if the frame was actually stored.
             // Gop::save_frame_data may drop the frame due to per-GOP limits
             // (MAX_FRAMES_PER_GOP or MAX_MEMORY_PER_GOP).
@@ -276,10 +278,10 @@ impl Gops {
     #[must_use]
     pub fn get_gops(&mut self) -> &VecDeque<Gop> {
         // Freeze the active GOP so frame_data() returns all frames
-        if let Some(back) = self.gops.back_mut() {
+        if let Some(back) = self.entries.back_mut() {
             back.freeze();
         }
-        &self.gops
+        &self.entries
     }
 }
 

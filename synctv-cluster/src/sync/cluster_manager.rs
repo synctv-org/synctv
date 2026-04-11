@@ -574,7 +574,7 @@ impl ClusterManager {
         }
 
         if let Some(room_id) = event.room_id().cloned() {
-            return self.message_hub.broadcast(&room_id, event);
+            return self.message_hub.broadcast(&room_id, &event);
         }
 
         if matches!(&event, ClusterEvent::UserNotification { .. }) {
@@ -648,7 +648,8 @@ impl ClusterManager {
         F: Fn() -> usize + Send + Sync + 'static,
     {
         let cancel_token = self.cancel_token.clone();
-        let interval_secs = (node_registry.heartbeat_timeout_secs / 3).max(1) as u64;
+        let interval_secs =
+            u64::try_from((node_registry.heartbeat_timeout_secs / 3).max(1)).unwrap_or(1);
         let failure_count = self.heartbeat_failure_count.clone();
         let epoch_mismatch_count = self.epoch_mismatch_count.clone();
         let is_quarantined = self.is_quarantined.clone();
@@ -778,7 +779,8 @@ impl ClusterManager {
                                 // Increment independent failure counter for business logic
                                 let failures = failure_count.fetch_add(1, Ordering::AcqRel) + 1;
                                 // Update Prometheus gauge for monitoring only (never read for decisions)
-                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(failures as i64);
+                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES
+                                    .set(i64::try_from(failures).unwrap_or(i64::MAX));
                                 error!(
                                     error = %e,
                                     consecutive_failures = failures,
@@ -960,7 +962,7 @@ impl ClusterManager {
         // Get room_id for broadcasting
         if let Some(room_id) = event.room_id() {
             // Broadcast to local subscribers
-            local_sent = self.message_hub.broadcast(room_id, event.clone());
+            local_sent = self.message_hub.broadcast(room_id, &event);
         }
 
         // UserNotification events are user-targeted (no room_id), so they are
@@ -1058,15 +1060,15 @@ impl ClusterManager {
         self.message_hub.get_room_subscribers(room_id)
     }
 
+    #[cfg(test)]
     const fn heartbeat_shutdown_timeout(&self) -> Duration {
-        #[cfg(test)]
-        {
-            self.heartbeat_shutdown_timeout
-        }
-        #[cfg(not(test))]
-        {
-            Duration::from_secs(10)
-        }
+        self.heartbeat_shutdown_timeout
+    }
+
+    #[cfg(not(test))]
+    const fn heartbeat_shutdown_timeout(&self) -> Duration {
+        let _ = self;
+        Duration::from_secs(10)
     }
 
     #[cfg(test)]
@@ -1082,6 +1084,7 @@ impl ClusterManager {
     }
 
     #[cfg(test)]
+    #[must_use]
     pub const fn test_with_heartbeat_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.heartbeat_shutdown_timeout = timeout;
         self
@@ -1900,7 +1903,7 @@ mod tests {
             redis_conn: None,
             cluster_enabled: false,
             node_id: "test_node_quarantine".to_string(),
-            dedup_window: Duration::from_secs(60),
+            dedup_window: Duration::from_mins(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),

@@ -76,7 +76,10 @@ pub async fn try_publish_cluster_event(
     }
 }
 
-pub const fn cluster_fanout_required(cluster_mode: bool, redis_publish_tx_configured: bool) -> bool {
+pub const fn cluster_fanout_required(
+    cluster_mode: bool,
+    redis_publish_tx_configured: bool,
+) -> bool {
     cluster_mode && redis_publish_tx_configured
 }
 
@@ -611,7 +614,9 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             | ProviderError::MissingField(msg)
             | ProviderError::UnsupportedFormat(msg) => Self::InvalidInput(msg),
             ProviderError::NotFound => Self::NotFound("Resource not found".to_string()),
-            ProviderError::InstanceNotFound(msg) => Self::NotFound(msg),
+            ProviderError::InstanceNotFound(msg) | ProviderError::CredentialNotFound(msg) => {
+                Self::NotFound(msg)
+            }
             ProviderError::MissingInstance => {
                 Self::NotFound("Provider instance not configured".to_string())
             }
@@ -624,7 +629,6 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::InvalidCredentialType => {
                 Self::InvalidInput("Invalid credential type".to_string())
             }
-            ProviderError::CredentialNotFound(msg) => Self::NotFound(msg),
             ProviderError::CredentialExpired(msg) => Self::Authentication(msg),
             ProviderError::RouteRegistrationFailed(msg) | ProviderError::Internal(msg) => {
                 Self::Internal(msg)

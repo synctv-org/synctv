@@ -13,6 +13,7 @@ use dashmap::DashMap; // still used for hls_registry
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use synctv_livestream::api::{HlsStreamingApi, LiveStreamingInfrastructure};
 use synctv_livestream::libraries::storage::MemoryStorage;
@@ -407,7 +408,6 @@ async fn test_segment_cleanup() {
     }
 
     // Cleanup segments older than 0 seconds (all)
-    use std::time::Duration;
     let deleted = storage.cleanup(Duration::from_secs(0)).await.unwrap();
     assert_eq!(deleted, 5);
 
@@ -553,7 +553,6 @@ async fn test_path_parameter_separation() {
     // Test that room_id and media_id are properly separated in different contexts
 
     // FLV: versioned provider proxy path
-    let _media_id = "media123";
     let room_id = "room456";
     let flv_path = "/api/providers/proxy/rtmp/version123/stream".to_string();
     let flv_query = format!("sig=test&uid=u1&rid={room_id}&exp=1");

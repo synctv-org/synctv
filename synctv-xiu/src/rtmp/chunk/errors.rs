@@ -41,6 +41,8 @@ pub enum PackErrorValue {
     NotExistHeader,
     #[error("unknow read state")]
     UnknowReadState,
+    #[error("invalid chunk stream id {0}")]
+    InvalidChunkStreamId(u32),
     #[error("bytes writer error: {0}")]
     BytesWriteError(BytesWriteError),
 }

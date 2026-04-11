@@ -251,7 +251,7 @@ impl FakeDynamicProvider {
         }
     }
 
-    fn item(&self, path: &str) -> NextPlayItem {
+    fn item(path: &str) -> NextPlayItem {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         NextPlayItem {
             name,
@@ -343,7 +343,7 @@ impl DynamicFolder for FakeDynamicProvider {
         let cursor = decode_dynamic_target(target);
         Ok(match cursor.as_str() {
             path if path == self.first_episode_path() || path == self.second_episode_path() => {
-                Some(self.item(&cursor))
+                Some(Self::item(&cursor))
             }
             _ => None,
         })
@@ -362,10 +362,10 @@ impl DynamicFolder for FakeDynamicProvider {
             (path, PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::Shuffle)
                 if path == self.first_episode_path() =>
             {
-                Some(self.item(self.second_episode_path()))
+                Some(Self::item(self.second_episode_path()))
             }
             (path, PlayMode::RepeatAll) if path == self.second_episode_path() => {
-                Some(self.item(self.first_episode_path()))
+                Some(Self::item(self.first_episode_path()))
             }
             (path, PlayMode::RepeatOne)
                 if path == self.first_episode_path() || path == self.second_episode_path() =>

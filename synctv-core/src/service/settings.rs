@@ -127,7 +127,7 @@ impl SettingsService {
     }
 
     /// Get all settings groups
-    pub async fn get_all(&self) -> Result<Vec<SettingsGroup>, Error> {
+    pub fn get_all(&self) -> Result<Vec<SettingsGroup>, Error> {
         let mut groups: Vec<_> = self
             .cache
             .iter()
@@ -138,8 +138,8 @@ impl SettingsService {
     }
 
     /// Get all settings as flat key-value pairs
-    pub async fn get_all_values(&self) -> Result<std::collections::HashMap<String, String>, Error> {
-        let settings = self.get_all().await?;
+    pub fn get_all_values(&self) -> Result<std::collections::HashMap<String, String>, Error> {
+        let settings = self.get_all()?;
         let mut result = std::collections::HashMap::new();
 
         for setting in settings {
@@ -719,7 +719,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::service::settings_vars::SettingProvider for MockProvider {
-        fn key(&self) -> &str {
+        fn key(&self) -> &'static str {
             "test.mock"
         }
 

@@ -171,9 +171,9 @@ impl PullStreamManager {
 
         // Get publisher node address from registry (with timeout to prevent
         // indefinite blocking on slow/partitioned Redis)
-        const REGISTRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        let registry_timeout = std::time::Duration::from_secs(5);
         let publisher_info = tokio::time::timeout(
-            REGISTRY_TIMEOUT,
+            registry_timeout,
             self.registry.get_publisher(room_id, media_id),
         )
         .await
@@ -184,7 +184,7 @@ impl PullStreamManager {
             );
             crate::error::StreamError::RegistryError(format!(
                 "Registry query timed out after {}s for {room_id} / {media_id}",
-                REGISTRY_TIMEOUT.as_secs()
+                registry_timeout.as_secs()
             ))
         })?
         .map_err(|e| {

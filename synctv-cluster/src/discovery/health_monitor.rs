@@ -195,7 +195,7 @@ impl HealthMonitor {
     ///
     /// Returns the `JoinHandle` so the caller can detect panics or task completion.
     /// Use `shutdown()` to gracefully stop the monitoring loop.
-    pub async fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
+    pub fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
         let registry = self.node_registry.clone();
         let health_status = self.health_status.clone();
         let timeout_secs = registry.heartbeat_timeout_secs;
@@ -645,7 +645,7 @@ mod tests {
     async fn test_health_monitor_start_and_shutdown() {
         let registry = make_registry();
         let monitor = HealthMonitor::new(registry, 60);
-        let handle = monitor.start().await.unwrap();
+        let handle = monitor.start().unwrap();
         monitor.set_join_handle(handle);
 
         // Let it run briefly
@@ -705,7 +705,7 @@ mod tests {
         let registry = make_registry();
         let parent = CancellationToken::new();
         let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
-        let handle = monitor.start().await.unwrap();
+        let handle = monitor.start().unwrap();
         monitor.set_join_handle(handle);
 
         // Let it run briefly
@@ -750,7 +750,7 @@ mod tests {
 
         let monitor = HealthMonitor::new(registry, 1);
         monitor.test_set_last_successful_refresh_at(current_unix_timestamp_secs());
-        let handle = monitor.start().await.expect("monitor should start");
+        let handle = monitor.start().expect("monitor should start");
         monitor.set_join_handle(handle);
 
         tokio::time::sleep(Duration::from_millis(2300)).await;

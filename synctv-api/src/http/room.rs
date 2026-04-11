@@ -85,7 +85,7 @@ fn validate_room_path(
     Ok(path.room_id)
 }
 
-fn map_validation_error(err: ValidationError) -> super::AppError {
+fn map_validation_error(err: &ValidationError) -> super::AppError {
     match err {
         ValidationError::TooLong { field, .. } => {
             super::AppError::validation_failed(field, "value is too long")
@@ -96,7 +96,7 @@ fn map_validation_error(err: ValidationError) -> super::AppError {
         ValidationError::InvalidFormat { field } => {
             super::AppError::validation_failed(field, "contains invalid characters")
         }
-        ValidationError::InvalidValue(message) => super::AppError::bad_request(message),
+        ValidationError::InvalidValue(message) => super::AppError::bad_request(*message),
         ValidationError::Required(field) => {
             super::AppError::validation_failed(field, "field is required")
         }
@@ -1127,7 +1127,8 @@ pub async fn update_playback(
             // When a version is provided, the update uses optimistic locking (CAS)
             // to prevent concurrent modification conflicts.
             if let Some(position) = position {
-                validate_playback_position(position).map_err(map_validation_error)?;
+                validate_playback_position(position)
+                    .map_err(|error| map_validation_error(&error))?;
             }
             state
                 .room_service

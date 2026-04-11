@@ -187,8 +187,7 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
     // Generate publish token
     let publish_key_service = create_publish_key_service();
     let key = publish_key_service
-        .generate_publish_key(room.id.clone(), media_id.clone(), user.id.clone())
-        .await
+        .generate_publish_key(&room.id, &media_id, &user.id)
         .expect("Failed to generate publish key");
 
     // Validate the token
@@ -223,8 +222,7 @@ async fn rtmp_auth_test_expired_token_rejected() {
 
     // Generate and immediately expire token
     let key = publish_key_service
-        .generate_publish_key(room.id.clone(), media_id.clone(), user.id.clone())
-        .await
+        .generate_publish_key(&room.id, &media_id, &user.id)
         .expect("Failed to generate publish key");
 
     // Wait for token to expire
@@ -257,8 +255,7 @@ async fn rtmp_auth_test_banned_user_validation() {
     // Generate publish key before banning
     let publish_key_service = create_publish_key_service();
     let key = publish_key_service
-        .generate_publish_key(room.id.clone(), media_id.clone(), user.id.clone())
-        .await
+        .generate_publish_key(&room.id, &media_id, &user.id)
         .expect("Failed to generate publish key");
 
     // Ban the user
@@ -302,8 +299,7 @@ async fn rtmp_auth_test_deleted_user_validation() {
     // Generate publish key before deletion
     let publish_key_service = create_publish_key_service();
     let key = publish_key_service
-        .generate_publish_key(room.id.clone(), media_id.clone(), user.id.clone())
-        .await
+        .generate_publish_key(&room.id, &media_id, &user.id)
         .expect("Failed to generate publish key");
 
     // Soft-delete the user via the repository's delete method
@@ -534,8 +530,7 @@ async fn rtmp_auth_test_non_room_member_rejected() {
     // Generate publish key for non-member
     let media_id = MediaId::new();
     let _key = publish_key_service
-        .generate_publish_key(room.id.clone(), media_id.clone(), non_member.id.clone())
-        .await
+        .generate_publish_key(&room.id, &media_id, &non_member.id)
         .expect("Failed to generate publish key");
 
     // Verify non-member is not in the room

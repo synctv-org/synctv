@@ -136,12 +136,14 @@ impl K8sDnsDiscovery {
 
     /// Attach a `NodeRegistry` so that readiness-verified DNS peers are merged
     /// into the local transient node view used by health monitoring and routing.
+    #[must_use]
     pub fn with_node_registry(mut self, registry: Arc<NodeRegistry>) -> Self {
         self.node_registry = Some(registry);
         self
     }
 
     /// Configure the cluster secret used for authenticated peer identity probes.
+    #[must_use]
     pub fn with_cluster_secret(mut self, cluster_secret: String) -> Self {
         self.cluster_secret = cluster_secret;
         self
@@ -394,9 +396,8 @@ mod tests {
             None => std::env::remove_var("POD_IP"),
         }
 
-        let err = match result {
-            Ok(_) => panic!("missing POD_IP must fail closed"),
-            Err(err) => err,
+        let Err(err) = result else {
+            panic!("missing POD_IP must fail closed");
         };
         assert!(
             err.to_string().contains("POD_IP"),

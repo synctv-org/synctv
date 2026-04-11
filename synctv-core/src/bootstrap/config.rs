@@ -40,7 +40,7 @@ pub fn load_dotenv(verbose: bool) -> Result<()> {
 ///    macOS `~/Library/Application Support/synctv/`, `/etc/synctv/`, `/config/`)
 /// 4. Fall back to environment variables only
 pub fn load_config() -> Result<Config> {
-    load_config_with_options(LoadConfigOptions {
+    load_config_with_options(&LoadConfigOptions {
         config_path: None,
         load_dotenv: true,
         validate: true,
@@ -48,7 +48,7 @@ pub fn load_config() -> Result<Config> {
     })
 }
 
-pub fn load_config_with_options(options: LoadConfigOptions) -> Result<Config> {
+pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
     if options.load_dotenv {
         load_dotenv(options.verbose)?;
     }
@@ -352,7 +352,7 @@ server:
         )
         .expect("valid config should be written");
 
-        let config = load_config_with_options(LoadConfigOptions {
+        let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: true,
@@ -377,7 +377,7 @@ jwt:
         )
         .expect("config should be written");
 
-        let config = load_config_with_options(LoadConfigOptions {
+        let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,
@@ -407,7 +407,7 @@ management:
             config_path.to_string_lossy().to_string(),
         );
 
-        let config = load_config_with_options(LoadConfigOptions {
+        let config = load_config_with_options(&LoadConfigOptions {
             config_path: None,
             load_dotenv: false,
             validate: false,
@@ -435,7 +435,7 @@ jwt:
         )
         .expect("config should be written");
 
-        let config = load_config_with_options(LoadConfigOptions {
+        let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,

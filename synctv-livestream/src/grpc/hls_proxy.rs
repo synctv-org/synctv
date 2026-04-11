@@ -125,7 +125,8 @@ impl HlsProxyClient {
                 // limit (in bytes here), not the entry count.
                 // Include key size for more accurate memory accounting.
                 let total = key.len().saturating_add(value.len());
-                total.min(u32::MAX as usize) as u32
+                u32::try_from(total.min(usize::try_from(u32::MAX).unwrap_or(usize::MAX)))
+                    .unwrap_or(u32::MAX)
             })
             .build();
 
@@ -372,7 +373,11 @@ impl HlsProxyClient {
         if total == 0 {
             0.0
         } else {
-            (hits as f64 / total as f64) * 100.0
+            let scaled = u128::from(hits)
+                .saturating_mul(10_000)
+                .checked_div(u128::from(total))
+                .unwrap_or_default();
+            f64::from(u32::try_from(scaled).unwrap_or(u32::MAX)) / 100.0
         }
     }
 
@@ -402,7 +407,7 @@ impl HlsProxyClient {
     /// ensures that a new epoch immediately creates a fresh cache namespace.
     ///
     /// This cleanup helps prevent memory bloat from accumulating old epoch entries.
-    pub async fn invalidate_stream_cache(&self, room_id: &str, media_id: &str) {
+    pub fn invalidate_stream_cache(&self, room_id: &str, media_id: &str) {
         // Match entries without epoch prefix: {room_id}:{media_id}:
         let prefix = format!("{room_id}:{media_id}:");
 
@@ -755,7 +760,7 @@ mod tests {
         let client = HlsProxyClient::with_defaults(None);
         assert_eq!(client.cache_hits(), 0);
         assert_eq!(client.cache_misses(), 0);
-        assert_eq!(client.cache_hit_rate(), 0.0);
+        assert_eq!(client.cache_hit_rate().to_bits(), 0.0f64.to_bits());
     }
 
     #[tokio::test]
@@ -1119,10 +1124,10 @@ mod tests {
         let media_id = "stream1";
 
         // Insert entry with version 0
-        let _key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, "seg1.ts");
+        let key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, "seg1.ts");
         client
             .segment_cache
-            .insert(_key.clone(), Bytes::from_static(b"data"))
+            .insert(key.clone(), Bytes::from_static(b"data"))
             .await;
 
         // Verify initial accessibility

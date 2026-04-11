@@ -40,6 +40,11 @@ pub const MAX_SDP_SIZE: usize = 10_000;
 /// Individual ICE candidates are small (typically under 200 bytes).
 pub const MAX_ICE_CANDIDATE_SIZE: usize = 500;
 
+const USER_LEFT_RETRY_MAX_RETRIES: u32 = 5;
+const USER_LEFT_RETRY_INITIAL_DELAY_MS: u64 = 100;
+const USER_LEFT_RETRY_MAX_DELAY_MS: u64 = 5_000;
+const PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS: f64 = 30.0;
+
 /// Maximum number of concurrent UserLeft retry tasks across the process.
 /// Prevents unbounded task spawning during mass disconnects with Redis down.
 static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
@@ -59,8 +64,8 @@ impl RealtimeJoinError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::PermissionDenied(message) => message,
-            Self::RateLimited(message)
+            Self::PermissionDenied(message)
+            | Self::RateLimited(message)
             | Self::ServiceUnavailable(message)
             | Self::Internal(message) => message,
         }
@@ -117,7 +122,7 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
 const fn should_fail_webrtc_signal_broadcast(
-    result: synctv_cluster::sync::BroadcastResult,
+    result: &synctv_cluster::sync::BroadcastResult,
     cluster_redis_enabled: bool,
 ) -> bool {
     if cluster_redis_enabled {
@@ -125,6 +130,16 @@ const fn should_fail_webrtc_signal_broadcast(
     } else {
         result.local_sent == 0 && !result.redis_sent
     }
+}
+
+fn i64_to_i32_saturating(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1021,7 +1036,7 @@ impl StreamMessageHandler {
                             // Backpressure control: try to acquire a semaphore permit.
                             // If the system is overloaded, return ResourceExhausted error instead of processing.
                             let semaphore = self.concurrency_config.semaphore();
-                            let permit = if let Ok(permit) = semaphore.try_acquire_owned() { permit } else {
+                            let Ok(permit) = semaphore.try_acquire_owned() else {
                                 tracing::warn!(
                                     user_id = %self.user_id.as_str(),
                                     room_id = %self.room_id.as_str(),
@@ -1041,7 +1056,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                             continue;
-                        };
+                            };
 
                             // Process message with semaphore permit held
                             let _permit = permit; // Hold permit for duration of processing
@@ -1528,8 +1543,10 @@ impl StreamMessageHandler {
                     username: self.username.clone(),
                     role: role_proto,
                     permissions,
-                    status: member
-                        .map_or(synctv_proto::common::MemberStatus::Active as i32, |member| member_status_to_proto(member.status)),
+                    status: member.map_or(
+                        synctv_proto::common::MemberStatus::Active as i32,
+                        |member| member_status_to_proto(member.status),
+                    ),
                     added_permissions: added,
                     removed_permissions: removed,
                     admin_added_permissions: admin_added,
@@ -1771,7 +1788,7 @@ impl StreamMessageHandler {
         if let Some(result) = result {
             if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
                 && should_retry_user_left_broadcast(
-                    result,
+                    &result,
                     self.cluster_manager.metrics().redis_enabled,
                 )
             {
@@ -1804,13 +1821,9 @@ impl StreamMessageHandler {
                         spawn_monitored("userleft_retry", async move {
                             let _permit = permit; // Hold permit for duration of retry task
 
-                            const MAX_RETRIES: u32 = 5;
-                            const INITIAL_DELAY_MS: u64 = 100;
-                            const MAX_DELAY_MS: u64 = 5000;
+                            let mut delay_ms = USER_LEFT_RETRY_INITIAL_DELAY_MS;
 
-                            let mut delay_ms = INITIAL_DELAY_MS;
-
-                            for attempt in 1..=MAX_RETRIES {
+                            for attempt in 1..=USER_LEFT_RETRY_MAX_RETRIES {
                                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
                                     .await;
 
@@ -1844,12 +1857,13 @@ impl StreamMessageHandler {
                                     room = %room_id.as_str(),
                                     connection = %connection_id,
                                     attempt = attempt,
-                                    max_retries = MAX_RETRIES,
+                                    max_retries = USER_LEFT_RETRY_MAX_RETRIES,
                                     "UserLeft retry attempt failed"
                                 );
 
                                 // Exponential backoff with cap
-                                delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
+                                delay_ms =
+                                    std::cmp::min(delay_ms * 2, USER_LEFT_RETRY_MAX_DELAY_MS);
                             }
 
                             tracing::error!(
@@ -1857,7 +1871,7 @@ impl StreamMessageHandler {
                                 room = %room_id.as_str(),
                                 connection = %connection_id,
                                 "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
-                                MAX_RETRIES
+                                USER_LEFT_RETRY_MAX_RETRIES
                             );
                         });
                     }
@@ -2063,7 +2077,7 @@ impl StreamMessageHandler {
                                 // Backpressure control: try to acquire a semaphore permit.
                                 // If the system is overloaded, skip this message.
                                 let semaphore = handler.concurrency_config.semaphore();
-                                let permit = if let Ok(permit) = semaphore.try_acquire_owned() { permit } else {
+                                let Ok(permit) = semaphore.try_acquire_owned() else {
                                     tracing::warn!(
                                         connection_id = %handler.connection_id,
                                         "System overloaded: message processing semaphore exhausted in start()"
@@ -2138,8 +2152,7 @@ impl StreamMessageHandler {
                                 .await
                                 {
                                     Ok(RealtimeMembershipAccess::Denied(_)) => true,
-                                    Ok(RealtimeMembershipAccess::Allowed(_)) => false,
-                                    Err(_) => false,
+                                    Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
                                 };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2197,14 +2210,13 @@ impl StreamMessageHandler {
                                 Ok(ClusterEvent::KickUser { user_id: uid, .. }) => {
                                     *uid == user_id
                                 }
-                                Ok(ClusterEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }) => {
+                                Ok(
+                                    ClusterEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }
+                                    | ClusterEvent::UserLeft { user_id: uid, room_id: rid, .. },
+                                ) => {
                                     *uid == user_id && *rid == room_id
                                 }
-                                Ok(ClusterEvent::UserLeft { user_id: uid, room_id: rid, .. }) => {
-                                    *uid == user_id && *rid == room_id
-                                }
-                                Ok(_) => false,
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
+                                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
                             };
                             // Handle lag separately
@@ -2224,8 +2236,7 @@ impl StreamMessageHandler {
                                 .await
                                 {
                                     Ok(RealtimeMembershipAccess::Denied(_)) => true,
-                                    Ok(RealtimeMembershipAccess::Allowed(_)) => false,
-                                    Err(_) => false,
+                                    Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
                                 };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2393,8 +2404,7 @@ impl StreamMessageHandler {
                         &sanitized_content,
                         chat_msg.position.unwrap_or(0.0),
                         chat_msg.color.clone(),
-                    )
-                    .await?;
+                    );
                 } else {
                     // Chat: delegate entirely to ChatService which handles permissions,
                     // room settings, rate limiting, content filtering, and persistence.
@@ -2420,7 +2430,7 @@ impl StreamMessageHandler {
                 self.handle_webrtc_join(join).await?;
             }
             Some(Message::WebrtcLeave(leave)) => {
-                self.handle_webrtc_leave(leave).await?;
+                self.handle_webrtc_leave(leave)?;
             }
             Some(Message::PlaybackProgress(report)) => {
                 self.handle_playback_progress(report).await?;
@@ -2507,12 +2517,7 @@ impl StreamMessageHandler {
     /// They are broadcast to all connected clients for real-time display but
     /// are not saved for later retrieval. This is consistent with how major
     /// danmaku platforms (Bilibili, Niconico) treat live/real-time danmaku.
-    async fn handle_danmaku(
-        &self,
-        content: &str,
-        position: f64,
-        color: Option<String>,
-    ) -> Result<(), String> {
+    fn handle_danmaku(&self, content: &str, position: f64, color: Option<String>) {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id.clone(),
@@ -2533,8 +2538,6 @@ impl StreamMessageHandler {
                 "Danmaku cluster broadcast did not reach Redis (ephemeral, acceptable)"
             );
         }
-
-        Ok(())
     }
 
     // ==================== WebRTC Message Handlers ====================
@@ -2577,8 +2580,10 @@ impl StreamMessageHandler {
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
-        {
+        if should_fail_webrtc_signal_broadcast(
+            &result,
+            self.cluster_manager.metrics().redis_enabled,
+        ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 "WebRTC offer cluster broadcast did not reach Redis while cluster fan-out is enabled"
@@ -2632,8 +2637,10 @@ impl StreamMessageHandler {
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
-        {
+        if should_fail_webrtc_signal_broadcast(
+            &result,
+            self.cluster_manager.metrics().redis_enabled,
+        ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 "WebRTC answer cluster broadcast did not reach Redis while cluster fan-out is enabled"
@@ -2687,8 +2694,10 @@ impl StreamMessageHandler {
 
         // Cross-replica ICE signaling must reach Redis when cluster mode is enabled.
         let result = self.cluster_manager.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(result, self.cluster_manager.metrics().redis_enabled)
-        {
+        if should_fail_webrtc_signal_broadcast(
+            &result,
+            self.cluster_manager.metrics().redis_enabled,
+        ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 "ICE candidate cluster broadcast did not reach Redis while cluster fan-out is enabled"
@@ -2770,7 +2779,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_webrtc_leave(
+    fn handle_webrtc_leave(
         &self,
         _leave: &crate::proto::client::WebRtcLeave,
     ) -> Result<(), String> {
@@ -2874,15 +2883,18 @@ impl StreamMessageHandler {
         if state.is_playing && report.is_playing {
             // Drift bounds check: compute expected position from last known
             // state + elapsed wall-clock time, reject if too far off.
-            let elapsed_secs = chrono::Utc::now()
+            let elapsed_ms = chrono::Utc::now()
                 .signed_duration_since(state.updated_at)
-                .num_milliseconds() as f64
-                / 1000.0;
+                .num_milliseconds();
+            let elapsed_secs = if elapsed_ms <= 0 {
+                0.0
+            } else {
+                Duration::from_millis(u64::try_from(elapsed_ms).unwrap_or(u64::MAX)).as_secs_f64()
+            };
             let expected_position = state.current_time + (elapsed_secs * state.speed);
             let drift = (report.current_time - expected_position).abs();
 
-            const MAX_DRIFT_SECONDS: f64 = 30.0;
-            if drift > MAX_DRIFT_SECONDS {
+            if drift > PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS {
                 tracing::warn!(
                     user_id = %self.user_id.as_str(),
                     room_id = %self.room_id.as_str(),
@@ -2890,10 +2902,10 @@ impl StreamMessageHandler {
                     expected = expected_position,
                     drift = drift,
                     "Playback progress report rejected: drift exceeds {} seconds",
-                    MAX_DRIFT_SECONDS
+                    PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS
                 );
                 return Err(format!(
-                    "Playback progress drift too large ({drift:.1}s > {MAX_DRIFT_SECONDS}s)"
+                    "Playback progress drift too large ({drift:.1}s > {PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS}s)"
                 ));
             }
 
@@ -2943,7 +2955,7 @@ impl StreamMessageHandler {
                         };
                         self.cluster_manager
                             .message_hub()
-                            .broadcast(&self.room_id, event);
+                            .broadcast(&self.room_id, &event);
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -3316,11 +3328,15 @@ fn cluster_event_to_server_messages(
                         Ok(parsed) => {
                             let migration_id =
                                 parsed["migration_id"].as_str().unwrap_or("").to_string();
-                            let state = parsed["state"].as_i64().unwrap_or(0) as i32;
-                            let total_peers = parsed["total_peers"].as_i64().unwrap_or(0) as i32;
-                            let completed_peers =
-                                parsed["completed_peers"].as_i64().unwrap_or(0) as i32;
-                            let failed_peers = parsed["failed_peers"].as_i64().unwrap_or(0) as i32;
+                            let state =
+                                i64_to_i32_saturating(parsed["state"].as_i64().unwrap_or(0));
+                            let total_peers =
+                                i64_to_i32_saturating(parsed["total_peers"].as_i64().unwrap_or(0));
+                            let completed_peers = i64_to_i32_saturating(
+                                parsed["completed_peers"].as_i64().unwrap_or(0),
+                            );
+                            let failed_peers =
+                                i64_to_i32_saturating(parsed["failed_peers"].as_i64().unwrap_or(0));
                             Some(ServerMessage {
                                 message: Some(Message::SfuMigrationStatus(
                                     crate::proto::client::SfuMigrationStatus {
@@ -3430,7 +3446,7 @@ fn cluster_event_to_server_messages(
 }
 
 const fn should_retry_user_left_broadcast(
-    result: synctv_cluster::sync::BroadcastResult,
+    result: &synctv_cluster::sync::BroadcastResult,
     cluster_redis_enabled: bool,
 ) -> bool {
     if cluster_redis_enabled {
@@ -3455,9 +3471,8 @@ const fn should_broadcast_user_left(
     }
 
     match distributed_presence {
-        Ok(true) => UserLeftDeliveryPlan::Skip,
         Ok(false) => UserLeftDeliveryPlan::LocalAndRedis,
-        Err(()) => UserLeftDeliveryPlan::Skip,
+        Ok(true) | Err(()) => UserLeftDeliveryPlan::Skip,
     }
 }
 
@@ -3528,9 +3543,8 @@ fn initial_realtime_join_denial_reason(
     member_lookup: &std::result::Result<RealtimeMembershipAccess, synctv_core::Error>,
 ) -> Option<String> {
     match member_lookup {
-        Ok(RealtimeMembershipAccess::Allowed(_)) => None,
         Ok(RealtimeMembershipAccess::Denied(reason)) => Some(reason.clone()),
-        Err(_) => None,
+        Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => None,
     }
 }
 
@@ -4075,7 +4089,7 @@ mod tests {
         node_id: &str,
         sender: Arc<dyn MessageSender>,
     ) -> StartTestFixture {
-        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let (container, pool) = synctv_core_testing::create_test_pool().await;
         let cluster_manager = test_cluster_manager(node_id).await;
         let connection_manager = test_connection_manager();
         let room_service = test_room_service(pool.clone());
@@ -4124,7 +4138,7 @@ mod tests {
         ));
 
         StartTestFixture {
-            _container,
+            _container: container,
             pool,
             cluster_manager,
             connection_manager,
@@ -4680,8 +4694,8 @@ mod tests {
             Some(Message::PlaybackState(ps)) => {
                 assert_eq!(ps.room_id, "room_test");
                 let s = ps.state.as_ref().unwrap();
-                assert_eq!(s.current_time, 123.456);
-                assert_eq!(s.speed, 1.5);
+                assert!((s.current_time - 123.456).abs() < f64::EPSILON);
+                assert!((s.speed - 1.5).abs() < f64::EPSILON);
                 assert!(s.is_playing);
                 assert_eq!(s.playing_media_id, "media_test");
                 assert_eq!(s.version, 7);
@@ -5595,7 +5609,7 @@ mod tests {
             redis_sent: false,
         };
 
-        let should_retry = super::should_retry_user_left_broadcast(result, true);
+        let should_retry = super::should_retry_user_left_broadcast(&result, true);
 
         assert!(
             should_retry,
@@ -5610,7 +5624,7 @@ mod tests {
             redis_sent: false,
         };
 
-        let should_retry = super::should_retry_user_left_broadcast(result, false);
+        let should_retry = super::should_retry_user_left_broadcast(&result, false);
 
         assert!(
             !should_retry,
@@ -5626,7 +5640,7 @@ mod tests {
         };
 
         assert!(
-            super::should_fail_webrtc_signal_broadcast(result, true),
+            super::should_fail_webrtc_signal_broadcast(&result, true),
             "cluster-mode WebRTC signaling must fail closed unless Redis publish succeeds because local room fan-out cannot prove the targeted peer received the signal"
         );
     }
@@ -5638,7 +5652,7 @@ mod tests {
             redis_sent: false,
         };
 
-        assert!(!super::should_fail_webrtc_signal_broadcast(result, false));
+        assert!(!super::should_fail_webrtc_signal_broadcast(&result, false));
     }
 
     #[test]
@@ -5648,7 +5662,7 @@ mod tests {
             redis_sent: true,
         };
 
-        assert!(!super::should_fail_webrtc_signal_broadcast(result, true));
+        assert!(!super::should_fail_webrtc_signal_broadcast(&result, true));
     }
 
     #[test]
@@ -5658,7 +5672,7 @@ mod tests {
             redis_sent: false,
         };
 
-        assert!(super::should_fail_webrtc_signal_broadcast(result, true));
+        assert!(super::should_fail_webrtc_signal_broadcast(&result, true));
     }
 
     #[test]
@@ -6239,7 +6253,7 @@ mod tests {
             .await
             .expect("register should succeed before subscription caching");
 
-        redis.terminate().await;
+        redis.terminate();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let error = tokio::time::timeout(

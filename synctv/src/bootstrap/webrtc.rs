@@ -99,7 +99,7 @@ pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCCo
             bind_addr,
             external_addr,
         };
-        match synctv_core::service::StunServer::start(stun_config).await {
+        match synctv_core::service::StunServer::start(&stun_config) {
             Ok(server) => {
                 info!("Built-in STUN server started on {}", server.local_addr());
                 Some(server)

@@ -13,6 +13,15 @@ use {
     tokio::sync::Mutex,
 };
 
+fn rtmp_version_u8() -> u8 {
+    u8::try_from(define::RTMP_VERSION).expect("RTMP version constant should fit into u8")
+}
+
+fn handshake_random_len_u32() -> u32 {
+    u32::try_from(define::RTMP_HANDSHAKE_SIZE - 8)
+        .expect("RTMP handshake random payload length should fit into u32")
+}
+
 pub struct SimpleHandshakeServer {
     pub reader: BytesReader,
     pub writer: AsyncBytesWriter,
@@ -161,7 +170,7 @@ impl THandshakeServer for SimpleHandshakeServer {
     }
 
     fn write_s0(&mut self) -> Result<(), HandshakeError> {
-        self.writer.write_u8(define::RTMP_VERSION as u8)?;
+        self.writer.write_u8(rtmp_version_u8())?;
         Ok(())
     }
 
@@ -171,8 +180,7 @@ impl THandshakeServer for SimpleHandshakeServer {
         let timestamp = self.c1_timestamp;
         self.writer.write_u32::<BigEndian>(timestamp)?;
 
-        self.writer
-            .write_random_bytes(define::RTMP_HANDSHAKE_SIZE as u32 - 8)?;
+        self.writer.write_random_bytes(handshake_random_len_u32())?;
         Ok(())
     }
 
@@ -213,7 +221,7 @@ impl THandshakeServer for ComplexHandshakeServer {
     }
 
     fn write_s0(&mut self) -> Result<(), HandshakeError> {
-        self.writer.write_u8(define::RTMP_VERSION as u8)?;
+        self.writer.write_u8(rtmp_version_u8())?;
         Ok(())
     }
 
@@ -223,7 +231,7 @@ impl THandshakeServer for ComplexHandshakeServer {
 
         writer.write_u32::<BigEndian>(utils::current_time())?;
         writer.write(&define::RTMP_SERVER_VERSION)?;
-        writer.write_random_bytes(define::RTMP_HANDSHAKE_SIZE as u32 - 8)?;
+        writer.write_random_bytes(handshake_random_len_u32())?;
 
         /*generate the digest*/
         let mut key = BytesMut::new();
@@ -243,7 +251,7 @@ impl THandshakeServer for ComplexHandshakeServer {
 
         writer.write_u32::<BigEndian>(utils::current_time())?;
         writer.write_u32::<BigEndian>(self.c1_timestamp)?;
-        writer.write_random_bytes(define::RTMP_HANDSHAKE_SIZE as u32 - 8)?;
+        writer.write_random_bytes(handshake_random_len_u32())?;
 
         /*generate the key for s2*/
         let mut key = BytesMut::new();
@@ -484,7 +492,7 @@ mod tests {
         assert_eq!(server.writer.bytes_writer.bytes.len(), 1);
         assert_eq!(
             server.writer.bytes_writer.bytes[0],
-            define::RTMP_VERSION as u8
+            u8::try_from(define::RTMP_VERSION).expect("RTMP version must fit in u8")
         );
     }
 

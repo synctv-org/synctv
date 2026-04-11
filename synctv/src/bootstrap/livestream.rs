@@ -161,7 +161,6 @@ pub async fn init_livestream(
         .with_auth(rtmp_auth)
         .with_rtmp_listener(rtmp_listener)
         .start()
-        .await
         .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;
 
     let live_infra = handle.infrastructure.clone();

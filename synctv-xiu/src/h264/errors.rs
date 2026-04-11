@@ -13,6 +13,10 @@ pub enum H264ErrorValue {
         "Exp-Golomb decoding exceeded maximum leading zeros ({0} > {MAX_EXP_GOLOMB_LEADING_ZEROS})"
     )]
     ExpGolombOverflow(usize),
+    #[error("Exp-Golomb code_num out of range for u32: {0}")]
+    ExpGolombCodeNumOutOfRange(u64),
+    #[error("Exp-Golomb signed value out of range for i32: {0}")]
+    ExpGolombSignedValueOutOfRange(i64),
     #[error("Invalid chroma_format_idc value: {0}. Valid values are 0, 1, 2, 3")]
     InvalidChromaFormatIdc(u32),
 }

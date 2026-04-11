@@ -450,7 +450,10 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
     let user_service = Arc::new(make_user_service(pool.clone()));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-    let owner = user_repo.create(&make_user("room_settings_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_settings_owner"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Room Settings Room".to_string(),
@@ -586,7 +589,10 @@ async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
         .expect_err("cluster mode must fail closed when media add fanout fails");
 
     assert!(matches!(err, ApiError::ServiceUnavailable(_)));
-    assert_eq!(err.message(), "failed to fan out MediaAdded to cluster replicas");
+    assert_eq!(
+        err.message(),
+        "failed to fan out MediaAdded to cluster replicas"
+    );
     assert_eq!(
         room_service
             .media_service()
@@ -680,10 +686,15 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
             },
         )
         .await
-        .expect_err("cluster mode must fail closed when batch media fanout capacity is insufficient");
+        .expect_err(
+            "cluster mode must fail closed when batch media fanout capacity is insufficient",
+        );
 
     assert!(matches!(err, ApiError::ServiceUnavailable(_)));
-    assert_eq!(err.message(), "failed to fan out MediaAdded to cluster replicas");
+    assert_eq!(
+        err.message(),
+        "failed to fan out MediaAdded to cluster replicas"
+    );
     assert_eq!(
         room_service
             .media_service()

@@ -85,9 +85,6 @@ pub fn proto_notification_type_to_core(
     value: i32,
 ) -> Result<CoreNotificationType, NotificationTypeParseError> {
     match ProtoNotificationType::try_from(value) {
-        Ok(ProtoNotificationType::Unspecified) => Err(NotificationTypeParseError {
-            invalid_value: value,
-        }),
         Ok(ProtoNotificationType::RoomInvitation) => Ok(CoreNotificationType::RoomInvitation),
         Ok(ProtoNotificationType::SystemAnnouncement) => {
             Ok(CoreNotificationType::SystemAnnouncement)
@@ -95,7 +92,7 @@ pub fn proto_notification_type_to_core(
         Ok(ProtoNotificationType::RoomEvent) => Ok(CoreNotificationType::RoomEvent),
         Ok(ProtoNotificationType::PasswordReset) => Ok(CoreNotificationType::PasswordReset),
         Ok(ProtoNotificationType::EmailVerification) => Ok(CoreNotificationType::EmailVerification),
-        Err(_) => Err(NotificationTypeParseError {
+        Ok(ProtoNotificationType::Unspecified) | Err(_) => Err(NotificationTypeParseError {
             invalid_value: value,
         }),
     }
@@ -113,21 +110,31 @@ pub struct ListNotificationsResult {
     pub unread_count: i64,
 }
 
-const DEFAULT_NOTIFICATION_PAGE: i32 = 1;
-const DEFAULT_NOTIFICATION_PAGE_SIZE: i32 = synctv_core::models::DEFAULT_PAGE_SIZE as i32;
+const DEFAULT_NOTIFICATION_PAGE: u32 = 1;
+const DEFAULT_NOTIFICATION_PAGE_SIZE: u32 = synctv_core::models::DEFAULT_PAGE_SIZE;
+
+fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
+    u32::try_from(value).unwrap_or(default)
+}
+
+fn normalized_notification_page_size(value: i32) -> u32 {
+    let max_page_size = i32::try_from(MAX_PAGE_SIZE).unwrap_or(i32::MAX);
+    let clamped = value.clamp(1, max_page_size);
+    positive_i32_to_u32(clamped, DEFAULT_NOTIFICATION_PAGE_SIZE)
+}
 
 fn normalize_notification_pagination(
     page: Option<i32>,
     page_size: Option<i32>,
 ) -> Result<PageParams, ApiError> {
     let page = match page {
-        Some(value) if value > 0 => value,
+        Some(value) if value > 0 => positive_i32_to_u32(value, DEFAULT_NOTIFICATION_PAGE),
         _ => DEFAULT_NOTIFICATION_PAGE,
-    } as u32;
+    };
     let page_size = match page_size {
-        Some(value) if value > 0 => value.clamp(1, MAX_PAGE_SIZE as i32),
+        Some(value) if value > 0 => normalized_notification_page_size(value),
         _ => DEFAULT_NOTIFICATION_PAGE_SIZE,
-    } as u32;
+    };
     let pagination = PageParams::new(Some(page), Some(page_size));
     pagination.validate().map_err(ApiError::from)?;
     Ok(pagination)
@@ -142,9 +149,9 @@ fn proto_notification_sort_by_to_core(sort_by: i32) -> NotificationListSortBy {
 }
 
 fn build_notification_list_query(
-    req: ListNotificationsRequest,
+    req: &ListNotificationsRequest,
 ) -> Result<NotificationListQuery, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
+    crate::impls::validate_proto_request(req)?;
 
     let pagination = normalize_notification_pagination(Some(req.page), Some(req.page_size))?;
     let notification_type = req
@@ -167,17 +174,17 @@ fn build_notification_list_query(
 }
 
 pub(crate) fn build_get_notification_request(
-    req: GetNotificationRequest,
+    req: &GetNotificationRequest,
 ) -> Result<Uuid, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
+    crate::impls::validate_proto_request(req)?;
     Uuid::parse_str(&req.notification_id)
         .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
 }
 
 pub(crate) fn build_mark_as_read_request(
-    req: ProtoMarkAsReadRequest,
+    req: &ProtoMarkAsReadRequest,
 ) -> Result<Vec<Uuid>, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
+    crate::impls::validate_proto_request(req)?;
     req.notification_ids
         .iter()
         .map(|id| {
@@ -188,11 +195,24 @@ pub(crate) fn build_mark_as_read_request(
 }
 
 pub(crate) fn build_delete_notification_request(
-    req: DeleteNotificationRequest,
+    req: &DeleteNotificationRequest,
 ) -> Result<Uuid, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
+    crate::impls::validate_proto_request(req)?;
     Uuid::parse_str(&req.notification_id)
         .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
+}
+
+pub(crate) fn notification_counts_to_proto(
+    total: i64,
+    unread_count: i64,
+) -> Result<(i32, i32), ApiError> {
+    let total = i32::try_from(total).map_err(|_| {
+        ApiError::Internal("Notification total exceeded int32 response range".to_string())
+    })?;
+    let unread_count = i32::try_from(unread_count).map_err(|_| {
+        ApiError::Internal("Notification unread_count exceeded int32 response range".to_string())
+    })?;
+    Ok((total, unread_count))
 }
 
 fn map_notification_lookup_error(err: synctv_core::Error) -> ApiError {
@@ -220,7 +240,7 @@ impl NotificationApiImpl {
         user_id: &UserId,
         req: ListNotificationsRequest,
     ) -> Result<ListNotificationsResult, ApiError> {
-        let query = build_notification_list_query(req)?;
+        let query = build_notification_list_query(&req)?;
 
         let (notifications, total) = self
             .notification_service
@@ -317,10 +337,7 @@ mod tests {
         let pagination =
             normalize_notification_pagination(Some(-5), Some(-100)).expect("pagination");
         assert_eq!(pagination.page, 1);
-        assert_eq!(
-            pagination.page_size,
-            synctv_core::models::DEFAULT_PAGE_SIZE
-        );
+        assert_eq!(pagination.page_size, synctv_core::models::DEFAULT_PAGE_SIZE);
     }
 
     #[test]
@@ -447,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_build_notification_list_query_normalizes_defaults() {
-        let query = build_notification_list_query(ListNotificationsRequest {
+        let query = build_notification_list_query(&ListNotificationsRequest {
             page: 0,
             page_size: 0,
             is_read: Some(true),
@@ -475,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_build_notification_list_query_rejects_invalid_proto_request() {
-        let error = build_notification_list_query(ListNotificationsRequest {
+        let error = build_notification_list_query(&ListNotificationsRequest {
             page: -1,
             page_size: 101,
             is_read: None,
@@ -501,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_build_get_notification_request_rejects_invalid_uuid() {
-        let error = build_get_notification_request(GetNotificationRequest {
+        let error = build_get_notification_request(&GetNotificationRequest {
             notification_id: "bad-id".to_string(),
         })
         .unwrap_err();
@@ -511,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_build_mark_as_read_request_rejects_invalid_uuid() {
-        let error = build_mark_as_read_request(ProtoMarkAsReadRequest {
+        let error = build_mark_as_read_request(&ProtoMarkAsReadRequest {
             notification_ids: vec!["bad-id".to_string()],
         })
         .unwrap_err();
@@ -521,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_notification_request_rejects_invalid_uuid() {
-        let error = build_delete_notification_request(DeleteNotificationRequest {
+        let error = build_delete_notification_request(&DeleteNotificationRequest {
             notification_id: "bad-id".to_string(),
         })
         .unwrap_err();

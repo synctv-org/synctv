@@ -10,8 +10,9 @@ use synctv_xiu::flv::amf0::Amf0ValueType;
 use synctv_xiu::rtmp::cache::metadata::MetaData;
 
 /// Helper to create metadata bytes from AMF0 values
-fn create_metadata_bytes(values: Vec<Amf0ValueType>) -> BytesMut {
+fn create_metadata_bytes(values: &[Amf0ValueType]) -> BytesMut {
     let mut writer = Amf0Writer::new();
+    let values = values.to_vec();
     writer.write_anys(&values).unwrap();
     writer.extract_current_bytes()
 }
@@ -23,7 +24,7 @@ fn test_is_metadata_with_set_data_frame_and_on_metadata() {
         Amf0ValueType::UTF8String("@setDataFrame".to_string()),
         Amf0ValueType::UTF8String("onMetaData".to_string()),
     ];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         metadata.is_metadata(&bytes),
@@ -35,7 +36,7 @@ fn test_is_metadata_with_set_data_frame_and_on_metadata() {
 fn test_is_metadata_with_only_on_metadata() {
     // Alternative format: just onMetaData
     let values = vec![Amf0ValueType::UTF8String("onMetaData".to_string())];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         metadata.is_metadata(&bytes),
@@ -47,7 +48,7 @@ fn test_is_metadata_with_only_on_metadata() {
 fn test_is_metadata_rejects_only_set_data_frame() {
     // @setDataFrame alone is NOT valid metadata (needs onMetaData after it)
     let values = vec![Amf0ValueType::UTF8String("@setDataFrame".to_string())];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         !metadata.is_metadata(&bytes),
@@ -62,7 +63,7 @@ fn test_is_metadata_rejects_set_data_frame_with_wrong_second_value() {
         Amf0ValueType::UTF8String("@setDataFrame".to_string()),
         Amf0ValueType::UTF8String("somethingElse".to_string()),
     ];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         !metadata.is_metadata(&bytes),
@@ -74,7 +75,7 @@ fn test_is_metadata_rejects_set_data_frame_with_wrong_second_value() {
 fn test_is_metadata_rejects_random_string() {
     // Random strings should be rejected
     let values = vec![Amf0ValueType::UTF8String("randomString".to_string())];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(!metadata.is_metadata(&bytes), "Should reject random string");
 }
@@ -100,7 +101,7 @@ fn test_is_metadata_with_additional_data() {
         Amf0ValueType::UTF8String("onMetaData".to_string()),
         Amf0ValueType::Object(props),
     ];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         metadata.is_metadata(&bytes),
@@ -120,7 +121,7 @@ fn test_is_metadata_with_set_data_frame_and_properties() {
         Amf0ValueType::UTF8String("onMetaData".to_string()),
         Amf0ValueType::Object(props),
     ];
-    let bytes = create_metadata_bytes(values);
+    let bytes = create_metadata_bytes(&values);
     let mut metadata = MetaData::new();
     assert!(
         metadata.is_metadata(&bytes),

@@ -443,9 +443,8 @@ impl TicketStore for InMemoryTicketStore {
         // Since moka uses lazy eviction, remove() may return entries that haven't
         // been evicted yet, so we manually check TTL expiry on the returned value.
         let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
-        let entry = match self.cache.remove(&cache_key).await {
-            Some(e) => e,
-            None => return Ok(None),
+        let Some(entry) = self.cache.remove(&cache_key).await else {
+            return Ok(None);
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -832,7 +831,7 @@ mod tests {
         let data = WsTicketData {
             user_id: "user123".to_string(),
             room_id: "room456".to_string(),
-            created_at: 1234567890,
+            created_at: 1_234_567_890,
             password_version: 5,
         };
 

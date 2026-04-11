@@ -62,7 +62,7 @@ pub mod providers {
 mod tests {
     use prost::Message;
 
-    fn validation_error_text(error: prost_protovalidate::Error) -> String {
+    fn validation_error_text(error: &prost_protovalidate::Error) -> String {
         error.to_string()
     }
 
@@ -1045,7 +1045,7 @@ mod tests {
             email: "not-an-email".into(),
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("username"), "{error}");
         assert!(error.contains("password"), "{error}");
@@ -1071,7 +1071,7 @@ mod tests {
             old_password: Some(String::new()),
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("username"), "{error}");
         assert!(error.contains("password"), "{error}");
@@ -1087,7 +1087,7 @@ mod tests {
             description: "x".repeat(501),
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("name"), "{error}");
         assert!(error.contains("description"), "{error}");
@@ -1100,7 +1100,7 @@ mod tests {
             room_id: "short".into(),
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
         assert!(error.contains("room_id"), "{error}");
     }
 
@@ -1114,7 +1114,7 @@ mod tests {
             status: 99,
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("role"), "{error}");
         assert!(error.contains("status"), "{error}");
@@ -1132,7 +1132,7 @@ mod tests {
             sort_direction: 99,
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("page"), "{error}");
         assert!(error.contains("page_size"), "{error}");
@@ -1186,9 +1186,9 @@ mod tests {
         };
 
         for error in [
-            validation_error_text(crate::validate(&list_rooms).unwrap_err()),
-            validation_error_text(crate::validate(&my_rooms).unwrap_err()),
-            validation_error_text(crate::validate(&members).unwrap_err()),
+            validation_error_text(&crate::validate(&list_rooms).unwrap_err()),
+            validation_error_text(&crate::validate(&my_rooms).unwrap_err()),
+            validation_error_text(&crate::validate(&members).unwrap_err()),
         ] {
             assert!(error.contains("page"), "{error}");
             assert!(error.contains("page_size"), "{error}");
@@ -1258,8 +1258,8 @@ mod tests {
         };
 
         for error in [
-            validation_error_text(crate::validate(&playlists).unwrap_err()),
-            validation_error_text(crate::validate(&items).unwrap_err()),
+            validation_error_text(&crate::validate(&playlists).unwrap_err()),
+            validation_error_text(&crate::validate(&items).unwrap_err()),
         ] {
             assert!(error.contains("page"), "{error}");
             assert!(error.contains("page_size"), "{error}");
@@ -1367,13 +1367,13 @@ mod tests {
         };
 
         for error in [
-            validation_error_text(crate::validate(&provider_instances).unwrap_err()),
-            validation_error_text(crate::validate(&users).unwrap_err()),
-            validation_error_text(crate::validate(&user_rooms).unwrap_err()),
-            validation_error_text(crate::validate(&rooms).unwrap_err()),
-            validation_error_text(crate::validate(&members).unwrap_err()),
-            validation_error_text(crate::validate(&admins).unwrap_err()),
-            validation_error_text(crate::validate(&streams).unwrap_err()),
+            validation_error_text(&crate::validate(&provider_instances).unwrap_err()),
+            validation_error_text(&crate::validate(&users).unwrap_err()),
+            validation_error_text(&crate::validate(&user_rooms).unwrap_err()),
+            validation_error_text(&crate::validate(&rooms).unwrap_err()),
+            validation_error_text(&crate::validate(&members).unwrap_err()),
+            validation_error_text(&crate::validate(&admins).unwrap_err()),
+            validation_error_text(&crate::validate(&streams).unwrap_err()),
         ] {
             assert!(error.contains("page"), "{error}");
             assert!(error.contains("page_size"), "{error}");
@@ -1473,7 +1473,7 @@ mod tests {
             sort_direction: crate::client::SortDirection::Unspecified as i32,
         };
 
-        let error = validation_error_text(crate::validate(&request).unwrap_err());
+        let error = validation_error_text(&crate::validate(&request).unwrap_err());
 
         assert!(error.contains("page"), "{error}");
         assert!(error.contains("page_size"), "{error}");
@@ -1494,7 +1494,7 @@ mod tests {
     #[test]
     fn validate_move_playlist_request_requires_anchor() {
         let error = validation_error_text(
-            crate::validate(&crate::client::MovePlaylistRequest {
+            &crate::validate(&crate::client::MovePlaylistRequest {
                 playlist_id: "playlist-1".into(),
                 anchor: None,
             })
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn validate_create_playlist_request_rejects_long_name_and_incomplete_dynamic_fields() {
         let error = validation_error_text(
-            crate::validate(&crate::client::CreatePlaylistRequest {
+            &crate::validate(&crate::client::CreatePlaylistRequest {
                 name: "a".repeat(256),
                 parent_id: String::new(),
                 source_provider: "alist".into(),
@@ -1538,7 +1538,7 @@ mod tests {
     #[test]
     fn validate_update_playlist_request_rejects_long_name_when_present() {
         let error = validation_error_text(
-            crate::validate(&crate::client::UpdatePlaylistRequest {
+            &crate::validate(&crate::client::UpdatePlaylistRequest {
                 playlist_id: "playlist-1".into(),
                 name: "a".repeat(256),
             })
@@ -1551,7 +1551,7 @@ mod tests {
     #[test]
     fn validate_move_media_request_rejects_conflicting_scope_and_selection_modes() {
         let error = validation_error_text(
-            crate::validate(&crate::client::MoveMediaRequest {
+            &crate::validate(&crate::client::MoveMediaRequest {
                 media_ids: vec!["media-1".into()],
                 source_playlist_id: Some("playlist-1".into()),
                 target_playlist_id: None,
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn validate_move_media_request_rejects_missing_media_ids_for_explicit_move() {
         let error = validation_error_text(
-            crate::validate(&crate::client::MoveMediaRequest {
+            &crate::validate(&crate::client::MoveMediaRequest {
                 media_ids: Vec::new(),
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1585,7 +1585,7 @@ mod tests {
     #[test]
     fn validate_move_media_request_rejects_multiple_anchor_ids() {
         let error = validation_error_text(
-            crate::validate(&crate::client::MoveMediaRequest {
+            &crate::validate(&crate::client::MoveMediaRequest {
                 media_ids: vec!["media-1".into()],
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1602,7 +1602,7 @@ mod tests {
     #[test]
     fn validate_move_media_request_rejects_batch_size_above_limit() {
         let error = validation_error_text(
-            crate::validate(&crate::client::MoveMediaRequest {
+            &crate::validate(&crate::client::MoveMediaRequest {
                 media_ids: (0..101).map(|idx| format!("media-{idx}")).collect(),
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     fn validate_add_media_request_rejects_oversized_title() {
         let error = validation_error_text(
-            crate::validate(&crate::client::AddMediaRequest {
+            &crate::validate(&crate::client::AddMediaRequest {
                 playlist_id: None,
                 provider: String::new(),
                 provider_instance_name: String::new(),
@@ -1654,7 +1654,7 @@ mod tests {
             title: String::new(),
         };
         let error = validation_error_text(
-            crate::validate(&crate::client::AddMediaBatchRequest {
+            &crate::validate(&crate::client::AddMediaBatchRequest {
                 items: vec![template; 101],
             })
             .unwrap_err(),
@@ -1666,7 +1666,7 @@ mod tests {
     #[test]
     fn validate_start_playback_request_rejects_multiple_targets() {
         let error = validation_error_text(
-            crate::validate(&crate::client::StartPlaybackRequest {
+            &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: "media-1".into(),
                 playlist_id: "playlist-1".into(),
                 target: Vec::new(),
@@ -1683,7 +1683,7 @@ mod tests {
     #[test]
     fn validate_start_playback_request_rejects_static_media_with_target() {
         let error = validation_error_text(
-            crate::validate(&crate::client::StartPlaybackRequest {
+            &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: "media-1".into(),
                 playlist_id: String::new(),
                 target: br#"{"provider":"alist"}"#.to_vec(),
@@ -1697,7 +1697,7 @@ mod tests {
     #[test]
     fn validate_start_playback_request_rejects_dynamic_playlist_without_target() {
         let error = validation_error_text(
-            crate::validate(&crate::client::StartPlaybackRequest {
+            &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: "playlist-1".into(),
                 target: Vec::new(),
@@ -1711,7 +1711,7 @@ mod tests {
     #[test]
     fn validate_delete_entries_request_rejects_empty_target_set() {
         let error = validation_error_text(
-            crate::validate(&crate::client::DeleteEntriesRequest {
+            &crate::validate(&crate::client::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: Vec::new(),
                 force: false,
@@ -1728,7 +1728,7 @@ mod tests {
     #[test]
     fn validate_delete_entries_request_rejects_batch_size_above_limit() {
         let error = validation_error_text(
-            crate::validate(&crate::client::DeleteEntriesRequest {
+            &crate::validate(&crate::client::DeleteEntriesRequest {
                 playlist_ids: (0..51).map(|idx| format!("playlist-{idx}")).collect(),
                 media_ids: (0..50).map(|idx| format!("media-{idx}")).collect(),
                 force: true,

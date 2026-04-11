@@ -14,16 +14,47 @@ fn settings_registry_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
 }
 
+const DEFAULT_ROOM_PAGE: u32 = 1;
+const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
+const MAX_ROOM_PAGE_SIZE: u32 = 100;
+const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
+const DEFAULT_HOT_ROOM_LIMIT_U32: u32 = 10;
+const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
+const MAX_HOT_ROOM_LIMIT_I32: i32 = 50;
+const HOT_ROOM_FETCH_MULTIPLIER: u32 = 4;
+const HOT_ROOM_FETCH_LIMIT_CAP: u32 = 200;
+const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
+
+fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
+    if value > 0 {
+        value.cast_unsigned()
+    } else {
+        default
+    }
+}
+
+fn positive_i64_to_u32(value: i64, default: u32) -> u32 {
+    u32::try_from(value).unwrap_or(default)
+}
+
+fn positive_i64_to_usize(value: i64, default: usize) -> usize {
+    usize::try_from(value).unwrap_or(default)
+}
+
+fn usize_to_i32_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 fn build_public_room_list_query(
     req: crate::proto::client::ListRoomsRequest,
 ) -> Result<synctv_core::models::RoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
-    let page = if req.page > 0 { req.page as u32 } else { 1 };
+    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
     let page_size = if req.page_size > 0 {
-        (req.page_size as u32).min(100)
+        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
     } else {
-        20
+        DEFAULT_ROOM_PAGE_SIZE
     };
 
     Ok(synctv_core::models::RoomListQuery {
@@ -56,11 +87,11 @@ fn build_my_room_list_query(
 ) -> Result<synctv_core::models::MyRoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
-    let page = if req.page > 0 { req.page as u32 } else { 1 };
+    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
     let page_size = if req.page_size > 0 {
-        (req.page_size as u32).min(100)
+        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
     } else {
-        20
+        DEFAULT_ROOM_PAGE_SIZE
     };
 
     Ok(synctv_core::models::MyRoomListQuery {
@@ -137,9 +168,9 @@ pub(crate) fn build_create_websocket_ticket_request(
 type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, String);
 
 fn build_get_chat_history_request(
-    req: crate::proto::client::GetChatHistoryRequest,
+    req: &crate::proto::client::GetChatHistoryRequest,
 ) -> Result<(i32, Option<ChatHistoryCursor>), ApiError> {
-    crate::impls::validate_proto_request(&req)?;
+    crate::impls::validate_proto_request(req)?;
 
     let limit = if req.limit > 0 { req.limit } else { 50 };
     let cursor = if req.cursor.is_empty() {
@@ -165,7 +196,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<Option<crate::proto::client::Media>, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before returning playing media
         self.room_service
@@ -353,7 +384,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -398,7 +429,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         let password = if req.password.is_empty() {
             None
@@ -417,7 +448,6 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
 
-            const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
             let elapsed = start.elapsed();
             let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
             if elapsed < min_delay {
@@ -489,7 +519,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Resolve username for the UserLeft event before performing the leave
         let username = self
@@ -535,7 +565,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let cluster_event = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),
@@ -574,7 +604,7 @@ impl ClientApiImpl {
         req: crate::proto::client::UpdateRoomSettingsRequest,
     ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         if req.settings.is_empty() {
             // SECURITY: Return success with None room instead of room details.
@@ -647,7 +677,7 @@ impl ClientApiImpl {
         req: crate::proto::client::SetRoomPasswordRequest,
     ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Validate password length
         if !req.password.is_empty() {
@@ -699,7 +729,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before returning settings
         self.room_service
@@ -728,7 +758,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let cluster_event = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
             self.config.cluster_runtime_enabled(),
@@ -774,7 +804,7 @@ impl ClientApiImpl {
         req: crate::proto::client::TransferRoomOwnershipRequest,
     ) -> Result<crate::proto::client::TransferRoomOwnershipResponse, ApiError> {
         let current_owner_id = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req)?;
 
         let room = self
@@ -864,8 +894,8 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let limit = if req.limit <= 0 || req.limit > 50 {
-            10
+        let limit = if req.limit <= 0 || req.limit > MAX_HOT_ROOM_LIMIT_I32 {
+            DEFAULT_HOT_ROOM_LIMIT
         } else {
             i64::from(req.limit)
         };
@@ -874,7 +904,9 @@ impl ClientApiImpl {
         // Fetch a bounded set (4x the requested limit, capped at 200) to reduce DB
         // and memory overhead while still providing a reasonable candidate pool for
         // sorting by online count.
-        let fetch_limit = ((limit as u32) * 4).min(200);
+        let fetch_limit = positive_i64_to_u32(limit, DEFAULT_HOT_ROOM_LIMIT_U32)
+            .saturating_mul(HOT_ROOM_FETCH_MULTIPLIER)
+            .min(HOT_ROOM_FETCH_LIMIT_CAP);
         let query = synctv_core::models::RoomListQuery {
             pagination: synctv_core::models::PageParams::new(Some(1), Some(fetch_limit)),
             search: None,
@@ -902,10 +934,13 @@ impl ClientApiImpl {
         let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
             .into_iter()
             .zip(distributed_counts)
-            .map(|(room, count)| (room, count as i32))
+            .map(|(room, count)| (room, usize_to_i32_saturating(count)))
             .collect();
         room_online.sort_by_key(|item| std::cmp::Reverse(item.1));
-        let top_rooms: Vec<_> = room_online.into_iter().take(limit as usize).collect();
+        let top_rooms: Vec<_> = room_online
+            .into_iter()
+            .take(positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE))
+            .collect();
 
         // Batch-fetch member counts for the top N rooms (single SQL query instead of N+1)
         let top_room_id_refs: Vec<&synctv_core::models::RoomId> =
@@ -946,7 +981,7 @@ impl ClientApiImpl {
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before returning chat history
         self.room_service
@@ -954,7 +989,7 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let (limit, cursor) = build_get_chat_history_request(req)?;
+        let (limit, cursor) = build_get_chat_history_request(&req)?;
         let (messages, next) = self
             .room_service
             .get_chat_history_cursor(
@@ -1222,7 +1257,7 @@ mod tests {
 
     #[test]
     fn build_get_chat_history_request_rejects_invalid_limit() {
-        let error = build_get_chat_history_request(crate::proto::client::GetChatHistoryRequest {
+        let error = build_get_chat_history_request(&crate::proto::client::GetChatHistoryRequest {
             limit: 101,
             cursor: String::new(),
         })
@@ -1238,7 +1273,7 @@ mod tests {
 
     #[test]
     fn build_get_chat_history_request_rejects_invalid_cursor() {
-        let error = build_get_chat_history_request(crate::proto::client::GetChatHistoryRequest {
+        let error = build_get_chat_history_request(&crate::proto::client::GetChatHistoryRequest {
             limit: 50,
             cursor: "not-a-cursor".to_string(),
         })

@@ -1,6 +1,10 @@
 use std::fs;
 use std::path::Path;
 
+fn match_count_as_i32(line: &str, needle: char) -> Result<i32, Box<dyn std::error::Error>> {
+    Ok(i32::try_from(line.matches(needle).count())?)
+}
+
 fn collect_openapi_schema_aliases(
     proto_file: impl AsRef<Path>,
 ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
@@ -38,8 +42,8 @@ fn collect_openapi_schema_aliases(
             }
         }
 
-        depth += raw_line.matches('{').count() as i32;
-        depth -= raw_line.matches('}').count() as i32;
+        depth += match_count_as_i32(raw_line, '{')?;
+        depth -= match_count_as_i32(raw_line, '}')?;
     }
 
     Ok(aliases)

@@ -56,10 +56,10 @@ fn paginate_room_stream_ids(
         media_ids.reverse();
     }
 
-    let page = req.page as usize;
-    let page_size = req.page_size as usize;
-    let total = media_ids.len() as i32;
-    let offset = (page - 1) * page_size;
+    let page = usize::try_from(req.page.max(1)).unwrap_or(usize::MAX);
+    let page_size = usize::try_from(req.page_size.max(1)).unwrap_or(usize::MAX);
+    let total = i32::try_from(media_ids.len()).unwrap_or(i32::MAX);
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
     let streams = media_ids
         .into_iter()
         .skip(offset)
@@ -96,7 +96,7 @@ impl ClientApiImpl {
         req: crate::proto::client::CreatePublishKeyRequest,
     ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let media_id = build_create_publish_key_request(req.clone())?;
 
         // Verify media exists and belongs to this room
@@ -135,8 +135,7 @@ impl ClientApiImpl {
 
         // Generate publish key
         let publish_key = publish_key_service
-            .generate_publish_key(rid.clone(), media_id.clone(), uid.clone())
-            .await
+            .generate_publish_key(&rid, &media_id, &uid)
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
 
         // Construct RTMP URL and stream key from server config
@@ -174,7 +173,7 @@ impl ClientApiImpl {
             .map_err(|_| ApiError::Authentication("Invalid or expired token".to_string()))?;
 
         // Verify room membership
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let is_member = self
             .room_service
             .member_service()
@@ -199,7 +198,7 @@ impl ClientApiImpl {
         media_id: &str,
     ) -> Result<crate::proto::client::GetStreamInfoResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before returning stream info
         self.room_service
@@ -241,7 +240,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
         let req = build_room_streams_request(req)?;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership before listing streams
         self.room_service

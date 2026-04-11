@@ -1078,9 +1078,9 @@ mod request_format {
     #[test]
     fn test_set_room_password_body_requires_password_field() {
         let json = r"{}";
-        let err = match serde_json::from_str::<synctv_api::http::room::SetRoomPasswordBody>(json) {
-            Ok(_) => panic!("missing password must be rejected"),
-            Err(err) => err,
+        let Err(err) = serde_json::from_str::<synctv_api::http::room::SetRoomPasswordBody>(json)
+        else {
+            panic!("missing password must be rejected");
         };
         assert!(
             err.to_string().contains("missing field"),

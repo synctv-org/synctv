@@ -174,18 +174,17 @@ impl StaticDiscovery {
                                 // Reset failure counter on success
                                 consecutive_failures.remove(&peer.api_address);
 
-                                let node_info = if let Some(info) = Self::discovered_node_info(
+                                let Some(node_info) = Self::discovered_node_info(
                                     &discovered,
                                     &peer.api_address,
                                     default_api_port,
-                                ) { info } else {
+                                ) else {
                                     warn!(
                                         peer = %peer.api_address,
                                         "Static peer probe succeeded but did not provide a usable node identity"
                                     );
                                     continue;
                                 };
-
                                 let registration_epoch = node_info.epoch;
 
                                 if let Err(e) = node_registry.register_remote(node_info).await {

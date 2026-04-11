@@ -183,19 +183,11 @@ impl PullStream {
         let child_token = self.cancel_token.child_token();
         let handle = tokio::spawn(async move {
             info!("gRPC puller task started for {} / {}", room_id, media_id);
-
-            /// Maximum number of puller rebuilds before giving up permanently.
-            const MAX_REBUILDS: u32 = 3;
-            /// Delay before rebuilding a puller after it exits with an error.
-            const REBUILD_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-            /// Interval for periodic epoch re-validation during streaming.
-            const EPOCH_REVALIDATION_INTERVAL: std::time::Duration =
-                std::time::Duration::from_secs(30);
-
-            /// L-04: Maximum consecutive Redis failures before treating epoch as potentially stale.
-            /// After this many failures, the stream is terminated to avoid running with stale data.
-            const MAX_CONSECUTIVE_EPOCH_FAILURES: u32 = 3;
+            let max_rebuilds: u32 = 3;
+            let rebuild_delay = std::time::Duration::from_secs(5);
+            let epoch_revalidation_interval = std::time::Duration::from_secs(30);
+            // L-04: After this many Redis failures, terminate to avoid streaming with stale data.
+            let max_consecutive_epoch_failures: u32 = 3;
 
             let mut rebuild_count: u32 = 0;
             let mut consecutive_epoch_failures: u32 = 0;
@@ -216,7 +208,7 @@ impl PullStream {
                 synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
 
                 // Race the puller against cancellation and periodic epoch re-validation
-                let mut epoch_interval = tokio::time::interval(EPOCH_REVALIDATION_INTERVAL);
+                let mut epoch_interval = tokio::time::interval(epoch_revalidation_interval);
                 // Skip the first immediate tick
                 epoch_interval.tick().await;
 
@@ -250,7 +242,7 @@ impl PullStream {
                                 Err(e) => {
                                     // L-04: Track consecutive failures instead of unconditional fail-open
                                     consecutive_epoch_failures += 1;
-                                    if consecutive_epoch_failures >= MAX_CONSECUTIVE_EPOCH_FAILURES {
+                                    if consecutive_epoch_failures >= max_consecutive_epoch_failures {
                                         error!(
                                             "Epoch validation failed {} consecutive times for {}/{}: {}. \
                                              Terminating pull stream (publisher may be stale). \
@@ -261,7 +253,7 @@ impl PullStream {
                                     }
                                     warn!(
                                         "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                        room_id, media_id, e, consecutive_epoch_failures, MAX_CONSECUTIVE_EPOCH_FAILURES
+                                        room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
                                     );
                                 }
                             }
@@ -305,22 +297,22 @@ impl PullStream {
                             .inc();
 
                         rebuild_count += 1;
-                        if rebuild_count > MAX_REBUILDS {
+                        if rebuild_count > max_rebuilds {
                             error!(
                                 "gRPC puller exhausted all retries and {} rebuilds for {} / {}: {}",
-                                MAX_REBUILDS, room_id, media_id, e
+                                max_rebuilds, room_id, media_id, e
                             );
                             break Err(e);
                         }
 
                         warn!(
                             "gRPC puller exited for {} / {}, rebuilding ({}/{}): {}",
-                            room_id, media_id, rebuild_count, MAX_REBUILDS, e
+                            room_id, media_id, rebuild_count, max_rebuilds, e
                         );
 
                         // Wait before rebuilding, but respect cancellation
                         tokio::select! {
-                            () = tokio::time::sleep(REBUILD_DELAY) => {}
+                            () = tokio::time::sleep(rebuild_delay) => {}
                             () = child_token.cancelled() => {
                                 info!("gRPC puller rebuild cancelled for {} / {}", room_id, media_id);
                                 break Ok(());
@@ -356,7 +348,7 @@ impl PullStream {
                             Err(e) => {
                                 // L-04: Track consecutive failures instead of unconditional fail-open
                                 consecutive_epoch_failures += 1;
-                                if consecutive_epoch_failures >= MAX_CONSECUTIVE_EPOCH_FAILURES {
+                                if consecutive_epoch_failures >= max_consecutive_epoch_failures {
                                     error!(
                                         "Epoch validation on reconnect failed {} consecutive times for {}/{}: {}. \
                                          Terminating pull stream (publisher may be stale). \
@@ -369,7 +361,7 @@ impl PullStream {
                                 }
                                 warn!(
                                     "Failed to validate epoch on reconnect for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                    room_id, media_id, e, consecutive_epoch_failures, MAX_CONSECUTIVE_EPOCH_FAILURES
+                                    room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
                                 );
                             }
                         }

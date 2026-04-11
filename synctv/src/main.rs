@@ -27,7 +27,7 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cli::execute(clap::Parser::parse()).await
+    Box::pin(cli::execute(clap::Parser::parse())).await
 }
 
 pub(crate) fn install_panic_hook(include_backtrace: bool) {

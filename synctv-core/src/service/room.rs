@@ -85,6 +85,7 @@ use crate::{
     service::{
         audit::{AuditAction, AuditService, AuditTargetType},
         media::MediaService,
+        member::AddMemberOptions,
         member::MemberService,
         notification::NotificationService,
         permission::PermissionService,
@@ -96,6 +97,12 @@ use crate::{
     Error, InternalExt, Result,
 };
 use std::sync::Arc;
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+const MAX_DELETE_TARGETS: usize = 100;
 
 /// Room service for business logic
 ///
@@ -222,12 +229,21 @@ impl RoomService {
             .room_repo
             .list_by_creator(
                 owner_id,
-                PageParams::new(Some(1), Some(max_rooms as u32 + 1)),
+                PageParams::new(
+                    Some(1),
+                    Some(
+                        u32::try_from(max_rooms)
+                            .unwrap_or(u32::MAX)
+                            .saturating_add(1),
+                    ),
+                ),
             )
             .await?;
 
         let owned_room_count = match excluding_room_id {
-            Some(room_id) => rooms.iter().filter(|room| room.id != *room_id).count() as i64,
+            Some(room_id) => {
+                usize_to_i64_saturating(rooms.iter().filter(|room| room.id != *room_id).count())
+            }
             None => total,
         };
 
@@ -1348,7 +1364,6 @@ impl RoomService {
         // AddMemberOptions::new() defaults to check_max_members=false; explicitly
         // enable it so the member_service reads max_members from RoomSettings and
         // rejects the join if the room is at capacity.
-        use crate::service::member::AddMemberOptions;
         let options = AddMemberOptions::new()
             .with_max_members(0)
             .with_initial_status(initial_status); // 0 = read from RoomSettings
@@ -3141,8 +3156,6 @@ impl RoomService {
         user_id: UserId,
         request: DeleteEntriesRequest,
     ) -> Result<DeleteEntriesResult> {
-        const MAX_DELETE_TARGETS: usize = 100;
-
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
         let force = request.force;
@@ -3186,9 +3199,9 @@ impl RoomService {
                 PermissionBits::REORDER_PLAYLIST,
             )
             .await?
-            {
-                return Err(Error::Authorization("Permission denied".to_string()));
-            }
+        {
+            return Err(Error::Authorization("Permission denied".to_string()));
+        }
 
         let media_items = self
             .media_repo
@@ -3296,8 +3309,6 @@ impl RoomService {
                 "Admin role required for this operation".to_string(),
             ));
         }
-
-        const MAX_DELETE_TARGETS: usize = 100;
 
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
@@ -3526,7 +3537,7 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        let count = result.rows_affected() as i64;
+        let count = result.rows_affected().cast_signed();
         tx.commit().await?;
 
         for media_id in &deleted_media_ids {
@@ -4065,14 +4076,14 @@ impl RoomService {
             .room_guest_version(room_id.as_str());
         self.user_service
             .token_blacklist_store()
-            .set_family_revoked(&key, next, self.room_guest_version_ttl_secs())
+            .set_family_revoked(&key, next, Self::room_guest_version_ttl_secs())
             .await?;
 
         Ok(next)
     }
 
-    const fn room_guest_version_ttl_secs(&self) -> u64 {
-        Duration::hours(4).num_seconds() as u64
+    const fn room_guest_version_ttl_secs() -> u64 {
+        Duration::hours(4).num_seconds().cast_unsigned()
     }
 
     // ========== Service Accessors ==========
@@ -4430,10 +4441,10 @@ async fn has_room_permission_in_tx(
     user_id: &UserId,
     permission: u64,
 ) -> Result<bool> {
-    let required_permission = permission as i64;
-    let admin_default = PermissionBits::DEFAULT_ADMIN as i64;
-    let member_default = PermissionBits::DEFAULT_MEMBER as i64;
-    let guest_default = PermissionBits::DEFAULT_GUEST as i64;
+    let required_permission = permission.cast_signed();
+    let admin_default = PermissionBits::DEFAULT_ADMIN.cast_signed();
+    let member_default = PermissionBits::DEFAULT_MEMBER.cast_signed();
+    let guest_default = PermissionBits::DEFAULT_GUEST.cast_signed();
     let has_permission: Option<bool> = sqlx::query_scalar(
         "SELECT EXISTS (
             SELECT 1
@@ -4584,7 +4595,6 @@ async fn collect_deleted_media_ids_in_tx(
     let explicit_media_id_strs: Vec<&str> =
         explicit_media_ids.iter().map(MediaId::as_str).collect();
 
-    use sqlx::Row;
     let rows = sqlx::query(
         "WITH RECURSIVE target_playlists AS (
             SELECT id

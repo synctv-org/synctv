@@ -102,18 +102,18 @@ impl ManagementServiceImpl {
         admin_api: Arc<AdminApiImpl>,
         client_api: Arc<ClientApiImpl>,
         lifecycle_controller: Arc<ManagementLifecycleController>,
-        management_auth_token: String,
+        management_auth_token: &str,
     ) -> Self {
         Self {
             user_service,
             admin_api,
             client_api,
             lifecycle_controller,
-            access_controller: ManagementAccessController::new(&management_auth_token),
+            access_controller: ManagementAccessController::new(management_auth_token),
         }
     }
 
-    async fn management_actor(
+    fn management_actor(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<ValidatedManagementUser, Status> {
@@ -124,15 +124,15 @@ impl ManagementServiceImpl {
         })
     }
 
-    async fn check_admin_get_validated(
+    fn check_admin_get_validated(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<ValidatedManagementUser, Status> {
-        self.management_actor(request).await
+        self.management_actor(request)
     }
 
-    async fn check_root(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
-        self.management_actor(request).await?;
+    fn check_root(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
+        self.management_actor(request)?;
         Ok(())
     }
 
@@ -153,7 +153,7 @@ impl ManagementServiceImpl {
         Ok(user.id.to_string())
     }
 
-    fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
+    fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestContext {
         let ip_address = request
             .extensions()
             .get::<tonic::transport::server::TcpConnectInfo>()
@@ -170,8 +170,8 @@ impl ManagementServiceImpl {
         }
     }
 
-    fn proto_response<T>(value: T) -> Result<Response<T>, Status> {
-        Ok(Response::new(value))
+    fn proto_response<T>(value: T) -> Response<T> {
+        Response::new(value)
     }
 }
 
@@ -184,7 +184,7 @@ impl ManagementService for ManagementServiceImpl {
         &self,
         request: Request<ListUsersRequest>,
     ) -> Result<Response<admin_proto::ListUsersResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -218,15 +218,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_user(
         &self,
         request: Request<GetUserRequest>,
     ) -> Result<Response<admin_proto::GetUserResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -234,15 +234,15 @@ impl ManagementService for ManagementServiceImpl {
                 user_id: req.user_id,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_user_by_username(
         &self,
         request: Request<GetUserByUsernameRequest>,
     ) -> Result<Response<admin_proto::GetUserResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let username = req.username.trim();
         if username.is_empty() {
@@ -260,17 +260,17 @@ impl ManagementService for ManagementServiceImpl {
                 user_id: user.id.to_string(),
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn add_admin(
         &self,
         request: Request<AddAdminRequest>,
     ) -> Result<Response<admin_proto::AddAdminResponse>, Status> {
-        self.check_root(&request).await?;
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        self.check_root(&request)?;
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -282,17 +282,17 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn remove_admin(
         &self,
         request: Request<RemoveAdminRequest>,
     ) -> Result<Response<admin_proto::RemoveAdminResponse>, Status> {
-        self.check_root(&request).await?;
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        self.check_root(&request)?;
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -304,15 +304,15 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_admins(
         &self,
         request: Request<ListAdminsRequest>,
     ) -> Result<Response<admin_proto::ListAdminsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -324,16 +324,16 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn create_user(
         &self,
         request: Request<CreateUserRequest>,
     ) -> Result<Response<admin_proto::CreateUserResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -350,16 +350,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn delete_user(
         &self,
         request: Request<DeleteUserRequest>,
     ) -> Result<Response<admin_proto::DeleteUserResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -371,16 +371,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn ban_user(
         &self,
         request: Request<BanUserRequest>,
     ) -> Result<Response<admin_proto::BanUserResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -394,16 +394,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn unban_user(
         &self,
         request: Request<UnbanUserRequest>,
     ) -> Result<Response<admin_proto::UnbanUserResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -415,16 +415,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn approve_user(
         &self,
         request: Request<ApproveUserRequest>,
     ) -> Result<Response<admin_proto::ApproveUserResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -436,16 +436,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_user_role(
         &self,
         request: Request<UpdateUserRoleRequest>,
     ) -> Result<Response<admin_proto::UpdateUserRoleResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -459,16 +459,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_user_password(
         &self,
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<admin_proto::UpdateUserPasswordResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -483,16 +483,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_user_username(
         &self,
         request: Request<UpdateUserUsernameRequest>,
     ) -> Result<Response<admin_proto::UpdateUserUsernameResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -505,15 +505,15 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_user_rooms(
         &self,
         request: Request<GetUserRoomsRequest>,
     ) -> Result<Response<admin_proto::GetUserRoomsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -542,16 +542,16 @@ impl ManagementService for ManagementServiceImpl {
                 },
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn batch_ban_users(
         &self,
         request: Request<BatchBanUsersRequest>,
     ) -> Result<Response<admin_proto::BatchBanUsersResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -565,16 +565,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn batch_delete_users(
         &self,
         request: Request<BatchDeleteUsersRequest>,
     ) -> Result<Response<admin_proto::BatchDeleteUsersResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -587,15 +587,15 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn create_room(
         &self,
         request: Request<CreateRoomRequest>,
     ) -> Result<Response<client_proto::CreateRoomResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -612,15 +612,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_rooms(
         &self,
         request: Request<ListRoomsRequest>,
     ) -> Result<Response<admin_proto::ListRoomsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -649,15 +649,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_room(
         &self,
         request: Request<GetRoomRequest>,
     ) -> Result<Response<admin_proto::GetRoomResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -665,15 +665,15 @@ impl ManagementService for ManagementServiceImpl {
                 room_id: req.room_id,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_room_members(
         &self,
         request: Request<GetRoomMembersRequest>,
     ) -> Result<Response<admin_proto::GetRoomMembersResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -704,16 +704,16 @@ impl ManagementService for ManagementServiceImpl {
                 },
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_member_permissions(
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
     ) -> Result<Response<client_proto::UpdateMemberPermissionsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -731,18 +731,20 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(client_proto::UpdateMemberPermissionsResponse {
-            member: response.member,
-        })
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(
+            client_proto::UpdateMemberPermissionsResponse {
+                member: response.member,
+            },
+        ))
     }
 
     async fn kick_member(
         &self,
         request: Request<KickMemberRequest>,
     ) -> Result<Response<client_proto::KickMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -755,18 +757,18 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(client_proto::KickMemberResponse {
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(client_proto::KickMemberResponse {
             success: response.success,
-        })
+        }))
     }
 
     async fn ban_member(
         &self,
         request: Request<BanMemberRequest>,
     ) -> Result<Response<client_proto::BanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -780,18 +782,18 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(client_proto::BanMemberResponse {
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(client_proto::BanMemberResponse {
             success: response.success,
-        })
+        }))
     }
 
     async fn unban_member(
         &self,
         request: Request<UnbanMemberRequest>,
     ) -> Result<Response<client_proto::UnbanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -804,17 +806,17 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(client_proto::UnbanMemberResponse {
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(client_proto::UnbanMemberResponse {
             success: response.success,
-        })
+        }))
     }
 
     async fn get_room_settings(
         &self,
         request: Request<GetRoomSettingsRequest>,
     ) -> Result<Response<admin_proto::GetRoomSettingsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -822,15 +824,15 @@ impl ManagementService for ManagementServiceImpl {
                 room_id: req.room_id,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_room_settings(
         &self,
         request: Request<UpdateRoomSettingsRequest>,
     ) -> Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -842,15 +844,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn reset_room_settings(
         &self,
         request: Request<ResetRoomSettingsRequest>,
     ) -> Result<Response<admin_proto::ResetRoomSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -861,15 +863,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn transfer_room_ownership(
         &self,
         request: Request<TransferRoomOwnershipRequest>,
     ) -> Result<Response<client_proto::TransferRoomOwnershipResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -884,16 +886,16 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_room_password(
         &self,
         request: Request<UpdateRoomPasswordRequest>,
     ) -> Result<Response<admin_proto::UpdateRoomPasswordResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -910,16 +912,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn ban_room(
         &self,
         request: Request<BanRoomRequest>,
     ) -> Result<Response<admin_proto::BanRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -932,16 +934,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn unban_room(
         &self,
         request: Request<UnbanRoomRequest>,
     ) -> Result<Response<admin_proto::UnbanRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -953,16 +955,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn delete_room(
         &self,
         request: Request<DeleteRoomRequest>,
     ) -> Result<Response<admin_proto::DeleteRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -974,16 +976,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn approve_room(
         &self,
         request: Request<ApproveRoomRequest>,
     ) -> Result<Response<admin_proto::ApproveRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -995,16 +997,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn batch_ban_rooms(
         &self,
         request: Request<BatchBanRoomsRequest>,
     ) -> Result<Response<admin_proto::BatchBanRoomsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1017,16 +1019,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn batch_delete_rooms(
         &self,
         request: Request<BatchDeleteRoomsRequest>,
     ) -> Result<Response<admin_proto::BatchDeleteRoomsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1038,16 +1040,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn start_playback(
         &self,
         request: Request<StartPlaybackRequest>,
     ) -> Result<Response<client_proto::StartPlaybackResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1062,44 +1064,44 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn stop_playback(
         &self,
         request: Request<StopPlaybackRequest>,
     ) -> Result<Response<client_proto::StopPlaybackResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
             .stop_playback(&req.room_id, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_playback(
         &self,
         request: Request<GetPlaybackRequest>,
     ) -> Result<Response<client_proto::GetPlaybackResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
             .get_playback(&req.room_id, &validated.user_id)
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn create_publish_key(
         &self,
         request: Request<CreatePublishKeyRequest>,
     ) -> Result<Response<client_proto::CreatePublishKeyResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -1112,29 +1114,29 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::CreatePublishKeyRequest { id: req.media_id },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<client_proto::GetStreamInfoResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
             .get_stream_info(&req.room_id, &req.media_id)
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_room_streams(
         &self,
         request: Request<ListRoomStreamsRequest>,
     ) -> Result<Response<client_proto::ListRoomStreamsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1163,15 +1165,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_playlists(
         &self,
         request: Request<ListPlaylistsRequest>,
     ) -> Result<Response<client_proto::ListPlaylistsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1192,29 +1194,29 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_playlist(
         &self,
         request: Request<GetPlaylistRequest>,
     ) -> Result<Response<client_proto::GetPlaylistResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
             .get_playlist(&req.room_id, &req.playlist_id, &validated.user_id)
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn create_playlist(
         &self,
         request: Request<CreatePlaylistRequest>,
     ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -1233,15 +1235,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_playlist(
         &self,
         request: Request<UpdatePlaylistRequest>,
     ) -> Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1254,15 +1256,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn move_playlist(
         &self,
         request: Request<MovePlaylistRequest>,
     ) -> Result<Response<client_proto::MovePlaylistResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1282,15 +1284,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn delete_playlist(
         &self,
         request: Request<DeletePlaylistRequest>,
     ) -> Result<Response<client_proto::DeletePlaylistResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1303,15 +1305,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_media(
         &self,
         request: Request<ListMediaRequest>,
     ) -> Result<Response<client_proto::ListPlaylistItemsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1332,15 +1334,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn add_media(
         &self,
         request: Request<AddMediaRequest>,
     ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -1359,15 +1361,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn add_direct_url_media(
         &self,
         request: Request<AddDirectUrlMediaRequest>,
     ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self
             .resolve_client_actor_user_id(&req.actor_user_id)
@@ -1390,15 +1392,15 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn edit_media(
         &self,
         request: Request<EditMediaRequest>,
     ) -> Result<Response<client_proto::EditMediaResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1411,15 +1413,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn delete_media(
         &self,
         request: Request<DeleteMediaRequest>,
     ) -> Result<Response<client_proto::DeleteMediaResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1432,15 +1434,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn move_media(
         &self,
         request: Request<MoveMediaRequest>,
     ) -> Result<Response<client_proto::MoveMediaResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
+        let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1465,15 +1467,15 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_provider_instances(
         &self,
         request: Request<ListProviderInstancesRequest>,
     ) -> Result<Response<admin_proto::ListProviderInstancesResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1488,16 +1490,16 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn add_provider_instance(
         &self,
         request: Request<AddProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::AddProviderInstanceResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1516,16 +1518,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_provider_instance(
         &self,
         request: Request<UpdateProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::UpdateProviderInstanceResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let comment = if req.clear_comment {
             Some(String::new())
@@ -1549,16 +1551,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn delete_provider_instance(
         &self,
         request: Request<DeleteProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::DeleteProviderInstanceResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1568,16 +1570,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn reconnect_provider_instance(
         &self,
         request: Request<ReconnectProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::ReconnectProviderInstanceResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1587,29 +1589,29 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn enable_provider_instance(
         &self,
         request: Request<EnableProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::EnableProviderInstanceResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
             .enable_provider_instance(admin_proto::EnableProviderInstanceRequest { name: req.name })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn disable_provider_instance(
         &self,
         request: Request<DisableProviderInstanceRequest>,
     ) -> Result<Response<admin_proto::DisableProviderInstanceResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1617,30 +1619,30 @@ impl ManagementService for ManagementServiceImpl {
                 name: req.name,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_settings(
         &self,
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<admin_proto::GetSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let response = self
             .admin_api
             .get_settings(admin_proto::GetSettingsRequest {}, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_settings_group(
         &self,
         request: Request<GetSettingsGroupRequest>,
     ) -> Result<Response<admin_proto::GetSettingsGroupResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1650,16 +1652,16 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn update_settings(
         &self,
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<admin_proto::UpdateSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1672,42 +1674,42 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn send_test_email(
         &self,
         request: Request<SendTestEmailRequest>,
     ) -> Result<Response<admin_proto::SendTestEmailResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
             .send_test_email(admin_proto::SendTestEmailRequest { to: req.to })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn get_system_stats(
         &self,
         request: Request<GetSystemStatsRequest>,
     ) -> Result<Response<admin_proto::GetSystemStatsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let response = self
             .admin_api
             .get_system_stats(admin_proto::GetSystemStatsRequest {})
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn list_active_streams(
         &self,
         request: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<admin_proto::ListActiveStreamsResponse>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1722,16 +1724,16 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(response)
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
     }
 
     async fn kick_stream(
         &self,
         request: Request<KickStreamRequest>,
     ) -> Result<Response<admin_proto::KickStreamResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = self.grpc_request_context(&request);
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = Self::grpc_request_context(&request);
         let req = request.into_inner();
         self.admin_api
             .kick_stream(
@@ -1744,15 +1746,15 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
-        Self::proto_response(admin_proto::KickStreamResponse {})
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(admin_proto::KickStreamResponse {}))
     }
 
     async fn stop_server(
         &self,
         request: Request<StopServerRequest>,
     ) -> Result<Response<Self::StopServerStream>, Status> {
-        self.check_admin_get_validated(&request).await?;
+        self.check_admin_get_validated(&request)?;
 
         let request = request.into_inner();
         let requested_mode = match ProtoShutdownMode::try_from(request.mode)
@@ -1804,7 +1806,7 @@ fn stop_server_event_stream(
                         let done = event.terminal;
                         return Some((Ok(event.to_proto()), (None, None, receiver, done)));
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             }
@@ -1896,7 +1898,7 @@ fn map_management_user_lookup_error(err: synctv_core::Error) -> Status {
     }
 }
 
-fn map_api_error(err: ApiError) -> tonic::Status {
+fn map_api_error(err: &ApiError) -> tonic::Status {
     let msg = err.message().to_string();
     match err.classify() {
         ErrorKind::NotFound => tonic::Status::not_found(msg),
@@ -1972,7 +1974,7 @@ mod tests {
 
     #[test]
     fn map_api_error_preserves_service_unavailable() {
-        let status = super::map_api_error(synctv_api::impls::ApiError::ServiceUnavailable(
+        let status = super::map_api_error(&synctv_api::impls::ApiError::ServiceUnavailable(
             "live streaming backend unavailable".to_string(),
         ));
 
@@ -1982,7 +1984,7 @@ mod tests {
 
     #[test]
     fn map_api_error_hides_internal_details() {
-        let status = super::map_api_error(synctv_api::impls::ApiError::Internal(
+        let status = super::map_api_error(&synctv_api::impls::ApiError::Internal(
             "redis://user:secret@localhost:6379 failure".to_string(),
         ));
 

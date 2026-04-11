@@ -222,6 +222,23 @@ impl AsyncBytesWriter {
 mod tests {
     use std::io::Write;
 
+    const FLV_HEADER: [u8; 9] = [
+        0x46, // 'F'
+        0x4c, //'L'
+        0x56, //'V'
+        0x01, //version
+        0x05, //00000101  audio tag  and video tag
+        0x00, 0x00, 0x00, 0x09, //flv header size
+    ];
+
+    fn i64_to_u8(value: i64) -> u8 {
+        u8::try_from(value).expect("test value should fit in u8")
+    }
+
+    fn i32_to_u8(value: i32) -> u8 {
+        u8::try_from(value).expect("test value should fit in u8")
+    }
+
     #[test]
     fn test_write_vec() {
         let mut v: Vec<u8> = Vec::new();
@@ -232,15 +249,6 @@ mod tests {
 
         v[0] = 0x02;
         assert_eq!(0x02, v[0]);
-
-        const FLV_HEADER: [u8; 9] = [
-            0x46, // 'F'
-            0x4c, //'L'
-            0x56, //'V'
-            0x01, //version
-            0x05, //00000101  audio tag  and video tag
-            0x00, 0x00, 0x00, 0x09, //flv header size
-        ];
 
         let rv = v.write(&FLV_HEADER);
 
@@ -255,7 +263,7 @@ mod tests {
     fn test_bit_opertion() {
         let pts: i64 = 1_627_702_096;
 
-        let val = ((pts << 1) & 0xFE) as u8;
+        let val = i64_to_u8((pts << 1) & 0xFE);
 
         println!("======={}=======", pts << 1);
         println!("======={val}=======");
@@ -266,20 +274,22 @@ mod tests {
         let flags = 0xC0;
         let pts: i64 = 1_627_702_096;
 
-        let b9 = ((flags >> 2) & 0x30) as u8 /* 0011/0010 */ | (((pts >> 30) & 0x07) << 1) as u8 /* PTS 30-32 */ | 0x01 /* marker_bit */;
-        println!("=======b9{b9}=======");
+        let b9 = i32_to_u8((flags >> 2) & 0x30) /* 0011/0010 */
+            | i64_to_u8(((pts >> 30) & 0x07) << 1) /* PTS 30-32 */
+            | 0x01 /* marker_bit */;
+        assert_eq!(b9, 51);
 
-        let b10 = (pts >> 22) as u8; /* PTS 22-29 */
-        println!("=======b10{b10}=======");
+        let b10 = i64_to_u8((pts >> 22) & 0xFF); /* PTS 22-29 */
+        assert_eq!(b10, 132);
 
-        let b11 = ((pts >> 14) & 0xFE) as u8 /* PTS 15-21 */ | 0x01; /* marker_bit */
-        println!("=======b11{b11}=======");
+        let b11 = i64_to_u8((pts >> 14) & 0xFE) /* PTS 15-21 */ | 0x01; /* marker_bit */
+        assert_eq!(b11, 19);
 
-        let b12 = (pts >> 7) as u8; /* PTS 7-14 */
-        println!("=======b12{b12}=======");
+        let b12 = i64_to_u8((pts >> 7) & 0xFF); /* PTS 7-14 */
+        assert_eq!(b12, 134);
 
-        let b13 = ((pts << 1) & 0xFE) as u8 /* PTS 0-6 */ | 0x01; /* marker_bit */
-        println!("=======b13{b13}=======");
+        let b13 = i64_to_u8((pts << 1) & 0xFE) /* PTS 0-6 */ | 0x01; /* marker_bit */
+        assert_eq!(b13, 161);
     }
 
     #[test]
@@ -288,7 +298,7 @@ mod tests {
         let pts: i64 = 1_627_702_096;
 
         let b12 = ((pts & 0x7fff) << 1) | 1; /* PTS 7-14 */
-        println!("=======b12{}=======", b12 >> 8_u8);
-        println!("=======b13{}=======", b12 as u8);
+        assert_eq!(i64_to_u8((b12 >> 8_u8) & 0xFF), 134);
+        assert_eq!(i64_to_u8(b12 & 0xFF), 161);
     }
 }

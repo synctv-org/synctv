@@ -112,6 +112,29 @@ pub struct SyncTvServer {
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const METRICS_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
+#[derive(Clone)]
+struct SharedProviderPlaybackRuntime {
+    provider_stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+    signing_key: Arc<synctv_core::service::ProxySigningKey>,
+}
+
+impl SharedProviderPlaybackRuntime {
+    fn new(
+        config: &Config,
+        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    ) -> Self {
+        Self {
+            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+                redis_conn,
+                config.redis.key_prefix.clone(),
+            )),
+            signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+                config.jwt.secret.as_bytes(),
+            )),
+        }
+    }
+}
+
 fn build_proxy_slice_cache_config(
     _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
 ) -> synctv_proxy::slice_cache::SliceCacheConfig {
@@ -122,6 +145,31 @@ fn build_proxy_slice_cache_config(
         enabled: true,
         ..synctv_proxy::slice_cache::SliceCacheConfig::default()
     }
+}
+
+fn build_management_client_api(
+    client_api: ClientApiImpl,
+    redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    credential_repo: Arc<UserProviderCredentialRepository>,
+    signing_key: Arc<synctv_core::service::ProxySigningKey>,
+    provider_stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+) -> ClientApiImpl {
+    client_api
+        .with_redis_publish_tx(redis_publish_tx)
+        .with_redis_conn(redis_conn)
+        .with_credential_encryption(credential_encryption)
+        .with_credential_repo(credential_repo)
+        .with_signing_key(signing_key)
+        .with_provider_stores(provider_stores)
+}
+
+fn build_management_admin_api(
+    admin_api: AdminApiImpl,
+    provider_stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+) -> AdminApiImpl {
+    admin_api.with_provider_stores(provider_stores)
 }
 
 fn build_ws_ticket_service(
@@ -379,8 +427,11 @@ where
     if let Some(state) = livestream_state.as_mut() {
         info!("Stopping livestream infrastructure...");
         let timeout_secs = livestream_shutdown_timeout_secs(budget);
-        let graceful = if let Ok(graceful) = tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs))
-            .await { graceful } else {
+        let graceful = if let Ok(graceful) =
+            tokio::time::timeout(budget, state.shutdown_for_server(timeout_secs)).await
+        {
+            graceful
+        } else {
             warn!(
                 "Livestream infrastructure exceeded the remaining shutdown budget before graceful shutdown could complete"
             );
@@ -598,7 +649,7 @@ struct ClusterActivationFailureShutdown {
     coordinator: ShutdownCoordinator,
 }
 
-async fn spawn_admin_event_listener(
+fn spawn_admin_event_listener(
     cluster_mgr: Arc<synctv_cluster::sync::ClusterManager>,
     infra: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
     cancel: tokio_util::sync::CancellationToken,
@@ -706,7 +757,7 @@ impl SyncTvServer {
         self,
         coordinator: ShutdownCoordinator,
     ) -> anyhow::Result<()> {
-        self.start_with_coordinator_and_shutdown_signal(coordinator, shutdown_signal())
+        Box::pin(self.start_with_coordinator_and_shutdown_signal(coordinator, shutdown_signal()))
             .await
     }
 
@@ -743,9 +794,14 @@ impl SyncTvServer {
             .services
             .connection_manager
             .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
+        let shared_provider_runtime =
+            SharedProviderPlaybackRuntime::new(&self.config, self.services.redis_conn.clone());
 
         // Start unified API server (single listener for REST + gRPC)
-        let api_handle = match self.start_api_server(shutdown_rx.clone()).await {
+        let api_handle = match self
+            .start_api_server(shutdown_rx.clone(), shared_provider_runtime.clone())
+            .await
+        {
             Ok(handle) => handle,
             Err(err) => {
                 let startup_cleanup_budget =
@@ -775,7 +831,10 @@ impl SyncTvServer {
         self.api_handle = Some(api_handle);
 
         if self.config.metrics.enabled {
-            let metrics_handle = match self.start_metrics_server(shutdown_rx.clone()).await {
+            let metrics_handle = match self
+                .start_metrics_server(shutdown_rx.clone(), shared_provider_runtime.clone())
+                .await
+            {
                 Ok(handle) => handle,
                 Err(err) => {
                     let api_handle = self.api_handle.take();
@@ -808,7 +867,10 @@ impl SyncTvServer {
         }
 
         if self.config.management.enabled {
-            let management_handle = match self.start_management_server(shutdown_rx.clone()).await {
+            let management_handle = match self
+                .start_management_server(shutdown_rx.clone(), shared_provider_runtime)
+                .await
+            {
                 Ok(handle) => handle,
                 Err(err) => {
                     let api_handle = self.api_handle.take();
@@ -889,8 +951,7 @@ impl SyncTvServer {
                 Arc::clone(cluster_mgr),
                 Arc::clone(infra),
                 admin_event_cancel.clone(),
-            )
-            .await;
+            );
             info!("Admin event listener spawned for cluster-wide stream kicks");
             Some(handle)
         } else {
@@ -1145,7 +1206,7 @@ impl SyncTvServer {
         // Shut down STUN server
         if let Some(ref stun) = self.services.stun_server {
             info!("Shutting down STUN server...");
-            stun.shutdown().await;
+            stun.shutdown();
             info!("STUN server shut down");
         }
 
@@ -1189,6 +1250,7 @@ impl SyncTvServer {
         &self,
         config: &Config,
         shutdown_rx: watch::Receiver<bool>,
+        shared_http_app_state: Arc<synctv_api::http::AppState>,
     ) -> anyhow::Result<axum::Router> {
         synctv_api::grpc::build_axum_router(synctv_api::grpc::GrpcServerConfig {
             config,
@@ -1221,6 +1283,7 @@ impl SyncTvServer {
             node_registry: self.services.node_registry.clone(),
             redis_client: self.services.redis_client.clone(),
             redis_conn: self.services.redis_conn.clone(),
+            shared_http_app_state: Some(shared_http_app_state),
             shutdown_rx: Some(shutdown_rx),
             builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                 let addr = s.external_addr();
@@ -1237,6 +1300,7 @@ impl SyncTvServer {
     async fn start_api_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
+        shared_provider_runtime: SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let api_address = self.config.api_address();
         let user_service = self.services.user_service.clone();
@@ -1296,6 +1360,8 @@ impl SyncTvServer {
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
                 redis_conn: self.services.redis_conn.clone(),
+                shared_provider_stores: Some(shared_provider_runtime.provider_stores.clone()),
+                shared_proxy_signing_key: Some(shared_provider_runtime.signing_key.clone()),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
@@ -1314,7 +1380,11 @@ impl SyncTvServer {
             },
         )?;
         let grpc_router = self
-            .build_grpc_router(&self.config, shutdown_rx.clone())
+            .build_grpc_router(
+                &self.config,
+                shutdown_rx.clone(),
+                Arc::new(http_state.clone()),
+            )
             .await?;
 
         // Parse and bind unified API address before spawning the task to propagate errors properly
@@ -1331,7 +1401,7 @@ impl SyncTvServer {
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
             let proxy_cache_lifecycle =
-                synctv_api::http::start_proxy_cache_lifecycle(http_state.proxy_slice_cache.clone());
+                synctv_api::http::start_proxy_cache_lifecycle(&http_state.proxy_slice_cache);
             let graceful = async move {
                 let _ = rx.changed().await;
             };
@@ -1380,6 +1450,7 @@ impl SyncTvServer {
     async fn start_metrics_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
+        shared_provider_runtime: SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let metrics_address = self.config.metrics_address();
         let is_cluster_mode = self.config.cluster_runtime_enabled();
@@ -1424,6 +1495,8 @@ impl SyncTvServer {
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
                 redis_conn: self.services.redis_conn.clone(),
+                shared_provider_stores: Some(shared_provider_runtime.provider_stores.clone()),
+                shared_proxy_signing_key: Some(shared_provider_runtime.signing_key.clone()),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
@@ -1519,8 +1592,9 @@ impl SyncTvServer {
     async fn start_management_server(
         &self,
         shutdown_rx: watch::Receiver<bool>,
+        shared_provider_runtime: SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let client_api = Arc::new(
+        let client_api = Arc::new(build_management_client_api(
             ClientApiImpl::new(
                 self.services.user_service.clone(),
                 self.services.room_service.clone(),
@@ -1531,12 +1605,14 @@ impl SyncTvServer {
                 self.services.live_streaming_infrastructure.clone(),
                 Some(self.services.providers_manager.clone()),
                 Some(self.services.settings_registry.clone()),
-            )
-            .with_redis_publish_tx(self.services.redis_publish_tx.clone())
-            .with_redis_conn(self.services.redis_conn.clone())
-            .with_credential_encryption(self.services.credential_encryption.clone())
-            .with_credential_repo(self.services.user_provider_credential_repository.clone()),
-        );
+            ),
+            self.services.redis_publish_tx.clone(),
+            self.services.redis_conn.clone(),
+            self.services.credential_encryption.clone(),
+            self.services.user_provider_credential_repository.clone(),
+            shared_provider_runtime.signing_key.clone(),
+            shared_provider_runtime.provider_stores.clone(),
+        ));
 
         let email_service = self.services.email_service.clone().unwrap_or_else(|| {
             Arc::new(
@@ -1544,19 +1620,22 @@ impl SyncTvServer {
                     .expect("EmailService::new(None) should not fail"),
             )
         });
-        let admin_api = Arc::new(AdminApiImpl::new(
-            self.services.room_service.clone(),
-            self.services.user_service.clone(),
-            self.services.settings_service.clone(),
-            Some(self.services.settings_registry.clone()),
-            email_service,
-            Arc::new(self.services.connection_manager.clone()),
-            self.services.provider_instance_manager.clone(),
-            self.services.live_streaming_infrastructure.clone(),
-            Some(self.services.publish_key_service.clone()),
-            Arc::new(self.config.clone()),
-            self.services.redis_publish_tx.clone(),
-            self.services.audit_service.clone(),
+        let admin_api = Arc::new(build_management_admin_api(
+            AdminApiImpl::new(
+                self.services.room_service.clone(),
+                self.services.user_service.clone(),
+                self.services.settings_service.clone(),
+                Some(self.services.settings_registry.clone()),
+                email_service,
+                Arc::new(self.services.connection_manager.clone()),
+                self.services.provider_instance_manager.clone(),
+                self.services.live_streaming_infrastructure.clone(),
+                Some(self.services.publish_key_service.clone()),
+                Arc::new(self.config.clone()),
+                self.services.redis_publish_tx.clone(),
+                self.services.audit_service.clone(),
+            ),
+            shared_provider_runtime.provider_stores,
         ));
 
         spawn_management_server(ManagementServerConfig {
@@ -1636,11 +1715,12 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
-        build_ws_ticket_service, cleanup_partial_startup, livestream_shutdown_timeout_secs,
-        map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
-        shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
-        spawn_admin_event_listener, LivestreamShutdown, StartupFailureShutdownContext,
+        await_runtime_server_shutdown, await_task_shutdown, build_management_client_api,
+        build_proxy_slice_cache_config, build_ws_ticket_service, cleanup_partial_startup,
+        livestream_shutdown_timeout_secs, map_background_task_exit, map_runtime_server_exit,
+        shutdown_after_startup_failure, shutdown_livestream_state,
+        shutdown_metrics_connection_tasks, shutdown_runtime_phase, spawn_admin_event_listener,
+        LivestreamShutdown, SharedProviderPlaybackRuntime, StartupFailureShutdownContext,
     };
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
@@ -1649,6 +1729,18 @@ mod tests {
         Arc,
     };
     use std::time::Duration;
+    use synctv_api::impls::ClientApiImpl;
+    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_core::{
+        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        config::PasswordComplexityConfig,
+        repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
+        service::{
+            auth::BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
+            RemoteProviderManager, RoomService, UserService,
+        },
+        Config,
+    };
     use tokio::sync::{oneshot, watch};
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
@@ -1664,6 +1756,109 @@ mod tests {
         Arc::new(synctv_core::service::SettingsRegistry::new(
             settings_service,
         ))
+    }
+
+    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+        let jwt_service =
+            JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt");
+        let username_cache =
+            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 64, 60);
+
+        UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            KeyBuilder::new("test"),
+            BruteForceProtection::in_memory("test".to_string()),
+        )
+    }
+
+    #[tokio::test]
+    async fn management_client_api_wiring_includes_signed_playback_dependencies() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let config = Arc::new(Config::default());
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
+        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None);
+        let user_service = Arc::new(test_user_service(pool.clone()));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let providers_manager = Arc::new(ProvidersManager::new(Arc::new(
+            RemoteProviderManager::new(Arc::new(ProviderInstanceRepository::new(pool))),
+        )));
+
+        let client_api = build_management_client_api(
+            ClientApiImpl::new(
+                user_service,
+                room_service,
+                Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+                config.clone(),
+                None,
+                JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt"),
+                None,
+                Some(providers_manager),
+                Some(test_settings_registry()),
+            ),
+            None,
+            None,
+            None,
+            credential_repo.clone(),
+            shared_runtime.signing_key.clone(),
+            shared_runtime.provider_stores.clone(),
+        );
+
+        assert!(
+            client_api.signing_key.is_some(),
+            "management client API must carry proxy signing key for signed playback"
+        );
+        assert!(
+            client_api.provider_stores.is_some(),
+            "management client API must carry provider stores for versioned playback mappings"
+        );
+        assert!(
+            Arc::ptr_eq(
+                client_api
+                    .signing_key
+                    .as_ref()
+                    .expect("management client API should set signing key"),
+                &shared_runtime.signing_key
+            ),
+            "management client API must reuse the configured proxy signing key"
+        );
+        assert!(
+            Arc::ptr_eq(
+                client_api
+                    .provider_stores
+                    .as_ref()
+                    .expect("management client API should set provider stores"),
+                &shared_runtime.provider_stores
+            ),
+            "management client API must reuse the shared provider store registry"
+        );
+        assert!(
+            Arc::ptr_eq(
+                client_api
+                    .credential_repo
+                    .as_ref()
+                    .expect("management client API should keep credential repo"),
+                &credential_repo
+            ),
+            "management client API must keep the credential repository wiring"
+        );
+    }
+
+    #[test]
+    fn shared_provider_runtime_uses_exact_configured_key_prefix() {
+        let config = Config::default();
+        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None);
+
+        assert_eq!(
+            shared_runtime.provider_stores.key_prefix(),
+            config.redis.key_prefix,
+            "shared provider runtime must preserve the configured Redis key prefix exactly"
+        );
     }
 
     /// Test that invalid HTTP address format returns an error
@@ -2213,8 +2408,7 @@ mod tests {
             Arc::new(StreamTracker::new()),
         ));
         let cancel = CancellationToken::new();
-        let handle =
-            spawn_admin_event_listener(Arc::new(cluster_manager), infra, cancel.clone()).await;
+        let handle = spawn_admin_event_listener(Arc::new(cluster_manager), infra, cancel.clone());
 
         cancel.cancel();
         await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
@@ -2285,8 +2479,7 @@ mod tests {
         ));
         let cancel = CancellationToken::new();
         let cluster_manager = Arc::new(cluster_manager);
-        let handle =
-            spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone()).await;
+        let handle = spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone());
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -2428,8 +2621,7 @@ mod tests {
         ));
         let cancel = CancellationToken::new();
         let cluster_manager = Arc::new(cluster_manager);
-        let handle =
-            spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone()).await;
+        let handle = spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone());
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {

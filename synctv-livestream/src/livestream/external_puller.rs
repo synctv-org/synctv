@@ -300,7 +300,7 @@ impl ExternalStreamPuller {
                             room_id = %self.room_id,
                             "Stream already published (stale entry), force-unpublishing and retrying"
                         );
-                        let _ = self.unpublish_from_local_stream_hub().await;
+                        self.unpublish_from_local_stream_hub();
                         // Retry publish immediately (don't count as a separate attempt)
                         match self.publish_to_local_stream_hub().await {
                             Ok(sender) => sender,
@@ -388,9 +388,7 @@ impl ExternalStreamPuller {
             drop(unpublish_guard);
 
             // Always clean up local StreamHub before retry or exit
-            if let Err(e) = self.unpublish_from_local_stream_hub().await {
-                warn!("Failed to unpublish from local StreamHub: {e}");
-            }
+            self.unpublish_from_local_stream_hub();
 
             // Exit cleanly if cancellation was triggered during streaming
             if self.cancel_token.is_cancelled() {
@@ -507,15 +505,15 @@ impl ExternalStreamPuller {
         );
 
         // Connect TCP to remote RTMP server with timeout
-        const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
+        let tcp_connect_timeout_secs: u64 = 10;
         let tcp_stream = tokio::time::timeout(
-            std::time::Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS),
+            std::time::Duration::from_secs(tcp_connect_timeout_secs),
             tokio::net::TcpStream::connect(&connect_addr),
         )
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "TCP connection to {connect_addr} timed out after {TCP_CONNECT_TIMEOUT_SECS}s"
+                "TCP connection to {connect_addr} timed out after {tcp_connect_timeout_secs}s"
             )
         })?
         .map_err(|e| anyhow::anyhow!("Failed to connect to {connect_addr}: {e}"))?;
@@ -644,7 +642,7 @@ impl ExternalStreamPuller {
         let mut buffer = BytesMut::new();
         let mut header_parsed = false;
         let mut dropped_frames: u64 = 0;
-        const DROP_LOG_INTERVAL: u64 = 100;
+        let drop_log_interval: u64 = 100;
         // Read response body in chunks and parse FLV tags.
         // Use per-chunk timeout instead of total request timeout so live streams
         // can run indefinitely as long as data keeps flowing.
@@ -734,10 +732,10 @@ impl ExternalStreamPuller {
                     | (buffer[3] as usize);
 
                 // Reject unreasonably large tags to prevent OOM (max 10 MB)
-                const MAX_FLV_TAG_SIZE: usize = 10 * 1024 * 1024;
-                if data_size > MAX_FLV_TAG_SIZE {
+                let max_flv_tag_size: usize = 10 * 1024 * 1024;
+                if data_size > max_flv_tag_size {
                     anyhow::bail!(
-                        "FLV tag data_size too large: {data_size} bytes (max {MAX_FLV_TAG_SIZE}), likely corrupted stream"
+                        "FLV tag data_size too large: {data_size} bytes (max {max_flv_tag_size}), likely corrupted stream"
                     );
                 }
 
@@ -782,7 +780,7 @@ impl ExternalStreamPuller {
                 // If channel is full, drop the packet (backpressure)
                 if let Err(mpsc::error::TrySendError::Full(_)) = data_sender.try_send(frame) {
                     dropped_frames += 1;
-                    if dropped_frames % DROP_LOG_INTERVAL == 1 {
+                    if dropped_frames % drop_log_interval == 1 {
                         warn!(
                             room_id = %self.room_id,
                             media_id = %self.media_id,
@@ -881,7 +879,7 @@ impl ExternalStreamPuller {
     }
 
     /// Unpublish from local `StreamHub`.
-    async fn unpublish_from_local_stream_hub(&mut self) -> Result<()> {
+    fn unpublish_from_local_stream_hub(&mut self) {
         let identifier = StreamIdentifier::Rtmp {
             app_name: self.room_id.clone(),
             stream_name: self.media_id.clone(),
@@ -892,8 +890,6 @@ impl ExternalStreamPuller {
         if let Err(e) = self.stream_hub_event_sender.try_send(unpublish_event) {
             warn!("Failed to send unpublish event: {}", e);
         }
-
-        Ok(())
     }
 }
 
@@ -1108,18 +1104,14 @@ mod tests {
         ));
     }
 
-    async fn spawn_stream_hub(
+    fn spawn_stream_hub(
         mut receiver: tokio::sync::mpsc::Receiver<StreamHubEvent>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
-                match event {
-                    StreamHubEvent::Publish { result_sender, .. } => {
-                        let (data_sender, _) = tokio::sync::mpsc::channel(8);
-                        let _ = result_sender.send(Ok((Some(data_sender), None, None)));
-                    }
-                    StreamHubEvent::UnPublish { .. } => {}
-                    _ => {}
+                if let StreamHubEvent::Publish { result_sender, .. } = event {
+                    let (data_sender, _) = tokio::sync::mpsc::channel(8);
+                    let _ = result_sender.send(Ok((Some(data_sender), None, None)));
                 }
             }
         })
@@ -1182,7 +1174,7 @@ mod tests {
             .await
             .expect("test server should start");
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
-        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
 
         let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
@@ -1208,7 +1200,7 @@ mod tests {
             .await
             .expect("test server should start");
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
-        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
 
         let puller = make_test_http_puller(addr, hub_sender, confirm_tx);
@@ -1241,7 +1233,7 @@ mod tests {
             .await
             .expect("test server should start");
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
-        let hub_handle = spawn_stream_hub(hub_receiver).await;
+        let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
 
         let puller = make_test_http_puller(addr, hub_sender, confirm_tx);

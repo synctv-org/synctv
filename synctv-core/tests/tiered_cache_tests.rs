@@ -40,7 +40,7 @@ async fn test_tiered_cache_l2_set_and_get() {
     cache.set(&user_id, user.clone()).await.unwrap();
 
     // Clear L1 so the next get must come from L2
-    cache.clear_l1().await;
+    cache.clear_l1();
 
     // Get should hit L2
     let retrieved = cache.get(&user_id).await.unwrap();
@@ -76,7 +76,7 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     assert!(cache.get(&user_id).await.unwrap().is_none());
 
     // Clear L1 again and try L2 -- should also be gone
-    cache.clear_l1().await;
+    cache.clear_l1();
     assert!(
         cache.get(&user_id).await.unwrap().is_none(),
         "Should not be in L2 after invalidate"

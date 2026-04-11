@@ -5,6 +5,7 @@
 use super::query_builder::escape_ilike;
 use sqlx::{FromRow, PgPool, Row};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use crate::{
     models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId, UserStatus},
@@ -21,6 +22,20 @@ pub struct MediaListItem {
 #[derive(Clone)]
 pub struct MediaRepository {
     pool: PgPool,
+}
+
+const CREATE_BATCH_CHUNK_SIZE: usize = 1000;
+
+fn pagination_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn rows_affected_to_usize(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }
 
 impl MediaRepository {
@@ -297,7 +312,8 @@ impl MediaRepository {
                 query_builder.push_str(", ");
             }
             let base = i * 10;
-            query_builder.push_str(&format!(
+            write!(
+                query_builder,
                 "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
                 base + 1,
                 base + 2,
@@ -310,7 +326,8 @@ impl MediaRepository {
                 base + 9,
                 base + 10,
                 base + 10
-            ));
+            )
+            .expect("writing SQL into String should not fail");
             binds.push(serde_json::to_value(&item.source_config)?);
         }
         query_builder.push_str(
@@ -359,10 +376,9 @@ impl MediaRepository {
             return Ok(Vec::new());
         }
 
-        const CHUNK_SIZE: usize = 1000;
         let mut all_results = Vec::with_capacity(items.len());
 
-        for chunk in items.chunks(CHUNK_SIZE) {
+        for chunk in items.chunks(CREATE_BATCH_CHUNK_SIZE) {
             let results = Self::create_batch_chunk(chunk, &mut **tx).await?;
             all_results.extend(results);
         }
@@ -583,8 +599,8 @@ impl MediaRepository {
         playlist_id: &PlaylistId,
         pagination: PageParams,
     ) -> Result<(Vec<Media>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(pagination.limit());
+        let offset = pagination_u64_to_i64(pagination.offset());
 
         // Get total count
         let total: i64 = sqlx::query_scalar(
@@ -627,8 +643,8 @@ impl MediaRepository {
         room_id: &RoomId,
         pagination: PageParams,
     ) -> Result<(Vec<Media>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(pagination.limit());
+        let offset = pagination_u64_to_i64(pagination.offset());
 
         let total: i64 = sqlx::query_scalar(
             r"
@@ -757,7 +773,7 @@ impl MediaRepository {
         .execute(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() as usize)
+        Ok(rows_affected_to_usize(result.rows_affected()))
     }
 
     /// Delete all media directly under the room root.
@@ -773,7 +789,7 @@ impl MediaRepository {
         .execute(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() as usize)
+        Ok(rows_affected_to_usize(result.rows_affected()))
     }
 
     /// Bulk delete media items by IDs
@@ -806,7 +822,7 @@ impl MediaRepository {
         .execute(executor)
         .await?;
 
-        Ok(result.rows_affected() as usize)
+        Ok(rows_affected_to_usize(result.rows_affected()))
     }
 
     async fn lock_scope_with_tx(
@@ -842,11 +858,7 @@ impl MediaRepository {
                 left_playlist
                     .as_ref()
                     .map_or("", PlaylistId::as_str)
-                    .cmp(
-                        right_playlist
-                            .as_ref()
-                            .map_or("", PlaylistId::as_str),
-                    )
+                    .cmp(right_playlist.as_ref().map_or("", PlaylistId::as_str))
             })
         });
 
@@ -873,13 +885,13 @@ impl MediaRepository {
                 if !gap.is_finite() || gap <= Self::MIN_ORDER_GAP {
                     return None;
                 }
-                let step = gap / ((count + 1) as f64);
+                let step = gap / usize_to_f64(count + 1);
                 if !step.is_finite() || step <= Self::MIN_ORDER_GAP {
                     return None;
                 }
                 let mut positions = Vec::with_capacity(count);
                 for index in 1..=count {
-                    let position = previous + step * (index as f64);
+                    let position = previous + step * usize_to_f64(index);
                     if !position.is_finite() || position <= previous || position >= next {
                         return None;
                     }
@@ -891,13 +903,13 @@ impl MediaRepository {
                 if !next.is_finite() {
                     return None;
                 }
-                let start = Self::ORDER_STEP.mul_add(-(count as f64), next);
+                let start = Self::ORDER_STEP.mul_add(-usize_to_f64(count), next);
                 if !start.is_finite() {
                     return None;
                 }
                 let mut positions = Vec::with_capacity(count);
                 for index in 0..count {
-                    let position = Self::ORDER_STEP.mul_add(index as f64, start);
+                    let position = Self::ORDER_STEP.mul_add(usize_to_f64(index), start);
                     if !position.is_finite() || position >= next {
                         return None;
                     }
@@ -911,7 +923,7 @@ impl MediaRepository {
                 }
                 let mut positions = Vec::with_capacity(count);
                 for index in 1..=count {
-                    let position = Self::ORDER_STEP.mul_add(index as f64, previous);
+                    let position = Self::ORDER_STEP.mul_add(usize_to_f64(index), previous);
                     if !position.is_finite() || position <= previous {
                         return None;
                     }
@@ -922,7 +934,7 @@ impl MediaRepository {
             (None, None) => {
                 let mut positions = Vec::with_capacity(count);
                 for index in 1..=count {
-                    positions.push(Self::ORDER_STEP * (index as f64));
+                    positions.push(Self::ORDER_STEP * usize_to_f64(index));
                 }
                 Some(positions)
             }
@@ -1254,7 +1266,7 @@ impl MediaRepository {
 
         for (index, row) in rows.into_iter().enumerate() {
             let media_id: String = row.try_get("id")?;
-            let position = Self::ORDER_STEP * ((index + 1) as f64);
+            let position = Self::ORDER_STEP * usize_to_f64(index + 1);
             sqlx::query("UPDATE media SET position = $2, version = version + 1 WHERE id = $1")
                 .bind(media_id)
                 .bind(position)
@@ -1311,13 +1323,11 @@ impl MediaRepository {
         after_media_id: Option<&MediaId>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<Media> {
-        let anchor_id = match (before_media_id, after_media_id) {
-            (Some(anchor_id), None) | (None, Some(anchor_id)) => anchor_id,
-            _ => {
-                return Err(crate::Error::InvalidInput(
-                    "Exactly one of before_media_id or after_media_id must be set".to_string(),
-                ))
-            }
+        let ((Some(anchor_id), None) | (None, Some(anchor_id))) = (before_media_id, after_media_id)
+        else {
+            return Err(crate::Error::InvalidInput(
+                "Exactly one of before_media_id or after_media_id must be set".to_string(),
+            ));
         };
 
         if media_id == anchor_id {
@@ -1578,7 +1588,7 @@ mod tests {
         );
 
         assert_eq!(media.name, "Test Video");
-        assert_eq!(media.position, 0.0);
+        assert!((media.position - 0.0).abs() < f64::EPSILON);
         assert_eq!(media.source_provider, "direct_url");
     }
 
@@ -1622,7 +1632,7 @@ mod tests {
         );
 
         assert_eq!(media.name, "Single Mode Video");
-        assert_eq!(media.position, 5.0);
+        assert!((media.position - 5.0).abs() < f64::EPSILON);
         assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
     }
@@ -1657,14 +1667,14 @@ mod tests {
             room_id,
             None,
             "Multimode Video".to_string(),
-            playback_infos,
-            "direct".to_string(),
-            metadata,
+            &playback_infos,
+            "direct",
+            &metadata,
             10.0,
         );
 
         assert_eq!(media.name, "Multimode Video");
-        assert_eq!(media.position, 10.0);
+        assert!((media.position - 10.0).abs() < f64::EPSILON);
         assert_eq!(media.provider_instance_name, "direct_url");
         assert!(media.source_config.get("playback_infos").is_some());
         assert!(media.source_config.get("metadata").is_some());
@@ -1726,7 +1736,7 @@ mod tests {
 
         let created = media_repo.create(&media).await.unwrap();
         assert_eq!(created.name, "Test Video");
-        assert_eq!(created.position, 0.0);
+        assert!((created.position - 0.0).abs() < f64::EPSILON);
 
         // Get by ID
         let fetched = media_repo.get_by_id(&created.id).await.unwrap();
@@ -1789,7 +1799,7 @@ mod tests {
 
         let result = media_repo.update(&updated).await.unwrap();
         assert_eq!(result.name, "Updated Name");
-        assert_eq!(result.position, 5.0);
+        assert!((result.position - 5.0).abs() < f64::EPSILON);
     }
 
     /// Integration test: Delete media
@@ -1984,7 +1994,7 @@ mod tests {
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
-                    i as f64,
+                    f64::from(i),
                 )
             })
             .collect();
@@ -2015,7 +2025,7 @@ mod tests {
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
-                    i as f64,
+                    f64::from(i),
                 )
             })
             .collect();
@@ -2097,8 +2107,8 @@ mod tests {
         let created1 = media_repo.create(&media1).await.unwrap();
         let created2 = media_repo.create(&media2).await.unwrap();
 
-        assert_eq!(created1.position, 1024.0);
-        assert_eq!(created2.position, 2048.0);
+        assert!((created1.position - 1024.0).abs() < f64::EPSILON);
+        assert!((created2.position - 2048.0).abs() < f64::EPSILON);
 
         let mut tx = pool.begin().await.unwrap();
         media_repo
@@ -2161,7 +2171,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i as f64,
+                f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
         }
@@ -2213,7 +2223,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i as f64,
+                f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
         }
@@ -2283,7 +2293,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i as f64,
+                f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();
             ids.push(created.id);
@@ -2342,7 +2352,7 @@ mod tests {
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
-                i as f64,
+                f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();
             ids.push(created.id);

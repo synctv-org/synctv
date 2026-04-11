@@ -86,7 +86,7 @@ fn make_cluster_config_with_prefix(
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_cross_node_broadcast() {
-    let (container, redis_client1, _conn1) = setup_redis().await;
+    let (container, redis_client1, conn1) = setup_redis().await;
 
     // Create a second Redis connection for node2
     let redis_url = container.connection_url();
@@ -113,7 +113,7 @@ async fn test_cross_node_broadcast() {
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
         redis_client1.clone(),
-        _conn1.clone(),
+        conn1.clone(),
         "node1",
         shared_prefix.clone(),
     );

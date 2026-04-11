@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use synctv_proxy::{
     apply_provider_headers, make_absolute, percent_encode, rewrite_m3u8,
     rewrite_uri_attribute_with_count,
@@ -215,7 +216,7 @@ fn test_rewrite_m3u8_max_urls_truncated() {
     // Live streams should NOT get #EXT-X-ENDLIST when truncated
     let mut m3u8 = String::from("#EXTM3U\n");
     for i in 0..1002 {
-        m3u8.push_str(&format!("seg{i}.ts\n"));
+        writeln!(m3u8, "seg{i}.ts").unwrap();
     }
     let rewritten = rewrite_m3u8(
         &m3u8,

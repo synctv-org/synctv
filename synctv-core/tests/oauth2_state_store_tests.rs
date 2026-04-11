@@ -273,7 +273,6 @@ async fn test_redis_oauth_state_store_uses_configured_key_prefix() {
         .expect("storing state should succeed");
 
     let mut raw_conn = shared_conn.read().await.clone();
-    use redis::AsyncCommands;
 
     let prefixed_exists: bool = raw_conn
         .exists("tenant-a:oauth2:state:prefixed_token")
@@ -293,3 +292,4 @@ async fn test_redis_oauth_state_store_uses_configured_key_prefix() {
         "state must not leak into the global unprefixed namespace"
     );
 }
+use redis::AsyncCommands;

@@ -74,7 +74,7 @@ pub(crate) async fn execute_proxy_action(
     }
 }
 
-async fn execute_proxy_action_with_state(
+pub(crate) async fn execute_proxy_action_with_state(
     state: &AppState,
     action: ProxyAction,
     client_headers: &axum::http::HeaderMap,
@@ -518,6 +518,8 @@ mod tests {
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
+            shared_provider_stores: None,
+            shared_proxy_signing_key: None,
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: None,
@@ -630,6 +632,8 @@ mod tests {
                     None,
                 )),
                 redis_conn: None,
+                shared_provider_stores: None,
+                shared_proxy_signing_key: None,
                 builtin_stun_url: None,
                 turn_health_checker: None,
                 credential_encryption: None,

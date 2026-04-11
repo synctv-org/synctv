@@ -312,21 +312,21 @@ async fn test_leader_election_single_leader() {
     let elector_a = LeaderElector::with_config(
         conn_a,
         "node_a".to_string(),
-        config_a,
+        &config_a,
         &redis.key_prefix,
         false,
     );
     let elector_b = LeaderElector::with_config(
         conn_b,
         "node_b".to_string(),
-        config_b,
+        &config_b,
         &redis.key_prefix,
         false,
     );
     let elector_c = LeaderElector::with_config(
         conn_c,
         "node_c".to_string(),
-        config_c,
+        &config_c,
         &redis.key_prefix,
         false,
     );

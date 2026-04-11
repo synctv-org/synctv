@@ -16,6 +16,14 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
+fn assert_f64_eq(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < f64::EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -72,8 +80,8 @@ async fn test_create_or_get_idempotent() {
     // First call creates the state
     let state1 = playback_repo.create_or_get(&room.id).await.unwrap();
     assert_eq!(state1.room_id, room.id);
-    assert_eq!(state1.current_time, 0.0);
-    assert_eq!(state1.speed, 1.0);
+    assert_f64_eq(state1.current_time, 0.0);
+    assert_f64_eq(state1.speed, 1.0);
     assert!(!state1.is_playing);
 
     // Second call returns the same version (no new insert or update)
@@ -110,7 +118,7 @@ async fn test_update_optimistic_lock_conflict() {
 
     // Task 1 succeeds
     let updated = playback_repo.update(&state_t1).await.unwrap();
-    assert_eq!(updated.current_time, 42.0);
+    assert_f64_eq(updated.current_time, 42.0);
     assert_eq!(updated.version, state.version + 1);
 
     // Task 2 uses stale version -> OptimisticLockConflict

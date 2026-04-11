@@ -187,6 +187,10 @@ pub struct RouterConfig {
     pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
     /// Shared Redis connection for playback caching (Sentinel-failover safe)
     pub redis_conn: Option<crate::SharedRedisConn>,
+    /// Shared provider playback store registry reused across transports when available.
+    pub shared_provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
+    /// Shared proxy signing key reused across transports when available.
+    pub shared_proxy_signing_key: Option<Arc<ProxySigningKey>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
@@ -299,10 +303,17 @@ pub fn create_router_with_state_from_config(
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
-    // Derive HMAC signing key for proxy URLs from JWT secret
-    let proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
-        config.config.jwt.secret.as_bytes(),
-    ));
+    let proxy_signing_key = config.shared_proxy_signing_key.clone().unwrap_or_else(|| {
+        Arc::new(ProxySigningKey::derive_from(
+            config.config.jwt.secret.as_bytes(),
+        ))
+    });
+    let provider_stores = config.shared_provider_stores.clone().unwrap_or_else(|| {
+        Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+            config.redis_conn.clone(),
+            config.config.redis.key_prefix.clone(),
+        ))
+    });
 
     // Build the shared security pipeline through the builder so startup fails
     // early if blacklist wiring becomes partial during future refactors.
@@ -334,7 +345,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
         .with_rate_limiter(config.rate_limiter.clone())
         .with_credential_encryption(config.credential_encryption.clone())
         .with_credential_repo(config.user_provider_credential_repository.clone())
-        .with_signing_key(proxy_signing_key.clone()),
+        .with_signing_key(proxy_signing_key.clone())
+        .with_provider_stores(provider_stores.clone()),
     );
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
@@ -360,20 +372,23 @@ fn build_app_state(config: RouterConfig) -> AppState {
                     .expect("EmailService::new(None) should not fail"),
             )
         });
-        Arc::new(crate::impls::AdminApiImpl::new(
-            config.room_service.clone(),
-            config.user_service.clone(),
-            settings_svc.clone(),
-            config.settings_registry.clone(),
-            email_svc,
-            config.connection_manager.clone(),
-            config.provider_instance_manager.clone(),
-            config.live_streaming_infrastructure.clone(),
-            config.publish_key_service.clone(),
-            config.config.clone(),
-            config.redis_publish_tx.clone(),
-            config.audit_service.clone(),
-        ))
+        Arc::new(
+            crate::impls::AdminApiImpl::new(
+                config.room_service.clone(),
+                config.user_service.clone(),
+                settings_svc.clone(),
+                config.settings_registry.clone(),
+                email_svc,
+                config.connection_manager.clone(),
+                config.provider_instance_manager.clone(),
+                config.live_streaming_infrastructure.clone(),
+                config.publish_key_service.clone(),
+                config.config.clone(),
+                config.redis_publish_tx.clone(),
+                config.audit_service.clone(),
+            )
+            .with_provider_stores(provider_stores.clone()),
+        )
     });
 
     // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
@@ -427,13 +442,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
             ),
     );
 
-    // Create lazy provider store registry (stores created on first access per-provider)
-    // Uses the shared Redis connection handle for Sentinel failover safety
-    let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-        config.redis_conn.clone(),
-        config.config.redis.key_prefix.clone(),
-    ));
-
     // Build proxy provider registry from ProviderSet (single source of truth)
     let proxy_provider_registry = Arc::new(config.providers.build_proxy_registry());
 
@@ -478,7 +486,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
 }
 
 pub fn start_proxy_cache_lifecycle(
-    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    cache: &Arc<synctv_proxy::slice_cache::SliceCache>,
 ) -> Option<ProxyCacheLifecycleRuntime> {
     let manager = synctv_proxy::slice_cache::CacheLifecycleManager::new(
         cache.backend().clone(),
@@ -1116,8 +1124,8 @@ mod tests {
         ProviderSet, RtmpProvider,
     };
     use synctv_core::service::{
-        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
-        RemoteProviderManager, RoomService, UserService,
+        AuditService, ContentFilter, InMemoryTokenBlacklistStore, ProxySigningKey, RateLimitConfig,
+        RateLimiter, RemoteProviderManager, RoomService, UserService,
     };
     use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
     use tower::ServiceExt;
@@ -1299,6 +1307,8 @@ mod tests {
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
+            shared_provider_stores: None,
+            shared_proxy_signing_key: None,
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: None,
@@ -1386,7 +1396,7 @@ mod tests {
             .await
             .expect("seed expired slice");
 
-        let lifecycle = start_proxy_cache_lifecycle(cache.clone())
+        let lifecycle = start_proxy_cache_lifecycle(&cache)
             .expect("enabled proxy cache must start lifecycle task");
 
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -1415,7 +1425,7 @@ mod tests {
             ..SliceCacheConfig::default()
         }));
 
-        let lifecycle = start_proxy_cache_lifecycle(cache)
+        let lifecycle = start_proxy_cache_lifecycle(&cache)
             .expect("cache lifecycle should start so runtime settings can enable caching later");
         lifecycle.cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
@@ -1464,6 +1474,12 @@ mod tests {
             enabled: false,
             ..SliceCacheConfig::default()
         }));
+        let injected_provider_stores = Arc::new(
+            synctv_core::provider::store::ProviderStoreRegistry::new(None, "shared:test:"),
+        );
+        let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
+            b"test-secret-key-for-http-router-tests-minimum-32-chars",
+        ));
         let injected_proxy_http_client = synctv_proxy::build_proxy_http_client()
             .expect("proxy HTTP client should build for tests");
 
@@ -1510,6 +1526,8 @@ mod tests {
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
+            shared_provider_stores: Some(injected_provider_stores.clone()),
+            shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: None,
@@ -1527,6 +1545,14 @@ mod tests {
         assert!(
             !state.proxy_slice_cache.config().enabled,
             "The injected cache configuration must be preserved"
+        );
+        assert!(
+            Arc::ptr_eq(&state.provider_stores, &injected_provider_stores),
+            "AppState must reuse the injected provider store registry"
+        );
+        assert!(
+            Arc::ptr_eq(&state.proxy_signing_key, &injected_proxy_signing_key),
+            "AppState must reuse the injected proxy signing key"
         );
         assert!(
             state

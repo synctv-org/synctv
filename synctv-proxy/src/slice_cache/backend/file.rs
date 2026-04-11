@@ -266,7 +266,7 @@ impl FileBackend {
     pub async fn load_index(&self, stale_max_age: Duration) -> anyhow::Result<LoadResult> {
         let mut result = LoadResult::default();
         let now = millis_since_epoch();
-        let stale_max_millis = stale_max_age.as_millis() as u64;
+        let stale_max_millis = u64::try_from(stale_max_age.as_millis()).unwrap_or(u64::MAX);
 
         self.walk_and_load(&self.cache_dir, now, stale_max_millis, &mut result)
             .await?;
@@ -389,9 +389,8 @@ impl FileBackend {
     /// separately.
     pub async fn cleanup_temp_files(&self) {
         let tmp_dir = self.tmp_dir();
-        let mut read_dir = match fs::read_dir(&tmp_dir).await {
-            Ok(rd) => rd,
-            Err(_) => return, // .tmp may not exist yet; that's fine.
+        let Ok(mut read_dir) = fs::read_dir(&tmp_dir).await else {
+            return;
         };
 
         let cutoff = SystemTime::now() - Duration::from_mins(5);
@@ -534,7 +533,8 @@ impl SliceCacheBackend for FileBackend {
         // Serialize header with bincode.
         let header_bytes =
             bincode::serialize(&header).map_err(|e| anyhow::anyhow!("bincode encode: {e}"))?;
-        let header_len = header_bytes.len() as u32;
+        let header_len = u32::try_from(header_bytes.len())
+            .map_err(|_| anyhow::anyhow!("cache header too large: {}", header_bytes.len()))?;
 
         // Build the complete file content.
         let mut file_content = Vec::with_capacity(4 + 4 + header_bytes.len() + entry.data.len());
@@ -825,12 +825,18 @@ fn millis_since_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// Convert a [`SystemTime`] to milliseconds since the Unix epoch.
 fn system_time_to_millis(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    t.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// Convert milliseconds since the Unix epoch to a [`SystemTime`].

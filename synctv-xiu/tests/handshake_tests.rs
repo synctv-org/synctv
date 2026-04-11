@@ -97,14 +97,14 @@ fn make_mock_io() -> Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> {
 fn build_c0c1() -> Vec<u8> {
     let mut data = Vec::with_capacity(1 + RTMP_HANDSHAKE_SIZE);
     // C0: RTMP version byte
-    data.push(RTMP_VERSION as u8);
+    data.push(u8::try_from(RTMP_VERSION).unwrap_or_default());
     // C1: 4 bytes timestamp + 4 bytes zeros + 1528 bytes random
     let timestamp: u32 = 12345;
     data.extend_from_slice(&timestamp.to_be_bytes());
     data.extend_from_slice(&[0u8; 4]); // version zeros
                                        // Fill remaining 1528 bytes with pattern
     for i in 0..(RTMP_HANDSHAKE_SIZE - 8) {
-        data.push((i % 256) as u8);
+        data.push(u8::try_from(i % 256).unwrap_or_default());
     }
     data
 }
@@ -113,7 +113,7 @@ fn build_c0c1() -> Vec<u8> {
 fn build_s0s1s2(c1_echo: &[u8]) -> Vec<u8> {
     let mut data = Vec::with_capacity(1 + RTMP_HANDSHAKE_SIZE * 2);
     // S0: RTMP version byte
-    data.push(RTMP_VERSION as u8);
+    data.push(u8::try_from(RTMP_VERSION).unwrap_or_default());
     // S1: 4 bytes time + 4 bytes zero + 1528 bytes random
     data.extend_from_slice(&[0, 0, 0, 0]); // time
     data.extend_from_slice(&[0, 0, 0, 0]); // zero
@@ -208,7 +208,9 @@ mod simple_handshake_server_tests {
     fn test_server_read_c0_valid() {
         let io = make_mock_io();
         let mut server = SimpleHandshakeServer::new(io);
-        server.extend_data(&[RTMP_VERSION as u8]).unwrap();
+        server
+            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
+            .unwrap();
         let result = server.read_c0();
         assert!(result.is_ok());
     }
@@ -226,7 +228,9 @@ mod simple_handshake_server_tests {
     fn test_server_read_c1_insufficient_data() {
         let io = make_mock_io();
         let mut server = SimpleHandshakeServer::new(io);
-        server.extend_data(&[RTMP_VERSION as u8]).unwrap();
+        server
+            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
+            .unwrap();
         server.read_c0().unwrap();
         // Only C0, no C1 data
         let result = server.read_c1();
@@ -288,7 +292,9 @@ mod complex_handshake_server_tests {
     fn test_complex_server_read_c0_valid() {
         let io = make_mock_io();
         let mut server = ComplexHandshakeServer::new(io);
-        server.extend_data(&[RTMP_VERSION as u8]).unwrap();
+        server
+            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
+            .unwrap();
         let result = server.read_c0();
         assert!(result.is_ok());
     }

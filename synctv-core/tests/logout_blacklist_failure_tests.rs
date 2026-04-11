@@ -49,6 +49,72 @@ impl TokenBlacklistStore for FailingBlacklistStore {
     }
 }
 
+struct CountingFailingStore {
+    count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for CountingFailingStore {
+    async fn is_blacklisted(&self, _key: &str) -> bool {
+        false
+    }
+
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Ok(false)
+    }
+
+    async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(synctv_core::Error::Internal("Store failed".to_string()))
+    }
+
+    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+        None
+    }
+
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+}
+
+struct RecordingTtlStore {
+    ttl_secs: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for RecordingTtlStore {
+    async fn is_blacklisted(&self, _key: &str) -> bool {
+        false
+    }
+
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Ok(false)
+    }
+
+    async fn blacklist(&self, _key: &str, ttl_secs: u64) -> synctv_core::Result<()> {
+        self.ttl_secs.store(ttl_secs, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+        None
+    }
+
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Test 1: Blacklist success should work correctly
 // ============================================================================
@@ -171,40 +237,6 @@ async fn test_concurrent_blacklist_failures_all_return_errors() {
     let failure_count = Arc::new(AtomicUsize::new(0));
     let failure_count_clone = failure_count.clone();
 
-    // Store that tracks how many times it failed
-    struct CountingFailingStore {
-        count: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl TokenBlacklistStore for CountingFailingStore {
-        async fn is_blacklisted(&self, _key: &str) -> bool {
-            false
-        }
-
-        async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
-            Ok(false)
-        }
-
-        async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
-            self.count.fetch_add(1, AtomicOrdering::SeqCst);
-            Err(synctv_core::Error::Internal("Store failed".to_string()))
-        }
-
-        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-            None
-        }
-
-        async fn set_family_revoked(
-            &self,
-            _key: &str,
-            _timestamp: i64,
-            _ttl_secs: u64,
-        ) -> synctv_core::Result<()> {
-            Ok(())
-        }
-    }
-
     let store = CountingFailingStore {
         count: failure_count_clone,
     };
@@ -242,39 +274,6 @@ async fn test_concurrent_blacklist_failures_all_return_errors() {
 
 #[tokio::test]
 async fn test_blacklist_ttl_passed_correctly() {
-    struct RecordingTtlStore {
-        ttl_secs: AtomicU64,
-    }
-
-    #[async_trait::async_trait]
-    impl TokenBlacklistStore for RecordingTtlStore {
-        async fn is_blacklisted(&self, _key: &str) -> bool {
-            false
-        }
-
-        async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
-            Ok(false)
-        }
-
-        async fn blacklist(&self, _key: &str, ttl_secs: u64) -> synctv_core::Result<()> {
-            self.ttl_secs.store(ttl_secs, Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
-            None
-        }
-
-        async fn set_family_revoked(
-            &self,
-            _key: &str,
-            _timestamp: i64,
-            _ttl_secs: u64,
-        ) -> synctv_core::Result<()> {
-            Ok(())
-        }
-    }
-
     let store = RecordingTtlStore {
         ttl_secs: AtomicU64::new(0),
     };

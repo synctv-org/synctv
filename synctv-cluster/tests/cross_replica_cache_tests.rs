@@ -389,8 +389,7 @@ async fn test_cluster_permission_cache_consistency() {
         match tokio::time::timeout(remaining, rx_b.recv()).await {
             Ok(Ok(InvalidationMessage::User { .. })) => received_count += 1,
             Ok(Ok(other)) => panic!("Unexpected message: {other:?}"),
-            Ok(Err(_)) => break,
-            Err(_) => break,
+            Ok(Err(_)) | Err(_) => break,
         }
     }
     assert_eq!(
@@ -509,7 +508,7 @@ async fn test_concurrent_permission_cache_updates() {
     );
 
     // Concurrent invalidations from all three nodes
-    let invalidations_per_node = 10;
+    let invalidations_per_node: u32 = 10;
     let total_invalidations = invalidations_per_node * 3;
 
     let received_count = Arc::new(AtomicU32::new(0));
@@ -616,7 +615,7 @@ async fn test_concurrent_permission_cache_updates() {
     // But due to timing and deduplication, we check for a reasonable minimum
     let final_count = received_count.load(Ordering::SeqCst);
     assert!(
-        final_count >= total_invalidations as u32,
+        final_count >= total_invalidations,
         "Should receive at least {total_invalidations} invalidations, got {final_count}"
     );
 

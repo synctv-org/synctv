@@ -149,7 +149,7 @@ pub struct PgAdvisoryMigrationLock {
 }
 
 /// Stable advisory lock key for migration coordination (hash of "`synctv_migration`").
-const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
+const PG_ADVISORY_LOCK_KEY: i64 = 0x7379_6E63_7476_6D69_i64;
 
 impl PgAdvisoryMigrationLock {
     #[must_use]
@@ -584,9 +584,8 @@ impl DistributedLock {
 
         run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock
-            let lock_value = match self.acquire(key, ttl_seconds).await? {
-                Some(value) => value,
-                None => return Ok(None), // Lock already held
+            let Some(lock_value) = self.acquire(key, ttl_seconds).await? else {
+                return Ok(None);
             };
 
             // Execute operation
@@ -686,11 +685,11 @@ impl DistributedLock {
 
         run_distributed_lock_client_op(key, client_timeout, async {
             // Try to acquire lock with token
-            let (lock_value, fencing_token) =
-                match self.acquire_with_token(key, ttl_seconds).await? {
-                    Some(result) => result,
-                    None => return Ok(None), // Lock already held
-                };
+            let Some((lock_value, fencing_token)) =
+                self.acquire_with_token(key, ttl_seconds).await?
+            else {
+                return Ok(None);
+            };
 
             // Execute operation with fencing token
             let result = operation(fencing_token).await;
@@ -1021,7 +1020,9 @@ impl Redlock {
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            })
     }
 
     /// Release lock on a single Redis instance (best-effort).
@@ -1426,7 +1427,9 @@ mod tests {
         // Test that time calculation works
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            });
         assert!(now > 0);
     }
 

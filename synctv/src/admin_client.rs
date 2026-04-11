@@ -133,7 +133,7 @@ fn resolve_management_endpoint_from_config(
     load_dotenv: bool,
     verbose: bool,
 ) -> Result<String> {
-    let config = load_config_with_options(LoadConfigOptions {
+    let config = load_config_with_options(&LoadConfigOptions {
         config_path: config_path.map(str::to_string),
         load_dotenv,
         validate: false,
@@ -178,7 +178,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
         return Ok(None);
     }
 
-    let config = load_config_with_options(LoadConfigOptions {
+    let config = load_config_with_options(&LoadConfigOptions {
         config_path: options.config_path.clone(),
         load_dotenv: options.load_dotenv,
         validate: false,

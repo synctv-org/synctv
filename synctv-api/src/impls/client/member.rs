@@ -20,7 +20,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -149,7 +149,8 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetRoomMembersResponse {
             members: proto_members,
-            total: total as i32,
+            total: i32::try_from(total)
+                .map_err(|_| ApiError::Internal("Member count exceeds i32 range".to_string()))?,
         })
     }
 
@@ -166,7 +167,7 @@ impl ClientApiImpl {
             notify,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
@@ -216,7 +217,7 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::AddMemberResponse {
-            member: Some(room_member_to_proto(member_with_user, role_default)),
+            member: Some(room_member_to_proto(&member_with_user, role_default)),
         })
     }
 
@@ -231,7 +232,7 @@ impl ClientApiImpl {
             user_id: target_user_id,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
 
         let member = self
@@ -276,7 +277,7 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::ApproveMemberResponse {
-            member: Some(room_member_to_proto(member_with_user, role_default)),
+            member: Some(room_member_to_proto(&member_with_user, role_default)),
         })
     }
 
@@ -292,7 +293,7 @@ impl ClientApiImpl {
             reason,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let reason = (!reason.trim().is_empty()).then_some(reason.as_str());
 
@@ -320,7 +321,7 @@ impl ClientApiImpl {
             admin_removed_permissions,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let permission_fanout = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -477,7 +478,7 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto(member_with_user, role_default)),
+            member: Some(room_member_to_proto(&member_with_user, role_default)),
         })
     }
 
@@ -492,7 +493,7 @@ impl ClientApiImpl {
             user_id: target_user_id,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let cluster_event = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),
@@ -553,7 +554,7 @@ impl ClientApiImpl {
         } = req;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let reason = if reason.is_empty() {
             None
@@ -618,7 +619,7 @@ impl ClientApiImpl {
             user_id: target_user_id,
         } = req;
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let permission_fanout = crate::impls::reserve_cluster_event_publish(
             self.redis_publish_tx.as_ref(),

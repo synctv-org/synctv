@@ -662,7 +662,7 @@ mod websocket_e2e {
         async fn cleanup(mut self) {
             self.pool.close().await;
             if let Some(redis) = self.redis.take() {
-                redis.cleanup().await;
+                redis.cleanup();
             }
             if let Some(postgres) = self.postgres.take() {
                 postgres.cleanup().await;
@@ -993,6 +993,8 @@ mod websocket_e2e {
             rate_limiter,
             ws_ticket_service: ws_ticket_service.clone(),
             redis_conn: None,
+            shared_provider_stores: None,
+            shared_proxy_signing_key: None,
             builtin_stun_url: None,
             credential_encryption: None,
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
@@ -1226,7 +1228,7 @@ mod websocket_e2e {
                 }
                 Ok(tungstenite::Message::Close(_)) => return None,
                 Err(e) => panic!("WebSocket error: {e}"),
-                _ => continue,
+                _ => {}
             }
         }
         None
@@ -1259,11 +1261,11 @@ mod websocket_e2e {
     ) -> Option<ServerMessage> {
         loop {
             let msg = recv_server_message(ws).await?;
-            match &msg.message {
-                Some(
-                    server_message::Message::UserJoined(_) | server_message::Message::UserLeft(_),
-                ) => continue,
-                _ => return Some(msg),
+            if !matches!(
+                &msg.message,
+                Some(server_message::Message::UserJoined(_) | server_message::Message::UserLeft(_))
+            ) {
+                return Some(msg);
             }
         }
     }
@@ -2034,11 +2036,7 @@ mod websocket_e2e {
             loop {
                 match ws2.next().await {
                     Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
-                    Some(Ok(tungstenite::Message::Binary(_))) => {
-                        // May still receive buffered messages; keep draining
-                        continue;
-                    }
-                    Some(Ok(_)) => continue,
+                    Some(Ok(_)) => {}
                 }
             }
         })
@@ -2097,7 +2095,7 @@ mod websocket_e2e {
             loop {
                 match ws2.next().await {
                     Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
-                    Some(Ok(_)) => continue,
+                    Some(Ok(_)) => {}
                 }
             }
         })
@@ -2185,7 +2183,7 @@ mod websocket_e2e {
             loop {
                 match ws2.next().await {
                     Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
-                    Some(Ok(_)) => continue,
+                    Some(Ok(_)) => {}
                 }
             }
         })
@@ -3308,7 +3306,7 @@ mod websocket_e2e {
             loop {
                 match ws1.next().await {
                     Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
-                    Some(Ok(_)) => continue,
+                    Some(Ok(_)) => {}
                 }
             }
         })
@@ -3322,7 +3320,7 @@ mod websocket_e2e {
                 loop {
                     match ws2.next().await {
                         Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
-                        Some(Ok(_)) => continue,
+                        Some(Ok(_)) => {}
                     }
                 }
             })
@@ -3395,7 +3393,7 @@ mod websocket_e2e {
                         {
                             return true;
                         }
-                        Some(_) => continue,
+                        Some(_) => {}
                         None => return false,
                     }
                 }
@@ -3508,7 +3506,7 @@ mod websocket_e2e {
                         {
                             return true;
                         }
-                        Some(_) => continue,
+                        Some(_) => {}
                         None => return false,
                     }
                 }
@@ -3755,7 +3753,7 @@ mod websocket_e2e {
                     Some(Err(_)) => {
                         return "connection_error";
                     }
-                    _ => continue,
+                    _ => {}
                 }
             }
         })
@@ -3962,7 +3960,7 @@ mod websocket_connection_limit_timing {
         async fn cleanup(mut self) {
             self.pool.close().await;
             if let Some(redis) = self.redis.take() {
-                redis.cleanup().await;
+                redis.cleanup();
             }
             if let Some(postgres) = self.postgres.take() {
                 postgres.cleanup().await;
@@ -4179,6 +4177,8 @@ mod websocket_connection_limit_timing {
             rate_limiter,
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
             redis_conn: None,
+            shared_provider_stores: None,
+            shared_proxy_signing_key: None,
             builtin_stun_url: None,
             credential_encryption: None,
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
@@ -4591,6 +4591,7 @@ mod websocket_connection_limit_timing {
 // exceeded, the client is disconnected.
 
 mod slow_client_disconnect_tests {
+    const THRESHOLD: u32 = 10;
 
     /// Test that consecutive drop counter logic works correctly.
     /// This simulates the counter behavior without actual WebSocket.
@@ -4599,7 +4600,6 @@ mod slow_client_disconnect_tests {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         let counter = AtomicU32::new(0);
-        const THRESHOLD: u32 = 10;
 
         // Simulate 9 drops - should NOT trigger disconnect
         for _i in 0..9 {

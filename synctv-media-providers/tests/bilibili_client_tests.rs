@@ -340,7 +340,7 @@ fn test_dash_video_resp_deserialize() {
     });
     let resp: DashVideoResp = serde_json::from_value(json).unwrap();
     assert_eq!(resp.code, 0);
-    assert_eq!(resp.data.dash.duration, 300.0);
+    assert!((resp.data.dash.duration - 300.0).abs() < f64::EPSILON);
     assert_eq!(resp.data.dash.video.len(), 1);
     assert_eq!(resp.data.dash.video[0].width, 1920);
     assert_eq!(resp.data.dash.video[0].height, 1080);
@@ -629,7 +629,7 @@ fn test_dash_pgc_resp_deserialize() {
     });
     let resp: DashPgcResp = serde_json::from_value(json).unwrap();
     assert_eq!(resp.code, 0);
-    assert_eq!(resp.result.dash.duration, 1440.0);
+    assert!((resp.result.dash.duration - 1440.0).abs() < f64::EPSILON);
 }
 
 #[test]

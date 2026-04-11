@@ -363,7 +363,8 @@ fn test_admin_negative_page_handled() {
     // Now the cap at MAX_PAGE_SIZE
     let page_size: i32 = 500;
     let safe_page_size: i32 = if page_size > 0 { page_size } else { 50 };
-    let params = synctv_core::models::PageParams::new(Some(1), Some(safe_page_size as u32));
+    let params =
+        synctv_core::models::PageParams::new(Some(1), Some(safe_page_size.cast_unsigned()));
     assert!(
         params.page_size <= 100,
         "PageParams should cap at MAX_PAGE_SIZE even for large values"
@@ -474,7 +475,7 @@ fn test_i32_to_u32_negative_conversion() {
 #[test]
 fn test_i32_as_u32_is_dangerous() {
     // This demonstrates the bug we fixed: -1i32 as u32 wraps to u32::MAX
-    let negative: u32 = (-1i32) as u32;
+    let negative: u32 = (-1i32).cast_unsigned();
     let wrapped = negative;
     assert_eq!(wrapped, u32::MAX, "Demonstrates the wrapping bug");
 

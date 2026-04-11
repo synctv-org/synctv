@@ -247,9 +247,9 @@ impl Media {
         room_id: RoomId,
         creator_id: Option<UserId>,
         name: String,
-        playback_infos: std::collections::HashMap<String, PlaybackInfo>,
-        default_mode: String,
-        metadata: std::collections::HashMap<String, JsonValue>,
+        playback_infos: &std::collections::HashMap<String, PlaybackInfo>,
+        default_mode: &str,
+        metadata: &std::collections::HashMap<String, JsonValue>,
         position: f64,
     ) -> Self {
         // Only store playback_infos, default_mode, and metadata in source_config
@@ -296,9 +296,9 @@ impl Media {
             room_id,
             creator_id,
             name,
-            playback_infos,
-            mode_name.to_string(),
-            std::collections::HashMap::new(),
+            &playback_infos,
+            mode_name,
+            &std::collections::HashMap::new(),
             position,
         )
     }

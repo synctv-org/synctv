@@ -24,6 +24,8 @@ use super::range::{
 use super::status::CacheStatus;
 use super::store::{FullBodyWrite, SliceCache};
 
+const MAX_BUFFERED_SLICES: usize = 8;
+
 // ------------------------------------------------------------------
 // HEAD helper
 // ------------------------------------------------------------------
@@ -215,7 +217,6 @@ pub async fn proxy_with_cache_enabled(
 
     // For large range requests spanning many slices, stream directly from
     // upstream to avoid buffering all slice data in memory.
-    const MAX_BUFFERED_SLICES: usize = 8;
     if needed.len() > MAX_BUFFERED_SLICES {
         return stream_through_with_status(
             cache.client(),
@@ -397,9 +398,9 @@ pub(super) async fn full_body_cache_path(
             .await
         {
             // Refresh the TTL by re-inserting.
-            let (etag, last_modified) = existing_meta
-                .as_ref()
-                .map_or((None, None), |meta| (meta.etag.as_deref(), meta.last_modified.as_deref()));
+            let (etag, last_modified) = existing_meta.as_ref().map_or((None, None), |meta| {
+                (meta.etag.as_deref(), meta.last_modified.as_deref())
+            });
             let ttl = match content_type.as_deref() {
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,
@@ -476,9 +477,9 @@ async fn revalidate_stale_full_body_entry(
             .get_full_body_cached_entry(url, provider_headers)
             .await
         {
-            let (etag, last_modified) = existing_meta
-                .as_ref()
-                .map_or((None, None), |meta| (meta.etag.as_deref(), meta.last_modified.as_deref()));
+            let (etag, last_modified) = existing_meta.as_ref().map_or((None, None), |meta| {
+                (meta.etag.as_deref(), meta.last_modified.as_deref())
+            });
             let ttl = match content_type.as_deref() {
                 Some(ct) if is_manifest_content_type(ct) => cache.config().manifest_ttl,
                 _ => cache.config().segment_ttl,
@@ -505,24 +506,24 @@ async fn refresh_full_body_cache_entry(
     cache: &SliceCache,
     url: &str,
     provider_headers: &HashMap<String, String>,
-    _resp: reqwest::Response,
+    resp: reqwest::Response,
 ) -> Result<(), anyhow::Error> {
     let _update_guard = FullBodyUpdateGuard::new(cache, url, provider_headers);
 
-    if !_resp.status().is_success() {
+    if !resp.status().is_success() {
         return Ok(());
     }
-    let content_type = _resp
+    let content_type = resp
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
-    let etag = _resp
+    let etag = resp
         .headers()
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
-    let last_modified = _resp
+    let last_modified = resp
         .headers()
         .get("last-modified")
         .and_then(|v| v.to_str().ok())
@@ -530,7 +531,7 @@ async fn refresh_full_body_cache_entry(
 
     let max_body = cache.config().max_cacheable_body;
     let mut buf = Vec::with_capacity(std::cmp::min(max_body, 4 * 1024 * 1024));
-    let mut stream = _resp.bytes_stream();
+    let mut stream = resp.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
@@ -748,7 +749,6 @@ pub(super) async fn stream_through_with_status(
         }
     }
 
-    use futures::StreamExt;
     let stream = resp
         .bytes_stream()
         .map(|result| result.map_err(|e| std::io::Error::other(format!("Stream error: {e}"))));

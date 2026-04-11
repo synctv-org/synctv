@@ -187,19 +187,18 @@ impl CacheL2Backend for RedisCacheL2 {
                         return Err(Error::Internal(format!(
                             "Failed to delete from Redis cache: {e}"
                         )));
-                    } else {
-                        let backoff_ms = 10 * u64::pow(5, attempt);
-                        tracing::warn!(
-                            key = %key,
-                            error = %e,
-                            attempt = attempt + 1,
-                            max_retries = max_retries,
-                            backoff_ms = backoff_ms,
-                            cache_type = %cache_type,
-                            "Redis L2 cache delete failed, retrying"
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                     }
+                    let backoff_ms = 10 * u64::pow(5, attempt);
+                    tracing::warn!(
+                        key = %key,
+                        error = %e,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        backoff_ms = backoff_ms,
+                        cache_type = %cache_type,
+                        "Redis L2 cache delete failed, retrying"
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
                 Err(L2RedisAttemptError::Timeout) => {
                     let is_last_attempt = attempt == max_retries - 1;
@@ -216,18 +215,17 @@ impl CacheL2Backend for RedisCacheL2 {
                         return Err(Error::Timeout(
                             "L2 cache timeout: delete from Redis cache".to_string(),
                         ));
-                    } else {
-                        let backoff_ms = 10 * u64::pow(5, attempt);
-                        tracing::warn!(
-                            key = %key,
-                            attempt = attempt + 1,
-                            max_retries = max_retries,
-                            backoff_ms = backoff_ms,
-                            cache_type = %cache_type,
-                            "Redis L2 cache delete timed out, retrying"
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                     }
+                    let backoff_ms = 10 * u64::pow(5, attempt);
+                    tracing::warn!(
+                        key = %key,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        backoff_ms = backoff_ms,
+                        cache_type = %cache_type,
+                        "Redis L2 cache delete timed out, retrying"
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
             }
         }
@@ -280,7 +278,7 @@ impl CacheL2Backend for RedisCacheL2 {
             script
                 .key(key)
                 .arg(json)
-                .arg(ttl_secs as i64)
+                .arg(ttl_secs.cast_signed())
                 .arg(new_ts_iso)
                 .invoke_async(&mut conn),
         )

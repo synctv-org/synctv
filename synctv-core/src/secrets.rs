@@ -75,7 +75,7 @@ impl SecretLoader {
     /// - Secret values are NEVER logged
     /// - Only secret names and sources are logged
     /// - Fails fast if secret is not found
-    pub fn load(name: &str, source: SecretSource) -> Result<String> {
+    pub fn load(name: &str, source: &SecretSource) -> Result<String> {
         match source {
             SecretSource::File(path) => {
                 debug!(
@@ -138,7 +138,7 @@ impl SecretLoader {
                 Ok(value)
             }
             #[cfg(test)]
-            SecretSource::Direct(value) => Ok(value),
+            SecretSource::Direct(value) => Ok(value.clone()),
         }
     }
 
@@ -156,8 +156,8 @@ impl SecretLoader {
     /// The secret value, or an error if not found in either source
     pub fn load_with_fallback(
         name: &str,
-        primary: SecretSource,
-        fallback: SecretSource,
+        primary: &SecretSource,
+        fallback: &SecretSource,
     ) -> Result<String> {
         match Self::load(name, primary) {
             Ok(secret) => Ok(secret),
@@ -189,7 +189,7 @@ impl SecretLoader {
     ///
     /// # Returns
     /// Some(secret) if found, None otherwise
-    pub fn load_optional(name: &str, source: SecretSource) -> Option<String> {
+    pub fn load_optional(name: &str, source: &SecretSource) -> Option<String> {
         match Self::load(name, source) {
             Ok(secret) => Some(secret),
             Err(e) => {
@@ -245,7 +245,7 @@ pub fn validate_required_secrets(required_secrets: &[(&str, SecretSource)]) -> R
     let mut missing_secrets = Vec::new();
 
     for (name, source) in required_secrets {
-        if SecretLoader::load(name, source.clone()).is_err() {
+        if SecretLoader::load(name, source).is_err() {
             missing_secrets.push(*name);
         }
     }
@@ -268,23 +268,23 @@ mod tests {
     #[test]
     fn test_load_secret_direct() {
         let secret =
-            SecretLoader::load("test", SecretSource::Direct("my_secret".to_string())).unwrap();
+            SecretLoader::load("test", &SecretSource::Direct("my_secret".to_string())).unwrap();
         assert_eq!(secret, "my_secret");
     }
 
     #[test]
     fn test_load_secret_file_not_found() {
-        let result = SecretLoader::load("test", SecretSource::File("/nonexistent/path"));
+        let result = SecretLoader::load("test", &SecretSource::File("/nonexistent/path"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_load_optional() {
         let secret =
-            SecretLoader::load_optional("test", SecretSource::Direct("optional".to_string()));
+            SecretLoader::load_optional("test", &SecretSource::Direct("optional".to_string()));
         assert_eq!(secret, Some("optional".to_string()));
 
-        let missing = SecretLoader::load_optional("test", SecretSource::File("/nonexistent"));
+        let missing = SecretLoader::load_optional("test", &SecretSource::File("/nonexistent"));
         assert_eq!(missing, None);
     }
 

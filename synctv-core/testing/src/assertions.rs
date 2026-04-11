@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Value 15 is not in range [1, 10]")]
     fn test_assert_in_range_out_of_bounds() {
         assert_in_range!(15, 1, 10);
     }

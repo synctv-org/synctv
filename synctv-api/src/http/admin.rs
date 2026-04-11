@@ -1770,9 +1770,8 @@ mod tests {
         let mut state = crate::http::tests::test_app_state();
         state.admin_api = None;
 
-        let err = match require_admin_api(&state) {
-            Ok(_) => panic!("missing admin api should fail"),
-            Err(err) => err,
+        let Err(err) = require_admin_api(&state) else {
+            panic!("missing admin api should fail");
         };
         assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(

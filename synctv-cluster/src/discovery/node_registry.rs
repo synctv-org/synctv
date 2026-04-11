@@ -21,6 +21,9 @@ const NODES_STALE_THRESHOLD_SECS: u64 = 30;
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
 
+/// Interval between cached Redis connection health checks.
+const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+
 /// TTL for the `get_all_nodes()` moka cache, in seconds.
 ///
 /// This controls the maximum staleness of node discovery queries used by health
@@ -40,6 +43,9 @@ const REDIS_TIMEOUT_SECS: u64 = 5;
 /// still coalescing bursts of `get_all_nodes()` calls within the same tick.
 const NODES_CACHE_TTL_SECS: u64 = 2;
 
+/// Maximum number of SCAN iterations when listing cluster node keys.
+const MAX_SCAN_ITERATIONS: usize = 1000;
+
 /// Create a failsafe circuit breaker for Redis operations.
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
@@ -49,6 +55,20 @@ fn create_redis_circuit_breaker(
     let backoff = backoff::exponential(Duration::from_secs(10), Duration::from_mins(1));
     let policy = failure_policy::consecutive_failures(3, backoff);
     CbConfig::new().failure_policy(policy).build()
+}
+
+fn unix_time_millis_u64() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Node information
@@ -367,15 +387,11 @@ impl NodeRegistry {
     ///
     /// Returns an error in local-only mode (no Redis client configured).
     async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
-        let client = match &self.redis_client {
-            Some(c) => c,
-            None => {
-                return Err(Error::Database(
-                    "Redis not configured (local-only mode)".to_string(),
-                ));
-            }
+        let Some(client) = &self.redis_client else {
+            return Err(Error::Database(
+                "Redis not configured (local-only mode)".to_string(),
+            ));
         };
-        const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 
         let mut guard = self.cached_conn.lock().await;
 
@@ -463,13 +479,10 @@ impl NodeRegistry {
             ));
         }
 
-        let circuit_breaker = match &self.circuit_breaker {
-            Some(cb) => cb,
-            None => {
-                return Err(Error::Database(
-                    "Circuit breaker not configured (local-only mode)".to_string(),
-                ));
-            }
+        let Some(circuit_breaker) = &self.circuit_breaker else {
+            return Err(Error::Database(
+                "Circuit breaker not configured (local-only mode)".to_string(),
+            ));
         };
 
         if !circuit_breaker.is_call_permitted() {
@@ -505,9 +518,8 @@ impl NodeRegistry {
     /// The probe task automatically stops when the circuit closes, the
     /// `CancellationToken` is cancelled, or the NodeRegistry is dropped.
     fn maybe_start_health_probe(&self, client: redis::Client) {
-        let circuit_breaker = match &self.circuit_breaker {
-            Some(cb) => cb,
-            None => return, // No circuit breaker in local-only mode
+        let Some(circuit_breaker) = &self.circuit_breaker else {
+            return;
         };
 
         // Check if circuit is open before spawning
@@ -953,7 +965,7 @@ impl NodeRegistry {
                 return Ok(HeartbeatResult::Ok);
             } else if result <= -1000 {
                 // Lua returns -(1000 + remote_epoch) on epoch mismatch
-                let remote_epoch = ((-result) - 1000) as u64;
+                let remote_epoch = ((-result) - 1000).cast_unsigned();
                 // Check for empty api_address before attempting re-registration
                 if api_addr.is_empty() {
                     tracing::error!(
@@ -1327,11 +1339,6 @@ impl NodeRegistry {
             let pattern = format!("{}:*", self.key_prefix);
             let mut keys = Vec::new();
             let mut cursor: u64 = 0;
-            /// Maximum number of SCAN iterations to prevent an infinite loop on
-            /// large or unexpectedly-growing keyspaces.  Each iteration requests
-            /// up to 100 keys (COUNT hint), so 1 000 iterations covers ~100 000
-            /// cluster-node keys — far beyond any realistic deployment.
-            const MAX_SCAN_ITERATIONS: usize = 1000;
             let mut scan_iterations: usize = 0;
 
             loop {
@@ -1663,10 +1670,7 @@ impl NodeRegistry {
         }
 
         let backoff_ms = self.reregister_backoff_ms.load(Ordering::Relaxed);
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = unix_time_millis_u64();
 
         let elapsed_ms = now_ms.saturating_sub(last_attempt);
         elapsed_ms < backoff_ms
@@ -1677,10 +1681,7 @@ impl NodeRegistry {
     /// Updates the last attempt timestamp and increases the backoff duration
     /// by the multiplier (2x), up to the maximum.
     fn apply_reregister_backoff(&self) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = unix_time_millis_u64();
 
         self.last_reregister_attempt
             .store(now_ms, Ordering::Relaxed);
@@ -1721,32 +1722,29 @@ impl NodeRegistry {
 
     /// Check if currently in re-registration backoff period (async wrapper for tests).
     #[doc(hidden)]
-    pub async fn is_in_reregister_backoff(&self) -> bool {
+    pub fn is_in_reregister_backoff(&self) -> bool {
         self.is_in_reregister_backoff_sync()
     }
 
     /// Get the current re-registration backoff duration.
     #[doc(hidden)]
-    pub async fn current_reregister_backoff(&self) -> std::time::Duration {
+    pub fn current_reregister_backoff(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.reregister_backoff_ms.load(Ordering::Relaxed))
     }
 
     /// Get the timestamp of the last re-registration attempt (for tests).
     #[doc(hidden)]
-    pub async fn last_reregister_attempt(&self) -> u64 {
+    pub fn last_reregister_attempt(&self) -> u64 {
         self.last_reregister_attempt.load(Ordering::Relaxed)
     }
 
     /// Set a specific backoff duration for testing purposes.
     #[doc(hidden)]
-    pub async fn set_reregister_backoff_for_test(&self, duration: std::time::Duration) {
+    pub fn set_reregister_backoff_for_test(&self, duration: std::time::Duration) {
         self.reregister_backoff_ms
-            .store(duration.as_millis() as u64, Ordering::Relaxed);
+            .store(duration_millis_u64(duration), Ordering::Relaxed);
         // Set last attempt to now so the backoff is active
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = unix_time_millis_u64();
         self.last_reregister_attempt
             .store(now_ms, Ordering::Relaxed);
     }
@@ -1991,33 +1989,15 @@ mod tests {
         let epoch_mismatch = HeartbeatResult::EpochMismatch(42);
         let empty_addr = HeartbeatResult::EmptyAddress;
 
-        match ok {
-            HeartbeatResult::Ok => {}
-            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
-            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
-            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
-        }
-
-        match need_rereg {
-            HeartbeatResult::Ok => panic!("wrong variant"),
-            HeartbeatResult::NeedReregistration => {}
-            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
-            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
-        }
-
+        assert!(matches!(ok, HeartbeatResult::Ok));
+        assert!(matches!(need_rereg, HeartbeatResult::NeedReregistration));
         match epoch_mismatch {
-            HeartbeatResult::Ok => panic!("wrong variant"),
-            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
-            HeartbeatResult::EpochMismatch(e) => assert_eq!(e, 42),
-            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
+            HeartbeatResult::EpochMismatch(epoch) => assert_eq!(epoch, 42),
+            HeartbeatResult::Ok
+            | HeartbeatResult::NeedReregistration
+            | HeartbeatResult::EmptyAddress => panic!("wrong variant"),
         }
-
-        match empty_addr {
-            HeartbeatResult::Ok => panic!("wrong variant"),
-            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
-            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
-            HeartbeatResult::EmptyAddress => {}
-        }
+        assert!(matches!(empty_addr, HeartbeatResult::EmptyAddress));
     }
 
     #[tokio::test]

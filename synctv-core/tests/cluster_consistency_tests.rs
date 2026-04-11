@@ -80,7 +80,7 @@ impl TestInfra {
     #[allow(dead_code)]
     async fn cleanup(mut self) {
         if let Some(redis) = self.redis.take() {
-            redis.cleanup().await;
+            redis.cleanup();
         }
         if let Some(postgres) = self.postgres.take() {
             postgres.cleanup().await;
@@ -311,8 +311,8 @@ async fn test_permission_change_cross_replica_sync() {
         "Node B permissions should have changed"
     );
     assert_eq!(
-        perms_b_after.0 & 12345,
-        12345,
+        perms_b_after.0 & 0x3039,
+        0x3039,
         "Node B should see the added permission bits"
     );
 }
@@ -861,8 +861,8 @@ async fn test_cache_consistency_without_redis() {
         "Permissions should have changed after invalidation"
     );
     assert_eq!(
-        perms_after.0 & 99999,
-        99999,
+        perms_after.0 & 0x0001_869F,
+        0x0001_869F,
         "Should see the added permission bits after local invalidation"
     );
 }

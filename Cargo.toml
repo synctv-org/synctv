@@ -28,7 +28,31 @@ license = "MIT OR Apache-2.0"
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+todo = "deny"
 unwrap_used = "warn"
+doc_markdown = "allow"
+struct_excessive_bools = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+missing_fields_in_debug = "allow"
+trivially_copy_pass_by_ref = "allow"
+default_trait_access = "allow"
+match_wildcard_for_single_variants = "allow"
+explicit_deref_methods = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+wildcard_imports = "allow"
+redundant_pub_crate = "allow"
+similar_names = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+needless_for_each = "allow"
 
 [workspace.dependencies]
 # Async Runtime

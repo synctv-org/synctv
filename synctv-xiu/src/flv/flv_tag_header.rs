@@ -209,9 +209,10 @@ impl Marshal<Result<BytesMut, FlvMuxerError>> for VideoTagHeader {
             writer.write_u8(self.avc_packet_type)?;
 
             let cts = self.composition_time;
-            writer.write_u8(((cts >> 16) & 0xFF) as u8)?;
-            writer.write_u8(((cts >> 8) & 0xFF) as u8)?;
-            writer.write_u8((cts & 0xFF) as u8)?;
+            let cts_bytes = cts.to_be_bytes();
+            writer.write_u8(cts_bytes[1])?;
+            writer.write_u8(cts_bytes[2])?;
+            writer.write_u8(cts_bytes[3])?;
         }
 
         Ok(writer.extract_current_bytes())

@@ -11,6 +11,20 @@ use super::errors::MpegErrorValue;
 use crate::h264::sps::SpsParser;
 
 const H264_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
+const MAX_SPS_COUNT: u8 = 16;
+const MAX_PPS_COUNT: u8 = 16;
+
+fn usize_to_u8(value: usize) -> Result<u8, Mpeg4AvcHevcError> {
+    u8::try_from(value).map_err(|_| Mpeg4AvcHevcError {
+        value: MpegErrorValue::ShouldNotComeHere,
+    })
+}
+
+fn usize_to_u16(value: usize) -> Result<u16, Mpeg4AvcHevcError> {
+    u16::try_from(value).map_err(|_| Mpeg4AvcHevcError {
+        value: MpegErrorValue::ShouldNotComeHere,
+    })
+}
 
 #[derive(Clone, Default)]
 pub struct Sps {
@@ -175,7 +189,6 @@ impl Mpeg4AvcProcessor {
 
         // Validate SPS count: H.264 spec allows up to 31, but typical streams use 1-4
         // Limiting to 16 prevents memory exhaustion while allowing reasonable flexibility
-        const MAX_SPS_COUNT: u8 = 16;
         if self.mpeg4_avc.nb_sps > MAX_SPS_COUNT {
             return Err(Mpeg4AvcHevcError {
                 value: MpegErrorValue::SpsPpsCountExceeded {
@@ -189,13 +202,13 @@ impl Mpeg4AvcProcessor {
             self.clear_sps_data();
         }
 
-        for i in 0..self.mpeg4_avc.nb_sps as usize {
+        for i in 0..usize::from(self.mpeg4_avc.nb_sps) {
             /*SPS size*/
             let sps_data_size = bytes_reader.read_u16::<BigEndian>()?;
             let sps_data = Sps {
                 // size: sps_data_size,
                 /*SPS data*/
-                data: bytes_reader.read_bytes(sps_data_size as usize)?,
+                data: bytes_reader.read_bytes(usize::from(sps_data_size))?,
             };
 
             let mut sps_reader = BytesReader::new(sps_data.clone().data);
@@ -228,7 +241,6 @@ impl Mpeg4AvcProcessor {
         self.mpeg4_avc.nb_pps = bytes_reader.read_u8()?;
 
         // Validate PPS count: similar to SPS, limit to prevent memory exhaustion
-        const MAX_PPS_COUNT: u8 = 16;
         if self.mpeg4_avc.nb_pps > MAX_PPS_COUNT {
             return Err(Mpeg4AvcHevcError {
                 value: MpegErrorValue::SpsPpsCountExceeded {
@@ -242,11 +254,11 @@ impl Mpeg4AvcProcessor {
             self.clear_pps_data();
         }
 
-        for i in 0..self.mpeg4_avc.nb_pps as usize {
+        for i in 0..usize::from(self.mpeg4_avc.nb_pps) {
             let pps_data_size = bytes_reader.read_u16::<BigEndian>()?;
             let pps_data = Pps {
                 // size: pps_data_size,
-                data: bytes_reader.read_bytes(pps_data_size as usize)?,
+                data: bytes_reader.read_bytes(usize::from(pps_data_size))?,
             };
 
             self.mpeg4_avc.pps.push(pps_data);
@@ -315,7 +327,7 @@ impl Mpeg4AvcProcessor {
         let nalu_length = self.mpeg4_avc.nalu_length;
         for i in 0..nalu_length {
             let shift = (nalu_length - i - 1) * 8;
-            let num = ((length >> shift) & 0xFF) as u8;
+            let num = usize_to_u8((length >> shift) & 0xFF)?;
             writer.write_u8(num)?;
         }
         Ok(())
@@ -347,15 +359,15 @@ impl Mpeg4AvcProcessor {
 
         //sps
         bytes_writer.write_u8(self.mpeg4_avc.nb_sps | 0xE0)?;
-        for i in 0..self.mpeg4_avc.nb_sps as usize {
-            bytes_writer.write_u16::<BigEndian>(self.mpeg4_avc.sps[i].len() as u16)?;
+        for i in 0..usize::from(self.mpeg4_avc.nb_sps) {
+            bytes_writer.write_u16::<BigEndian>(usize_to_u16(self.mpeg4_avc.sps[i].len())?)?;
             bytes_writer.write(&self.mpeg4_avc.sps[i].data[..])?;
         }
 
         //pps
         bytes_writer.write_u8(self.mpeg4_avc.nb_pps)?;
-        for i in 0..self.mpeg4_avc.nb_pps as usize {
-            bytes_writer.write_u16::<BigEndian>(self.mpeg4_avc.pps[i].len() as u16)?;
+        for i in 0..usize::from(self.mpeg4_avc.nb_pps) {
+            bytes_writer.write_u16::<BigEndian>(usize_to_u16(self.mpeg4_avc.pps[i].len())?)?;
             bytes_writer.write(&self.mpeg4_avc.pps[i].data[..])?;
         }
 
@@ -398,7 +410,7 @@ mod tests {
 
         for i in 0..length {
             let shift = (length - i - 1) * 8;
-            let num = ((size >> shift) & 0xFF) as u8;
+            let num = u8::try_from((size >> shift) & 0xFF).unwrap();
             bytes_writer.write_u8(num).unwrap();
         }
         assert_eq!(

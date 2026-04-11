@@ -197,6 +197,7 @@ pub(crate) async fn logout(
         get,
         path = "/api/providers/alist/binds",
         tag = "Provider",
+        params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Alist credentials", body = GetBindsResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
@@ -210,14 +211,17 @@ pub(crate) async fn logout(
 pub(crate) async fn binds(
     auth: crate::http::middleware::AuthUser,
     State(state): State<AppState>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     tracing::info!("Alist binds request for user: {}", auth.user_id);
+    let instance_name = provider_instance_name(&query)?;
 
     let provider_binds = get_provider_binds(
         &state.user_provider_credential_repository,
         &auth.user_id.to_string(),
         synctv_core::provider::AlistProvider::NAME,
         "username",
+        instance_name,
     )
     .await
     .map_err(AppError::from)?;

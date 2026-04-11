@@ -241,8 +241,8 @@ impl ManagementLifecycleController {
             .read()
             .expect("shutdown mode rwlock poisoned");
         let effective_mode = match (current_mode, requested_mode) {
-            (Some(ShutdownMode::Force), _) => ShutdownMode::Force,
-            (Some(ShutdownMode::Graceful), ShutdownMode::Force) => ShutdownMode::Force,
+            (Some(ShutdownMode::Force), _)
+            | (Some(ShutdownMode::Graceful), ShutdownMode::Force) => ShutdownMode::Force,
             (Some(existing), _) => existing,
             (None, mode) => mode,
         };
@@ -284,10 +284,13 @@ impl ManagementLifecycleController {
 }
 
 fn unix_millis_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

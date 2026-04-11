@@ -260,12 +260,12 @@ impl BilibiliSourceConfig {
             Self::Video {
                 provider_instance_name,
                 ..
-            } => provider_instance_name.as_deref(),
-            Self::Pgc {
+            }
+            | Self::Pgc {
                 provider_instance_name,
                 ..
-            } => provider_instance_name.as_deref(),
-            Self::Live {
+            }
+            | Self::Live {
                 provider_instance_name,
                 ..
             } => provider_instance_name.as_deref(),
@@ -279,6 +279,51 @@ impl BilibiliSourceConfig {
             | Self::Pgc { credential_ref, .. }
             | Self::Live { credential_ref, .. } => credential_ref,
         }
+    }
+}
+
+fn playback_cache_entry(config: &BilibiliSourceConfig) -> (String, Duration) {
+    match config {
+        BilibiliSourceConfig::Video {
+            bvid,
+            aid,
+            cid,
+            credential_ref,
+            ..
+        } => (
+            format!(
+                "playback:video:{}:{}:{}:{}:{}",
+                bvid.as_deref().unwrap_or(""),
+                aid.unwrap_or(0),
+                cid,
+                credential_ref.server_id,
+                credential_ref.credential_owner_id
+            ),
+            Duration::from_hours(2),
+        ),
+        BilibiliSourceConfig::Pgc {
+            epid,
+            cid,
+            credential_ref,
+            ..
+        } => (
+            format!(
+                "playback:pgc:{epid}:{cid}:{}:{}",
+                credential_ref.server_id, credential_ref.credential_owner_id
+            ),
+            Duration::from_hours(2),
+        ),
+        BilibiliSourceConfig::Live {
+            room_id,
+            credential_ref,
+            ..
+        } => (
+            format!(
+                "playback:live:{room_id}:{}:{}",
+                credential_ref.server_id, credential_ref.credential_owner_id
+            ),
+            Duration::from_mins(2),
+        ),
     }
 }
 
@@ -318,53 +363,12 @@ impl MediaProvider for BilibiliProvider {
         let credential =
             super::credential_resolver::resolve_credential(repo, Self::NAME, cred_ref).await?;
 
-        let cookies = match credential {
-            crate::models::ProviderCredential::Bilibili { cookies } => cookies,
-            _ => return Err(ProviderError::InvalidCredentialType),
+        let crate::models::ProviderCredential::Bilibili { cookies } = credential else {
+            return Err(ProviderError::InvalidCredentialType);
         };
 
-        // Build cache key based on content identity + server_id (user-specific)
-        let (cache_key, cache_ttl) = match &config {
-            BilibiliSourceConfig::Video {
-                bvid,
-                aid,
-                cid,
-                credential_ref,
-                ..
-            } => (
-                format!(
-                    "playback:video:{}:{}:{}:{}",
-                    bvid.as_deref().unwrap_or(""),
-                    aid.unwrap_or(0),
-                    cid,
-                    credential_ref.credential_owner_id
-                ),
-                Duration::from_hours(2), // 2 hours
-            ),
-            BilibiliSourceConfig::Pgc {
-                epid,
-                cid,
-                credential_ref,
-                ..
-            } => (
-                format!(
-                    "playback:pgc:{epid}:{cid}:{}",
-                    credential_ref.credential_owner_id
-                ),
-                Duration::from_hours(2),
-            ),
-            BilibiliSourceConfig::Live {
-                room_id,
-                credential_ref,
-                ..
-            } => (
-                format!(
-                    "playback:live:{room_id}:{}",
-                    credential_ref.credential_owner_id
-                ),
-                Duration::from_mins(2), // Live streams expire quickly
-            ),
-        };
+        // Cache by content identity plus the exact credential binding that resolved it.
+        let (cache_key, cache_ttl) = playback_cache_entry(&config);
 
         let store = _ctx.store.as_ref();
 
@@ -475,20 +479,17 @@ impl MediaProvider for BilibiliProvider {
         // Verify credential_ref points to an existing credential
         if let Some(repo) = _ctx.credential_repo {
             let cred_ref = config.credential_ref();
-            repo.get_by_provider_and_server(
-                &cred_ref.credential_owner_id,
-                Self::NAME,
-                &cred_ref.server_id,
-            )
-            .await
-            .map_err(|e| {
-                ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
-            })?
-            .ok_or_else(|| {
-                ProviderError::CredentialNotFound(
-                    "Referenced bilibili credential does not exist".to_string(),
-                )
-            })?;
+            let credential_owner_id = _ctx.user_id.unwrap_or(&cred_ref.credential_owner_id);
+            repo.get_by_provider_and_server(credential_owner_id, Self::NAME, &cred_ref.server_id)
+                .await
+                .map_err(|e| {
+                    ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
+                })?
+                .ok_or_else(|| {
+                    ProviderError::CredentialNotFound(
+                        "Referenced bilibili credential does not exist".to_string(),
+                    )
+                })?;
         }
 
         Ok(())
@@ -518,6 +519,7 @@ impl MediaProvider for BilibiliProvider {
 //
 // Supported sub_paths:
 // - `{version}/subtitle/{name}` — proxy a specific subtitle track
+// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
 // - `{room_id}/{media_id}/danmu` — danmaku server connection info (JSON)
 #[async_trait]
@@ -535,20 +537,99 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
 
         // Try `{version}/subtitle/{name}`
         if let Some((version, rest)) = sub_path.split_once('/') {
-            if let Some(name) = rest.strip_prefix("subtitle/") {
+            if let Some(stream_path) = rest.strip_prefix("stream/") {
                 let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
-                let subtitle_url = versioned
-                    .result
-                    .playback_infos
-                    .values()
-                    .flat_map(|pi| &pi.subtitles)
-                    .find(|s| s.name == name)
-                    .map(|s| s.url.clone())
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            stream_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: url.clone(),
+                    headers: if playback_info.headers.is_empty() {
+                        bilibili_headers()
+                    } else {
+                        playback_info.headers.clone()
+                    },
+                });
+            }
+
+            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
+                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let (subtitle_url, subtitle_headers) =
+                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
+                        let playback_info = versioned
+                            .result
+                            .playback_infos
+                            .get(mode_name)
+                            .ok_or(ProviderError::NotFound)?;
+                        let index: usize = index_str.parse().map_err(|_| {
+                            ProviderError::ApiError("Invalid subtitle index".into())
+                        })?;
+                        playback_info.subtitles.get(index).map(|subtitle| {
+                            (
+                                subtitle.url.clone(),
+                                super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                            )
+                        })
+                    } else {
+                        let default_playback_info = versioned
+                            .result
+                            .playback_infos
+                            .get(&versioned.result.default_mode)
+                            .ok_or(ProviderError::NotFound)?;
+                        subtitle_path
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|index| default_playback_info.subtitles.get(index))
+                            .or_else(|| {
+                                default_playback_info
+                                    .subtitles
+                                    .iter()
+                                    .find(|subtitle| subtitle.name == subtitle_path)
+                            })
+                            .map(|subtitle| {
+                                (
+                                    subtitle.url.clone(),
+                                    super::subtitle_headers_for_proxy(
+                                        &default_playback_info.headers,
+                                        subtitle,
+                                    ),
+                                )
+                            })
+                    }
                     .ok_or(ProviderError::NotFound)?;
 
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: subtitle_url,
-                    headers: bilibili_headers(),
+                    headers: if subtitle_headers.is_empty() {
+                        bilibili_headers()
+                    } else {
+                        subtitle_headers
+                    },
                 });
             }
 
@@ -719,6 +800,7 @@ impl BilibiliProvider {
                                 language: name.clone(),
                                 name,
                                 url,
+                                headers: HashMap::new(),
                                 format: "json".to_string(),
                             })
                             .collect();
@@ -798,6 +880,7 @@ impl BilibiliProvider {
                                 language: name.clone(),
                                 name,
                                 url,
+                                headers: HashMap::new(),
                                 format: "json".to_string(),
                             })
                             .collect();
@@ -931,13 +1014,13 @@ mod tests {
         Arc::new(RemoteProviderManager::new(repo))
     }
 
-    fn validate_bilibili(config: Value) -> Result<(), ProviderError> {
+    fn validate_bilibili(config: &Value) -> Result<(), ProviderError> {
         tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(async {
                 let provider = BilibiliProvider::new(fake_provider_instance_manager());
                 provider
-                    .validate_source_config(&ProviderContext::new("test"), &config)
+                    .validate_source_config(&ProviderContext::new("test"), config)
                     .await
             })
     }
@@ -950,7 +1033,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -961,7 +1044,7 @@ mod tests {
             "cid": 67890,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -971,7 +1054,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -982,7 +1065,7 @@ mod tests {
             "cid": 0,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -993,7 +1076,7 @@ mod tests {
             "cid": 67890,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -1004,7 +1087,7 @@ mod tests {
             "cid": 67890,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1014,7 +1097,7 @@ mod tests {
             "room_id": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -1024,7 +1107,7 @@ mod tests {
             "room_id": 0,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1034,7 +1117,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1045,7 +1128,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1056,7 +1139,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1067,7 +1150,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1078,7 +1161,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1089,7 +1172,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1100,7 +1183,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1111,7 +1194,7 @@ mod tests {
             "cid": 12345,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -1123,7 +1206,7 @@ mod tests {
             "cid": 67890,
             "credential_ref": test_cred_ref()
         });
-        assert!(validate_bilibili(config).is_ok());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
@@ -1134,7 +1217,7 @@ mod tests {
             "bvid": "BV1xx411c7mD",
             "cid": 12345
         });
-        assert!(validate_bilibili(config).is_err());
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
@@ -1152,5 +1235,73 @@ mod tests {
         let cred_ref = parsed.credential_ref();
         assert_eq!(cred_ref.credential_owner_id, "user456");
         assert_eq!(cred_ref.server_id, "bilibili");
+    }
+
+    #[test]
+    fn test_playback_cache_entry_isolated_by_server_id() {
+        let first = BilibiliSourceConfig::try_from(&json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "user456",
+                "server_id": "bilibili-main"
+            }
+        }))
+        .expect("first config should parse");
+        let second = BilibiliSourceConfig::try_from(&json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "user456",
+                "server_id": "bilibili-backup"
+            }
+        }))
+        .expect("second config should parse");
+
+        let (first_key, first_ttl) = playback_cache_entry(&first);
+        let (second_key, second_ttl) = playback_cache_entry(&second);
+
+        assert_eq!(first_ttl, Duration::from_hours(2));
+        assert_eq!(second_ttl, Duration::from_hours(2));
+        assert_ne!(
+            first_key, second_key,
+            "Bilibili playback cache must not collide across distinct credential server_ids"
+        );
+    }
+
+    #[test]
+    fn test_playback_cache_entry_isolated_by_credential_owner() {
+        let first = BilibiliSourceConfig::try_from(&json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "user-alpha",
+                "server_id": "bilibili-main"
+            }
+        }))
+        .expect("first config should parse");
+        let second = BilibiliSourceConfig::try_from(&json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "user-beta",
+                "server_id": "bilibili-main"
+            }
+        }))
+        .expect("second config should parse");
+
+        let (first_key, first_ttl) = playback_cache_entry(&first);
+        let (second_key, second_ttl) = playback_cache_entry(&second);
+
+        assert_eq!(first_ttl, Duration::from_hours(2));
+        assert_eq!(second_ttl, Duration::from_hours(2));
+        assert_ne!(
+            first_key, second_key,
+            "Bilibili playback cache must not collide across distinct credential owners"
+        );
     }
 }

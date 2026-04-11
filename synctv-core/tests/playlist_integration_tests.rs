@@ -319,7 +319,7 @@ async fn test_next_append_position_uses_sparse_floating_positions() {
         .get_next_append_position_with_tx(&room.id, Some(&root.id), &mut tx)
         .await
         .unwrap();
-    assert_eq!(first_position, 1024.0);
+    assert!((first_position - 1024.0).abs() < f64::EPSILON);
 
     playlist_repo
         .create_with_executor(
@@ -346,7 +346,7 @@ async fn test_next_append_position_uses_sparse_floating_positions() {
         .get_next_append_position_with_tx(&room.id, Some(&root.id), &mut tx)
         .await
         .unwrap();
-    assert_eq!(second_position, 2048.0);
+    assert!((second_position - 2048.0).abs() < f64::EPSILON);
     tx.commit().await.unwrap();
 }
 

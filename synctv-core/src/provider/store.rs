@@ -411,6 +411,11 @@ impl ProviderStoreRegistry {
             })
             .clone()
     }
+
+    #[must_use]
+    pub fn key_prefix(&self) -> &str {
+        &self.key_prefix
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +447,12 @@ mod tests {
     use std::sync::Arc;
     use testcontainers::{runners::AsyncRunner, ContainerAsync};
     use testcontainers_modules::redis::Redis;
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct TestData {
+        name: String,
+        count: u32,
+    }
 
     async fn start_redis() -> (
         ContainerAsync<Redis>,
@@ -535,11 +546,6 @@ mod tests {
     #[tokio::test]
     async fn test_typed_get_set() {
         let store = InMemoryProviderStore::new(100);
-        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-        struct TestData {
-            name: String,
-            count: u32,
-        }
         let data = TestData {
             name: "test".to_string(),
             count: 42,

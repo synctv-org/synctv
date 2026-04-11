@@ -1,6 +1,9 @@
 //! Logto `OAuth2` provider
 
-use super::{build_oauth2_http_client, build_provider_http_client, map_provider_http_error};
+use super::{
+    build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
+    validate_provider_url,
+};
 use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
@@ -29,8 +32,19 @@ pub struct LogtoProvider {
     client:
         Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
     endpoint: String,
-    oauth2_http_client: Arc<oauth2::reqwest::Client>,
+    oauth2_http_client: Arc<super::OAuth2HttpClient>,
     http_client: Arc<Client>,
+}
+
+#[derive(Deserialize)]
+struct LogtoUser {
+    sub: String,
+    username: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
+    picture: Option<String>,
 }
 
 impl LogtoProvider {
@@ -45,9 +59,16 @@ impl LogtoProvider {
         endpoint: &str,
     ) -> Result<Self, Error> {
         let endpoint = endpoint.trim_end_matches('/');
-        let auth_url = AuthUrl::new(format!("{endpoint}/oidc/auth"))
+        validate_provider_url(endpoint, "Invalid Logto endpoint")?;
+        let auth_url_str = format!("{endpoint}/oidc/auth");
+        let token_url_str = format!("{endpoint}/oidc/token");
+        let userinfo_url = format!("{endpoint}/oidc/me");
+        validate_provider_url(&auth_url_str, "Invalid Logto auth URL")?;
+        validate_provider_url(&token_url_str, "Invalid Logto token URL")?;
+        validate_provider_url(&userinfo_url, "Invalid Logto user info URL")?;
+        let auth_url = AuthUrl::new(auth_url_str)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto auth URL: {e}")))?;
-        let token_url = TokenUrl::new(format!("{endpoint}/oidc/token"))
+        let token_url = TokenUrl::new(token_url_str)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto token URL: {e}")))?;
         let redirect = RedirectUrl::new(redirect_url)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto redirect URL: {e}")))?;
@@ -112,17 +133,6 @@ impl Provider for LogtoProvider {
             .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
             .error_for_status()
             .internal_with_err("Logto API error")?;
-
-        #[derive(Deserialize)]
-        struct LogtoUser {
-            sub: String,
-            username: Option<String>,
-            name: Option<String>,
-            email: Option<String>,
-            #[serde(default)]
-            email_verified: bool,
-            picture: Option<String>,
-        }
 
         let user: LogtoUser = resp
             .json()
@@ -211,6 +221,18 @@ mod tests {
         // Invalid endpoint should fail when constructing auth/token URLs
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_create_provider_rejects_loopback_endpoint() {
+        let result = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "http://127.0.0.1:8443",
+        );
+
+        assert!(matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
     }
 
     // ==================== Provider Type ====================

@@ -10,8 +10,37 @@
 //! 7. Statistics data processing
 
 #![allow(clippy::unwrap_used)]
+use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
+use synctv_xiu::streamhub::define::{DataSender, SubscribeType, TStreamHandler};
+use synctv_xiu::streamhub::errors::StreamHubError;
+
+struct MockHandler;
+
+#[async_trait]
+impl TStreamHandler for MockHandler {
+    async fn send_prior_data(
+        &self,
+        _sender: DataSender,
+        _sub_type: SubscribeType,
+    ) -> Result<(), StreamHubError> {
+        Ok(())
+    }
+}
+
+struct MockHandler2;
+
+#[async_trait]
+impl TStreamHandler for MockHandler2 {
+    async fn send_prior_data(
+        &self,
+        _sender: DataSender,
+        _sub_type: SubscribeType,
+    ) -> Result<(), StreamHubError> {
+        Ok(())
+    }
+}
 
 // === RTMP Chunk Header Tests ===
 
@@ -698,7 +727,6 @@ fn test_publish_type_serialization() {
 #[tokio::test]
 async fn test_streams_hub_publish_and_subscribe() {
     use synctv_xiu::streamhub::define::*;
-    use synctv_xiu::streamhub::errors::StreamHubError;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::StreamsHub;
 
@@ -710,19 +738,6 @@ async fn test_streams_hub_publish_and_subscribe() {
         stream_name: "test_stream".to_string(),
     };
 
-    // Create a mock stream handler
-    struct MockHandler;
-    #[async_trait::async_trait]
-    impl TStreamHandler for MockHandler {
-        async fn send_prior_data(
-            &self,
-            _sender: DataSender,
-            _sub_type: SubscribeType,
-        ) -> Result<(), StreamHubError> {
-            Ok(())
-        }
-    }
-
     let handler: Arc<dyn TStreamHandler> = Arc::new(MockHandler);
 
     // Create frame data receiver
@@ -733,9 +748,7 @@ async fn test_streams_hub_publish_and_subscribe() {
     };
 
     // Publish
-    let result = hub
-        .publish(identifier.clone(), PublishType::RtmpPush, receiver, handler)
-        .await;
+    let result = hub.publish(identifier.clone(), PublishType::RtmpPush, receiver, handler);
     assert!(result.is_ok());
 
     // Duplicate publish should fail
@@ -745,26 +758,12 @@ async fn test_streams_hub_publish_and_subscribe() {
         packet_receiver: None,
     };
 
-    struct MockHandler2;
-    #[async_trait::async_trait]
-    impl TStreamHandler for MockHandler2 {
-        async fn send_prior_data(
-            &self,
-            _sender: DataSender,
-            _sub_type: SubscribeType,
-        ) -> Result<(), StreamHubError> {
-            Ok(())
-        }
-    }
-
-    let result2 = hub
-        .publish(
-            identifier.clone(),
-            PublishType::RtmpPush,
-            receiver2,
-            Arc::new(MockHandler2),
-        )
-        .await;
+    let result2 = hub.publish(
+        identifier.clone(),
+        PublishType::RtmpPush,
+        receiver2,
+        Arc::new(MockHandler2),
+    );
     assert!(result2.is_err());
 }
 
@@ -832,7 +831,6 @@ async fn test_streams_hub_unsubscribe_no_stream() {
 #[tokio::test]
 async fn test_streams_hub_broadcast_event() {
     use synctv_xiu::streamhub::define::*;
-    use synctv_xiu::streamhub::errors::StreamHubError;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::StreamsHub;
 
@@ -847,18 +845,6 @@ async fn test_streams_hub_broadcast_event() {
         stream_name: "test".to_string(),
     };
 
-    struct MockHandler;
-    #[async_trait::async_trait]
-    impl TStreamHandler for MockHandler {
-        async fn send_prior_data(
-            &self,
-            _sender: DataSender,
-            _sub_type: SubscribeType,
-        ) -> Result<(), StreamHubError> {
-            Ok(())
-        }
-    }
-
     let (_, frame_receiver) = tokio::sync::mpsc::channel(100);
     let receiver = DataReceiver {
         frame_receiver: Some(frame_receiver),
@@ -872,7 +858,6 @@ async fn test_streams_hub_broadcast_event() {
         receiver,
         Arc::new(MockHandler),
     )
-    .await
     .unwrap();
 
     // Should receive the publish broadcast event

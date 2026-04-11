@@ -19,15 +19,105 @@ pub use logto::{LogtoConfig, LogtoProvider};
 pub use oidc::{OidcConfig, OidcProvider};
 
 use crate::{resilience::timeout::HTTP_REQUEST_TIMEOUT, Error, InternalExt};
+use oauth2::{AsyncHttpClient, HttpClientError, HttpRequest, HttpResponse};
 use reqwest::Client;
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use url::{Host, Url};
 
-pub(super) fn build_provider_http_client_with_timeout(timeout: Duration) -> Result<Client, Error> {
-    Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(timeout)
+pub(super) struct OAuth2HttpClient {
+    client: reqwest::Client,
+}
+
+impl OAuth2HttpClient {
+    const fn new(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+}
+
+impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
+    type Error = HttpClientError<reqwest::Error>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<HttpResponse, Self::Error>> + Send + Sync + 'c>>;
+
+    fn call(&'c self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let response = self
+                .client
+                .execute(request.try_into().map_err(Box::new)?)
+                .await
+                .map_err(Box::new)?;
+
+            let mut builder = http::Response::builder()
+                .status(response.status())
+                .version(response.version());
+
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+
+            builder
+                .body(response.bytes().await.map_err(Box::new)?.to_vec())
+                .map_err(HttpClientError::Http)
+        })
+    }
+}
+
+fn build_ssrf_safe_provider_client(timeout: Duration) -> Result<reqwest::Client, Error> {
+    synctv_common::http::SsrfSafeClientBuilder::provider()
+        .request_timeout(timeout)
         .build()
         .internal_with_err("Failed to build HTTP client")
+}
+
+pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Error> {
+    let parsed = Url::parse(url)
+        .map_err(|err| Error::InvalidInput(format!("{context}: invalid URL: {err}")))?;
+    let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+
+    if guard.acl().is_scheme_allowed(parsed.scheme()).is_denied() {
+        return Err(Error::InvalidInput(format!(
+            "{context}: scheme '{}' is not allowed",
+            parsed.scheme()
+        )));
+    }
+
+    match parsed.host() {
+        Some(Host::Domain(host)) if guard.is_host_blocked(host) => {
+            return Err(Error::InvalidInput(format!(
+                "{context}: host '{host}' is not allowed"
+            )));
+        }
+        Some(Host::Ipv4(ip)) if guard.is_ip_blocked(&ip.into()) => {
+            return Err(Error::InvalidInput(format!(
+                "{context}: ip '{ip}' is not allowed"
+            )));
+        }
+        Some(Host::Ipv6(ip)) if guard.is_ip_blocked(&ip.into()) => {
+            return Err(Error::InvalidInput(format!(
+                "{context}: ip '{ip}' is not allowed"
+            )));
+        }
+        Some(_) => {}
+        None => {
+            return Err(Error::InvalidInput(format!(
+                "{context}: URL must include a host"
+            )));
+        }
+    }
+
+    if let Some(port) = parsed.port_or_known_default() {
+        if guard.acl().is_port_allowed(port).is_denied() {
+            return Err(Error::InvalidInput(format!(
+                "{context}: port '{port}' is not allowed"
+            )));
+        }
+    }
+
+    Ok(parsed)
+}
+
+pub(super) fn build_provider_http_client_with_timeout(timeout: Duration) -> Result<Client, Error> {
+    build_ssrf_safe_provider_client(timeout)
 }
 
 pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
@@ -38,15 +128,13 @@ pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
 
 pub(super) fn build_oauth2_http_client_with_timeout(
     timeout: Duration,
-) -> Result<oauth2::reqwest::Client, Error> {
-    oauth2::reqwest::ClientBuilder::new()
-        .redirect(oauth2::reqwest::redirect::Policy::none())
-        .timeout(timeout)
-        .build()
+) -> Result<OAuth2HttpClient, Error> {
+    build_ssrf_safe_provider_client(timeout)
+        .map(OAuth2HttpClient::new)
         .internal_with_err("Failed to build OAuth2 HTTP client")
 }
 
-pub(super) fn build_oauth2_http_client() -> Result<Arc<oauth2::reqwest::Client>, Error> {
+pub(super) fn build_oauth2_http_client() -> Result<Arc<OAuth2HttpClient>, Error> {
     Ok(Arc::new(build_oauth2_http_client_with_timeout(
         HTTP_REQUEST_TIMEOUT,
     )?))
@@ -88,65 +176,37 @@ mod tests {
         basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, RedirectUrl,
         TokenUrl,
     };
-    use std::future::pending;
-    use tokio::{
-        io::AsyncReadExt,
-        net::TcpListener,
-        task::JoinHandle,
-        time::{timeout, Duration},
-    };
+    use std::io::ErrorKind;
+    use tokio::time::Duration;
 
-    async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let handle = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf).await;
-            pending::<()>().await;
-        });
-
-        (format!("http://{addr}"), handle)
-    }
-
-    #[tokio::test]
-    async fn provider_http_client_times_out_hanging_userinfo_requests() {
-        let client = build_provider_http_client_with_timeout(Duration::from_millis(50)).unwrap();
-        let (base_url, server_handle) = spawn_hanging_http_server().await;
-
-        let result = timeout(
-            Duration::from_millis(250),
-            client.get(format!("{base_url}/userinfo")).send(),
-        )
-        .await;
-        server_handle.abort();
-
-        let err = match result {
-            Ok(Err(err)) => err,
-            Ok(Ok(_)) => panic!("expected request to fail with timeout"),
-            Err(_) => panic!("request client did not enforce its own timeout"),
-        };
-        let mapped = map_provider_http_error("Failed to fetch user info", err);
+    #[test]
+    fn validate_provider_url_rejects_loopback_ips() {
+        let err =
+            validate_provider_url("http://127.0.0.1:8080/userinfo", "Unsafe userinfo endpoint")
+                .expect_err("loopback IPs must be rejected");
 
         assert!(matches!(
-            mapped,
-            Error::Timeout(ref msg) if msg.contains("Failed to fetch user info")
+            err,
+            Error::InvalidInput(ref msg)
+                if msg.contains("Unsafe userinfo endpoint") && msg.contains("127.0.0.1")
         ));
     }
 
-    #[tokio::test]
-    async fn provider_http_timeout_maps_to_core_timeout_error() {
-        let client = build_provider_http_client_with_timeout(Duration::from_millis(50)).unwrap();
-        let (base_url, server_handle) = spawn_hanging_http_server().await;
+    #[test]
+    fn validate_provider_url_rejects_denied_hosts() {
+        let err = validate_provider_url("http://localhost:8080/token", "Unsafe token endpoint")
+            .expect_err("denied hosts must be rejected");
 
-        let err = client
-            .get(format!("{base_url}/userinfo"))
-            .send()
-            .await
-            .expect_err("request should time out");
-        server_handle.abort();
+        assert!(matches!(
+            err,
+            Error::InvalidInput(ref msg)
+                if msg.contains("Unsafe token endpoint") && msg.contains("localhost")
+        ));
+    }
 
+    #[test]
+    fn provider_http_timeout_maps_to_core_timeout_error() {
+        let err = std::io::Error::new(ErrorKind::TimedOut, "timed out");
         let mapped = map_provider_http_error("Failed to fetch user info", err);
         assert!(matches!(
             mapped,
@@ -155,36 +215,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_exchange_client_times_out_hanging_token_endpoint() {
+    async fn token_exchange_client_rejects_denied_hosts() {
         let http_client = build_oauth2_http_client_with_timeout(Duration::from_millis(50)).unwrap();
-        let (base_url, server_handle) = spawn_hanging_http_server().await;
 
         let client = BasicClient::new(ClientId::new("client_id".to_string()))
             .set_client_secret(ClientSecret::new("client_secret".to_string()))
             .set_auth_uri(AuthUrl::new("https://example.com/auth".to_string()).unwrap())
-            .set_token_uri(TokenUrl::new(format!("{base_url}/token")).unwrap())
+            .set_token_uri(TokenUrl::new("http://localhost/token".to_string()).unwrap())
             .set_redirect_uri(
                 RedirectUrl::new("https://example.com/callback".to_string()).unwrap(),
             );
 
-        let result = timeout(
-            Duration::from_millis(250),
-            client
-                .exchange_code(AuthorizationCode::new("code".to_string()))
-                .request_async(&http_client),
-        )
-        .await;
-        server_handle.abort();
-
-        let err = match result {
-            Ok(Err(err)) => err,
-            Ok(Ok(_)) => panic!("expected token exchange to fail with timeout"),
-            Err(_) => panic!("token exchange client did not enforce its own timeout"),
-        };
+        let err = client
+            .exchange_code(AuthorizationCode::new("code".to_string()))
+            .request_async(&http_client)
+            .await
+            .expect_err("denied hosts must fail before token exchange completes");
         let mapped = map_provider_http_error("Failed to exchange code", err);
         assert!(matches!(
             mapped,
-            Error::Timeout(ref msg) if msg.contains("Failed to exchange code")
+            Error::Internal(ref msg) if msg.contains("Failed to exchange code")
         ));
     }
 }

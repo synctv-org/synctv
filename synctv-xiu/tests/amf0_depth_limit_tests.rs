@@ -29,7 +29,12 @@ fn create_nested_object(depth: usize) -> Amf0ValueType {
 fn create_large_object(key_count: usize) -> Amf0ValueType {
     let mut properties = IndexMap::new();
     for i in 0..key_count {
-        properties.insert(format!("key{i}"), Amf0ValueType::Number(i as f64));
+        properties.insert(
+            format!("key{i}"),
+            Amf0ValueType::Number(f64::from(
+                u32::try_from(i).expect("test key index must fit in u32"),
+            )),
+        );
     }
     Amf0ValueType::Object(properties)
 }

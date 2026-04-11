@@ -16,6 +16,21 @@ use bytes::BytesMut;
 use synctv_xiu::rtmp::cache::SplitCache;
 use synctv_xiu::streamhub::define::FrameData;
 
+const SPLIT_LOCK_READ_WRITE_ITERATIONS: usize = 1000;
+const CONTENTION_ITERATIONS: usize = 5000;
+const CONTENTION_THREADS: usize = 16;
+const SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS: usize = 100;
+const HIGH_CONTENTION_THREADS: usize = 8;
+const HIGH_CONTENTION_ITERATIONS: usize = 200;
+
+fn usize_to_u8(value: usize) -> u8 {
+    u8::try_from(value).expect("test value should fit in u8")
+}
+
+fn usize_to_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("test value should fit in u32")
+}
+
 // ==================================================================
 // Simulated Split Lock Architecture (for performance baseline)
 // ==================================================================
@@ -64,14 +79,13 @@ impl SplitCacheSim {
 #[test]
 fn test_split_lock_concurrent_read_write() {
     let cache = Arc::new(SplitCacheSim::new());
-    const ITERATIONS: usize = 1000;
 
     // Writer thread
     let writer_cache = Arc::clone(&cache);
     let writer = thread::spawn(move || {
-        for i in 0..ITERATIONS {
+        for i in 0..SPLIT_LOCK_READ_WRITE_ITERATIONS {
             let data = vec![1u8; 64];
-            writer_cache.save_video(&data, i as u32);
+            writer_cache.save_video(&data, usize_to_u32(i));
         }
     });
 
@@ -82,7 +96,7 @@ fn test_split_lock_concurrent_read_write() {
         .map(|c| {
             thread::spawn(move || {
                 let mut last_ts = 0u32;
-                for _ in 0..ITERATIONS {
+                for _ in 0..SPLIT_LOCK_READ_WRITE_ITERATIONS {
                     let (_, ts) = c.get_video();
                     // Timestamps should be monotonically increasing
                     // (or equal due to race conditions, which is fine)
@@ -103,19 +117,18 @@ fn test_split_lock_concurrent_read_write() {
 #[test]
 fn test_no_deadlock_under_contention() {
     let cache = Arc::new(SplitCacheSim::new());
-    const ITERATIONS: usize = 5000;
-    const THREADS: usize = 16;
 
-    let handles: Vec<_> = (0..THREADS)
+    let handles: Vec<_> = (0..CONTENTION_THREADS)
         .map(|tid| {
             let cache = Arc::clone(&cache);
             thread::spawn(move || {
-                for i in 0..ITERATIONS {
-                    let data = vec![tid as u8; 32];
+                for i in 0..CONTENTION_ITERATIONS {
+                    let data = vec![usize_to_u8(tid); 32];
                     // Interleave operations to increase contention
-                    cache.save_video(&data, i as u32);
-                    cache.save_audio(&data, i as u32);
-                    cache.save_metadata(&data, i as u32);
+                    let ts = usize_to_u32(i);
+                    cache.save_video(&data, ts);
+                    cache.save_audio(&data, ts);
+                    cache.save_metadata(&data, ts);
                     // Also do reads
                     let _ = cache.get_video();
                     let _ = cache.get_audio();
@@ -316,31 +329,30 @@ fn test_split_cache_gops() {
 #[test]
 fn test_split_cache_concurrent_saves() {
     let cache = Arc::new(SplitCache::new(5, None, None));
-    const ITERATIONS: usize = 100;
 
     // Writer threads
     let cache_video = Arc::clone(&cache);
     let h1 = thread::spawn(move || {
-        for i in 0..ITERATIONS {
+        for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
-            data.extend_from_slice(&[i as u8; 64]);
-            cache_video.save_video_data(&data, i as u32).ok();
+            data.extend_from_slice(&[usize_to_u8(i); 64]);
+            cache_video.save_video_data(&data, usize_to_u32(i)).ok();
         }
     });
 
     let cache_audio = Arc::clone(&cache);
     let h2 = thread::spawn(move || {
-        for i in 0..ITERATIONS {
+        for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
-            data.extend_from_slice(&[i as u8; 64]);
-            cache_audio.save_audio_data(&data, i as u32).ok();
+            data.extend_from_slice(&[usize_to_u8(i); 64]);
+            cache_audio.save_audio_data(&data, usize_to_u32(i)).ok();
         }
     });
 
     // Reader thread - should not block writers
     let cache_reader = Arc::clone(&cache);
     let h3 = thread::spawn(move || {
-        for _ in 0..ITERATIONS {
+        for _ in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             // These reads should not block the writers significantly
             let _ = cache_reader.get_metadata();
             let _ = cache_reader.get_video_seq();
@@ -368,22 +380,21 @@ fn test_split_cache_concurrent_saves() {
 #[test]
 fn test_split_cache_high_contention() {
     let cache = Arc::new(SplitCache::new(10, None, None));
-    const THREADS: usize = 8;
-    const ITERATIONS: usize = 200;
 
-    let handles: Vec<_> = (0..THREADS)
+    let handles: Vec<_> = (0..HIGH_CONTENTION_THREADS)
         .map(|tid| {
             let cache = Arc::clone(&cache);
             thread::spawn(move || {
-                for i in 0..ITERATIONS {
+                for i in 0..HIGH_CONTENTION_ITERATIONS {
                     let mut data = BytesMut::new();
-                    data.extend_from_slice(&[tid as u8, i as u8]);
+                    data.extend_from_slice(&[usize_to_u8(tid), usize_to_u8(i)]);
+                    let ts = usize_to_u32(i);
 
                     match tid % 3 {
-                        0 => cache.save_video_data(&data, i as u32).ok(),
-                        1 => cache.save_audio_data(&data, i as u32).ok(),
+                        0 => cache.save_video_data(&data, ts).ok(),
+                        1 => cache.save_audio_data(&data, ts).ok(),
                         _ => {
-                            cache.save_metadata(&data, i as u32);
+                            cache.save_metadata(&data, ts);
                             Some(())
                         }
                     };

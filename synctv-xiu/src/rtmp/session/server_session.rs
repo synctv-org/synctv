@@ -35,6 +35,8 @@ use {
     tokio::{net::TcpStream, sync::Mutex},
 };
 
+const MAX_HANDSHAKE_BUFFER: usize = 8192;
+
 enum ServerSessionState {
     Handshake,
     ReadChunk,
@@ -194,8 +196,6 @@ impl ServerSession {
         // Timeout to prevent slowloris attacks holding handshake slots indefinitely
         let handshake_timeout = tokio::time::Duration::from_secs(10);
         let handshake_start = tokio::time::Instant::now();
-        // M-1: Maximum buffer size during handshake to prevent memory exhaustion
-        const MAX_HANDSHAKE_BUFFER: usize = 8192;
 
         while bytes_len < handshake::define::RTMP_HANDSHAKE_SIZE + 1 {
             let remaining = handshake_timeout
@@ -369,13 +369,13 @@ impl ServerSession {
                 self.on_set_chunk_size(*chunk_size as usize);
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, timestamp).await?;
+                self.common.on_audio_data(data, timestamp)?;
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, timestamp).await?;
+                self.common.on_video_data(data, timestamp)?;
             }
             RtmpMessageData::AmfData { raw_data } => {
-                self.common.on_meta_data(raw_data, timestamp).await?;
+                self.common.on_meta_data(raw_data, timestamp)?;
             }
 
             _ => {}
@@ -657,7 +657,9 @@ impl ServerSession {
         stream_id: &u32,
         other_values: &mut Vec<Amf0ValueType>,
     ) -> Result<(), SessionError> {
-        let length = other_values.len() as u8;
+        let length = u8::try_from(other_values.len()).map_err(|_| SessionError {
+            value: SessionErrorValue::Amf0ValueCountNotCorrect,
+        })?;
         let mut index: u8 = 0;
 
         let mut stream_name: Option<String> = None;
@@ -1095,10 +1097,15 @@ mod tests {
 
     fn build_c0c1() -> Vec<u8> {
         let mut data = Vec::with_capacity(1 + handshake::define::RTMP_HANDSHAKE_SIZE);
-        data.push(handshake::define::RTMP_VERSION as u8);
+        data.push(
+            u8::try_from(handshake::define::RTMP_VERSION).expect("RTMP version must fit in u8"),
+        );
         data.extend_from_slice(&12345_u32.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]);
-        data.extend((0..(handshake::define::RTMP_HANDSHAKE_SIZE - 8)).map(|i| (i % 255) as u8));
+        data.extend(
+            (0..(handshake::define::RTMP_HANDSHAKE_SIZE - 8))
+                .map(|i| u8::try_from(i % 255).expect("modulo 255 value must fit in u8")),
+        );
         data
     }
 

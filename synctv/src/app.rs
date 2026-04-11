@@ -355,7 +355,11 @@ impl Application {
     /// If any phase fails, all resources created in earlier phases are cleaned up
     /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
-        Self::build_with_options(config, ApplicationBuildOptions::default()).await
+        Box::pin(Self::build_with_options(
+            config,
+            ApplicationBuildOptions::default(),
+        ))
+        .await
     }
 
     /// Build the application with explicit runtime wiring options.
@@ -436,7 +440,7 @@ impl Application {
             self.pool,
             Arc::new(ManagementLifecycleController::new()),
         );
-        server.start_with_coordinator(self.shutdown).await
+        Box::pin(server.start_with_coordinator(self.shutdown)).await
     }
 
     /// Start all servers and stop when the supplied future resolves.
@@ -769,6 +773,7 @@ impl Application {
             synctv_core::config::RedisDeploymentMode::Sentinel
         );
 
+        #[cfg(feature = "k8s")]
         let leader_elector = LeaderRuntimeBuilder::new(
             true,
             leader_mode,
@@ -779,6 +784,21 @@ impl Application {
         )
         .build()
         .await
+        .map_err(|e| {
+            error!(error = %e, mode = leader_mode, "CRITICAL: leader election initialization failed");
+            e
+        })?;
+
+        #[cfg(not(feature = "k8s"))]
+        let leader_elector = LeaderRuntimeBuilder::new(
+            true,
+            leader_mode,
+            &infra.node_id,
+            Some(plain_conn),
+            &infra.config.redis.key_prefix,
+            is_sentinel,
+        )
+        .build()
         .map_err(|e| {
             error!(error = %e, mode = leader_mode, "CRITICAL: leader election initialization failed");
             e
@@ -1625,6 +1645,8 @@ mod tests {
             !metrics.redis_enabled,
             "local-only cluster manager must not require Redis"
         );
+
+        cluster_manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -1865,10 +1887,9 @@ mod tests {
 
     #[test]
     fn test_build_connection_manager_returns_error_without_redis_in_cluster_mode() {
-        let error = match build_connection_manager(ConnectionLimits::default(), None, "test:", true)
-        {
-            Ok(_) => panic!("cluster mode without Redis wiring must return an error"),
-            Err(error) => error,
+        let Err(error) = build_connection_manager(ConnectionLimits::default(), None, "test:", true)
+        else {
+            panic!("cluster mode without Redis wiring must return an error");
         };
 
         assert!(
@@ -1910,7 +1931,9 @@ mod tests {
         let leader_runtime = Arc::new(TestLeaderRuntime::new(false));
         let cancel = tokio_util::sync::CancellationToken::new();
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let completed = Arc::new(tokio::sync::Notify::new());
         let ran_clone = ran.clone();
+        let completed_clone = completed.clone();
 
         let handle = spawn_on_leadership_gain(
             "test_leadership_gain",
@@ -1918,14 +1941,18 @@ mod tests {
             cancel.clone(),
             Arc::new(move || {
                 let ran = ran_clone.clone();
+                let completed = completed_clone.clone();
                 Box::pin(async move {
                     ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    completed.notify_one();
                 })
             }),
         );
 
         leader_runtime.gain_leadership();
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), completed.notified())
+            .await
+            .expect("leadership gain should run deferred startup work");
         cancel.cancel();
         handle.await.expect("task should join");
 
@@ -1937,7 +1964,9 @@ mod tests {
         let leader_runtime = Arc::new(TestLeaderRuntime::new(true));
         let cancel = tokio_util::sync::CancellationToken::new();
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let completed = Arc::new(tokio::sync::Notify::new());
         let ran_clone = ran.clone();
+        let completed_clone = completed.clone();
 
         let handle = spawn_on_leadership_gain(
             "test_already_leader",
@@ -1945,13 +1974,17 @@ mod tests {
             cancel.clone(),
             Arc::new(move || {
                 let ran = ran_clone.clone();
+                let completed = completed_clone.clone();
                 Box::pin(async move {
                     ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    completed.notify_one();
                 })
             }),
         );
 
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), completed.notified())
+            .await
+            .expect("already-leader startup work should run immediately");
         cancel.cancel();
         handle.await.expect("task should join");
 

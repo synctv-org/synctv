@@ -337,27 +337,35 @@ impl BilibiliClient {
     }
 
     pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Result<Self, BilibiliError> {
-        Self::new_with_transport(shared_client()?, BilibiliEndpoints::default(), wbi_state)
+        Ok(Self::new_with_transport(
+            shared_client()?,
+            BilibiliEndpoints::default(),
+            wbi_state,
+        ))
     }
 
     pub(crate) const fn new_with_transport(
         client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
-    ) -> Result<Self, BilibiliError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             client,
             cookies: None,
             wbi_state,
             endpoints,
-        })
+        }
     }
 
     pub fn new_with_transport_defaults(
         client: Client,
         endpoints: BilibiliEndpoints,
     ) -> Result<Self, BilibiliError> {
-        Self::new_with_transport(client, endpoints, Arc::new(WbiState::default()))
+        Ok(Self::new_with_transport(
+            client,
+            endpoints,
+            Arc::new(WbiState::default()),
+        ))
     }
 
     /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter).
@@ -369,12 +377,12 @@ impl BilibiliClient {
         cookies: HashMap<String, String>,
         wbi_state: Arc<WbiState>,
     ) -> Result<Self, BilibiliError> {
-        Self::with_cookies_and_transport(
+        Ok(Self::with_cookies_and_transport(
             cookies,
             shared_client()?,
             BilibiliEndpoints::default(),
             wbi_state,
-        )
+        ))
     }
 
     pub(crate) const fn with_cookies_and_transport(
@@ -382,13 +390,13 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
-    ) -> Result<Self, BilibiliError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             client,
             cookies: Some(cookies),
             wbi_state,
             endpoints,
-        })
+        }
     }
 
     pub fn with_cookies_and_transport_defaults(
@@ -396,7 +404,12 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
     ) -> Result<Self, BilibiliError> {
-        Self::with_cookies_and_transport(cookies, client, endpoints, Arc::new(WbiState::default()))
+        Ok(Self::with_cookies_and_transport(
+            cookies,
+            client,
+            endpoints,
+            Arc::new(WbiState::default()),
+        ))
     }
 
     #[cfg(test)]
@@ -2419,21 +2432,18 @@ impl ReconnectableLiveDanmakuConnection {
         }
 
         // Get current connection or attempt initial connection
-        let conn = match self.connection.as_ref() {
-            Some(conn) => conn,
-            None => {
-                // No connection yet, try to establish one
-                match self.try_reconnect().await {
-                    Ok(()) => {
-                        return Ok(ReconnectResult::Reconnected {
-                            attempts: self.current_retry,
-                        });
-                    }
-                    Err(e) => {
-                        let attempts = self.current_retry;
-                        self.current_retry = 0;
-                        return Ok(ReconnectResult::Failed { attempts, error: e });
-                    }
+        let Some(conn) = self.connection.as_ref() else {
+            // No connection yet, try to establish one
+            match self.try_reconnect().await {
+                Ok(()) => {
+                    return Ok(ReconnectResult::Reconnected {
+                        attempts: self.current_retry,
+                    });
+                }
+                Err(e) => {
+                    let attempts = self.current_retry;
+                    self.current_retry = 0;
+                    return Ok(ReconnectResult::Failed { attempts, error: e });
                 }
             }
         };
@@ -3768,7 +3778,6 @@ mod tests {
             ser.finish()
         };
 
-        use md5::{Digest, Md5};
         let mut hasher = Md5::new();
         hasher.update(format!("{expected_query}{mixin_key}").as_bytes());
         let expected_hash = format!("{:x}", hasher.finalize());

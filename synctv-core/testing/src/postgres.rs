@@ -2,7 +2,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -142,18 +142,18 @@ impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
         let mut path = PathBuf::from("/tmp");
         path.push(format!("synctv-{name}.lock"));
-        Self::try_acquire_path(path)
+        Self::try_acquire_path(&path)
     }
 
-    fn try_acquire_path(path: PathBuf) -> Option<Self> {
-        let file = Self::open_lock_file(&path);
+    fn try_acquire_path(path: &Path) -> Option<Self> {
+        let file = Self::open_lock_file(path);
         match file.try_lock() {
             Ok(()) => Some(Self(file)),
             Err(_) => None,
         }
     }
 
-    fn open_lock_file(path: &PathBuf) -> File {
+    fn open_lock_file(path: &Path) -> File {
         OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -194,9 +194,7 @@ impl SharedPostgresServer {
         );
 
         if let Err(err) = sqlx::query(&sql).execute(&self.admin_pool).await {
-            eprintln!(
-                "warning: failed to drop postgres test database {database_name}: {err}"
-            );
+            eprintln!("warning: failed to drop postgres test database {database_name}: {err}");
         }
     }
 }
@@ -222,15 +220,15 @@ impl TestContainer {
         }
     }
 
-    pub async fn host(&self) -> String {
+    pub fn host(&self) -> String {
         self.shared.host.clone()
     }
 
-    pub async fn port_ipv4(&self, _internal_port: u16) -> u16 {
+    pub fn port_ipv4(&self, _internal_port: u16) -> u16 {
         self.shared.port
     }
 
-    pub async fn host_port(&self, _internal_port: u16) -> (String, u16) {
+    pub fn host_port(&self, _internal_port: u16) -> (String, u16) {
         (self.shared.host.clone(), self.shared.port)
     }
 }
@@ -380,7 +378,11 @@ fn current_process_id() -> u32 {
 fn current_test_run_id() -> String {
     std::env::var("NEXTEST_RUN_ID")
         .ok()
-        .filter(|value| !value.trim().is_empty()).map_or_else(|| format!("pid-{}", current_process_id()), |value| sanitize_container_name(&value))
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(
+            || format!("pid-{}", current_process_id()),
+            |value| sanitize_container_name(&value),
+        )
 }
 
 fn startup_lock_name(run_id: &str) -> String {
@@ -398,7 +400,7 @@ fn acquire_run_lock(run_id: &str) -> ProcessLock {
         run_lock_file_prefix(run_id),
         current_process_id()
     ));
-    ProcessLock::try_acquire_path(path)
+    ProcessLock::try_acquire_path(&path)
         .unwrap_or_else(|| panic!("failed to acquire postgres run lock for {run_id}"))
 }
 
@@ -416,7 +418,7 @@ fn run_has_active_lock(run_id: &str) -> bool {
         if !file_name.starts_with(&prefix) || !file_name.ends_with(".lock") {
             continue;
         }
-        if ProcessLock::try_acquire_path(path).is_none() {
+        if ProcessLock::try_acquire_path(&path).is_none() {
             return true;
         }
     }
@@ -540,7 +542,7 @@ fn cleanup_orphaned_run_lock_files(prefix: &str) {
             continue;
         }
 
-        let Some(lock) = ProcessLock::try_acquire_path(path.clone()) else {
+        let Some(lock) = ProcessLock::try_acquire_path(&path) else {
             continue;
         };
         drop(lock);
@@ -912,10 +914,10 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
                 }
                 panic!("Failed to start Postgres container: {err}");
             }
-            Err(_) => {
+            Err(elapsed) => {
                 panic!(
-                    "Docker container startup timed out after {:?} (is Docker running?)",
-                    docker_startup_timeout()
+                    "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
+                    docker_startup_timeout(),
                 );
             }
         }
@@ -935,7 +937,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     // tokio blocking thread pool so we don't block the async runtime.
     let template_database = template_database_name();
     let template_db = template_database.clone();
-    let (admin_pool, _pool_runtime) = tokio::task::spawn_blocking(move || {
+    let (admin_pool, pool_runtime) = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -963,7 +965,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
 
     SharedPostgresServer {
         _container: std::mem::ManuallyDrop::new(postgres),
-        _pool_runtime,
+        _pool_runtime: pool_runtime,
         host,
         port,
         admin_pool,
@@ -1451,8 +1453,8 @@ mod tests {
 
         let shared = shared_postgres_server().await;
         assert_eq!(
-            db_one.host_port(5432).await,
-            db_two.host_port(5432).await,
+            db_one.host_port(5432),
+            db_two.host_port(5432),
             "leases in the same process should reuse a single postgres container"
         );
         assert_ne!(

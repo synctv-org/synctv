@@ -19,6 +19,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use urlencoding;
 
+const EMBY_TICKS_PER_SECOND: u128 = 10_000_000;
+
+fn seconds_to_emby_ticks(position: f64) -> i64 {
+    let Ok(duration) = Duration::try_from_secs_f64(position.max(0.0)) else {
+        return 0;
+    };
+    let ticks = duration.as_nanos() / (1_000_000_000 / EMBY_TICKS_PER_SECOND);
+    i64::try_from(ticks).unwrap_or(i64::MAX)
+}
+
 /// Emby `MediaProvider`
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
@@ -66,55 +76,6 @@ impl EmbyProvider {
                 self.client_manager.local_emby_client()
             })
             .await
-    }
-
-    /// Resolve thumbnail proxy action from query parameters.
-    ///
-    /// Parses `host`, `token`, `max_height`, and `max_width` from query string,
-    /// builds the Emby thumbnail URL, and returns `FetchAndForward` with the
-    /// X-Emby-Token header for authentication.
-    fn resolve_thumbnail(
-        &self,
-        item_id: &str,
-        query_string: Option<&str>,
-    ) -> Result<super::proxy::ProxyAction, ProviderError> {
-        let qs = query_string.unwrap_or("");
-        let params: HashMap<String, String> = url::form_urlencoded::parse(qs.as_bytes())
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-
-        let host = params
-            .get("host")
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing 'host' parameter".into()))?;
-        let token = params
-            .get("token")
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing 'token' parameter".into()))?;
-        let max_height: u32 = params
-            .get("max_height")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(300)
-            .min(1920);
-        let max_width: u32 = params
-            .get("max_width")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-            .min(1920);
-
-        let thumbnail_path = if max_width > 0 {
-            format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90")
-        } else {
-            format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90")
-        };
-
-        let thumbnail_url = format!("{}{}", host.trim_end_matches('/'), thumbnail_path);
-
-        let mut headers = HashMap::new();
-        headers.insert("X-Emby-Token".to_string(), token.clone());
-
-        Ok(super::proxy::ProxyAction::FetchAndForward {
-            url: thumbnail_url,
-            headers,
-        })
     }
 
     // ========== Provider API Methods ==========
@@ -217,10 +178,11 @@ impl EmbyProvider {
         }
     }
 
-    fn build_thumbnail_url(host: &str, item_id: &str) -> String {
+    fn build_thumbnail_url(server_id: &str, credential_owner_id: &str, item_id: &str) -> String {
         format!(
-            "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
-            host = urlencoding::encode(host),
+            "/api/providers/emby/thumbnail/{item_id}?server_id={server_id}&credential_owner_id={credential_owner_id}&max_height=300",
+            server_id = urlencoding::encode(server_id),
+            credential_owner_id = urlencoding::encode(credential_owner_id),
         )
     }
 
@@ -381,6 +343,7 @@ impl EmbyProvider {
                         language: stream.language.clone(),
                         name: stream.display_title.clone(),
                         url: subtitle_url,
+                        headers: HashMap::new(),
                         format: stream.codec.to_lowercase(),
                     }
                 })
@@ -512,9 +475,12 @@ impl MediaProvider for EmbyProvider {
 
         // Validate credential_ref exists and the referenced credential is accessible
         if let Some(repo) = _ctx.credential_repo {
+            let credential_owner_id = _ctx
+                .user_id
+                .unwrap_or(&config.credential_ref.credential_owner_id);
             let cred = repo
                 .get_by_provider_and_server(
-                    &config.credential_ref.credential_owner_id,
+                    credential_owner_id,
                     Self::NAME,
                     &config.credential_ref.server_id,
                 )
@@ -576,13 +542,13 @@ impl MediaProvider for EmbyProvider {
         )
         .await?;
 
-        let (host, token, user_id) = match credential {
-            crate::models::ProviderCredential::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            } => (host, api_key, emby_user_id),
-            _ => return Err(ProviderError::InvalidCredentialType),
+        let crate::models::ProviderCredential::Emby {
+            host,
+            api_key: token,
+            emby_user_id: user_id,
+        } = credential
+        else {
+            return Err(ProviderError::InvalidCredentialType);
         };
 
         let resolved = ResolvedEmbyConfig {
@@ -713,7 +679,7 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
-        let position_ticks = (position * 10_000_000.0) as i64;
+        let position_ticks = seconds_to_emby_ticks(position);
 
         let item_id = config.item_id.clone();
 
@@ -779,7 +745,7 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
-        let position_ticks = (position * 10_000_000.0) as i64;
+        let position_ticks = seconds_to_emby_ticks(position);
 
         let item_id = config.item_id.clone();
         let req = synctv_media_providers::grpc::emby::ReportPlaybackProgressReq {
@@ -812,6 +778,7 @@ impl MediaProvider for EmbyProvider {
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
 // - `{version}/subtitle/{index}` — proxy a subtitle track by index
+// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
 #[async_trait]
 impl super::proxy::ProviderProxy for EmbyProvider {
     async fn resolve_proxy(
@@ -820,40 +787,89 @@ impl super::proxy::ProviderProxy for EmbyProvider {
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
 
-        // `thumbnail/{item_id}` — proxy Emby thumbnail images
-        // Query params: host, token, max_height, max_width
-        if let Some(item_id) = sub_path.strip_prefix("thumbnail/") {
-            return self.resolve_thumbnail(item_id, ctx.query_string);
-        }
-
         if let Some((version, rest)) = sub_path.split_once('/') {
             let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
 
-            // `{version}/subtitle/{index}`
-            if let Some(index_str) = rest.strip_prefix("subtitle/") {
-                let index: usize = index_str
-                    .parse()
-                    .map_err(|_| ProviderError::ApiError("Invalid subtitle index".into()))?;
+            // `{version}/subtitle/{mode}/{index}` or legacy `{version}/subtitle/{index}`
+            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
+                let (subtitle, playback_info) =
+                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
+                        let playback_info = versioned
+                            .result
+                            .playback_infos
+                            .get(mode_name)
+                            .ok_or(ProviderError::NotFound)?;
+                        let index: usize = index_str.parse().map_err(|_| {
+                            ProviderError::ApiError("Invalid subtitle index".into())
+                        })?;
+                        (
+                            playback_info
+                                .subtitles
+                                .get(index)
+                                .ok_or(ProviderError::NotFound)?,
+                            playback_info,
+                        )
+                    } else {
+                        let index: usize = subtitle_path.parse().map_err(|_| {
+                            ProviderError::ApiError("Invalid subtitle index".into())
+                        })?;
 
-                let all_subtitles: Vec<_> = versioned
-                    .result
-                    .playback_infos
-                    .values()
-                    .flat_map(|pi| &pi.subtitles)
-                    .collect();
+                        let default_playback_info = versioned
+                            .result
+                            .playback_infos
+                            .get(&versioned.result.default_mode)
+                            .ok_or(ProviderError::NotFound)?;
+                        let all_subtitles: Vec<_> = versioned
+                            .result
+                            .playback_infos
+                            .values()
+                            .flat_map(|pi| &pi.subtitles)
+                            .collect();
 
-                let subtitle = all_subtitles.get(index).ok_or(ProviderError::NotFound)?;
-
-                let provider_headers: HashMap<String, String> = versioned
-                    .result
-                    .playback_infos
-                    .get(&versioned.result.default_mode)
-                    .map(|pi| pi.headers.clone())
-                    .unwrap_or_default();
+                        (
+                            *all_subtitles.get(index).ok_or(ProviderError::NotFound)?,
+                            default_playback_info,
+                        )
+                    };
 
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: subtitle.url.clone(),
-                    headers: provider_headers,
+                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                });
+            }
+
+            if let Some(stream_path) = rest.strip_prefix("stream/") {
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            stream_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
                 });
             }
 
@@ -907,6 +923,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = EmbySourceConfig::try_from(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
         let target_item_id =
             Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
@@ -930,7 +947,16 @@ impl DynamicFolder for EmbyProvider {
             .into_iter()
             .filter_map(|item| {
                 let item_type = Self::item_type_from_listing(&item)?;
-                let thumbnail_url = Self::build_thumbnail_url(&resolved.host, &item.id);
+                let server_id =
+                    crate::models::UserProviderCredential::generate_server_id_for_instance(
+                        &resolved.host,
+                        resolved.provider_instance_name.as_deref(),
+                    );
+                let thumbnail_url = Self::build_thumbnail_url(
+                    &server_id,
+                    &base_config.credential_ref.credential_owner_id,
+                    &item.id,
+                );
 
                 Some(DirectoryItem {
                     name: item.name,
@@ -1237,8 +1263,8 @@ mod tests {
 
     /// Validate Emby source config: checks item_id and credential_ref fields.
     /// Host/token/user_id are no longer in source_config (resolved from credential_ref at runtime).
-    fn validate_emby(config: Value) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(&config)?;
+    fn validate_emby(config: &Value) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(config)?;
 
         if config.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
@@ -1267,7 +1293,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_emby(config).is_ok());
+        assert!(validate_emby(&config).is_ok());
     }
 
     #[test]
@@ -1280,7 +1306,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_emby(config).is_ok());
+        assert!(validate_emby(&config).is_ok());
     }
 
     #[test]
@@ -1292,7 +1318,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_emby(config).is_err());
+        assert!(validate_emby(&config).is_err());
     }
 
     #[test]
@@ -1301,7 +1327,7 @@ mod tests {
         let config = json!({
             "item_id": "item-456"
         });
-        assert!(validate_emby(config).is_err());
+        assert!(validate_emby(&config).is_err());
     }
 
     #[test]
@@ -1313,7 +1339,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_emby(config).is_err());
+        assert!(validate_emby(&config).is_err());
     }
 
     #[test]
@@ -1390,21 +1416,16 @@ mod tests {
     #[test]
     fn test_thumbnail_url_must_not_contain_raw_token() {
         // The thumbnail URL format in list_playlist should never contain the raw
-        // Emby API token in the query string. Instead it should use an HMAC-signed
-        // proxy token so the client never sees the actual credential.
+        // Emby API token in the query string. Instead it should carry only the
+        // opaque server_id so the authenticated thumbnail handler can resolve
+        // credentials server-side.
         let raw_token = "super-secret-api-key-12345";
         let item_id = "item-789";
+        let server_id = "srv-123";
+        let credential_owner_id = "owner-456";
 
-        // Simulate the thumbnail URL generation (the code under test in list_playlist)
-        // The old (insecure) format was:
-        //   /api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}
-        //
-        // After the fix, the URL must NOT contain the raw token value.
-        let thumbnail_url = format!(
-            "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
-            item_id = item_id,
-            host = urlencoding::encode("https://emby.example.com"),
-        );
+        let thumbnail_url =
+            EmbyProvider::build_thumbnail_url(server_id, credential_owner_id, item_id);
 
         assert!(
             !thumbnail_url.contains(raw_token),
@@ -1413,6 +1434,14 @@ mod tests {
         assert!(
             !thumbnail_url.contains("token="),
             "Thumbnail URL must not include a 'token=' query parameter"
+        );
+        assert!(
+            thumbnail_url.contains("server_id=srv-123"),
+            "Thumbnail URL must include the opaque server_id for credential lookup"
+        );
+        assert!(
+            thumbnail_url.contains("credential_owner_id=owner-456"),
+            "Thumbnail URL must include the credential owner for shared Emby media"
         );
     }
 }

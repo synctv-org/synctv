@@ -24,8 +24,16 @@ pub struct GitHubConfig {
 pub struct GitHubProvider {
     client:
         Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
-    oauth2_http_client: Arc<oauth2::reqwest::Client>,
+    oauth2_http_client: Arc<super::OAuth2HttpClient>,
     http_client: Arc<Client>,
+}
+
+#[derive(Deserialize)]
+struct GitHubUser {
+    login: String,
+    id: u64,
+    email: Option<String>,
+    avatar_url: Option<String>,
 }
 
 impl GitHubProvider {
@@ -156,14 +164,6 @@ impl Provider for GitHubProvider {
             .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
             .error_for_status()
             .internal_with_err("GitHub API error")?;
-
-        #[derive(Deserialize)]
-        struct GitHubUser {
-            login: String,
-            id: u64,
-            email: Option<String>,
-            avatar_url: Option<String>,
-        }
 
         let user: GitHubUser = resp
             .json()

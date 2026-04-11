@@ -514,7 +514,7 @@ mod p1_cluster_cleanup_tests {
         config.livestream.rtmp_port = reserve_unused_port().await;
         config.server.advertise_host = "127.0.0.1".to_string();
 
-        let app = Application::build(config.clone())
+        let app = Box::pin(Application::build(config.clone()))
             .await
             .expect("application build should succeed before run");
 
@@ -538,10 +538,10 @@ mod p1_cluster_cleanup_tests {
             nodes.iter().map(|n| n.node_id.as_str()).collect::<Vec<_>>()
         );
 
-        app.run_with_shutdown_signal(std::future::ready(()))
+        Box::pin(app.run_with_shutdown_signal(std::future::ready(())))
             .await
             .ok();
-        redis.cleanup().await;
+        redis.cleanup();
         postgres.cleanup().await;
     }
 
@@ -566,7 +566,7 @@ mod p1_cluster_cleanup_tests {
         config.livestream.rtmp_port = occupied_addr.port();
         config.server.advertise_host = "127.0.0.1".to_string();
 
-        let result = Application::build(config.clone()).await;
+        let result = Box::pin(Application::build(config.clone())).await;
         assert!(
             result.is_err(),
             "occupied RTMP port must force Application::build to fail after cluster init"
@@ -600,7 +600,7 @@ mod p1_cluster_cleanup_tests {
         }
 
         drop(occupied_rtmp);
-        redis.cleanup().await;
+        redis.cleanup();
         postgres.cleanup().await;
     }
 }

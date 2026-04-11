@@ -31,7 +31,7 @@ pub async fn spawn_management_server(
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     match config.config.management.transport {
         ManagementTransport::Tcp => spawn_management_tcp_server(config).await,
-        ManagementTransport::Unix => spawn_management_unix_server(config).await,
+        ManagementTransport::Unix => spawn_management_unix_server(config),
     }
 }
 
@@ -52,7 +52,7 @@ async fn spawn_management_tcp_server(
     Ok(handle)
 }
 
-async fn spawn_management_unix_server(
+fn spawn_management_unix_server(
     config: ManagementServerConfig,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     #[cfg(not(unix))]
@@ -104,7 +104,7 @@ where
         config.admin_api,
         config.client_api,
         config.lifecycle_controller,
-        config.config.management.auth_token.clone(),
+        &config.config.management.auth_token,
     ))
     .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
     .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);

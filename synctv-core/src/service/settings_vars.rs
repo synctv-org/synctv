@@ -144,12 +144,11 @@ impl SettingsStorage {
     }
 
     /// Initialize all settings from database
-    pub async fn init(&self) -> Result<()> {
+    pub fn init(&self) -> Result<()> {
         // Load all settings as flat key-value pairs
         let all_values = self
             .settings_service
             .get_all_values()
-            .await
             .map_err(|e| crate::Error::Internal(format!("Failed to load settings: {e}")))?;
 
         let mut storage = self.inner.write();
@@ -158,11 +157,10 @@ impl SettingsStorage {
         Ok(())
     }
 
-    async fn reload_all_from_service(&self) -> Result<()> {
+    fn reload_all_from_service(&self) -> Result<()> {
         let all_values = self
             .settings_service
             .get_all_values()
-            .await
             .map_err(|e| crate::Error::Internal(format!("Failed to reload settings: {e}")))?;
 
         let mut storage = self.inner.write();
@@ -208,7 +206,7 @@ impl SettingsStorage {
                             "SettingsStorage reload listener lagged by {} messages, forcing full snapshot refresh",
                             n
                         );
-                        if let Err(error) = storage.reload_all_from_service().await {
+                        if let Err(error) = storage.reload_all_from_service() {
                             warn!(
                                 error = %error,
                                 "Failed to refresh SettingsStorage after lagged notifications"
@@ -337,7 +335,7 @@ where
     pub fn new(key: &'static str, storage: Arc<SettingsStorage>, default_value: T) -> Self {
         let setting = Self {
             key,
-            storage: storage.clone(),
+            storage,
             cache: Arc::new(RwLock::new(None)),
             raw_cache: Arc::new(RwLock::new(None)),
             default_value,
@@ -346,7 +344,9 @@ where
         };
 
         // Auto-register provider
-        storage.register_provider(key, Arc::new(setting.clone()));
+        setting
+            .storage
+            .register_provider(key, Arc::new(setting.clone()));
 
         setting
     }
@@ -365,6 +365,7 @@ where
     ///         }
     ///     });
     /// ```
+    #[must_use]
     pub fn with_validator<F>(self, validator: F) -> Self
     where
         F: Fn(&T) -> Result<()> + Send + Sync + 'static,
@@ -539,23 +540,29 @@ mod tests {
 
     #[test]
     fn test_custom_validator() {
-        // This test demonstrates using with_validator
-        // In real usage, the validator would be stored with the setting
         let validator_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let harness = test_storage_harness();
+        let storage = harness.storage;
 
-        let _validator = |v: &i64| -> Result<()> {
-            validator_called.store(true, std::sync::atomic::Ordering::SeqCst);
-            if *v > 0 && *v <= 100 {
-                Ok(())
-            } else {
-                Err(crate::Error::InvalidInput(
-                    "Value must be between 1 and 100".into(),
-                ))
-            }
-        };
+        let validator_called_clone = Arc::clone(&validator_called);
+        let _setting = Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(
+            move |v: &i64| -> Result<()> {
+                validator_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                if *v > 0 && *v <= 100 {
+                    Ok(())
+                } else {
+                    Err(crate::Error::InvalidInput(
+                        "Value must be between 1 and 100".into(),
+                    ))
+                }
+            },
+        );
 
-        // The validator would be set via with_validator in actual usage
-        // This is just to demonstrate the API
+        assert!(storage.validate("test.max_items", "50"));
+        assert!(validator_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        validator_called.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!storage.validate("test.max_items", "not_a_number"));
         assert!(!validator_called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
@@ -743,13 +750,13 @@ mod tests {
         .unwrap();
 
         service.initialize().await.unwrap();
-        storage.init().await.unwrap();
+        storage.init().unwrap();
         storage
             .inner
             .write()
             .insert("room.room_must_need_pwd".to_string(), "false".to_string());
 
-        storage.reload_all_from_service().await.unwrap();
+        storage.reload_all_from_service().unwrap();
 
         assert_eq!(
             storage.get_raw("room.room_must_need_pwd").as_deref(),
@@ -782,7 +789,7 @@ mod tests {
             .unwrap();
         }
 
-        storage.init().await.unwrap();
+        storage.init().unwrap();
         let must_need = Setting::<bool>::new("room.room_must_need_pwd", storage.clone(), false);
         let must_no_need =
             Setting::<bool>::new("room.room_must_no_need_pwd", storage.clone(), false);

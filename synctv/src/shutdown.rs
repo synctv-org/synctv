@@ -226,9 +226,10 @@ impl ShutdownCoordinator {
         }
 
         let remaining_budget = deadline - now;
-        let equal_share = remaining_budget / remaining_items as u32;
+        let remaining_items_u32 = u32::try_from(remaining_items).unwrap_or(u32::MAX);
+        let equal_share = remaining_budget / remaining_items_u32;
         let preferred_total = MIN_PER_TASK_TIMEOUT
-            .checked_mul(remaining_items as u32)
+            .checked_mul(remaining_items_u32)
             .unwrap_or(Duration::MAX);
 
         if remaining_budget >= preferred_total {

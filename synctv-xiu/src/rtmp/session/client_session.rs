@@ -327,13 +327,13 @@ impl ClientSession {
                 self.on_stream_is_recorded(stream_id)?;
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, timestamp).await?;
+                self.common.on_audio_data(data, timestamp)?;
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, timestamp).await?;
+                self.common.on_video_data(data, timestamp)?;
             }
             RtmpMessageData::AmfData { raw_data } => {
-                self.common.on_meta_data(raw_data, timestamp).await?;
+                self.common.on_meta_data(raw_data, timestamp)?;
             }
 
             _ => {}
@@ -355,11 +355,6 @@ impl ClientSession {
             _ => empty_cmd_name,
         };
 
-        let transaction_id = match transaction_id {
-            Amf0ValueType::Number(number) => *number as u8,
-            _ => 0,
-        };
-
         let empty_cmd_obj: IndexMap<String, Amf0ValueType> = IndexMap::new();
         let _ = match command_object {
             Amf0ValueType::Object(obj) => obj,
@@ -367,13 +362,20 @@ impl ClientSession {
             _ => &empty_cmd_obj,
         };
 
+        let is_transaction_id =
+            |number: f64, expected: u8| (number - f64::from(expected)).abs() < f64::EPSILON;
+
         match cmd_name.as_str() {
             "_result" => match transaction_id {
-                define::TRANSACTION_ID_CONNECT => {
+                Amf0ValueType::Number(number)
+                    if is_transaction_id(*number, define::TRANSACTION_ID_CONNECT) =>
+                {
                     tracing::info!("[C <- S] on_result_connect...");
                     self.on_result_connect().await?;
                 }
-                define::TRANSACTION_ID_CREATE_STREAM => {
+                Amf0ValueType::Number(number)
+                    if is_transaction_id(*number, define::TRANSACTION_ID_CREATE_STREAM) =>
+                {
                     tracing::info!("[C <- S] on_result_create_stream...");
                     self.on_result_create_stream()?;
                 }

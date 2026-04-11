@@ -7,6 +7,7 @@
 
 use chrono::Utc;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
@@ -25,6 +26,39 @@ use synctv_core::{
     },
 };
 use synctv_core_testing::create_test_pool;
+
+struct MockBroadcaster {
+    notified: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl synctv_core::service::notification::EventBroadcaster for MockBroadcaster {
+    async fn broadcast_to_room(
+        &self,
+        _room_id: &RoomId,
+        _event: &synctv_core::service::notification::RoomEvent,
+    ) -> Result<usize, synctv_core::Error> {
+        self.notified.store(true, Ordering::Release);
+        Ok(1)
+    }
+
+    async fn send_to_user(
+        &self,
+        _room_id: &RoomId,
+        _user_id: &UserId,
+        _event: &synctv_core::service::notification::RoomEvent,
+    ) -> Result<bool, synctv_core::Error> {
+        Ok(true)
+    }
+
+    async fn broadcast_to_cluster(
+        &self,
+        _room_id: &RoomId,
+        _event: &synctv_core::service::notification::RoomEvent,
+    ) -> Result<bool, synctv_core::Error> {
+        Ok(true)
+    }
+}
 
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
@@ -124,44 +158,8 @@ async fn test_edit_media_sends_notification() {
         .await
         .unwrap();
 
-    // Create a mock notification service that tracks calls
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     let notification_sent = Arc::new(AtomicBool::new(false));
     let notification_sent_clone = notification_sent.clone();
-
-    struct MockBroadcaster {
-        notified: Arc<AtomicBool>,
-    }
-
-    #[async_trait::async_trait]
-    impl synctv_core::service::notification::EventBroadcaster for MockBroadcaster {
-        async fn broadcast_to_room(
-            &self,
-            _room_id: &RoomId,
-            _event: &synctv_core::service::notification::RoomEvent,
-        ) -> Result<usize, synctv_core::Error> {
-            self.notified.store(true, Ordering::Release);
-            Ok(1)
-        }
-
-        async fn send_to_user(
-            &self,
-            _room_id: &RoomId,
-            _user_id: &UserId,
-            _event: &synctv_core::service::notification::RoomEvent,
-        ) -> Result<bool, synctv_core::Error> {
-            Ok(true)
-        }
-
-        async fn broadcast_to_cluster(
-            &self,
-            _room_id: &RoomId,
-            _event: &synctv_core::service::notification::RoomEvent,
-        ) -> Result<bool, synctv_core::Error> {
-            Ok(true)
-        }
-    }
 
     let broadcaster = Arc::new(MockBroadcaster {
         notified: notification_sent_clone,

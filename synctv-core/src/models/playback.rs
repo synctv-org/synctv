@@ -48,15 +48,10 @@ impl RoomPlaybackState {
     #[must_use]
     pub fn computed_current_time(&self) -> f64 {
         if self.is_playing {
-            // Use checked subtraction to get elapsed seconds safely.
-            // `num_seconds()` returns i64 which fits in f64 for reasonable durations.
-            // We add the fractional millisecond part separately to avoid precision
-            // loss from converting a large millisecond count directly to f64.
             let delta = Utc::now() - self.updated_at;
-            let whole_secs = delta.num_seconds() as f64;
-            let frac_ms =
-                (delta - chrono::Duration::seconds(delta.num_seconds())).num_milliseconds() as f64;
-            let elapsed = (whole_secs + frac_ms / 1000.0).max(0.0);
+            let elapsed = delta
+                .to_std()
+                .map_or(0.0, |duration| duration.as_secs_f64());
             self.current_time + elapsed * self.speed
         } else {
             self.current_time

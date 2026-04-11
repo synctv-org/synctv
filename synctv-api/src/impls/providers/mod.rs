@@ -12,6 +12,7 @@ pub use bilibili::BilibiliApiImpl;
 pub use emby::EmbyApiImpl;
 
 use std::sync::Arc;
+use synctv_core::models::UserProviderCredential;
 use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
 
@@ -37,6 +38,50 @@ pub struct ProviderBind {
 const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
     "Provider bind information is temporarily unavailable";
 
+fn filter_provider_binds(
+    credentials: Vec<UserProviderCredential>,
+    provider_name: &str,
+    user_field_key: &str,
+    instance_name: Option<&str>,
+) -> Vec<ProviderBind> {
+    let requested_instance_name = normalized_instance_name(instance_name);
+
+    credentials
+        .into_iter()
+        .filter(|credential| credential.provider == provider_name)
+        .filter(|credential| {
+            requested_instance_name.is_none_or(|requested| {
+                normalized_instance_name(credential.provider_instance_name.as_deref())
+                    == Some(requested)
+            })
+        })
+        .map(|credential| {
+            let host = credential
+                .credential_data
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let label_value = credential
+                .credential_data
+                .get(user_field_key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            ProviderBind {
+                id: credential.id,
+                host,
+                label_key: user_field_key.to_string(),
+                label_value,
+                created_at: credential.created_at.timestamp(),
+                created_at_str: synctv_common::time::format_datetime_rfc3339(credential.created_at),
+            }
+        })
+        .collect()
+}
+
 /// Shared implementation for querying saved provider credentials ("binds").
 ///
 /// Eliminates duplication across Alist, Emby, and Bilibili HTTP/gRPC handlers.
@@ -45,6 +90,7 @@ pub async fn get_provider_binds(
     user_id: &str,
     provider_name: &str,
     user_field_key: &str,
+    instance_name: Option<&str>,
 ) -> Result<Vec<ProviderBind>, ApiError> {
     let credentials = repo.get_by_user(user_id).await.map_err(|error| {
         tracing::error!(
@@ -56,36 +102,12 @@ pub async fn get_provider_binds(
         ApiError::ServiceUnavailable(PROVIDER_BINDS_UNAVAILABLE_MESSAGE.to_string())
     })?;
 
-    let binds = credentials
-        .into_iter()
-        .filter(|c| c.provider == provider_name)
-        .map(|c| {
-            let host = c
-                .credential_data
-                .get("host")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            let label_value = c
-                .credential_data
-                .get(user_field_key)
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            ProviderBind {
-                id: c.id,
-                host,
-                label_key: user_field_key.to_string(),
-                label_value,
-                created_at: c.created_at.timestamp(),
-                created_at_str: synctv_common::time::format_datetime_rfc3339(c.created_at),
-            }
-        })
-        .collect();
-
-    Ok(binds)
+    Ok(filter_provider_binds(
+        credentials,
+        provider_name,
+        user_field_key,
+        instance_name,
+    ))
 }
 
 /// Extract `instance_name` from a request field: empty string maps to `None`.
@@ -140,13 +162,40 @@ pub(crate) fn resolve_bound_instance_name(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_instance_name, get_provider_binds, resolve_bound_instance_name,
-        PROVIDER_BINDS_UNAVAILABLE_MESSAGE,
+        extract_instance_name, filter_provider_binds, get_provider_binds,
+        resolve_bound_instance_name, PROVIDER_BINDS_UNAVAILABLE_MESSAGE,
     };
     use crate::impls::ApiError;
+    use chrono::Utc;
+    use serde_json::json;
     use std::sync::Arc;
+    use synctv_core::models::UserProviderCredential;
     use synctv_core::provider::ProviderError;
     use synctv_core::repository::UserProviderCredentialRepository;
+
+    fn sample_credential(
+        id: &str,
+        provider: &str,
+        provider_instance_name: Option<&str>,
+        host: &str,
+        label_key: &str,
+        label_value: &str,
+    ) -> UserProviderCredential {
+        UserProviderCredential {
+            id: id.to_string(),
+            user_id: "user-1".to_string(),
+            provider: provider.to_string(),
+            server_id: format!("srv-{id}"),
+            provider_instance_name: provider_instance_name.map(ToString::to_string),
+            credential_data: json!({
+                "host": host,
+                label_key: label_value,
+            }),
+            expires_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[tokio::test]
     async fn get_provider_binds_backend_outage_maps_to_service_unavailable() {
@@ -156,7 +205,7 @@ mod tests {
             .expect("lazy pool");
         let repo = Arc::new(UserProviderCredentialRepository::new(pool));
 
-        let err = get_provider_binds(&repo, "user-1", "alist", "username")
+        let err = get_provider_binds(&repo, "user-1", "alist", "username", None)
             .await
             .expect_err("bind query should fail");
 
@@ -212,5 +261,74 @@ mod tests {
             extract_instance_name("  emby-main  "),
             Some("emby-main".to_string())
         );
+    }
+
+    #[test]
+    fn filter_provider_binds_scopes_to_requested_instance() {
+        let binds = filter_provider_binds(
+            vec![
+                sample_credential(
+                    "cred-1",
+                    "emby",
+                    Some("emby-main"),
+                    "https://main.example.com",
+                    "emby_user_id",
+                    "main-user",
+                ),
+                sample_credential(
+                    "cred-2",
+                    "emby",
+                    Some("emby-backup"),
+                    "https://backup.example.com",
+                    "emby_user_id",
+                    "backup-user",
+                ),
+                sample_credential(
+                    "cred-3",
+                    "alist",
+                    Some("alist-main"),
+                    "https://alist.example.com",
+                    "username",
+                    "alist-user",
+                ),
+            ],
+            "emby",
+            "emby_user_id",
+            Some("emby-main"),
+        );
+
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].id, "cred-1");
+        assert_eq!(binds[0].host, "https://main.example.com");
+        assert_eq!(binds[0].label_value, "main-user");
+    }
+
+    #[test]
+    fn filter_provider_binds_returns_all_instances_when_request_omits_instance() {
+        let binds = filter_provider_binds(
+            vec![
+                sample_credential(
+                    "cred-1",
+                    "alist",
+                    Some("alist-main"),
+                    "https://main.example.com",
+                    "username",
+                    "main-user",
+                ),
+                sample_credential(
+                    "cred-2",
+                    "alist",
+                    Some("alist-backup"),
+                    "https://backup.example.com",
+                    "username",
+                    "backup-user",
+                ),
+            ],
+            "alist",
+            "username",
+            None,
+        );
+
+        assert_eq!(binds.len(), 2);
     }
 }

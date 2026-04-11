@@ -20,7 +20,6 @@ impl SortDirection {
     }
 }
 
-
 impl FromStr for SortDirection {
     type Err = String;
 

@@ -6,6 +6,7 @@
 //! Run with: cargo test -p synctv-core --test `media_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -13,16 +14,23 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
+    models::{
+        PermissionBits, Playlist, User, UserId, UserProviderCredential, UserRole, UserStatus,
+    },
+    repository::{UserProviderCredentialRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         media::{AddMediaRequest, EditMediaRequest},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        playlist::CreatePlaylistRequest,
+        CredentialEncryption, InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
+fn test_encryption() -> CredentialEncryption {
+    CredentialEncryption::new(&[0x24; 32]).expect("test credential encryption")
+}
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -106,6 +114,24 @@ async fn register_direct_url_provider(room_service: &RoomService) {
         .create_provider("direct_url", "direct_url", &serde_json::json!({}))
         .await
         .expect("Failed to register direct_url provider");
+}
+
+async fn register_bilibili_provider(room_service: &RoomService) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("bilibili", "bilibili", &serde_json::json!({}))
+        .await
+        .expect("Failed to register bilibili provider");
+}
+
+async fn register_alist_provider(room_service: &RoomService) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("alist", "alist", &serde_json::json!({}))
+        .await
+        .expect("Failed to register alist provider");
 }
 
 // ========== add_media: ADD_MEDIA permission check ==========
@@ -210,6 +236,272 @@ async fn test_add_media_with_permission_succeeds() {
     assert!(result.is_ok(), "Creator should be able to add media");
     let media = result.unwrap();
     assert_eq!(media.name, "Good Video");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_media_ignores_forged_credential_owner_id_for_bilibili() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let encryption = test_encryption();
+    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+        pool.clone(),
+        encryption.clone(),
+    ));
+
+    room_service.set_media_credential_encryption(encryption);
+    room_service.set_media_credential_repo(Arc::clone(&credential_repo));
+
+    let creator = user_repo
+        .create(&make_user("addm_bili_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Add Media Bilibili Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_bilibili_provider(&room_service).await;
+
+    let server_id = UserProviderCredential::bilibili_server_id(None);
+    credential_repo
+        .create(&UserProviderCredential {
+            id: synctv_common::snanoid!(12),
+            user_id: creator.id.to_string(),
+            provider: "bilibili".to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: None,
+            credential_data: serde_json::to_value(
+                synctv_core::models::ProviderCredential::bilibili(HashMap::from([(
+                    "SESSDATA".to_string(),
+                    "test_session".to_string(),
+                )])),
+            )
+            .expect("bilibili credential should serialize"),
+            expires_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_service = room_service.media_service();
+
+    let request = AddMediaRequest {
+        playlist_id: Some(playlist.id.clone()),
+        name: "Bilibili Video".to_string(),
+        source_provider: "bilibili".to_string(),
+        provider_instance_name: "bilibili".to_string(),
+        source_config: serde_json::json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "forged-user-id",
+                "server_id": server_id
+            }
+        }),
+    };
+
+    let media = media_service
+        .add_media(room.id.clone(), creator.id.clone(), request)
+        .await
+        .expect("add_media should ignore forged credential owner ids");
+
+    assert_eq!(
+        media.source_config["credential_ref"]["credential_owner_id"],
+        serde_json::Value::String(creator.id.to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_add_media_with_credential_backed_provider_without_repo_fails_closed() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("addm_bili_missing_repo"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Add Media Missing Repo".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_bilibili_provider(&room_service).await;
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let request = AddMediaRequest {
+        playlist_id: Some(playlist.id.clone()),
+        name: "Bilibili Missing Repo".to_string(),
+        source_provider: "bilibili".to_string(),
+        provider_instance_name: "bilibili".to_string(),
+        source_config: serde_json::json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": creator.id.to_string(),
+                "server_id": "bilibili"
+            }
+        }),
+    };
+
+    let err = room_service
+        .media_service()
+        .add_media(room.id.clone(), creator.id.clone(), request)
+        .await
+        .expect_err("credential-backed media should fail closed without repo wiring");
+
+    match err {
+        Error::ServiceUnavailable(message) => {
+            assert!(message.contains("bilibili"));
+            assert!(message.contains("credential repository"));
+        }
+        other => panic!("expected ServiceUnavailable, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_dynamic_playlist_with_credential_backed_provider_without_repo_fails_closed() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("plist_alist_missing_repo"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Playlist Missing Repo".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_alist_provider(&room_service).await;
+
+    let request = CreatePlaylistRequest {
+        room_id: room.id.clone(),
+        name: "Alist Dynamic".to_string(),
+        parent_id: None,
+        source_provider: Some("alist".to_string()),
+        source_config: Some(serde_json::json!({
+            "path": "/media/library",
+            "credential_ref": {
+                "credential_owner_id": creator.id.to_string(),
+                "server_id": "alist-server"
+            }
+        })),
+        provider_instance_name: Some("alist".to_string()),
+    };
+
+    let err = room_service
+        .playlist_service()
+        .create_playlist(room.id.clone(), creator.id.clone(), request)
+        .await
+        .expect_err("credential-backed dynamic playlist should fail closed without repo wiring");
+
+    match err {
+        Error::ServiceUnavailable(message) => {
+            assert!(message.contains("alist"));
+            assert!(message.contains("credential repository"));
+        }
+        other => panic!("expected ServiceUnavailable, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_dynamic_playlist_items_with_credential_backed_provider_without_repo_fails_closed(
+) {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("alist_dynamic_runtime_missing_repo"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Playlist Runtime Missing Repo".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_alist_provider(&room_service).await;
+
+    let playlist = Playlist {
+        id: synctv_core::models::PlaylistId::new(),
+        room_id: room.id.clone(),
+        creator_id: Some(creator.id.clone()),
+        name: "Persisted Alist Dynamic".to_string(),
+        parent_id: None,
+        position: 0.0,
+        source_provider: Some("alist".to_string()),
+        source_config: Some(serde_json::json!({
+            "path": "/media/library",
+            "credential_ref": {
+                "credential_owner_id": creator.id.to_string(),
+                "server_id": "alist-server"
+            }
+        })),
+        provider_instance_name: Some("alist".to_string()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    synctv_core::repository::PlaylistRepository::new(pool.clone())
+        .create(&playlist)
+        .await
+        .unwrap();
+
+    let err = room_service
+        .media_service()
+        .list_dynamic_playlist_items(
+            room.id.clone(),
+            creator.id.clone(),
+            &playlist.id,
+            None,
+            0,
+            20,
+        )
+        .await
+        .expect_err("credential-backed dynamic listing should fail closed without repo wiring");
+
+    match err {
+        Error::ServiceUnavailable(message) => {
+            assert!(message.contains("alist"));
+            assert!(message.contains("credential repository"));
+        }
+        other => panic!("expected ServiceUnavailable, got {other:?}"),
+    }
 }
 
 // ========== add_media: cross-room playlist authorization ==========

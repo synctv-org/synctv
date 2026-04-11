@@ -19,6 +19,15 @@ use synctv_core::{
 use synctv_core_testing::create_test_jwt_service;
 use tonic::metadata::MetadataMap;
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ExpiredClaims {
+    sub: String,
+    typ: String,
+    jti: String,
+    iat: i64,
+    exp: i64,
+}
+
 const JWT_SECRET: &str = "test-secret-key-for-jwt-security-tests-minimum-32-chars";
 
 #[tokio::test]
@@ -797,15 +806,6 @@ async fn test_tampered_subject_rejected() {
 async fn test_expired_refresh_token_rejected() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct ExpiredClaims {
-        sub: String,
-        typ: String,
-        jti: String,
-        iat: i64,
-        exp: i64,
-    }
 
     let now = Utc::now().timestamp();
     let claims = ExpiredClaims {

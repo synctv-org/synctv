@@ -21,10 +21,11 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
 
 use super::client::convert::{
+    bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
     media_to_proto, media_to_proto_with_availability, member_status_to_proto,
     playback_result_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
     playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
-    room_to_proto_basic,
+    room_to_proto_basic, sign_local_bilibili_danmaku_urls,
 };
 use super::reserve_cluster_event_publish;
 use super::ApiError;
@@ -38,6 +39,52 @@ pub struct RequestContext {
 }
 
 pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: &str = "mgmt_local01";
+
+fn page_i32_to_usize(value: i32) -> usize {
+    usize::try_from(value.max(1)).unwrap_or(usize::MAX)
+}
+
+fn page_size_i32_to_usize(value: i32, max: i32) -> usize {
+    usize::try_from(value.clamp(1, max)).unwrap_or(usize::MAX)
+}
+
+fn page_i32_to_u32(value: i32) -> u32 {
+    value.max(1).cast_unsigned()
+}
+
+fn page_size_i32_to_u32(value: i32, max: i32) -> u32 {
+    value.clamp(1, max).cast_unsigned()
+}
+
+fn usize_to_i32_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn i64_to_i32_saturating(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn i64_to_usize_saturating(value: i64) -> usize {
+    if value.is_negative() {
+        0
+    } else {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+}
+
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
 
 fn map_batch_result_error(error: impl Into<ApiError>) -> String {
     let error = error.into();
@@ -163,6 +210,7 @@ pub struct AdminApiImpl {
     pub config: Arc<synctv_core::Config>,
     pub redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
     pub audit_service: Arc<AuditService>,
+    pub provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
 }
 
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
@@ -227,8 +275,8 @@ fn map_resource_availability_filter(filter: i32) -> Option<bool> {
 }
 
 fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Vec<T> {
-    let page = page.max(1) as usize;
-    let page_size = page_size.clamp(1, 100) as usize;
+    let page = page_i32_to_usize(page);
+    let page_size = page_size_i32_to_usize(page_size, 100);
     let offset = (page - 1) * page_size;
     items.into_iter().skip(offset).take(page_size).collect()
 }
@@ -249,7 +297,7 @@ fn build_room_stream_list_response(
         media_ids.reverse();
     }
 
-    let total = media_ids.len() as i32;
+    let total = usize_to_i32_saturating(media_ids.len());
     let streams = paginate_vec(media_ids, req.page, req.page_size)
         .into_iter()
         .map(|media_id| crate::proto::client::StreamEntry {
@@ -439,7 +487,7 @@ impl AdminApiImpl {
         Ok(actor)
     }
 
-    async fn effective_settings_by_key(
+    fn effective_settings_by_key(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, ApiError> {
         let mut effective = std::collections::BTreeMap::new();
@@ -456,12 +504,7 @@ impl AdminApiImpl {
             effective.extend(defaults);
         }
 
-        for setting in self
-            .settings_service
-            .get_all()
-            .await
-            .map_err(ApiError::from)?
-        {
+        for setting in self.settings_service.get_all().map_err(ApiError::from)? {
             if let Some(registered_keys) = &registered_keys {
                 if registered_keys.contains(&setting.key) {
                     effective.insert(setting.key, setting.value);
@@ -486,6 +529,18 @@ impl AdminApiImpl {
         room_id: &str,
         media: synctv_core::models::Media,
     ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+        let signing_key =
+            synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
+        if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
+            sign_local_bilibili_danmaku_urls(
+                &mut embedded_result,
+                user_id,
+                Some(&signing_key),
+                None,
+            );
+            return Ok(playback_result_to_proto(&embedded_result));
+        }
+
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider = if let Some(instance_name) =
             (!media.provider_instance_name.trim().is_empty())
@@ -510,8 +565,6 @@ impl AdminApiImpl {
                 })?
         };
 
-        let signing_key =
-            synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(user_id)
             .with_room_id(room_id)
@@ -522,10 +575,23 @@ impl AdminApiImpl {
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
+        if let Some(stores) = &self.provider_stores {
+            ctx = ctx.with_store(stores.load(provider.name()));
+        }
         let provider_result = provider
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
+        let default_mode_expires_at = provider_result
+            .playback_infos
+            .get(&provider_result.default_mode)
+            .and_then(|info| info.expires_at);
+        let live_danmaku = bilibili_live_danmaku_for_static_media(
+            &media,
+            user_id,
+            Some(&signing_key),
+            default_mode_expires_at,
+        );
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id.clone(),
@@ -537,16 +603,25 @@ impl AdminApiImpl {
         .default_mode(provider_result.default_mode.clone());
 
         for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
+            let mut info = provider_playback_info_to_model(&provider_info);
+            if let Some(ref danmaku) = live_danmaku {
+                info.danmakus.push(danmaku.clone());
+            }
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
             builder = builder.add_metadata(key, value);
         }
 
-        let full_result = builder
+        let mut full_result = builder
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        sign_local_bilibili_danmaku_urls(
+            &mut full_result,
+            user_id,
+            Some(&signing_key),
+            default_mode_expires_at,
+        );
         Ok(playback_result_to_proto(&full_result))
     }
 
@@ -617,6 +692,9 @@ impl AdminApiImpl {
         }
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(stores) = &self.provider_stores {
+            ctx = ctx.with_store(stores.load(provider.name()));
         }
         let provider_result = provider
             .generate_playback(&ctx, &item.source_config)
@@ -748,7 +826,17 @@ impl AdminApiImpl {
             config,
             redis_publish_tx,
             audit_service,
+            provider_stores: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_provider_stores(
+        mut self,
+        stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+    ) -> Self {
+        self.provider_stores = Some(stores);
+        self
     }
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub
@@ -850,8 +938,8 @@ impl AdminApiImpl {
 
         let query = synctv_core::models::RoomListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(page as u32),
-                Some(page_size as u32),
+                Some(page_i32_to_u32(page)),
+                Some(page_size_i32_to_u32(page_size, 100)),
             ),
             status,
             search: if req.search.is_empty() {
@@ -1781,8 +1869,8 @@ impl AdminApiImpl {
 
         let query = synctv_core::models::UserListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(page as u32),
-                Some(page_size as u32),
+                Some(page_i32_to_u32(page)),
+                Some(page_size_i32_to_u32(page_size, 100)),
             ),
             search,
             status,
@@ -1981,7 +2069,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::GetSettingsResponse, ApiError> {
-        let group_list = Self::project_settings_groups(self.effective_settings_by_key().await?)?;
+        let group_list = Self::project_settings_groups(self.effective_settings_by_key()?)?;
         let group_names: Vec<String> = group_list.iter().map(|g| g.name.clone()).collect();
 
         // Audit log for settings view (best-effort)
@@ -2014,7 +2102,7 @@ impl AdminApiImpl {
             ));
         }
 
-        let group = Self::project_settings_groups(self.effective_settings_by_key().await?)?
+        let group = Self::project_settings_groups(self.effective_settings_by_key()?)?
             .into_iter()
             .find(|group| group.name == requested_group)
             .ok_or_else(|| {
@@ -2123,8 +2211,8 @@ impl AdminApiImpl {
 
         let query = synctv_core::models::ProviderInstanceListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(req.page.max(1) as u32),
-                Some(req.page_size.clamp(1, 100) as u32),
+                Some(page_i32_to_u32(req.page)),
+                Some(page_size_i32_to_u32(req.page_size, 100)),
             ),
             provider_type: normalize_non_empty_filter(&req.provider_type),
             search: normalize_non_empty_filter(&req.search),
@@ -3290,8 +3378,8 @@ impl AdminApiImpl {
         let page_size = req.page_size.clamp(1, 100);
         let query = synctv_core::models::UserListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(page as u32),
-                Some(page_size as u32),
+                Some(page_i32_to_u32(page)),
+                Some(page_size_i32_to_u32(page_size, 100)),
             ),
             search: (!req.search.is_empty()).then_some(req.search),
             sort_by: match crate::proto::admin::UserListSortBy::try_from(req.sort_by) {
@@ -3396,16 +3484,16 @@ impl AdminApiImpl {
         let (_, total_rooms) = total_rooms_res.unwrap_or((vec![], 0));
         let (_, active_rooms) = active_rooms_res.unwrap_or((vec![], 0));
         let (_, banned_rooms) = banned_rooms_res.unwrap_or((vec![], 0));
-        let provider_count = provider_count_res.map_or(0, |i| i.len() as i32);
-        let total_media = total_media_res.unwrap_or(0) as i32;
+        let provider_count = provider_count_res.map_or(0, |i| usize_to_i32_saturating(i.len()));
+        let total_media = i64_to_i32_saturating(total_media_res.unwrap_or(0));
 
         Ok(crate::proto::admin::GetSystemStatsResponse {
-            total_users: total_users as i32,
-            active_users: active_users as i32,
-            banned_users: banned_users as i32,
-            total_rooms: total_rooms as i32,
-            active_rooms: active_rooms as i32,
-            banned_rooms: banned_rooms as i32,
+            total_users: i64_to_i32_saturating(total_users),
+            active_users: i64_to_i32_saturating(active_users),
+            banned_users: i64_to_i32_saturating(banned_users),
+            total_rooms: i64_to_i32_saturating(total_rooms),
+            active_rooms: i64_to_i32_saturating(active_rooms),
+            banned_rooms: i64_to_i32_saturating(banned_rooms),
             total_media,
             provider_instances: provider_count,
             additional_stats: vec![],
@@ -3593,8 +3681,7 @@ impl AdminApiImpl {
             .ok_or_else(publish_key_service_unavailable_error)?;
 
         let publish_key = publish_key_service
-            .generate_publish_key(rid.clone(), media_id.clone(), admin_user_id.clone())
-            .await
+            .generate_publish_key(&rid, &media_id, admin_user_id)
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
         let token = publish_key.token.clone();
         let stream_key = format!("{}?key={}", media_id.as_str(), token);
@@ -3813,18 +3900,20 @@ impl AdminApiImpl {
             ));
         }
 
-        let child_folder_count = self
-            .room_service
-            .playlist_service()
-            .count_children(&pid)
-            .await
-            .map_err(ApiError::from)? as i32;
-        let media_count = self
-            .room_service
-            .media_service()
-            .count_playlist_media(&pid)
-            .await
-            .unwrap_or(0) as i32;
+        let child_folder_count = i64_to_i32_saturating(
+            self.room_service
+                .playlist_service()
+                .count_children(&pid)
+                .await
+                .map_err(ApiError::from)?,
+        );
+        let media_count = i64_to_i32_saturating(
+            self.room_service
+                .media_service()
+                .count_playlist_media(&pid)
+                .await
+                .unwrap_or(0),
+        );
 
         Ok(crate::proto::client::GetPlaylistResponse {
             playlist: Some(playlist_to_proto(&playlist, media_count)),
@@ -3846,14 +3935,11 @@ impl AdminApiImpl {
 
         self.require_admin_actor(admin_user_id).await?;
 
-        const DEFAULT_PAGE_SIZE: i32 = 50;
-        const MAX_PAGE_SIZE: i32 = 100;
-
-        let page = req.page.max(1) as usize;
+        let page = page_i32_to_usize(req.page);
         let page_size = if req.page_size <= 0 {
-            DEFAULT_PAGE_SIZE as usize
+            page_size_i32_to_usize(50, 100)
         } else {
-            req.page_size.min(MAX_PAGE_SIZE) as usize
+            page_size_i32_to_usize(req.page_size, 100)
         };
         let parent_id = if req.parent_id.is_empty() {
             None
@@ -3875,8 +3961,8 @@ impl AdminApiImpl {
         };
         let query = CorePlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(page as u32),
-                Some(page_size as u32),
+                Some(u32::try_from(page).unwrap_or(u32::MAX)),
+                Some(u32::try_from(page_size).unwrap_or(u32::MAX)),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -3886,11 +3972,12 @@ impl AdminApiImpl {
             sort_by: map_admin_playlist_sort(req.sort_by),
             sort_direction: map_client_sort_direction(req.sort_direction),
         };
-        let total = self
-            .room_service
-            .count_client_playlists(&rid, parent_id.as_ref(), &query)
-            .await
-            .map_err(ApiError::from)? as i32;
+        let total = i64_to_i32_saturating(
+            self.room_service
+                .count_client_playlists(&rid, parent_id.as_ref(), &query)
+                .await
+                .map_err(ApiError::from)?,
+        );
         let offset = (page - 1) * page_size;
         let playlists = self
             .room_service
@@ -3898,8 +3985,8 @@ impl AdminApiImpl {
                 &rid,
                 parent_id.as_ref(),
                 &query,
-                page_size as i64,
-                offset as i64,
+                usize_to_i64_saturating(page_size),
+                usize_to_i64_saturating(offset),
             )
             .await
             .map_err(ApiError::from)?;
@@ -3915,8 +4002,9 @@ impl AdminApiImpl {
         let playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count =
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                let item_count = i64_to_i32_saturating(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                );
                 playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
@@ -3959,7 +4047,7 @@ impl AdminApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::CreatePlaylistResponse {
             playlist: Some(playlist_to_proto(&playlist, item_count)),
@@ -4001,7 +4089,7 @@ impl AdminApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
             playlist: Some(playlist_to_proto(&playlist, item_count)),
@@ -4043,7 +4131,7 @@ impl AdminApiImpl {
             .media_service()
             .count_playlist_media(&playlist.id)
             .await
-            .unwrap_or(0) as i32;
+            .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::MovePlaylistResponse {
             playlist: Some(playlist_to_proto(&playlist, item_count)),
@@ -4106,8 +4194,8 @@ impl AdminApiImpl {
             }
             let playlist_query = CorePlaylistListQuery {
                 pagination: synctv_core::models::PageParams::new(
-                    Some(req.page.max(1) as u32),
-                    Some(req.page_size.clamp(1, 100) as u32),
+                    Some(page_i32_to_u32(req.page)),
+                    Some(page_size_i32_to_u32(req.page_size, 100)),
                 ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -4119,8 +4207,8 @@ impl AdminApiImpl {
             };
             let media_query = CoreMediaListQuery {
                 pagination: synctv_core::models::PageParams::new(
-                    Some(req.page.max(1) as u32),
-                    Some(req.page_size.clamp(1, 100) as u32),
+                    Some(page_i32_to_u32(req.page)),
+                    Some(page_size_i32_to_u32(req.page_size, 100)),
                 ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -4133,15 +4221,17 @@ impl AdminApiImpl {
                 .room_service
                 .count_client_playlists(&rid, None, &playlist_query)
                 .await
-                .map_err(ApiError::from)? as usize;
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?;
             let file_count = self
                 .room_service
                 .count_client_media(&rid, None, &media_query)
                 .await
-                .map_err(ApiError::from)? as usize;
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?;
             let total = folder_count + file_count;
-            let page_size = req.page_size.clamp(1, 100) as usize;
-            let skip = (req.page.max(1) as usize - 1) * page_size;
+            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let skip = (page_i32_to_usize(req.page) - 1) * page_size;
             let (playlists, media) = if skip < folder_count {
                 let playlists = self
                     .room_service
@@ -4149,15 +4239,21 @@ impl AdminApiImpl {
                         &rid,
                         None,
                         &playlist_query,
-                        page_size as i64,
-                        skip as i64,
+                        usize_to_i64_saturating(page_size),
+                        usize_to_i64_saturating(skip),
                     )
                     .await
                     .map_err(ApiError::from)?;
                 let remaining = page_size.saturating_sub(playlists.len());
                 let media = if remaining > 0 {
                     self.room_service
-                        .list_client_media(&rid, None, &media_query, remaining as i64, 0)
+                        .list_client_media(
+                            &rid,
+                            None,
+                            &media_query,
+                            usize_to_i64_saturating(remaining),
+                            0,
+                        )
                         .await
                         .map_err(ApiError::from)?
                 } else {
@@ -4172,8 +4268,8 @@ impl AdminApiImpl {
                         &rid,
                         None,
                         &media_query,
-                        page_size as i64,
-                        media_skip as i64,
+                        usize_to_i64_saturating(page_size),
+                        usize_to_i64_saturating(media_skip),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -4190,8 +4286,9 @@ impl AdminApiImpl {
             let proto_playlists = playlists
                 .iter()
                 .map(|entry| {
-                    let item_count =
-                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                    let item_count = i64_to_i32_saturating(
+                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                    );
                     playlist_to_proto_with_availability(
                         &entry.playlist,
                         item_count,
@@ -4207,9 +4304,9 @@ impl AdminApiImpl {
             return Ok(crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
-                total: total as i32,
-                folder_count: folder_count as i32,
-                file_count: file_count as i32,
+                total: usize_to_i32_saturating(total),
+                folder_count: usize_to_i32_saturating(folder_count),
+                file_count: usize_to_i32_saturating(file_count),
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
             });
@@ -4254,8 +4351,8 @@ impl AdminApiImpl {
                 });
             }
 
-            let page = req.page.max(1) as usize;
-            let page_size = req.page_size.clamp(1, 100) as usize;
+            let page = page_i32_to_usize(req.page);
+            let page_size = page_size_i32_to_usize(req.page_size, 100);
             let items = self
                 .room_service
                 .media_service()
@@ -4283,7 +4380,7 @@ impl AdminApiImpl {
                         name: item.name,
                         item_type,
                         target: item.target,
-                        size: item.size.map(|s| s as i64),
+                        size: item.size.map(u64_to_i64_saturating),
                         thumbnail: Some(item.thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
                     })
@@ -4328,8 +4425,8 @@ impl AdminApiImpl {
 
         let playlist_query = CorePlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(req.page.max(1) as u32),
-                Some(req.page_size.clamp(1, 100) as u32),
+                Some(page_i32_to_u32(req.page)),
+                Some(page_size_i32_to_u32(req.page_size, 100)),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -4341,8 +4438,8 @@ impl AdminApiImpl {
         };
         let media_query = CoreMediaListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(req.page.max(1) as u32),
-                Some(req.page_size.clamp(1, 100) as u32),
+                Some(page_i32_to_u32(req.page)),
+                Some(page_size_i32_to_u32(req.page_size, 100)),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -4355,15 +4452,17 @@ impl AdminApiImpl {
             .room_service
             .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
-            .map_err(ApiError::from)? as usize;
+            .map_err(ApiError::from)
+            .map(i64_to_usize_saturating)?;
         let file_count = self
             .room_service
             .count_client_media(&rid, Some(&playlist_id), &media_query)
             .await
-            .map_err(ApiError::from)? as usize;
+            .map_err(ApiError::from)
+            .map(i64_to_usize_saturating)?;
         let total = folder_count + file_count;
-        let page_size = req.page_size.clamp(1, 100) as usize;
-        let skip = (req.page.max(1) as usize - 1) * page_size;
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let skip = (page_i32_to_usize(req.page) - 1) * page_size;
         let (playlists, media) = if skip < folder_count {
             let playlists = self
                 .room_service
@@ -4371,15 +4470,21 @@ impl AdminApiImpl {
                     &rid,
                     Some(&playlist_id),
                     &playlist_query,
-                    page_size as i64,
-                    skip as i64,
+                    usize_to_i64_saturating(page_size),
+                    usize_to_i64_saturating(skip),
                 )
                 .await
                 .map_err(ApiError::from)?;
             let remaining = page_size.saturating_sub(playlists.len());
             let media = if remaining > 0 {
                 self.room_service
-                    .list_client_media(&rid, Some(&playlist_id), &media_query, remaining as i64, 0)
+                    .list_client_media(
+                        &rid,
+                        Some(&playlist_id),
+                        &media_query,
+                        usize_to_i64_saturating(remaining),
+                        0,
+                    )
                     .await
                     .map_err(ApiError::from)?
             } else {
@@ -4394,8 +4499,8 @@ impl AdminApiImpl {
                     &rid,
                     Some(&playlist_id),
                     &media_query,
-                    page_size as i64,
-                    media_skip as i64,
+                    usize_to_i64_saturating(page_size),
+                    usize_to_i64_saturating(media_skip),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -4411,8 +4516,9 @@ impl AdminApiImpl {
         let proto_playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count =
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                let item_count = i64_to_i32_saturating(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                );
                 playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
@@ -4424,9 +4530,9 @@ impl AdminApiImpl {
         Ok(crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
-            total: total as i32,
-            folder_count: folder_count as i32,
-            file_count: file_count as i32,
+            total: usize_to_i32_saturating(total),
+            folder_count: usize_to_i32_saturating(folder_count),
+            file_count: usize_to_i32_saturating(file_count),
             dynamic_items: Vec::new(),
             current_path,
         })
@@ -4447,13 +4553,15 @@ impl AdminApiImpl {
                 .media_service()
                 .count_playlist_media(playlist_id)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         } else {
             self.room_service
                 .media_service()
                 .count_room_root_media(&rid)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         };
         if existing_count >= crate::impls::ClientApiImpl::MAX_PLAYLIST_SIZE {
             return Err(ApiError::InvalidInput(format!(
@@ -4586,7 +4694,7 @@ impl AdminApiImpl {
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
-            moved_count: media.len() as i32,
+            moved_count: usize_to_i32_saturating(media.len()),
             media: media.iter().map(media_to_proto).collect(),
         })
     }
@@ -5025,7 +5133,7 @@ async fn list_active_user_room_ids(
         }
 
         room_ids.extend(page_room_ids);
-        if room_ids.len() as i64 >= total {
+        if usize_to_i64_saturating(room_ids.len()) >= total {
             break;
         }
 
@@ -5055,7 +5163,7 @@ async fn list_owned_room_ids(
         }
 
         room_ids.extend(rooms.into_iter().map(|room| room.id));
-        if room_ids.len() as i64 >= total {
+        if usize_to_i64_saturating(room_ids.len()) >= total {
             break;
         }
 
@@ -5465,6 +5573,10 @@ mod tests {
             24,
         ));
         let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
+        let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::new(
+            None,
+            "test:provider:".to_string(),
+        ));
 
         (
             AdminApiImpl::new(
@@ -5480,7 +5592,8 @@ mod tests {
                 config,
                 Some(redis_publish_tx),
                 audit_service,
-            ),
+            )
+            .with_provider_stores(provider_stores),
             redis_publish_rx,
         )
     }
@@ -5525,6 +5638,10 @@ mod tests {
             24,
         ));
         let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
+        let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::new(
+            None,
+            "test:provider:".to_string(),
+        ));
 
         let tracker = Arc::new(StreamTracker::new());
         let registry: Arc<dyn StreamRegistryTrait> = Arc::new(InMemoryStreamRegistry::new());
@@ -5563,7 +5680,8 @@ mod tests {
                 config,
                 Some(redis_publish_tx),
                 audit_service,
-            ),
+            )
+            .with_provider_stores(provider_stores),
             live_streaming_infrastructure,
             redis_publish_rx,
         )
@@ -7203,8 +7321,9 @@ mod tests {
         .await
         {
             if let ClusterEvent::KickUser {
-                    user_id, reason, ..
-                } = publish.event {
+                user_id, reason, ..
+            } = publish.event
+            {
                 assert_eq!(user_id, target_user.id);
                 assert_eq!(reason, "user_deleted");
                 saw_kick_user = true;
@@ -7437,8 +7556,9 @@ mod tests {
         .await
         {
             if let ClusterEvent::KickUser {
-                    user_id, reason, ..
-                } = publish.event {
+                user_id, reason, ..
+            } = publish.event
+            {
                 assert_eq!(user_id, target_user.id);
                 assert_eq!(reason, "user_banned");
                 saw_kick_user = true;
@@ -7780,11 +7900,12 @@ mod tests {
         .await
         {
             if let ClusterEvent::RoomOwnerInactive {
-                    room_id,
-                    owner_id,
-                    triggered_by,
-                    ..
-                } = publish.event {
+                room_id,
+                owner_id,
+                triggered_by,
+                ..
+            } = publish.event
+            {
                 assert_eq!(room_id, room.id);
                 assert_eq!(owner_id, target_user.id);
                 assert_eq!(triggered_by, admin_user.id);
@@ -8020,11 +8141,12 @@ mod tests {
         .await
         {
             if let ClusterEvent::RoomOwnerInactive {
-                    room_id,
-                    owner_id,
-                    triggered_by,
-                    ..
-                } = publish.event {
+                room_id,
+                owner_id,
+                triggered_by,
+                ..
+            } = publish.event
+            {
                 assert_eq!(room_id, room.id);
                 assert_eq!(owner_id, target_user.id);
                 assert_eq!(triggered_by, admin_user.id);
@@ -8393,7 +8515,10 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&global_admin).await.expect("create global admin");
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
         user_repo.create(&owner).await.expect("create owner");
         user_repo.create(&target).await.expect("create target");
 
@@ -8491,7 +8616,10 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&global_admin).await.expect("create global admin");
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
         user_repo.create(&owner).await.expect("create owner");
         user_repo.create(&target).await.expect("create target");
 
@@ -9073,7 +9201,7 @@ mod tests {
             .expect("playback state query should succeed");
         assert!(state.playing_media_id.is_none());
         assert!(!state.is_playing);
-        assert_eq!(state.current_time, 0.0);
+        assert!((state.current_time - 0.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -9167,6 +9295,130 @@ mod tests {
         assert_eq!(result.media_id, media.id.as_str());
         assert_eq!(result.room_id, room.id.as_str());
         assert_eq!(result.name, media.name);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+        let media_repo = MediaRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_playback_get_signed".to_string(),
+            email: Some("global_admin_playback_get_signed@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_playback_get_signed".to_string(),
+            email: Some("room_owner_playback_get_signed@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room provider playback get test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let media = synctv_core::models::Media::from_provider(
+            None,
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "provider-playback-media".to_string(),
+            serde_json::json!({
+                "url": "https://example.com/video.mp4",
+                "headers": {
+                    "Authorization": "Bearer admin-provider-token"
+                }
+            }),
+            "direct_url",
+            String::new(),
+            0.0,
+        );
+        let media = media_repo
+            .create(&media)
+            .await
+            .expect("create provider media");
+
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(
+                room.id.clone(),
+                owner.id.clone(),
+                Some(media.id.clone()),
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("owner should be able to seed playback state");
+
+        let response = admin_api
+            .get_playback(room.id.as_str(), &global_admin.id)
+            .await
+            .expect("global admin should get signed provider playback");
+
+        let result = response
+            .playback_result
+            .expect("playback result should be present");
+        let direct = result
+            .playback_infos
+            .get("direct")
+            .expect("direct mode should be present");
+        assert_eq!(direct.urls.len(), 1);
+        assert!(
+            direct.urls[0]
+                .url
+                .starts_with("/api/providers/proxy/direct_url/"),
+            "signed provider playback should expose proxy URL, got {}",
+            direct.urls[0].url
+        );
+        assert!(
+            direct.urls[0].url.contains("/stream?"),
+            "signed direct-url playback should use stream proxy contract, got {}",
+            direct.urls[0].url
+        );
+        assert!(
+            direct.urls[0].headers.is_empty(),
+            "proxy-backed playback should not require client-side secret headers"
+        );
     }
 
     #[tokio::test]
@@ -9793,8 +10045,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_admin_update_room_settings_fails_closed_when_cluster_fanout_fails() {
         let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
         drop(redis_publish_rx);
 
         let mut cluster_config = Config::default();
@@ -9890,8 +10141,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_admin_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
         let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
         drop(redis_publish_rx);
 
         let mut cluster_config = Config::default();

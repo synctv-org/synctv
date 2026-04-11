@@ -982,9 +982,8 @@ mod tests {
 
     #[test]
     fn test_with_encryption_rejects_invalid_key_length() {
-        let err = match InMemoryCredentialStorage::with_encryption(&[0u8; 16]) {
-            Ok(_) => panic!("invalid encryption key length must return an error"),
-            Err(err) => err,
+        let Err(err) = InMemoryCredentialStorage::with_encryption(&[0u8; 16]) else {
+            panic!("invalid encryption key length must return an error");
         };
         assert!(err.to_string().contains("Invalid encryption key length"));
     }

@@ -10,7 +10,8 @@
 use std::sync::Arc;
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
-    models::{RoomId, UserId},
+    models::{RoomId, RoomMember, UserId},
+    repository::RoomMemberRepository,
 };
 use synctv_core_testing::{
     create_test_pool_with_options_and_label, start_redis_url as start_test_redis_url,
@@ -656,7 +657,6 @@ async fn test_cache_invalidation_after_commit() {
         .expect("Failed to create room");
 
     // Create the creator member entry
-    use synctv_core::{models::RoomMember, repository::RoomMemberRepository};
     let member_repo = RoomMemberRepository::new(pool.clone());
     let _member = member_repo
         .add(&RoomMember {

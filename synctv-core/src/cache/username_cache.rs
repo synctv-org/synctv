@@ -183,8 +183,8 @@ impl UsernameCache {
     ///
     /// This is useful for testing or manual cache clearing.
     /// Note: Redis cache is not cleared.
-    pub async fn clear_memory(&self) {
-        self.inner.clear_l1().await;
+    pub fn clear_memory(&self) {
+        self.inner.clear_l1();
     }
 
     /// Clear both L1 (in-memory) and L2 (Redis) username caches.
@@ -299,7 +299,7 @@ mod tests {
         cache.set(&user_id, "alice").await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_some());
 
-        cache.clear_memory().await;
+        cache.clear_memory();
         assert!(cache.get(&user_id).await.unwrap().is_none());
     }
 

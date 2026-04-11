@@ -10,6 +10,17 @@ use crate::{
     Error, InternalExt, Result,
 };
 
+fn usize_to_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+fn u64_to_i64(value: u64) -> i64 {
+    value.cast_signed()
+}
+
+const MIN_JWT_SECRET_ENTROPY_BITS_F64: f64 = 128.0;
+const MIN_SHANNON_ENTROPY: f64 = 3.5;
+
 /// JWT token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
@@ -150,7 +161,7 @@ const MIN_JWT_SECRET_ENTROPY_BITS: usize = 128;
 
 /// Map a `jsonwebtoken` error to our domain `Error::Authentication`, using
 /// the given `context` string to prefix the messages (e.g. "Token" or "Guest token").
-fn map_jwt_error(e: jsonwebtoken::errors::Error, context: &str) -> Error {
+fn map_jwt_error(e: &jsonwebtoken::errors::Error, context: &str) -> Error {
     match e.kind() {
         jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
             Error::Authentication(format!("{context} expired"))
@@ -300,7 +311,7 @@ impl JwtService {
         // Requirement 3: Unique character ratio
         // Prevents "aaaa..." or "abcabcabc..." patterns
         let unique_chars: std::collections::HashSet<char> = secret.chars().collect();
-        let unique_ratio = unique_chars.len() as f64 / secret.len() as f64;
+        let unique_ratio = usize_to_f64(unique_chars.len()) / usize_to_f64(secret.len());
 
         // Require at least 25% unique characters
         if unique_ratio < 0.25 {
@@ -352,8 +363,6 @@ impl JwtService {
         // Requirement 5: Shannon entropy calculation
         // More accurate than simple charset-based estimation
         let entropy = Self::calculate_shannon_entropy(secret);
-        const MIN_SHANNON_ENTROPY: f64 = 3.5; // bits per character (max is ~4.7 for ASCII)
-
         if entropy < MIN_SHANNON_ENTROPY {
             return Err(Error::Internal(format!(
                 "JWT secret has low entropy ({entropy:.1} bits/char, need at least {MIN_SHANNON_ENTROPY:.1}). \
@@ -363,9 +372,9 @@ impl JwtService {
 
         // Requirement 6: Estimate total entropy bits
         // Entropy = length * entropy_per_char
-        let estimated_entropy_bits = secret.len() as f64 * entropy;
+        let estimated_entropy_bits = usize_to_f64(secret.len()) * entropy;
 
-        if estimated_entropy_bits < MIN_JWT_SECRET_ENTROPY_BITS as f64 {
+        if estimated_entropy_bits < MIN_JWT_SECRET_ENTROPY_BITS_F64 {
             return Err(Error::Internal(format!(
                 "JWT secret has insufficient total entropy ({estimated_entropy_bits:.0} bits, need at least {MIN_JWT_SECRET_ENTROPY_BITS} bits). \
                  Use a longer secret or one with more character variety."
@@ -390,11 +399,11 @@ impl JwtService {
             *freq.entry(c).or_insert(0) += 1;
         }
 
-        let len = s.len() as f64;
+        let len = usize_to_f64(s.len());
         let mut entropy = 0.0;
 
         for &count in freq.values() {
-            let p = count as f64 / len;
+            let p = usize_to_f64(count) / len;
             if p > 0.0 {
                 entropy = p.mul_add(-p.log2(), entropy);
             }
@@ -427,7 +436,7 @@ impl JwtService {
         }
 
         // If more than 70% of adjacent chars are sequential, reject
-        let threshold = (chars.len() - 1) as f64 * 0.7;
+        let threshold = usize_to_f64(chars.len() - 1) * 0.7;
         f64::from(ascending_count) > threshold || f64::from(descending_count) > threshold
     }
 
@@ -454,7 +463,7 @@ impl JwtService {
                     }
                 }
                 // If more than 80% match, it's a repeating pattern
-                if f64::from(matches) / repetitions as f64 > 0.8 {
+                if f64::from(matches) / usize_to_f64(repetitions) > 0.8 {
                     return true;
                 }
             }
@@ -478,9 +487,9 @@ impl JwtService {
     ) -> Result<String> {
         let now = Utc::now();
         let duration = match token_type {
-            TokenType::Access => Duration::hours(self.access_token_duration_hours as i64),
-            TokenType::Refresh => Duration::days(self.refresh_token_duration_days as i64),
-            TokenType::Guest => Duration::hours(self.guest_token_duration_hours as i64),
+            TokenType::Access => Duration::hours(u64_to_i64(self.access_token_duration_hours)),
+            TokenType::Refresh => Duration::days(u64_to_i64(self.refresh_token_duration_days)),
+            TokenType::Guest => Duration::hours(u64_to_i64(self.guest_token_duration_hours)),
         };
 
         let claims = Claims {
@@ -529,7 +538,7 @@ impl JwtService {
         }
 
         let token_data: TokenData<Claims> = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| map_jwt_error(e, "Token"))?;
+            .map_err(|e| map_jwt_error(&e, "Token"))?;
 
         Ok(token_data.claims)
     }
@@ -590,7 +599,7 @@ impl JwtService {
         room_guest_version: i64,
     ) -> Result<String> {
         let now = Utc::now();
-        let duration = Duration::hours(self.guest_token_duration_hours as i64);
+        let duration = Duration::hours(u64_to_i64(self.guest_token_duration_hours));
         let session_id = synctv_common::snanoid!(16); // Generate random session ID
 
         let guest_claims = GuestClaims {
@@ -641,7 +650,7 @@ impl JwtService {
         }
 
         let token_data: TokenData<GuestClaims> = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| map_jwt_error(e, "Guest token"))?;
+            .map_err(|e| map_jwt_error(&e, "Guest token"))?;
 
         let claims = token_data.claims;
 
@@ -669,8 +678,8 @@ impl JwtService {
     ///
     /// Used by `OAuth2` token response to report the correct `expires_in` value.
     #[must_use]
-    pub const fn access_token_duration_seconds(&self) -> i64 {
-        (self.access_token_duration_hours as i64) * 3600
+    pub fn access_token_duration_seconds(&self) -> i64 {
+        u64_to_i64(self.access_token_duration_hours) * 3600
     }
 
     /// Get refresh token duration in seconds
@@ -732,7 +741,7 @@ impl JwtService {
         validation.leeway = self.clock_skew_leeway_secs;
 
         let token_data = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| map_jwt_error(e, "Token"))?;
+            .map_err(|e| map_jwt_error(&e, "Token"))?;
 
         Ok(token_data.claims)
     }
@@ -1074,7 +1083,7 @@ mod tests {
     #[test]
     fn test_map_jwt_error_hides_unexpected_verification_details_for_tokens() {
         let error = map_jwt_error(
-            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer),
+            &jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer),
             "Token",
         );
 
@@ -1087,7 +1096,7 @@ mod tests {
     #[test]
     fn test_map_jwt_error_hides_unexpected_verification_details_for_guest_tokens() {
         let error = map_jwt_error(
-            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience),
+            &jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience),
             "Guest token",
         );
 

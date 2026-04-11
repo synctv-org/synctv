@@ -13,12 +13,13 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
 use crate::http::{
-    error::map_api_error, middleware::AuthUser, validation::ValidatedQuery, AppError, AppResult,
+    error::map_api_error, middleware::AuthUser, validation::StrictQuery, AppError, AppResult,
     AppState,
 };
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
@@ -26,6 +27,30 @@ use synctv_core::models::id::RoomId;
 use synctv_core::provider::proxy::ProxyAction;
 use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 use synctv_livestream::error::StreamError;
+
+const MAX_CONSECUTIVE_DROPS: u32 = 100;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct RoomStreamsQuery {
+    page: i32,
+    page_size: i32,
+    search: String,
+    sort_by: i32,
+    sort_direction: i32,
+}
+
+impl From<RoomStreamsQuery> for crate::proto::client::ListRoomStreamsRequest {
+    fn from(value: RoomStreamsQuery) -> Self {
+        Self {
+            page: value.page,
+            page_size: value.page_size,
+            search: value.search,
+            sort_by: value.sort_by,
+            sort_direction: value.sort_direction,
+        }
+    }
+}
 
 pub fn rtmp_routes() -> Router<AppState> {
     create_live_provider_router()
@@ -124,11 +149,13 @@ pub(crate) async fn handle_stream_info(
 pub(crate) async fn handle_room_streams(
     auth: AuthUser,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<crate::proto::client::ListRoomStreamsRequest>,
+    StrictQuery(query): StrictQuery<RoomStreamsQuery>,
     State(state): State<AppState>,
 ) -> AppResult<Json<crate::proto::client::ListRoomStreamsResponse>> {
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
     let room_id = path.room_id;
+    let req =
+        crate::impls::client::build_room_streams_request(query.into()).map_err(map_api_error)?;
     let resp = state
         .client_api
         .list_room_streams(auth.user_id.as_str(), &room_id, req)
@@ -238,7 +265,6 @@ async fn execute_flv_stream(
         let _guard = subscriber_guard;
         let mut rx = rx;
         let mut consecutive_drops: u32 = 0;
-        const MAX_CONSECUTIVE_DROPS: u32 = 100;
         let start_time = std::time::Instant::now();
         let mut lifecycle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
         lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -479,8 +505,8 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     #[test]
-    fn room_streams_query_deserializes_proto_request() {
-        let query: crate::proto::client::ListRoomStreamsRequest = serde_urlencoded::from_str(
+    fn room_streams_query_deserializes_strict_request() {
+        let query: RoomStreamsQuery = serde_urlencoded::from_str(
             "page=2&page_size=25&search=beta&sort_by=1&sort_direction=2",
         )
         .unwrap();
@@ -492,11 +518,27 @@ mod tests {
     }
 
     #[test]
-    fn room_streams_query_rejects_invalid_page_casing() {
-        let query: crate::proto::client::ListRoomStreamsRequest =
-            serde_urlencoded::from_str("pageSize=25").unwrap();
-        assert_eq!(query.page, 0);
-        assert_eq!(query.page_size, 0);
+    fn room_streams_query_rejects_unknown_query_keys() {
+        let err = serde_urlencoded::from_str::<RoomStreamsQuery>("pageSize=25")
+            .expect_err("unexpected camelCase query key must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown field") || message.contains("pageSize"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn room_streams_query_defaults_still_map_to_proto_defaults() {
+        let req = crate::impls::client::build_room_streams_request(
+            serde_urlencoded::from_str::<RoomStreamsQuery>("")
+                .expect("empty query should deserialize")
+                .into(),
+        )
+        .expect("default room streams request should validate");
+
+        assert_eq!(req.page, 1);
+        assert_eq!(req.page_size, 50);
     }
 
     #[tokio::test]

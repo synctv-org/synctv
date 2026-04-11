@@ -154,6 +154,7 @@ impl SyncTvRtmpAuth {
     /// Call this after construction when a Redis connection is available.
     /// If not called, cross-replica user→stream lookup falls back to the
     /// publisher registry's reverse index (`stream:user_publishers:{user_id}`).
+    #[must_use]
     pub fn with_redis(mut self, conn: Arc<RwLock<redis::aio::ConnectionManager>>) -> Self {
         self.redis_conn = Some(conn);
         self
@@ -167,6 +168,7 @@ impl SyncTvRtmpAuth {
     }
 
     /// Reject new RTMP publications while StreamHub is restarting.
+    #[must_use]
     pub fn with_restarting_flag(mut self, is_restarting: Arc<AtomicBool>) -> Self {
         self.is_restarting = Some(is_restarting);
         self
@@ -217,14 +219,14 @@ impl SyncTvRtmpAuth {
             })
     }
 
-    async fn resolve_publish_cleanup(
+    fn resolve_publish_cleanup(
         &self,
         room_id: &str,
         media_id: &str,
         context: &'static str,
-    ) -> Result<Option<PendingPublishCleanup>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Option<PendingPublishCleanup> {
         if let Some(attempt) = self.peek_pending_publish_cleanup(room_id, media_id) {
-            return Ok(Some(attempt));
+            return Some(attempt);
         }
 
         tracing::warn!(
@@ -233,7 +235,7 @@ impl SyncTvRtmpAuth {
             "Skipping {context} cleanup because no in-memory publish fence is available"
         );
 
-        Ok(None)
+        None
     }
 
     async fn lookup_registered_epoch(
@@ -377,21 +379,8 @@ impl AuthCallback for SyncTvRtmpAuth {
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        let Some(resolved) = (match self
-            .resolve_publish_cleanup(app_name, stream_name, "on_unpublish")
-            .await
-        {
-            Ok(cleanup) => cleanup,
-            Err(e) => {
-                tracing::error!(
-                    room_id = %app_name,
-                    media_id = %stream_name,
-                    "Failed to resolve on_unpublish cleanup target: {}",
-                    e
-                );
-                return;
-            }
-        }) else {
+        let Some(resolved) = self.resolve_publish_cleanup(app_name, stream_name, "on_unpublish")
+        else {
             return;
         };
         let attempt = resolved;
@@ -463,21 +452,7 @@ impl AuthCallback for SyncTvRtmpAuth {
             "Rolling back publisher registration due to StreamHub failure"
         );
 
-        let Some(resolved) = (match self
-            .resolve_publish_cleanup(app_name, stream_name, "rollback")
-            .await
-        {
-            Ok(cleanup) => cleanup,
-            Err(e) => {
-                tracing::warn!(
-                    room_id = %app_name,
-                    media_id = %stream_name,
-                    error = %e,
-                    "Failed to resolve rollback cleanup target"
-                );
-                return;
-            }
-        }) else {
+        let Some(resolved) = self.resolve_publish_cleanup(app_name, stream_name, "rollback") else {
             return;
         };
         let attempt = resolved;

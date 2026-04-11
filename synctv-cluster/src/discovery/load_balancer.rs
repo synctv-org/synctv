@@ -18,7 +18,7 @@ pub enum LoadBalancingStrategy {
     /// Round-robin
     RoundRobin,
     /// Least connections (select node with fewest active connections)
-    /// Nodes must report connection count in metadata["connections"] via heartbeat.
+    /// Nodes must report connection count in `metadata["connections"]` via heartbeat.
     LeastConnections,
 }
 
@@ -136,8 +136,14 @@ impl LoadBalancer {
                             let age_secs = now.timestamp() - registered_at;
                             if age_secs < WARMUP_PERIOD_SECS {
                                 // In warmup period - apply penalty that decreases over time
-                                let warmup_progress = age_secs as f64 / WARMUP_PERIOD_SECS as f64;
-                                let penalty = (WARMUP_PENALTY as f64 * (1.0 - warmup_progress)) as usize;
+                                let age_secs = usize::try_from(age_secs).unwrap_or(0);
+                                let warmup_period_secs =
+                                    usize::try_from(WARMUP_PERIOD_SECS).unwrap_or(1);
+                                let remaining_warmup =
+                                    warmup_period_secs.saturating_sub(age_secs);
+                                let penalty = WARMUP_PENALTY
+                                    .saturating_mul(remaining_warmup)
+                                    / warmup_period_secs.max(1);
                                 tracing::trace!(
                                     node_id = %n.node_id,
                                     age_secs = age_secs,

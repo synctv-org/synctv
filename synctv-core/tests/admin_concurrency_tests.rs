@@ -727,7 +727,9 @@ async fn test_concurrent_room_settings_update() {
                     .await
                     .expect("Failed to get settings");
                 let mut updated = settings.clone();
-                updated.max_members = synctv_core::models::room_settings::MaxMembers(50 + i as u64);
+                updated.max_members = synctv_core::models::room_settings::MaxMembers(
+                    50 + u64::try_from(i).unwrap_or_default(),
+                );
 
                 match repo
                     .set_settings_with_version(&rid, &updated, version)
@@ -740,7 +742,9 @@ async fn test_concurrent_room_settings_update() {
                             break Err(Error::OptimisticLockConflict);
                         }
                         let base_ms = 10u64 * (1u64 << retries.min(5));
-                        let jitter = (i as u64 * 7 + u64::from(retries) * 3) % base_ms;
+                        let jitter = (u64::try_from(i).unwrap_or_default() * 7
+                            + u64::from(retries) * 3)
+                            % base_ms;
                         tokio::time::sleep(tokio::time::Duration::from_millis(base_ms + jitter))
                             .await;
                     }

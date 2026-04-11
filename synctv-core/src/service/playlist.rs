@@ -44,6 +44,18 @@ pub trait PlaylistBroadcaster: Send + Sync {
     );
 }
 
+const OPTIMISTIC_LOCK_MAX_RETRIES: u32 = 3;
+const OPTIMISTIC_LOCK_BACKOFF_BASE_MS: u64 = 5;
+
+fn provider_requires_credential_repo(provider_name: &str) -> bool {
+    matches!(
+        provider_name,
+        crate::provider::AlistProvider::NAME
+            | crate::provider::BilibiliProvider::NAME
+            | crate::provider::EmbyProvider::NAME
+    )
+}
+
 fn normalize_dynamic_playlist_fields(
     source_provider: Option<String>,
     source_config: Option<JsonValue>,
@@ -134,6 +146,16 @@ impl std::fmt::Debug for PlaylistService {
 }
 
 impl PlaylistService {
+    fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
+        if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
+            return Err(Error::ServiceUnavailable(format!(
+                "Provider '{provider_name}' requires credential repository wiring"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Create a new playlist service
     #[must_use]
     pub fn new(
@@ -217,6 +239,7 @@ impl PlaylistService {
                 "Provider {trimmed_provider} does not support dynamic folders"
             )));
         }
+        self.ensure_provider_credential_repo(&trimmed_provider)?;
 
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
@@ -495,11 +518,7 @@ impl PlaylistService {
                 .await?;
         }
 
-        // Retry loop with optimistic locking
-        const MAX_RETRIES: u32 = 3;
-        const BACKOFF_BASE_MS: u64 = 5;
-
-        for attempt in 0..MAX_RETRIES {
+        for attempt in 0..OPTIMISTIC_LOCK_MAX_RETRIES {
             // Get existing playlist (re-fetch on each retry to get latest version)
             let mut playlist = self
                 .playlist_repo
@@ -541,10 +560,10 @@ impl PlaylistService {
                     return Ok(updated_playlist);
                 }
                 Err(Error::OptimisticLockConflict) => {
-                    if attempt + 1 < MAX_RETRIES {
+                    if attempt + 1 < OPTIMISTIC_LOCK_MAX_RETRIES {
                         // Exponential backoff with jitter
-                        let backoff = BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::random_range(0..BACKOFF_BASE_MS);
+                        let backoff = OPTIMISTIC_LOCK_BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::random_range(0..OPTIMISTIC_LOCK_BACKOFF_BASE_MS);
                         let delay = backoff + jitter;
                         tracing::debug!(
                             room_id = %room_id.as_str(),
@@ -1037,10 +1056,9 @@ mod tests {
             provider_repo,
             None,
         ));
-        let providers_manager = Arc::new({
-            
-            crate::service::ProvidersManager::new(provider_instance_manager)
-        });
+        let providers_manager = Arc::new(crate::service::ProvidersManager::new(
+            provider_instance_manager,
+        ));
         providers_manager
             .create_builtin_defaults()
             .await
@@ -1109,7 +1127,7 @@ mod tests {
 
         match err {
             Error::InvalidInput(message) => {
-                assert!(message.contains("does not support dynamic folders"))
+                assert!(message.contains("does not support dynamic folders"));
             }
             other => panic!("expected InvalidInput, got {other:?}"),
         }

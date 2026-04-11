@@ -8,6 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
+type HmacSha1 = hmac::Hmac<sha1::Sha1>;
+
 /// STUN server configuration
 #[derive(Debug, Clone)]
 pub struct StunServerConfig {
@@ -63,13 +65,12 @@ pub async fn resolve_external_ip() -> Option<IpAddr> {
     }
 
     // 3. Cloud metadata services (best-effort, with short timeouts)
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .connect_timeout(std::time::Duration::from_secs(1))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return None,
+    else {
+        return None;
     };
 
     // AWS IMDSv2
@@ -189,7 +190,7 @@ impl StunServer {
     ///
     /// Configures turn-rs with a single UDP interface and no authentication,
     /// so only STUN Binding requests succeed.
-    pub async fn start(config: StunServerConfig) -> anyhow::Result<Arc<Self>> {
+    pub fn start(config: &StunServerConfig) -> anyhow::Result<Arc<Self>> {
         let listen: SocketAddr = config
             .bind_addr
             .parse()
@@ -246,7 +247,7 @@ impl StunServer {
     }
 
     /// Shut down the STUN server by aborting the background task.
-    pub async fn shutdown(&self) {
+    pub fn shutdown(&self) {
         self.task.abort();
     }
 }
@@ -289,8 +290,7 @@ pub fn generate_turn_credentials(
     ttl_seconds: u64,
 ) -> TurnCredential {
     use base64::Engine as _;
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
+    use hmac::Mac;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -303,7 +303,6 @@ pub fn generate_turn_credentials(
     let username = format!("{expiry_timestamp}:{user_id}");
 
     // Password: Base64(HMAC-SHA1(secret, username))
-    type HmacSha1 = Hmac<Sha1>;
     let mut mac =
         HmacSha1::new_from_slice(shared_secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(username.as_bytes());

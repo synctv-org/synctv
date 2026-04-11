@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub enum SchemaVersion {
     Schema0,
     Schema1,

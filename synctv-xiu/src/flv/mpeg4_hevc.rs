@@ -163,39 +163,27 @@ impl Mpeg4HevcProcessor {
                         self.mpeg4_hevc.vps.push(nal);
                         // Append VPS with Annex B start code (accumulate all VPS NAL units)
                         self.mpeg4_hevc.vps_annexb_data.write(&HEVC_START_CODE)?;
-                        self.mpeg4_hevc.vps_annexb_data.write(
-                            self.mpeg4_hevc
-                                .vps
-                                .last()
-                                .map(|v| v.data.as_ref())
-                                .unwrap_or(&[]),
-                        )?;
+                        self.mpeg4_hevc
+                            .vps_annexb_data
+                            .write(self.mpeg4_hevc.vps.last().map_or(&[], |v| v.data.as_ref()))?;
                     }
                     hevc_nal_type::HEVC_NAL_SPS => {
                         let nal = HevcNal { data: nal_data };
                         self.mpeg4_hevc.sps.push(nal);
                         // Append SPS with Annex B start code (accumulate all SPS NAL units)
                         self.mpeg4_hevc.sps_annexb_data.write(&HEVC_START_CODE)?;
-                        self.mpeg4_hevc.sps_annexb_data.write(
-                            self.mpeg4_hevc
-                                .sps
-                                .last()
-                                .map(|s| s.data.as_ref())
-                                .unwrap_or(&[]),
-                        )?;
+                        self.mpeg4_hevc
+                            .sps_annexb_data
+                            .write(self.mpeg4_hevc.sps.last().map_or(&[], |s| s.data.as_ref()))?;
                     }
                     hevc_nal_type::HEVC_NAL_PPS => {
                         let nal = HevcNal { data: nal_data };
                         self.mpeg4_hevc.pps.push(nal);
                         // Append PPS with Annex B start code (accumulate all PPS NAL units)
                         self.mpeg4_hevc.pps_annexb_data.write(&HEVC_START_CODE)?;
-                        self.mpeg4_hevc.pps_annexb_data.write(
-                            self.mpeg4_hevc
-                                .pps
-                                .last()
-                                .map(|p| p.data.as_ref())
-                                .unwrap_or(&[]),
-                        )?;
+                        self.mpeg4_hevc
+                            .pps_annexb_data
+                            .write(self.mpeg4_hevc.pps.last().map_or(&[], |p| p.data.as_ref()))?;
                     }
                     _ => {
                         // Ignore other NAL types in configuration record

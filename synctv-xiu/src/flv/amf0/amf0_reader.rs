@@ -216,7 +216,7 @@ impl Amf0Reader {
             properties.insert(key, val);
         }
 
-        if len != properties.len() as u32 {
+        if u32::try_from(properties.len()) != Ok(len) {
             tracing::warn!("the ecma array length is not correct!");
         }
 
@@ -286,7 +286,7 @@ mod tests {
         let phi = 1.618_033_988_7;
         let mut buf = [0; 8];
         BigEndian::write_f64(&mut buf, phi);
-        assert_eq!(phi, BigEndian::read_f64(&buf));
+        assert_eq!(phi.to_bits(), BigEndian::read_f64(&buf).to_bits());
         println!("tsetstt");
     }
 

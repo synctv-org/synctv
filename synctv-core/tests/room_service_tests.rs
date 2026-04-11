@@ -33,6 +33,17 @@ use synctv_core_testing::create_test_pool;
 
 // Helper functions for room tests
 // TODO: Consider moving to room_test_helpers.rs for reuse
+fn assert_f64_eq(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < f64::EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 fn make_user_service(pool: PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -2728,7 +2739,7 @@ async fn test_remove_media_respects_admin_override_columns() {
     )
     .bind(room.id.as_str())
     .bind(admin.id.as_str())
-    .bind(PermissionBits::DELETE_MEDIA_ANY as i64)
+    .bind(u64_to_i64(PermissionBits::DELETE_MEDIA_ANY))
     .execute(&pool)
     .await
     .unwrap();
@@ -3422,7 +3433,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
     assert!(!refreshed_state.is_playing);
-    assert_eq!(refreshed_state.current_time, 0.0);
+    assert_f64_eq(refreshed_state.current_time, 0.0);
 
     let mut saw_playback_reset = false;
     for _ in 0..2 {
@@ -3441,8 +3452,8 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         } = event
         {
             assert!(!playing);
-            assert_eq!(position, 0.0);
-            assert_eq!(speed, 1.0);
+            assert_f64_eq(position, 0.0);
+            assert_f64_eq(speed, 1.0);
             assert_eq!(media_id, None);
             saw_playback_reset = true;
         }
@@ -3929,7 +3940,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
-    assert_eq!(state.current_time, 0.0);
+    assert_f64_eq(state.current_time, 0.0);
 }
 
 #[tokio::test]
@@ -4050,7 +4061,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
-    assert_eq!(state.current_time, 0.0);
+    assert_f64_eq(state.current_time, 0.0);
 }
 
 // ========== Room Name and Description Edge Cases ==========

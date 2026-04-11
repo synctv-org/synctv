@@ -284,10 +284,12 @@ mod tests {
         let limiter = RateLimiter::in_memory_only("email_token_test:".to_string());
 
         // Create service with aggressive rate limiting for testing
-        let _config = EmailTokenRateLimitConfig {
+        let config = EmailTokenRateLimitConfig {
             max_tokens_per_user: 2,
             window_seconds: 60,
         };
+        assert_eq!(config.max_tokens_per_user, 2);
+        assert_eq!(config.window_seconds, 60);
 
         // We can't test actual token generation without a database,
         // but we can verify the rate limit key format and limiter behavior

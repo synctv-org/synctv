@@ -687,25 +687,25 @@ mod tests {
 
     #[test]
     fn test_hsts_header_basic() {
-        let header = hsts_header(31536000, false, false);
+        let header = hsts_header(31_536_000, false, false);
         assert_eq!(header, "max-age=31536000");
     }
 
     #[test]
     fn test_hsts_header_with_subdomains() {
-        let header = hsts_header(31536000, true, false);
+        let header = hsts_header(31_536_000, true, false);
         assert_eq!(header, "max-age=31536000; includeSubDomains");
     }
 
     #[test]
     fn test_hsts_header_with_preload() {
-        let header = hsts_header(31536000, false, true);
+        let header = hsts_header(31_536_000, false, true);
         assert_eq!(header, "max-age=31536000; preload");
     }
 
     #[test]
     fn test_hsts_header_full() {
-        let header = hsts_header(63072000, true, true);
+        let header = hsts_header(63_072_000, true, true);
         assert_eq!(header, "max-age=63072000; includeSubDomains; preload");
     }
 
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn test_hsts_header_large_max_age() {
         // 2 years is a common production value
-        let header = hsts_header(63072000, true, true);
+        let header = hsts_header(63_072_000, true, true);
         assert!(header.starts_with("max-age=63072000"));
         assert!(header.contains("includeSubDomains"));
         assert!(header.contains("preload"));
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn test_hsts_header_min_max_age_for_preload() {
         // HSTS preload list requires max-age >= 31536000 (1 year)
-        let header = hsts_header(31536000, true, true);
+        let header = hsts_header(31_536_000, true, true);
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
     }
 

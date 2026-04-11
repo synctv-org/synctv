@@ -29,7 +29,7 @@ pub struct ClusterDiscoveryComponents {
     pub load_balancer: Arc<LoadBalancer>,
 }
 
-pub async fn init_cluster_components(
+pub fn init_cluster_components(
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     config: &Config,
@@ -98,7 +98,7 @@ pub async fn activate_cluster_node(
     )
     .await;
 
-    match health_monitor.start().await {
+    match health_monitor.start() {
         Ok(hm_handle) => {
             info!("Health monitor started");
             health_monitor.set_join_handle(hm_handle);
@@ -154,7 +154,7 @@ pub async fn init_cluster_discovery(
                 )
             })?;
             let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+                init_cluster_components(redis_handles, cm, config, connection_manager)?;
             let k8s_discovery = k8s_discovery
                 .with_cluster_secret(config.server.cluster_secret.clone())
                 .with_node_registry(components.registry.clone());
@@ -189,7 +189,7 @@ pub async fn init_cluster_discovery(
         "static" => {
             info!("Using static peer discovery mode");
             let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+                init_cluster_components(redis_handles, cm, config, connection_manager)?;
 
             // Start static discovery background probe loop
             let peer_configs: Vec<StaticPeerConfig> = config
@@ -234,7 +234,7 @@ pub async fn init_cluster_discovery(
         }
         "redis" => {
             let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+                init_cluster_components(redis_handles, cm, config, connection_manager)?;
             Ok((
                 Some(components.registry),
                 Some(components.health_monitor),

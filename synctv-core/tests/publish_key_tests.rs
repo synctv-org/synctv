@@ -41,8 +41,7 @@ async fn test_validate_expired_token_rejected() {
     let user_id = UserId::new();
 
     let key = service
-        .generate_publish_key(room_id, media_id, user_id)
-        .await
+        .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
     // Wait a moment to ensure the token is past its expiration
@@ -124,8 +123,7 @@ async fn test_publish_key_single_use() {
     let user_id = UserId::new();
 
     let key = service
-        .generate_publish_key(room_id, media_id, user_id)
-        .await
+        .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
     // First use should succeed
@@ -156,8 +154,7 @@ async fn test_publish_key_room_mismatch_does_not_consume_token() {
     let user_id = UserId::new();
 
     let key = service
-        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-        .await
+        .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
     let first_result = service
@@ -187,8 +184,7 @@ async fn test_publish_key_user_validator_failure_does_not_consume_token() {
     let user_id = UserId::new();
 
     let key = service
-        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
-        .await
+        .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
     let first_result = service
@@ -261,8 +257,7 @@ async fn test_publish_key_service_with_redis_full_lifecycle() {
     let user_id = UserId::new();
 
     let key = service
-        .generate_publish_key(room_id, media_id, user_id)
-        .await
+        .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
     // First validation should succeed

@@ -354,7 +354,7 @@ async fn test_webrtc_join_leave_broadcast() {
         username: "user1".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    hub.broadcast(&room, join_event);
+    hub.broadcast(&room, &join_event);
 
     // Both should receive
     let r1 = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
@@ -370,7 +370,7 @@ async fn test_webrtc_join_leave_broadcast() {
         conn_id: "conn1".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    hub.broadcast(&room, leave_event);
+    hub.broadcast(&room, &leave_event);
 
     let r1 = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
     let r2 = tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await;
@@ -667,7 +667,7 @@ async fn test_broadcast_to_user_all_connections() {
     };
 
     // broadcast_to_user sends to all user connections
-    let sent = hub.broadcast_to_user(&room, &user, event);
+    let sent = hub.broadcast_to_user(&room, &user, &event);
     assert_eq!(sent, 3, "Should send to all 3 connections");
 
     // All should receive

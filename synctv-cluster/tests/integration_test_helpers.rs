@@ -10,6 +10,9 @@ use synctv_core::cache::InvalidationMessage;
 use synctv_core_testing::redis::RedisContainer;
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 
+const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 /// Default Redis version for test containers
 #[allow(dead_code)]
 pub const REDIS_VERSION: &str = "8";
@@ -79,16 +82,16 @@ impl TestRedis {
     }
 
     #[allow(dead_code)]
-    pub async fn cleanup(mut self) {
+    pub fn cleanup(mut self) {
         if let Some(redis) = self.redis_container.take() {
-            redis.cleanup().await;
+            redis.cleanup();
         }
     }
 
     #[allow(dead_code)]
-    pub async fn terminate_container(&mut self) {
+    pub fn terminate_container(&mut self) {
         if let Some(redis) = self.redis_container.take() {
-            redis.terminate().await;
+            redis.terminate();
         }
     }
 
@@ -241,9 +244,6 @@ async fn broadcast_until_all_clients_receive_with(
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let mut pending = vec![true; clients.len()];
-    const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
-    const POLL_INTERVAL: Duration = Duration::from_millis(25);
-
     while pending.iter().any(|is_pending| *is_pending) {
         broadcast();
 
@@ -311,9 +311,8 @@ pub async fn broadcast_until_room_event(
 
         match tokio::time::timeout(Duration::from_millis(750), room_rx.recv()).await {
             Ok(Some(event)) if matches(&event) => return event,
-            Ok(Some(_)) => {}
             Ok(None) => panic!("{label} channel closed unexpectedly"),
-            Err(_) => {}
+            Ok(Some(_)) | Err(_) => {}
         }
 
         assert!(
@@ -336,14 +335,15 @@ pub async fn broadcast_until_admin_event(
     loop {
         manager.broadcast(make_event());
 
-        match tokio::time::timeout(Duration::from_millis(750), admin_rx.recv()).await {
-            Ok(Ok(event)) if matches(&event) => return event,
-            Ok(Ok(_)) => {}
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                panic!("{label} channel closed unexpectedly");
+        if let Ok(result) = tokio::time::timeout(Duration::from_millis(750), admin_rx.recv()).await
+        {
+            match result {
+                Ok(event) if matches(&event) => return event,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("{label} channel closed unexpectedly");
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             }
-            Err(_) => {}
         }
 
         assert!(
@@ -413,7 +413,7 @@ pub async fn broadcast_until_cache_invalidation(
                         return;
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                     panic!("{label} channel closed unexpectedly");
                 }

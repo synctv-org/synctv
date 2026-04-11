@@ -35,8 +35,46 @@ impl LiveProxyProvider {
         Self {}
     }
 
+    fn validate_live_source_url(url: &str) -> Result<(), ProviderError> {
+        // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
+        // Use URL path parsing to avoid false positives from `.flv` appearing
+        // in query parameters or other URL parts.
+        let is_rtmp = url.starts_with("rtmp://");
+        let parsed_url = url::Url::parse(url).ok();
+        let is_flv = parsed_url
+            .as_ref()
+            .map_or_else(|| url.ends_with(".flv"), |u| u.path().ends_with(".flv"));
+        if !is_rtmp && !is_flv {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
+            )));
+        }
+
+        if let Some(parsed_url) = parsed_url {
+            let host = parsed_url.host_str().ok_or_else(|| {
+                ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
+            })?;
+            let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+
+            if guard.is_host_blocked(host) {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "LiveProxy source host '{host}' is blocked by SSRF policy"
+                )));
+            }
+
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if guard.is_ip_blocked(&ip) {
+                    return Err(ProviderError::InvalidConfig(format!(
+                        "LiveProxy source IP '{ip}' is blocked by SSRF policy"
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn build_live_proxy_action(
-        &self,
         rest: &str,
         versioned: &VersionedPlayback,
         verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
@@ -113,6 +151,7 @@ impl MediaProvider for LiveProxyProvider {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
+        Self::validate_live_source_url(source_url)?;
 
         let mut result = super::build_live_playback(media_id, room_id);
         let redacted_host = url::Url::parse(source_url)
@@ -152,19 +191,7 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
 
-        // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
-        // Use URL path parsing to avoid false positives from `.flv` appearing
-        // in query parameters or other URL parts.
-        let is_rtmp = url.starts_with("rtmp://");
-        let is_flv = url::Url::parse(url)
-            .map_or_else(|_| url.ends_with(".flv"), |u| u.path().ends_with(".flv"));
-        if !is_rtmp && !is_flv {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
-            )));
-        }
-
-        Ok(())
+        Self::validate_live_source_url(url)
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
@@ -183,7 +210,7 @@ impl ProviderProxy for LiveProxyProvider {
             .split_once('/')
             .ok_or(ProviderError::NotFound)?;
         let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
-        self.build_live_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 
@@ -295,5 +322,33 @@ mod tests {
         assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
         assert!(flv.contains("/stream?"));
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_rejects_blocked_hosts() {
+        let provider = LiveProxyProvider::new();
+        let ctx = ProviderContext::new("test");
+
+        for config in [
+            json!({
+                "url": "rtmp://localhost/live/stream",
+                "room_id": "room-123",
+                "media_id": "media-456"
+            }),
+            json!({
+                "url": "http://127.0.0.1/live/stream.flv",
+                "room_id": "room-123",
+                "media_id": "media-456"
+            }),
+        ] {
+            let err = provider
+                .validate_source_config(&ctx, &config)
+                .await
+                .expect_err("blocked live source URLs must be rejected at validation time");
+            assert!(matches!(
+                err,
+                ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
+            ));
+        }
     }
 }

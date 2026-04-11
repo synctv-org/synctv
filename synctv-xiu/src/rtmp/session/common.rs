@@ -53,6 +53,23 @@ enum FrameType {
     Metadata,
 }
 
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn try_send_prior<T>(sender: &mpsc::Sender<T>, data: T, name: &str) -> Result<(), StreamHubError> {
+    match sender.try_send(data) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("send_prior_data: {} dropped due to channel full", name);
+            Ok(())
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
+            value: StreamHubErrorValue::SubscriberClosed,
+        }),
+    }
+}
+
 pub struct Common {
     /* Used to mark the subscriber's the data producer
     in channels and delete it from map when unsubscribe
@@ -207,7 +224,7 @@ impl Common {
             csid_type::AUDIO,
             chunk_type::TYPE_0,
             timestamp,
-            data.len() as u32,
+            usize_to_u32_saturating(data.len()),
             msg_type_id::AUDIO,
             0,
             data,
@@ -225,7 +242,7 @@ impl Common {
             csid_type::VIDEO,
             chunk_type::TYPE_0,
             timestamp,
-            data.len() as u32,
+            usize_to_u32_saturating(data.len()),
             msg_type_id::VIDEO,
             0,
             data,
@@ -247,7 +264,7 @@ impl Common {
             csid_type::DATA_AMF0_AMF3,
             chunk_type::TYPE_0,
             timestamp,
-            data.len() as u32,
+            usize_to_u32_saturating(data.len()),
             msg_type_id::DATA_AMF0,
             0,
             data,
@@ -260,7 +277,7 @@ impl Common {
         Ok(())
     }
 
-    pub async fn on_video_data(
+    pub fn on_video_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
@@ -304,7 +321,7 @@ impl Common {
         Ok(())
     }
 
-    pub async fn on_audio_data(
+    pub fn on_audio_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
@@ -348,7 +365,7 @@ impl Common {
         Ok(())
     }
 
-    pub async fn on_meta_data(
+    pub fn on_meta_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
@@ -685,24 +702,6 @@ impl TStreamHandler for RtmpStreamHandler {
                 });
             }
         };
-
-        /// Helper to send prior data, returning error on closed channel
-        fn try_send_prior<T>(
-            sender: &mpsc::Sender<T>,
-            data: T,
-            name: &str,
-        ) -> Result<(), StreamHubError> {
-            match sender.try_send(data) {
-                Ok(()) => Ok(()),
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!("send_prior_data: {} dropped due to channel full", name);
-                    Ok(())
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
-                    value: StreamHubErrorValue::SubscriberClosed,
-                }),
-            }
-        }
 
         // Read cache reference with minimal lock time
         let cache_ref = {

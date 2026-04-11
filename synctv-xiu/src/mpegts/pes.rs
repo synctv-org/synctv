@@ -4,6 +4,15 @@ use {
     bytes::BytesMut,
 };
 
+fn i64_to_u8(value: i64) -> Result<u8, MpegTsError> {
+    u8::try_from(value)
+        .map_err(|_| std::io::Error::other("PES timestamp field exceeds u8 range").into())
+}
+
+fn timestamp_byte(value: i64, shift: u32) -> Result<u8, MpegTsError> {
+    i64_to_u8((value >> shift) & 0xFF)
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Pes {
@@ -128,37 +137,41 @@ impl PesMuxer {
         //http://dvdnav.mplayerhq.hu/dvdinfo/pes-hdr.html
         /*The flags has 0x80 means that it has pts -- 5 bytes*/
         if (flags & 0x80) > 0 {
-            let b9 = ((flags >> 2) & 0x30)/* 0011/0010 */ | (((stream_data.pts >> 30) & 0x07) << 1) as u8 /* PTS 30-32 */ | 0x01 /* marker_bit */;
+            let b9 = ((flags >> 2) & 0x30)/* 0011/0010 */
+                | i64_to_u8(((stream_data.pts >> 30) & 0x07) << 1)? /* PTS 30-32 */
+                | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b9)?; //9
 
-            let b10 = (stream_data.pts >> 22) as u8; /* PTS 22-29 */
+            let b10 = timestamp_byte(stream_data.pts, 22)?; /* PTS 22-29 */
             self.bytes_writer.write_u8(b10)?; //10
 
-            let b11 = ((stream_data.pts >> 14) & 0xFE) as u8 /* PTS 15-21 */ | 0x01; /* marker_bit */
+            let b11 = i64_to_u8((stream_data.pts >> 14) & 0xFE)? /* PTS 15-21 */ | 0x01; /* marker_bit */
             self.bytes_writer.write_u8(b11)?; //11
 
-            let b12 = (stream_data.pts >> 7) as u8; /* PTS 7-14 */
+            let b12 = timestamp_byte(stream_data.pts, 7)?; /* PTS 7-14 */
             self.bytes_writer.write_u8(b12)?; //12
 
-            let b13 = ((stream_data.pts << 1) & 0xFE) as u8 /* PTS 0-6 */ | 0x01; /* marker_bit */
+            let b13 = i64_to_u8((stream_data.pts << 1) & 0xFE)? /* PTS 0-6 */ | 0x01; /* marker_bit */
             self.bytes_writer.write_u8(b13)?; //13
         }
 
         /*The flags has 0x40 means that it has dts -- 5 bytes*/
         if (flags & 0x40) > 0 {
-            let b14 = 0x10 /* 0001 */ | (((stream_data.dts >> 30) & 0x07) << 1) as u8 /* DTS 30-32 */ | 0x01 /* marker_bit */;
+            let b14 = 0x10 /* 0001 */
+                | i64_to_u8(((stream_data.dts >> 30) & 0x07) << 1)? /* DTS 30-32 */
+                | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b14)?;
 
-            let b15 = (stream_data.dts >> 22) as u8; /* DTS 22-29 */
+            let b15 = timestamp_byte(stream_data.dts, 22)?; /* DTS 22-29 */
             self.bytes_writer.write_u8(b15)?;
 
-            let b16 = ((stream_data.dts >> 14) & 0xFE) as u8 /* DTS 15-21 */ | 0x01 /* marker_bit */;
+            let b16 = i64_to_u8((stream_data.dts >> 14) & 0xFE)? /* DTS 15-21 */ | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b16)?;
 
-            let b17 = (stream_data.dts >> 7) as u8; /* DTS 7-14 */
+            let b17 = timestamp_byte(stream_data.dts, 7)?; /* DTS 7-14 */
             self.bytes_writer.write_u8(b17)?;
 
-            let b18 = ((stream_data.dts << 1) & 0xFE) as u8 /* DTS 0-6 */ | 0x01 /* marker_bit */;
+            let b18 = i64_to_u8((stream_data.dts << 1) & 0xFE)? /* DTS 0-6 */ | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b18)?;
         }
 
@@ -180,11 +193,44 @@ impl PesMuxer {
             self.bytes_writer.write_u8_at(4, 0x00)?;
             self.bytes_writer.write_u8_at(5, 0x00)?;
         } else {
-            self.bytes_writer
-                .write_u8_at(4, (pes_payload_length >> 8) as u8)?;
-            self.bytes_writer.write_u8_at(5, pes_payload_length as u8)?;
+            self.bytes_writer.write_u8_at(
+                4,
+                u8::try_from(pes_payload_length >> 8).map_err(|_| {
+                    std::io::Error::other("PES payload length high byte exceeds u8 range")
+                })?,
+            )?;
+            self.bytes_writer.write_u8_at(
+                5,
+                u8::try_from(pes_payload_length).map_err(|_| {
+                    std::io::Error::other("PES payload length low byte exceeds u8 range")
+                })?,
+            )?;
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Pes, PesMuxer};
+
+    #[test]
+    fn write_pes_header_accepts_large_valid_pts_values() {
+        let mut pes = Pes::new();
+        pes.stream_id = 0xE0;
+        pes.pts = 1_627_702_096;
+
+        let mut muxer = PesMuxer::new();
+        muxer
+            .write_pes_header(0, &pes, true)
+            .expect("33-bit PTS should encode into PES header bytes");
+
+        let bytes = muxer.bytes_writer.extract_current_bytes();
+        assert_eq!(bytes[9], 51);
+        assert_eq!(bytes[10], 132);
+        assert_eq!(bytes[11], 19);
+        assert_eq!(bytes[12], 134);
+        assert_eq!(bytes[13], 161);
     }
 }

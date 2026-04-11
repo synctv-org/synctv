@@ -8,7 +8,12 @@ use {
     crate::bytesio::bytes_writer::BytesWriter,
     byteorder::{BigEndian, LittleEndian},
     bytes::BytesMut,
+    std::io::{Error, ErrorKind},
 };
+
+fn invalid_data_error(message: &str) -> Error {
+    Error::new(ErrorKind::InvalidData, message)
+}
 #[derive(Debug, Clone)]
 pub struct Pmt {
     pub pid: u16,
@@ -61,7 +66,9 @@ impl PmtMuxer {
 
     pub fn write(&mut self, pmt: &Pmt) -> Result<BytesMut, MpegTsError> {
         /*table id*/
-        self.bytes_writer.write_u8(epat_pid::PAT_TID_PMS as u8)?;
+        let table_id = u8::try_from(epat_pid::PAT_TID_PMS)
+            .map_err(|_| invalid_data_error("PMT table id exceeds u8"))?;
+        self.bytes_writer.write_u8(table_id)?;
 
         let mut tmp_bytes_writer = BytesWriter::new();
         /*program_number*/
@@ -75,7 +82,8 @@ impl PmtMuxer {
         /*PCR_PID*/
         tmp_bytes_writer.write_u16::<BigEndian>(0xE000 | pmt.pcr_pid)?;
         /*program_info_length*/
-        let program_info_length = pmt.program_info.len() as u16;
+        let program_info_length = u16::try_from(pmt.program_info.len())
+            .map_err(|_| invalid_data_error("PMT program info length exceeds u16"))?;
         tmp_bytes_writer.write_u16::<BigEndian>(0xF000 | program_info_length)?;
 
         if program_info_length > 0 && program_info_length < 0x400 {
@@ -97,8 +105,11 @@ impl PmtMuxer {
         }
 
         /*section_length*/
+        let section_length = u16::try_from(tmp_bytes_writer.len())
+            .map_err(|_| invalid_data_error("PMT section length exceeds u16"))?
+            .saturating_add(4);
         self.bytes_writer
-            .write_u16::<BigEndian>(0xB000 | (tmp_bytes_writer.len() as u16 + 4))?;
+            .write_u16::<BigEndian>(0xB000 | section_length)?;
 
         self.bytes_writer
             .write(&tmp_bytes_writer.extract_current_bytes()[..])?;
@@ -161,7 +172,10 @@ mod tests {
         // section_nums(2) + pcr_pid(2) + program_info_len(2) + crc32(4) = 16 bytes
         assert!(!data.is_empty());
         // Check table_id
-        assert_eq!(data[0], epat_pid::PAT_TID_PMS as u8);
+        assert_eq!(
+            data[0],
+            u8::try_from(epat_pid::PAT_TID_PMS).expect("PMT table id must fit in u8")
+        );
     }
 
     #[test]

@@ -108,14 +108,14 @@ impl ProviderInstanceRepository {
 
     /// Encrypt a string field before storage (if encryption is configured).
     /// Returns the encrypted string or the original if encryption is not configured.
-    fn encrypt_field(&self, plaintext: &Option<String>) -> Result<Option<String>> {
+    fn encrypt_field(&self, plaintext: Option<&str>) -> Result<Option<String>> {
         match (&self.encryption, plaintext) {
             (Some(enc), Some(value)) if !value.is_empty() => {
-                let json_value = serde_json::Value::String(value.clone());
+                let json_value = serde_json::Value::String(value.to_owned());
                 let encrypted = enc.encrypt(&json_value)?;
                 Ok(Some(encrypted))
             }
-            _ => Ok(plaintext.clone()),
+            _ => Ok(plaintext.map(str::to_owned)),
         }
     }
 
@@ -130,7 +130,7 @@ impl ProviderInstanceRepository {
     }
 
     /// Decrypt a string field after reading. Only encrypted values (enc: prefix) are supported.
-    fn decrypt_field(&self, stored: &Option<String>) -> Result<Option<String>> {
+    fn decrypt_field(&self, stored: Option<&str>) -> Result<Option<String>> {
         match (&self.encryption, stored) {
             (Some(enc), Some(value)) if value.starts_with("enc:") => {
                 let decrypted = enc.decrypt(value)?;
@@ -143,14 +143,14 @@ impl ProviderInstanceRepository {
                 "Provider instance contains plaintext sensitive data while credential encryption is enabled"
                     .to_string(),
             )),
-            _ => Ok(stored.clone()),
+            _ => Ok(stored.map(str::to_owned)),
         }
     }
 
     /// Decrypt sensitive fields on a `ProviderInstance` after reading from DB.
     fn decrypt_instance(&self, mut instance: ProviderInstance) -> Result<ProviderInstance> {
-        instance.jwt_secret = self.decrypt_field(&instance.jwt_secret)?;
-        instance.custom_ca = self.decrypt_field(&instance.custom_ca)?;
+        instance.jwt_secret = self.decrypt_field(instance.jwt_secret.as_deref())?;
+        instance.custom_ca = self.decrypt_field(instance.custom_ca.as_deref())?;
         Ok(instance)
     }
 
@@ -197,8 +197,8 @@ impl ProviderInstanceRepository {
     }
 
     pub async fn list(&self, query: &ProviderInstanceListQuery) -> Result<Vec<ProviderInstance>> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = i64::try_from(query.pagination.limit()).unwrap_or(i64::MAX);
+        let offset = i64::try_from(query.pagination.offset()).unwrap_or(i64::MAX);
 
         let mut builder =
             sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM media_provider_instances");
@@ -230,8 +230,8 @@ impl ProviderInstanceRepository {
     /// Create a new provider instance (encrypts sensitive fields before storage)
     pub async fn create(&self, instance: &ProviderInstance) -> Result<()> {
         self.ensure_encryption_for_sensitive_fields(instance)?;
-        let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
-        let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
+        let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
+        let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
         let result = sqlx::query(
             r"
             INSERT INTO media_provider_instances
@@ -267,8 +267,8 @@ impl ProviderInstanceRepository {
     /// Update an existing provider instance (encrypts sensitive fields before storage)
     pub async fn update(&self, instance: &ProviderInstance) -> Result<()> {
         self.ensure_encryption_for_sensitive_fields(instance)?;
-        let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
-        let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
+        let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
+        let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
 
         let result = sqlx::query(
             r"
@@ -631,9 +631,7 @@ mod tests {
         let encryption = CredentialEncryption::new(&[7u8; 32]).unwrap();
         let repo = ProviderInstanceRepository::new_with_encryption(pool, encryption);
 
-        let err = repo
-            .decrypt_field(&Some("plaintext-secret".to_string()))
-            .unwrap_err();
+        let err = repo.decrypt_field(Some("plaintext-secret")).unwrap_err();
         assert!(
             err.to_string().contains("plaintext sensitive data"),
             "unexpected error: {err}"

@@ -17,6 +17,7 @@ pub use static_discovery::{StaticDiscovery, StaticDiscoveryConfig, StaticPeerCon
 use std::time::Duration;
 use tonic::transport::Endpoint;
 
+use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
 use crate::grpc::synctv::cluster::{self, GetNodesRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,12 +63,9 @@ pub async fn probe_node_identity(
         }
     };
 
-    let channel = match endpoint.connect().await {
-        Ok(ch) => ch,
-        Err(_) => return None,
+    let Ok(channel) = endpoint.connect().await else {
+        return None;
     };
-
-    use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
     let mut client = ClusterServiceClient::new(channel);
     let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
 

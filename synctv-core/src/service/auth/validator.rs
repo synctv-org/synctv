@@ -120,7 +120,7 @@ impl JwtValidator {
     /// # Errors
     /// - Missing authorization header
     /// - Invalid header format
-    fn extract_grpc_token(&self, metadata: &MetadataMap) -> Result<String> {
+    fn extract_grpc_token(metadata: &MetadataMap) -> Result<String> {
         let auth_header = metadata
             .get("authorization")
             .ok_or_else(|| Error::Authentication("Missing authorization header".to_string()))?
@@ -145,7 +145,7 @@ impl JwtValidator {
     /// - Invalid header format
     /// - Invalid token
     pub fn validate_grpc(&self, metadata: &MetadataMap) -> Result<Claims> {
-        let token = self.extract_grpc_token(metadata)?;
+        let token = Self::extract_grpc_token(metadata)?;
         self.validate_token(&token)
     }
 
@@ -181,7 +181,7 @@ impl JwtValidator {
         &self,
         metadata: &MetadataMap,
     ) -> std::result::Result<Claims, Status> {
-        let token = self.extract_grpc_token(metadata).map_err(|error| {
+        let token = Self::extract_grpc_token(metadata).map_err(|error| {
             tracing::warn!(error = %error, "gRPC token extraction failed");
             Status::unauthenticated("Invalid authorization header")
         })?;

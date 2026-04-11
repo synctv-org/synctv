@@ -111,7 +111,7 @@ impl ClientApiImpl {
                     urls: turn_urls,
                     username: Some(cred.username),
                     credential: Some(cred.password),
-                    expiry_time: cred.expiry_timestamp as i64,
+                    expiry_time: cred.expiry_timestamp.cast_signed(),
                 });
             }
         } else if let Some(registry) = &self.settings_registry {
@@ -122,7 +122,7 @@ impl ClientApiImpl {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    (now.saturating_add(webrtc_config.turn_credential_ttl_seconds)) as i64
+                    (now.saturating_add(webrtc_config.turn_credential_ttl_seconds)).cast_signed()
                 } else {
                     0
                 };

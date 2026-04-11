@@ -49,7 +49,7 @@ pub struct CleanupConfig {
 impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
-            room_ttl_seconds: 172800, // 48 hours in seconds (matches global settings default)
+            room_ttl_seconds: 172_800, // 48 hours in seconds (matches global settings default)
             soft_delete_retention_days: 90,
             room_soft_delete_retention_days: 90,
             expired_token_retention_days: 7,
@@ -92,6 +92,10 @@ pub struct CleanupService {
 }
 
 impl CleanupService {
+    fn u32_to_i32_saturating(value: u32) -> i32 {
+        i32::try_from(value).unwrap_or(i32::MAX)
+    }
+
     /// Create a new cleanup service with a leader check.
     ///
     /// Cleanup only runs when this node is the cluster leader (or in
@@ -134,7 +138,9 @@ impl CleanupService {
         self.settings_registry
             .as_ref()
             .and_then(|r| r.max_chat_messages_per_room.get().ok())
-            .map_or(self.config.chat_max_messages_per_room, |v| v as i64)
+            .map_or(self.config.chat_max_messages_per_room, |value| {
+                i64::try_from(value).unwrap_or(i64::MAX)
+            })
     }
 
     /// Run all cleanup tasks once
@@ -306,7 +312,7 @@ impl CleanupService {
 
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
-        let days = self.config.soft_delete_retention_days as i32;
+        let days = Self::u32_to_i32_saturating(self.config.soft_delete_retention_days);
         let user_ids: Vec<String> = sqlx::query_scalar(
             r"
             SELECT id
@@ -368,7 +374,7 @@ impl CleanupService {
 
     /// Permanently delete rooms that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_rooms(&self) -> Result<u64> {
-        let days = self.config.room_soft_delete_retention_days as i32;
+        let days = Self::u32_to_i32_saturating(self.config.room_soft_delete_retention_days);
         let room_ids: Vec<crate::models::RoomId> = sqlx::query_scalar(
             r"
             SELECT id
@@ -403,7 +409,7 @@ impl CleanupService {
 
     /// Delete email tokens that expired beyond the retention period
     async fn delete_expired_tokens(&self) -> Result<u64> {
-        let days = self.config.expired_token_retention_days as i32;
+        let days = Self::u32_to_i32_saturating(self.config.expired_token_retention_days);
         let result = sqlx::query(
             r"
             DELETE FROM email_tokens
@@ -423,7 +429,7 @@ impl CleanupService {
     /// Calls the database function `cleanup_expired_credentials()` which deletes credentials
     /// that expired more than `buffer_hours` ago.
     async fn delete_expired_credentials(&self) -> Result<u64> {
-        let buffer_hours = self.config.expired_credential_buffer_hours as i32;
+        let buffer_hours = Self::u32_to_i32_saturating(self.config.expired_credential_buffer_hours);
         let result_json =
             sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
                 .bind(buffer_hours)
@@ -431,14 +437,18 @@ impl CleanupService {
                 .await
                 .internal_with_err("Failed to delete expired credentials")?;
 
-        let deleted_count = result_json["deleted_count"].as_i64().unwrap_or(0) as u64;
+        let deleted_count = result_json["deleted_count"]
+            .as_i64()
+            .unwrap_or(0)
+            .max(0)
+            .cast_unsigned();
 
         Ok(deleted_count)
     }
 
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
-        let days = self.config.notification_retention_days as i32;
+        let days = Self::u32_to_i32_saturating(self.config.notification_retention_days);
         let result = sqlx::query(
             r"
             DELETE FROM notifications
@@ -459,7 +469,7 @@ impl CleanupService {
     /// This prevents unbounded growth from unread notifications that are never
     /// acknowledged by users.
     async fn delete_expired_notifications(&self) -> Result<u64> {
-        let days = self.config.notification_max_retention_days as i32;
+        let days = Self::u32_to_i32_saturating(self.config.notification_max_retention_days);
         let result = sqlx::query(
             r"
             DELETE FROM notifications
@@ -491,7 +501,7 @@ impl CleanupService {
         .fetch_one(&self.pool)
         .await
         .internal_with_err("Failed to cleanup token blacklist")?;
-        Ok(deleted_count.max(0) as u64)
+        Ok(deleted_count.max(0).cast_unsigned())
     }
 
     /// Cleanup chat messages exceeding per-room cap
@@ -676,7 +686,7 @@ mod tests {
         // Should work fine without registry
         assert!(service.settings_registry.is_none());
         // Should use config defaults
-        assert_eq!(service.room_ttl_seconds(), 172800);
+        assert_eq!(service.room_ttl_seconds(), 172_800);
         assert_eq!(service.chat_max_messages_per_room(), 0);
     }
 

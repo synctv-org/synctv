@@ -13,6 +13,7 @@ mod inner {
     use crate::storage::{validate_component, validate_storage_key, HlsStorage};
     use async_trait::async_trait;
     use bytes::Bytes;
+    use futures::TryStreamExt;
     use opendal::{services::S3, Operator};
     use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
@@ -111,7 +112,6 @@ mod inner {
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
-            use futures::TryStreamExt;
             let mut entries = lister;
             let mut deleted = 0;
             while let Some(entry) = entries
@@ -253,7 +253,6 @@ mod inner {
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
-            use futures::TryStreamExt;
             let mut entries = lister;
             while let Some(entry) = entries
                 .try_next()

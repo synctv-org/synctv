@@ -152,7 +152,7 @@ where
     }
 
     let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    let remaining_ttl = (claims.exp - now).max(0).cast_unsigned();
     if remaining_ttl == 0 {
         return Err(ApiError::Authentication(
             "Access token already expired".to_string(),

@@ -103,7 +103,7 @@ macro_rules! impl_grpc_method {
                             stringify!($method),
                         ))
                     })?
-                    .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), e)))?;
+                    .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), &e)))?;
                 Ok(response.into_inner())
             })
         }
@@ -168,7 +168,7 @@ const fn grpc_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
     }
 }
 
-fn map_grpc_status(context: &str, status: Status) -> synctv_media_providers::ProviderClientError {
+fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::ProviderClientError {
     let message = status.message().to_string();
     match status.code() {
         Code::Unauthenticated => synctv_media_providers::ProviderClientError::Auth(message),
@@ -234,11 +234,11 @@ fn map_grpc_status(context: &str, status: Status) -> synctv_media_providers::Pro
 #[derive(Clone)]
 pub struct ProviderClientManager {
     /// Local Alist client (singleton within this manager)
-    local_alist: AlistClientArc,
+    alist: AlistClientArc,
     /// Local Bilibili client (singleton within this manager)
-    local_bilibili: BilibiliClientArc,
+    bilibili: BilibiliClientArc,
     /// Local Emby client (singleton within this manager)
-    local_emby: EmbyClientArc,
+    emby: EmbyClientArc,
     #[cfg(test)]
     marker: usize,
 }
@@ -246,9 +246,9 @@ pub struct ProviderClientManager {
 impl std::fmt::Debug for ProviderClientManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderClientManager")
-            .field("local_alist", &"AlistClientArc")
-            .field("local_bilibili", &"BilibiliClientArc")
-            .field("local_emby", &"EmbyClientArc")
+            .field("alist", &"AlistClientArc")
+            .field("bilibili", &"BilibiliClientArc")
+            .field("emby", &"EmbyClientArc")
             .finish()
     }
 }
@@ -272,13 +272,13 @@ impl ProviderClientManager {
     #[must_use]
     pub fn new_with_provider_http_client(client: reqwest::Client) -> Self {
         Self {
-            local_alist: Arc::new(synctv_media_providers::alist::AlistService::with_client(
+            alist: Arc::new(synctv_media_providers::alist::AlistService::with_client(
                 client.clone(),
             )),
-            local_bilibili: Arc::new(
+            bilibili: Arc::new(
                 synctv_media_providers::bilibili::BilibiliService::with_client(client.clone()),
             ),
-            local_emby: Arc::new(synctv_media_providers::emby::EmbyService::with_client(
+            emby: Arc::new(synctv_media_providers::emby::EmbyService::with_client(
                 client,
             )),
             #[cfg(test)]
@@ -294,9 +294,9 @@ impl ProviderClientManager {
         emby: synctv_media_providers::emby::EmbyService,
     ) -> Self {
         Self {
-            local_alist: Arc::new(alist),
-            local_bilibili: Arc::new(bilibili),
-            local_emby: Arc::new(emby),
+            alist: Arc::new(alist),
+            bilibili: Arc::new(bilibili),
+            emby: Arc::new(emby),
             #[cfg(test)]
             marker: PROVIDER_CLIENT_MANAGER_MARKER_SEQ.fetch_add(1, AtomicOrdering::Relaxed),
         }
@@ -307,14 +307,14 @@ impl ProviderClientManager {
     /// This is useful for testing with mock clients.
     #[must_use]
     pub fn with_custom_clients(
-        local_alist: AlistClientArc,
-        local_bilibili: BilibiliClientArc,
-        local_emby: EmbyClientArc,
+        alist: AlistClientArc,
+        bilibili: BilibiliClientArc,
+        emby: EmbyClientArc,
     ) -> Self {
         Self {
-            local_alist,
-            local_bilibili,
-            local_emby,
+            alist,
+            bilibili,
+            emby,
             #[cfg(test)]
             marker: PROVIDER_CLIENT_MANAGER_MARKER_SEQ.fetch_add(1, AtomicOrdering::Relaxed),
         }
@@ -323,19 +323,19 @@ impl ProviderClientManager {
     /// Get the local Alist client.
     #[must_use]
     pub fn local_alist_client(&self) -> AlistClientArc {
-        self.local_alist.clone()
+        self.alist.clone()
     }
 
     /// Get the local Bilibili client.
     #[must_use]
     pub fn local_bilibili_client(&self) -> BilibiliClientArc {
-        self.local_bilibili.clone()
+        self.bilibili.clone()
     }
 
     /// Get the local Emby client.
     #[must_use]
     pub fn local_emby_client(&self) -> EmbyClientArc {
-        self.local_emby.clone()
+        self.emby.clone()
     }
 
     /// Resolve an Alist client: use remote if channel provided, otherwise local.
@@ -472,7 +472,7 @@ impl AlistInterface for GrpcAlistClient {
                     GRPC_REQUEST_TIMEOUT.as_secs(),
                 ))
             })?
-            .map_err(|e| map_grpc_status("login", e))?;
+            .map_err(|e| map_grpc_status("login", &e))?;
         Ok(response.into_inner().token)
     }
 }
@@ -596,10 +596,11 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
         match error {
             ProviderClientError::Network(msg) => Self::NetworkError(msg),
             ProviderClientError::Api { message, .. } => Self::ApiError(message),
-            ProviderClientError::Parse(msg) => Self::ParseError(msg),
+            ProviderClientError::Parse(msg) | ProviderClientError::InvalidHeader(msg) => {
+                Self::ParseError(msg)
+            }
             ProviderClientError::Auth(msg) => Self::ApiError(msg),
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
-            ProviderClientError::InvalidHeader(msg) => Self::ParseError(msg),
             ProviderClientError::NotImplemented(msg) => {
                 Self::ApiError(format!("Not implemented: {msg}"))
             }
@@ -1047,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_unauthenticated_to_auth() {
-        let error = map_grpc_status("login", Status::unauthenticated("Invalid provider secret"));
+        let error = map_grpc_status("login", &Status::unauthenticated("Invalid provider secret"));
         assert!(matches!(
             error,
             ProviderClientError::Auth(message) if message == "Invalid provider secret"
@@ -1056,7 +1057,10 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_invalid_argument_to_invalid_config() {
-        let error = map_grpc_status("fs_get", Status::invalid_argument("missing host parameter"));
+        let error = map_grpc_status(
+            "fs_get",
+            &Status::invalid_argument("missing host parameter"),
+        );
         assert!(matches!(
             error,
             ProviderClientError::InvalidConfig(message) if message == "missing host parameter"
@@ -1065,7 +1069,7 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_not_found_to_http_404() {
-        let error = map_grpc_status("me", Status::not_found("user not found"));
+        let error = map_grpc_status("me", &Status::not_found("user not found"));
         assert!(matches!(
             error,
             ProviderClientError::Http { status, ref url, ref body, retry_after_secs: None }
@@ -1077,7 +1081,7 @@ mod tests {
 
     #[test]
     fn test_map_grpc_status_unimplemented_to_not_implemented() {
-        let error = map_grpc_status("future_method", Status::unimplemented("not available"));
+        let error = map_grpc_status("future_method", &Status::unimplemented("not available"));
         assert!(matches!(
             error,
             ProviderClientError::NotImplemented(message) if message == "not available"

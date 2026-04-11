@@ -287,14 +287,13 @@ impl ClientServiceImpl {
     /// Authentication and security checks are completed by the transport layer
     /// before this service is called, so this only consumes the injected context.
     #[allow(clippy::result_large_err)]
-    async fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
+    fn get_user_id(request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
         extract_authenticated_user_id(request)
     }
 
     /// Extract `RoomContext` (injected by `inject_room` interceptor)
     #[allow(clippy::result_large_err)]
     fn get_room_context(
-        &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<super::interceptors::RoomContext, Status> {
         request
@@ -306,8 +305,8 @@ impl ClientServiceImpl {
 
     /// Extract `room_id` from `RoomContext`
     #[allow(clippy::result_large_err)]
-    fn get_room_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<RoomId, Status> {
-        let room_context = self.get_room_context(request)?;
+    fn get_room_id(request: &Request<impl std::fmt::Debug>) -> Result<RoomId, Status> {
+        let room_context = Self::get_room_context(request)?;
         Ok(RoomId::from_string(room_context.room_id))
     }
 }
@@ -375,7 +374,7 @@ impl UserService for ClientServiceImpl {
         }
 
         let now = chrono::Utc::now().timestamp();
-        let remaining_ttl = (claims.exp - now).max(0) as u64;
+        let remaining_ttl = u64::try_from((claims.exp - now).max(0)).unwrap_or(u64::MAX);
         if remaining_ttl == 0 {
             return Err(Status::unauthenticated("Authentication required"));
         }
@@ -396,7 +395,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetProfileRequest>,
     ) -> Result<Response<GetProfileResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let response = self
             .client_api
             .get_profile(user_id.as_str())
@@ -409,7 +408,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<SetUsernameRequest>,
     ) -> Result<Response<SetUsernameResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -423,7 +422,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<SetPasswordRequest>,
     ) -> Result<Response<SetPasswordResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -437,7 +436,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<CreateRoomRequest>,
     ) -> Result<Response<CreateRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -451,7 +450,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<GetRoomRequest>,
     ) -> Result<Response<GetRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -465,7 +464,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<JoinRoomRequest>,
     ) -> Result<Response<JoinRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let client_ip = super::extract_client_ip(&request, &self.config).map(|ip| ip.to_string());
         let req = request.into_inner();
         let room_id = req.room_id.clone();
@@ -481,7 +480,7 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<ListMyRoomsRequest>,
     ) -> Result<Response<ListMyRoomsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -500,8 +499,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UpdateRoomSettingsRequest>,
     ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -515,8 +514,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetRoomMembersRequest>,
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -530,8 +529,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<AddMemberRequest>,
     ) -> Result<Response<AddMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -545,8 +544,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ApproveMemberRequest>,
     ) -> Result<Response<ApproveMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -560,8 +559,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<RejectMemberRequest>,
     ) -> Result<Response<RejectMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -575,8 +574,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
     ) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -590,8 +589,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<KickMemberRequest>,
     ) -> Result<Response<KickMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -605,8 +604,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<BanMemberRequest>,
     ) -> Result<Response<BanMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -620,8 +619,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UnbanMemberRequest>,
     ) -> Result<Response<UnbanMemberResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -635,8 +634,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetRoomSettingsRequest>,
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .get_room_settings(user_id.as_str(), room_id.as_str())
@@ -649,8 +648,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ResetRoomSettingsRequest>,
     ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .reset_room_settings(user_id.as_str(), room_id.as_str())
@@ -663,8 +662,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<TransferRoomOwnershipRequest>,
     ) -> Result<Response<TransferRoomOwnershipResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -678,8 +677,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<SetRoomPasswordRequest>,
     ) -> Result<Response<SetRoomPasswordResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -693,8 +692,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<LeaveRoomRequest>,
     ) -> Result<Response<LeaveRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .leave_room(user_id.as_str(), room_id.as_str())
@@ -707,8 +706,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<DeleteRoomRequest>,
     ) -> Result<Response<DeleteRoomResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .delete_room(user_id.as_str(), room_id.as_str())
@@ -735,7 +734,7 @@ impl RoomService for ClientServiceImpl {
             .get::<super::interceptors::UserContext>()
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?
             .clone();
-        let room_id = self.get_room_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let user_id = UserId::from_string(user_context.user_id.clone());
         let client_stream = request.into_inner();
 
@@ -845,8 +844,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetChatHistoryRequest>,
     ) -> Result<Response<GetChatHistoryResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -860,8 +859,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetIceServersRequest>,
     ) -> Result<Response<GetIceServersResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .get_ice_servers(&room_id, &user_id)
@@ -874,8 +873,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetNetworkQualityRequest>,
     ) -> Result<Response<GetNetworkQualityResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .get_network_quality(&room_id, &user_id)
@@ -888,8 +887,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<AddMediaRequest>,
     ) -> Result<Response<AddMediaResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -903,8 +902,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<DeleteMediaRequest>,
     ) -> Result<Response<DeleteMediaResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -918,8 +917,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<DeleteEntriesRequest>,
     ) -> Result<Response<DeleteEntriesResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -933,8 +932,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<EditMediaRequest>,
     ) -> Result<Response<EditMediaResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -948,8 +947,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ListPlaylistItemsRequest>,
     ) -> Result<Response<ListPlaylistItemsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -963,8 +962,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<MoveMediaRequest>,
     ) -> Result<Response<MoveMediaResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -978,8 +977,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ClearPlaylistRequest>,
     ) -> Result<Response<ClearPlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let response = self
             .client_api
             .clear_playlist(user_id.as_str(), room_id.as_str())
@@ -992,8 +991,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<AddMediaBatchRequest>,
     ) -> Result<Response<AddMediaBatchResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1007,8 +1006,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<StartPlaybackRequest>,
     ) -> Result<Response<StartPlaybackResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1022,8 +1021,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<StopPlaybackRequest>,
     ) -> Result<Response<StopPlaybackResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1037,8 +1036,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetPlaybackRequest>,
     ) -> Result<Response<GetPlaybackResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1052,8 +1051,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<CreatePublishKeyRequest>,
     ) -> Result<Response<CreatePublishKeyResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
 
         self.client_api
@@ -1067,8 +1066,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<GetStreamInfoResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
 
         self.client_api
@@ -1082,8 +1081,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ListRoomStreamsRequest>,
     ) -> Result<Response<ListRoomStreamsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
 
         self.client_api
@@ -1098,8 +1097,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<CreatePlaylistRequest>,
     ) -> Result<Response<CreatePlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1113,8 +1112,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetPlaylistRequest>,
     ) -> Result<Response<GetPlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1128,8 +1127,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<UpdatePlaylistRequest>,
     ) -> Result<Response<UpdatePlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1143,8 +1142,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<MovePlaylistRequest>,
     ) -> Result<Response<MovePlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1158,8 +1157,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<DeletePlaylistRequest>,
     ) -> Result<Response<DeletePlaylistResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1173,8 +1172,8 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<ListPlaylistsRequest>,
     ) -> Result<Response<ListPlaylistsResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
+        let room_id = Self::get_room_id(&request)?;
         let req = request.into_inner();
         let response = self
             .client_api
@@ -1238,7 +1237,7 @@ impl StreamMessage for GrpcStreamMessage {
         .await
         {
             GrpcReceiveOutcome::Message(Ok(Some(msg))) => Some(Ok(msg)),
-            GrpcReceiveOutcome::Message(Ok(None)) => {
+            GrpcReceiveOutcome::Message(Ok(None)) | GrpcReceiveOutcome::ResponseStreamClosed => {
                 self.alive
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 None
@@ -1247,11 +1246,6 @@ impl StreamMessage for GrpcStreamMessage {
                 self.alive
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 Some(Err(format!("gRPC stream error: {e}")))
-            }
-            GrpcReceiveOutcome::ResponseStreamClosed => {
-                self.alive
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                None
             }
         }
     }

@@ -27,7 +27,7 @@ pub struct BilibiliProviderGrpcService {
 
 impl BilibiliProviderGrpcService {
     #[must_use]
-    pub fn new(app_state: Arc<AppState>) -> Self {
+    pub fn new(app_state: &Arc<AppState>) -> Self {
         let api = BilibiliApiImpl::new(
             app_state.providers.bilibili.clone(),
             app_state.user_provider_credential_repository.clone(),

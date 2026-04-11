@@ -93,6 +93,34 @@ impl CacheLifecycleManager {
     /// This is the core of the cache manager, equivalent to nginx's
     /// `ngx_http_file_cache_manager` function.
     async fn run_cycle(&self) {
+        fn compute_watermark(max_cache_size: u64, ratio: f64) -> u64 {
+            let clamped_ratio = if ratio.is_finite() {
+                ratio.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+
+            // For the configured ratios used here (0.5, 0.875), formatting to a
+            // fixed decimal string preserves the intended decimal value while
+            // avoiding lossy integer<->float casts in the eviction path.
+            let ratio_text = format!("{clamped_ratio:.9}");
+            let mut parts = ratio_text.split('.');
+            let integer_part = parts.next().unwrap_or("0");
+            let fractional_raw = parts.next().unwrap_or("0");
+            let fractional_part = fractional_raw.trim_end_matches('0');
+            let scale_digits = fractional_part.len();
+            let scale = 10_u128.pow(u32::try_from(scale_digits).unwrap_or(0));
+            let numerator = integer_part.parse::<u128>().unwrap_or(0) * scale
+                + if fractional_part.is_empty() {
+                    0
+                } else {
+                    fractional_part.parse::<u128>().unwrap_or(0)
+                };
+            let watermark = u128::from(max_cache_size).saturating_mul(numerator) / scale.max(1);
+
+            u64::try_from(watermark).unwrap_or(max_cache_size)
+        }
+
         // 1. Evict expired entries.
         let expired = self.backend.evict_expired().await;
         if expired > 0 {
@@ -101,8 +129,7 @@ impl CacheLifecycleManager {
 
         // 2. Check watermark (7/8 of max_size like nginx).
         //    nginx: `if (size < cache->max_size && count < watermark) { break; }`
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let watermark = (self.config.max_cache_size as f64 * self.config.watermark_ratio) as u64;
+        let watermark = compute_watermark(self.config.max_cache_size, self.config.watermark_ratio);
         let current = self.backend.current_size();
         if current > watermark {
             let freed = self.backend.evict_to_size(watermark).await;

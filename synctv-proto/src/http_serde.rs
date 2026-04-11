@@ -35,8 +35,8 @@ pub enum ClientUpdateRoomSettingsRequestDef {
 impl From<ClientUpdateRoomSettingsRequestDef> for crate::client::UpdateRoomSettingsRequest {
     fn from(value: ClientUpdateRoomSettingsRequestDef) -> Self {
         let settings = match value {
-            ClientUpdateRoomSettingsRequestDef::Wrapped { settings } => settings,
-            ClientUpdateRoomSettingsRequestDef::Raw(settings) => settings,
+            ClientUpdateRoomSettingsRequestDef::Wrapped { settings }
+            | ClientUpdateRoomSettingsRequestDef::Raw(settings) => settings,
         };
 
         Self {
@@ -75,19 +75,34 @@ impl From<AdminUpdateRoomSettingsRequestDef> for crate::admin::UpdateRoomSetting
 
 #[derive(serde::Deserialize)]
 pub struct MovePlaylistRequestDef {
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "playlist_id",
+        alias = "playlistId",
+        alias = "playlist"
+    )]
     playlist_id: String,
-    #[serde(default, alias = "beforePlaylistId")]
-    before_playlist_id: Option<String>,
-    #[serde(default, alias = "afterPlaylistId")]
-    after_playlist_id: Option<String>,
+    #[serde(
+        default,
+        rename = "before_playlist_id",
+        alias = "beforePlaylistId",
+        alias = "before"
+    )]
+    before: Option<String>,
+    #[serde(
+        default,
+        rename = "after_playlist_id",
+        alias = "afterPlaylistId",
+        alias = "after"
+    )]
+    after: Option<String>,
 }
 
 impl TryFrom<MovePlaylistRequestDef> for crate::client::MovePlaylistRequest {
     type Error = String;
 
     fn try_from(value: MovePlaylistRequestDef) -> Result<Self, Self::Error> {
-        let anchor = match (value.before_playlist_id, value.after_playlist_id) {
+        let anchor = match (value.before, value.after) {
             (Some(before_playlist_id), None) => Some(
                 crate::client::move_playlist_request::Anchor::BeforePlaylistId(before_playlist_id),
             ),

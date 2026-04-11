@@ -18,6 +18,11 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -1084,10 +1089,10 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
     .bind(rejected_member.user_id.as_str())
     .bind(rejected_member.role)
     .bind(rejected_member.status)
-    .bind(rejected_member.added_permissions as i64)
-    .bind(rejected_member.removed_permissions as i64)
-    .bind(rejected_member.admin_added_permissions as i64)
-    .bind(rejected_member.admin_removed_permissions as i64)
+    .bind(u64_to_i64(rejected_member.added_permissions))
+    .bind(u64_to_i64(rejected_member.removed_permissions))
+    .bind(u64_to_i64(rejected_member.admin_added_permissions))
+    .bind(u64_to_i64(rejected_member.admin_removed_permissions))
     .bind(rejected_member.joined_at)
     .bind(rejected_member.left_at)
     .bind(rejected_member.version)

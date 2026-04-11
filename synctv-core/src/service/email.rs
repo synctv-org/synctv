@@ -16,6 +16,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 use rand::RngExt;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -123,6 +124,12 @@ pub trait VerificationCodeStore: Send + Sync {
 /// Redis key prefix for email verification codes
 const EMAIL_CODE_KEY_PREFIX: &str = "email:code:";
 
+fn ttl_minutes_to_seconds(ttl_minutes: i64) -> u64 {
+    u64::try_from(ttl_minutes.max(1))
+        .unwrap_or(1)
+        .saturating_mul(60)
+}
+
 /// Redis-backed verification code store (multi-node safe).
 pub struct RedisVerificationCodeStore {
     shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
@@ -155,10 +162,9 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
 
         let mut conn = self.conn().await;
 
-        let ttl_seconds = self.ttl_minutes * 60;
-        use redis::AsyncCommands;
+        let ttl_seconds = ttl_minutes_to_seconds(self.ttl_minutes);
         let _: () = conn
-            .set_ex(&key, value, ttl_seconds as u64)
+            .set_ex(&key, value, ttl_seconds)
             .await
             .internal_with_err("Failed to store verification code in Redis")?;
 
@@ -259,9 +265,9 @@ impl InMemoryVerificationCodeStore {
         Self {
             cache: moka::sync::Cache::builder()
                 .max_capacity(10_000)
-                .time_to_live(std::time::Duration::from_secs(
-                    (ttl_minutes.max(1) * 60) as u64,
-                ))
+                .time_to_live(std::time::Duration::from_secs(ttl_minutes_to_seconds(
+                    ttl_minutes,
+                )))
                 .build(),
         }
     }
@@ -836,7 +842,7 @@ impl EmailService {
     }
 
     /// Clean up expired codes (local memory only - Redis handles its own TTL)
-    pub async fn cleanup_expired_codes(&self) {
+    pub fn cleanup_expired_codes(&self) {
         // No-op: moka handles TTL expiration automatically; Redis handles its own TTL.
     }
 

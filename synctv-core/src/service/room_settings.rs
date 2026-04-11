@@ -371,7 +371,6 @@ impl RoomSettingsService {
                     let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
                     let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
                     tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
                 }
                 Err(e) => return Err(e),
             }
@@ -414,7 +413,6 @@ impl RoomSettingsService {
                     let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
                     let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
                     tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
                 }
                 Err(e) => return Err(e),
             }
@@ -514,7 +512,7 @@ impl RoomSettingsService {
     }
 
     /// Clear all cache
-    pub async fn clear_cache(&self) {
+    pub fn clear_cache(&self) {
         self.cache.invalidate_all();
     }
 }

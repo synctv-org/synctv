@@ -39,6 +39,12 @@ const STATE_SYNC_INTERVAL_SECS: u64 = 60;
 /// would create head-of-line stalls across the process.
 const SUBSCRIBER_POLL_INTERVAL_MS: u64 = 250;
 
+/// Maximum reconnect backoff for the subscriber loop.
+const SUBSCRIBER_MAX_BACKOFF_SECS: u64 = 30;
+
+/// Trim interval in subscriber loop iterations (~60 seconds at 1s block).
+const TRIM_EVERY_N_ITERATIONS: u32 = 60;
+
 /// Cache invalidation message types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -245,7 +251,6 @@ impl CacheInvalidationService {
         let subscriber_handle =
             crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
                 let mut backoff_secs: u64 = 1;
-                const MAX_BACKOFF_SECS: u64 = 30;
 
                 loop {
                     if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -275,7 +280,7 @@ impl CacheInvalidationService {
                                     }
                                 } => return,
                             }
-                            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                            backoff_secs = (backoff_secs * 2).min(SUBSCRIBER_MAX_BACKOFF_SECS);
                         }
                     }
                 }
@@ -439,9 +444,8 @@ impl CacheInvalidationService {
             .query_async(&mut conn)
             .await;
 
-        let groups = match result {
-            Ok(g) => g,
-            Err(_) => return, // Stream may not exist yet
+        let Ok(groups) = result else {
+            return;
         };
 
         for group_info in &groups {
@@ -588,7 +592,6 @@ impl CacheInvalidationService {
 
         // Phase 2: Live -- read new messages
         let mut trim_counter: u32 = 0;
-        const TRIM_EVERY_N_ITERATIONS: u32 = 60; // ~60 seconds at 1s block
 
         loop {
             if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -888,7 +891,8 @@ impl CacheInvalidationService {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
+            .as_millis();
+        let now_ms = u64::try_from(now_ms).unwrap_or(u64::MAX);
         let min_id = now_ms.saturating_sub(STREAM_RETENTION_MS);
         let min_id_str = format!("{min_id}-0");
 

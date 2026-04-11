@@ -18,9 +18,17 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+const LIST_PAGE_SIZE: usize = 50;
+const SHUFFLE_MAX_ITEMS: usize = 200;
+
+fn alist_modified_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
 
 /// Alist `MediaProvider`
 ///
@@ -184,6 +192,18 @@ impl TryFrom<&Value> for AlistSourceConfig {
 // Note: Default implementation removed as it requires RemoteProviderManager
 
 impl AlistProvider {
+    fn playback_cache_key(server_id: &str, path: &str, password: Option<&str>) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(password.unwrap_or("").as_bytes());
+        let path_hash: String = format!("{:x}", hasher.finalize())
+            .chars()
+            .take(16)
+            .collect();
+        format!("playback:{server_id}:{path_hash}")
+    }
+
     /// Resolve AlistSourceConfig + credential_ref into ResolvedAlistConfig.
     async fn resolve_config(
         &self,
@@ -319,6 +339,7 @@ impl AlistProvider {
                                     language: sub.language.clone(),
                                     name: sub.language.clone(),
                                     url: sub.url.clone(),
+                                    headers: HashMap::new(),
                                     format: "srt".to_string(),
                                 })
                                 .collect(),
@@ -406,9 +427,12 @@ impl MediaProvider for AlistProvider {
 
         // Validate credential_ref exists
         if let Some(repo) = _ctx.credential_repo {
+            let credential_owner_id = _ctx
+                .user_id
+                .unwrap_or(&config.credential_ref.credential_owner_id);
             let cred = repo
                 .get_by_provider_and_server(
-                    &config.credential_ref.credential_owner_id,
+                    credential_owner_id,
                     Self::NAME,
                     &config.credential_ref.server_id,
                 )
@@ -465,12 +489,11 @@ impl MediaProvider for AlistProvider {
 
         // Build cache key from server_id and path
         let config = AlistSourceConfig::try_from(source_config)?;
-        use sha2::{Digest, Sha256};
-        let path_hash: String = format!("{:x}", Sha256::digest(resolved.path.as_bytes()))
-            .chars()
-            .take(16)
-            .collect();
-        let cache_key = format!("playback:{}:{path_hash}", config.credential_ref.server_id);
+        let cache_key = Self::playback_cache_key(
+            &config.credential_ref.server_id,
+            &resolved.path,
+            resolved.password.as_deref(),
+        );
         let cache_ttl = Duration::from_mins(15);
 
         let store = _ctx.store.as_ref();
@@ -526,6 +549,7 @@ impl MediaProvider for AlistProvider {
 // Supported sub_paths:
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
+// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
 #[async_trait]
 impl super::proxy::ProviderProxy for AlistProvider {
     async fn resolve_proxy(
@@ -536,6 +560,77 @@ impl super::proxy::ProviderProxy for AlistProvider {
 
         if let Some((version, rest)) = sub_path.split_once('/') {
             let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+
+            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            subtitle_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let subtitle = playback_info
+                    .subtitles
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: subtitle.url.clone(),
+                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                });
+            }
+
+            if let Some(stream_path) = rest.strip_prefix("stream/") {
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            stream_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
+                });
+            }
+
             let default_info = versioned
                 .result
                 .playback_infos
@@ -671,7 +766,7 @@ impl DynamicFolder for AlistProvider {
                     } else {
                         Some(file_item.thumb)
                     },
-                    modified_at: Some(file_item.modified as i64),
+                    modified_at: Some(alist_modified_to_i64(file_item.modified)),
                 })
             })
             .collect();
@@ -721,11 +816,16 @@ impl DynamicFolder for AlistProvider {
         });
         let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
-        const PAGE_SIZE: usize = 50;
         let mut page = 0;
         loop {
             let page_items = self
-                .list_playlist(ctx, playlist, parent_target.as_deref(), page, PAGE_SIZE)
+                .list_playlist(
+                    ctx,
+                    playlist,
+                    parent_target.as_deref(),
+                    page,
+                    LIST_PAGE_SIZE,
+                )
                 .await?;
             if page_items.is_empty() {
                 return Ok(None);
@@ -752,7 +852,7 @@ impl DynamicFolder for AlistProvider {
                 ));
             }
 
-            if page_items.len() < PAGE_SIZE {
+            if page_items.len() < LIST_PAGE_SIZE {
                 return Ok(None);
             }
             page += 1;
@@ -810,7 +910,6 @@ impl DynamicFolder for AlistProvider {
                 });
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
-                const PAGE_SIZE: usize = 50;
                 let mut found_current = false;
                 let mut current_page = 0;
 
@@ -821,7 +920,7 @@ impl DynamicFolder for AlistProvider {
                             playlist,
                             parent_target.as_deref(),
                             current_page,
-                            PAGE_SIZE,
+                            LIST_PAGE_SIZE,
                         )
                         .await?;
 
@@ -869,7 +968,7 @@ impl DynamicFolder for AlistProvider {
                         }
                     }
 
-                    if page_items.len() < PAGE_SIZE {
+                    if page_items.len() < LIST_PAGE_SIZE {
                         break;
                     }
                     current_page += 1;
@@ -885,7 +984,7 @@ impl DynamicFolder for AlistProvider {
                     });
                     let parent_target = parent_path.map(Self::encode_target).transpose()?;
                     let first_page = self
-                        .list_playlist(ctx, playlist, parent_target.as_deref(), 0, PAGE_SIZE)
+                        .list_playlist(ctx, playlist, parent_target.as_deref(), 0, LIST_PAGE_SIZE)
                         .await?;
                     if let Some(first) = first_page
                         .iter()
@@ -917,22 +1016,26 @@ impl DynamicFolder for AlistProvider {
                 });
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
-                const PAGE_SIZE: usize = 50;
-                const MAX_ITEMS: usize = 200;
-                let mut all_items = Vec::with_capacity(MAX_ITEMS);
+                let mut all_items = Vec::with_capacity(SHUFFLE_MAX_ITEMS);
                 let mut page = 0;
                 loop {
                     let page_items = self
-                        .list_playlist(ctx, playlist, parent_target.as_deref(), page, PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            parent_target.as_deref(),
+                            page,
+                            LIST_PAGE_SIZE,
+                        )
                         .await?;
-                    let is_last_page = page_items.len() < PAGE_SIZE;
+                    let is_last_page = page_items.len() < LIST_PAGE_SIZE;
                     all_items.extend(page_items);
-                    if is_last_page || all_items.len() >= MAX_ITEMS {
+                    if is_last_page || all_items.len() >= SHUFFLE_MAX_ITEMS {
                         break;
                     }
                     page += 1;
                 }
-                all_items.truncate(MAX_ITEMS);
+                all_items.truncate(SHUFFLE_MAX_ITEMS);
 
                 let videos: Vec<_> = all_items
                     .iter()
@@ -1010,8 +1113,8 @@ mod tests {
 
     /// Validate Alist source config: checks path and credential_ref fields.
     /// Host/token are no longer in source_config (resolved from credential_ref at runtime).
-    fn validate_alist(config: Value) -> Result<(), ProviderError> {
-        let config = AlistSourceConfig::try_from(&config)?;
+    fn validate_alist(config: &Value) -> Result<(), ProviderError> {
+        let config = AlistSourceConfig::try_from(config)?;
 
         if config.path.is_empty() {
             return Err(ProviderError::InvalidConfig(
@@ -1044,7 +1147,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_alist(config).is_ok());
+        assert!(validate_alist(&config).is_ok());
     }
 
     #[test]
@@ -1057,7 +1160,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_alist(config).is_ok());
+        assert!(validate_alist(&config).is_ok());
     }
 
     #[test]
@@ -1069,7 +1172,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_alist(config).is_err());
+        assert!(validate_alist(&config).is_err());
     }
 
     #[test]
@@ -1081,7 +1184,7 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_alist(config).is_err());
+        assert!(validate_alist(&config).is_err());
     }
 
     #[test]
@@ -1089,7 +1192,7 @@ mod tests {
         let config = json!({
             "path": "/media/movies/test.mp4"
         });
-        assert!(validate_alist(config).is_err());
+        assert!(validate_alist(&config).is_err());
     }
 
     #[test]
@@ -1229,6 +1332,24 @@ mod tests {
         });
         let parsed = AlistSourceConfig::try_from(&config).unwrap();
         assert_eq!(parsed.password, Some("dir-password".to_string()));
+    }
+
+    #[test]
+    fn test_alist_playback_cache_key_includes_directory_password() {
+        let no_password = AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", None);
+        let password_a =
+            AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", Some("folder-a"));
+        let password_b =
+            AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", Some("folder-b"));
+
+        assert_ne!(
+            no_password, password_a,
+            "Directory password must affect the Alist playback cache key"
+        );
+        assert_ne!(
+            password_a, password_b,
+            "Different directory passwords must not reuse the same playback cache entry"
+        );
     }
 
     // ========== B6: Alist URL-encoded path traversal ==========

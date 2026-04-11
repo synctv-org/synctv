@@ -35,6 +35,10 @@ pub struct UserNotificationService {
 }
 
 impl UserNotificationService {
+    fn u64_to_usize(value: u64) -> usize {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+
     #[must_use]
     pub fn new(repository: NotificationRepository) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
@@ -176,7 +180,7 @@ impl UserNotificationService {
             .repository
             .mark_as_read(user_id, &req.notification_ids)
             .await?;
-        Ok(affected as usize)
+        Ok(Self::u64_to_usize(affected))
     }
 
     /// Mark all notifications as read
@@ -189,7 +193,7 @@ impl UserNotificationService {
             .repository
             .mark_all_as_read(user_id, req.before)
             .await?;
-        Ok(affected as usize)
+        Ok(Self::u64_to_usize(affected))
     }
 
     /// Delete a notification
@@ -200,7 +204,7 @@ impl UserNotificationService {
     /// Delete all read notifications
     pub async fn delete_all_read(&self, user_id: &UserId) -> Result<usize> {
         let affected = self.repository.delete_all_read(user_id).await?;
-        Ok(affected as usize)
+        Ok(Self::u64_to_usize(affected))
     }
 }
 

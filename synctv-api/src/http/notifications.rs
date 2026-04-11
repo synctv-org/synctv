@@ -12,7 +12,7 @@ use crate::http::validation::ValidatedQuery;
 use crate::http::AppState;
 use crate::impls::notification::{
     build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
-    notification_to_proto,
+    notification_counts_to_proto, notification_to_proto,
 };
 use crate::proto::client::{
     DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
@@ -69,6 +69,8 @@ pub async fn list_notifications(
         .list_notifications(&auth.user_id, query)
         .await
         .map_err(crate::http::error::map_api_error)?;
+    let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(ListNotificationsResponse {
         notifications: result
@@ -76,8 +78,8 @@ pub async fn list_notifications(
             .into_iter()
             .map(notification_to_proto)
             .collect(),
-        total: result.total as i32,
-        unread_count: result.unread_count as i32,
+        total,
+        unread_count,
     }))
 }
 
@@ -109,7 +111,7 @@ pub async fn get_notification(
 ) -> AppResult<Json<GetNotificationResponse>> {
     let api = get_notification_api(&state)?;
     let notification_id =
-        build_get_notification_request(req).map_err(crate::http::error::map_api_error)?;
+        build_get_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
     let notification = api
         .get_notification(&auth.user_id, notification_id)
@@ -148,7 +150,7 @@ pub async fn mark_as_read(
     let api = get_notification_api(&state)?;
 
     let notification_ids =
-        build_mark_as_read_request(req).map_err(crate::http::error::map_api_error)?;
+        build_mark_as_read_request(&req).map_err(crate::http::error::map_api_error)?;
 
     api.mark_as_read(&auth.user_id, notification_ids)
         .await
@@ -226,7 +228,7 @@ pub async fn delete_notification(
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
     let notification_id =
-        build_delete_notification_request(req).map_err(crate::http::error::map_api_error)?;
+        build_delete_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
     api.delete_notification(&auth.user_id, notification_id)
         .await

@@ -668,7 +668,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         "test:playback:invalidate:stream:{}",
         synctv_common::snanoid!(8)
     );
-    let (redis_host, redis_port) = redis_container.host_port(6379).await;
+    let (redis_host, redis_port) = redis_container.host_port(6379);
     let redis_url = if redis_host.contains(':') && !redis_host.starts_with('[') {
         format!("redis://[{redis_host}]:{redis_port}")
     } else {
@@ -764,7 +764,7 @@ async fn test_playback_state_cache_direct_with_redis() {
     assert_eq!(from_cache.room_id, room_id);
 
     // Clear L1, then check L2
-    cache.clear_l1().await;
+    cache.clear_l1();
 
     // L2 hit
     let from_l2 = cache.get(&room_id).await.unwrap().unwrap();
@@ -821,7 +821,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     assert!(was_set, "Newer state should be set");
 
     // Clear L1 to force read from L2
-    cache.clear_l1().await;
+    cache.clear_l1();
 
     // Verify we get the newer state
     let from_cache = cache.get(&room_id).await.unwrap().unwrap();
@@ -842,7 +842,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     assert!(!was_set, "Older state should be rejected");
 
     // Verify we still have the newer state
-    cache.clear_l1().await;
+    cache.clear_l1();
     let from_cache = cache.get(&room_id).await.unwrap().unwrap();
     assert_eq!(from_cache.version, 10, "Should still have version 10");
 }

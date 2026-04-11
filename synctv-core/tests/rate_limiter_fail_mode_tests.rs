@@ -185,8 +185,7 @@ async fn test_fail_open_does_not_propagate_redis_errors() {
     for _ in 0..5 {
         let result = limiter.check_rate_limit("key", 10, 1).await;
         match result {
-            Ok(()) => {}
-            Err(RateLimitError::RateLimitExceeded { .. }) => {}
+            Ok(()) | Err(RateLimitError::RateLimitExceeded { .. }) => {}
             Err(RateLimitError::BackendUnavailable(message)) => {
                 panic!(
                     "check_rate_limit should not return BackendUnavailable in fail-open mode: {message}"

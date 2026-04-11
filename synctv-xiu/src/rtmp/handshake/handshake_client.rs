@@ -10,6 +10,15 @@ use {
     tokio::sync::Mutex,
 };
 
+fn rtmp_version_u8() -> u8 {
+    u8::try_from(define::RTMP_VERSION).expect("RTMP version constant should fit into u8")
+}
+
+fn handshake_random_len_u32() -> u32 {
+    u32::try_from(define::RTMP_HANDSHAKE_SIZE - 8)
+        .expect("RTMP handshake random payload length should fit into u32")
+}
+
 // use super::define;
 // use super::utils;
 // use super::{define::ClientHandshakeState, handshake_trait::THandshakeClient};
@@ -76,15 +85,14 @@ impl SimpleHandshakeClient {
 
 impl THandshakeClient for SimpleHandshakeClient {
     fn write_c0(&mut self) -> Result<(), HandshakeError> {
-        self.writer.write_u8(define::RTMP_VERSION as u8)?;
+        self.writer.write_u8(rtmp_version_u8())?;
         Ok(())
     }
     fn write_c1(&mut self) -> Result<(), HandshakeError> {
         self.writer.write_u32::<BigEndian>(utils::current_time())?;
         self.writer.write_u32::<BigEndian>(0)?;
 
-        self.writer
-            .write_random_bytes((define::RTMP_HANDSHAKE_SIZE - 8) as u32)?;
+        self.writer.write_random_bytes(handshake_random_len_u32())?;
         Ok(())
     }
     fn write_c2(&mut self) -> Result<(), HandshakeError> {

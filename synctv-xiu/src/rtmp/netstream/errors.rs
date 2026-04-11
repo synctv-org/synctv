@@ -12,6 +12,8 @@ pub enum NetStreamErrorValue {
     Amf0WriteError(Amf0WriteError),
     #[error("invalid max chunk size")]
     InvalidMaxChunkSize { chunk_size: usize },
+    #[error("message too large: {0} bytes")]
+    MessageTooLarge(usize),
     #[error("pack error")]
     PackError(PackError),
 }

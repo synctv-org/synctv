@@ -390,11 +390,11 @@ mod tests {
     fn test_user_context_fields() {
         let ctx = UserContext {
             user_id: "user1".to_string(),
-            iat: 1234567890,
+            iat: 1_234_567_890,
             pv: 3,
         };
         assert_eq!(ctx.user_id, "user1");
-        assert_eq!(ctx.iat, 1234567890);
+        assert_eq!(ctx.iat, 1_234_567_890);
         assert_eq!(ctx.pv, 3);
     }
 

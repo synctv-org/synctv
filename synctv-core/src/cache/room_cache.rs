@@ -304,8 +304,8 @@ impl RoomCache {
     ///
     /// Useful for testing or manual cache clearing.
     /// Note: L2 cache is not cleared.
-    pub async fn clear_l1(&self) {
-        self.inner.clear_l1().await;
+    pub fn clear_l1(&self) {
+        self.inner.clear_l1();
     }
 
     /// Clear both L1 (in-memory) and L2 (Redis) caches.

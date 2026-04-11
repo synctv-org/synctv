@@ -571,7 +571,7 @@ fn test_playback_state_to_proto() {
         target: Vec::new(),
         current_time: 120.5,
         speed: 1.5,
-        is_playing: true,
+        is_playing: false,
         updated_at: chrono::Utc::now(),
         version: 42,
     };
@@ -584,8 +584,28 @@ fn test_playback_state_to_proto() {
     assert!(proto.target.is_empty());
     assert!((proto.current_time - 120.5).abs() < f64::EPSILON);
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
-    assert!(proto.is_playing);
+    assert!(!proto.is_playing);
     assert_eq!(proto.version, 42);
+}
+
+#[test]
+fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
+    let state = synctv_core::models::RoomPlaybackState {
+        room_id: RoomId::from_string("room1".to_string()),
+        playing_media_id: Some(MediaId::from_string("media1".to_string())),
+        playing_playlist_id: None,
+        target: Vec::new(),
+        current_time: 120.5,
+        speed: 1.5,
+        is_playing: true,
+        updated_at: chrono::Utc::now() - chrono::TimeDelta::seconds(2),
+        version: 42,
+    };
+
+    let proto = playback_state_to_proto(&state);
+
+    assert!(proto.current_time >= 123.5);
+    assert!(proto.current_time < 124.5);
 }
 
 #[test]
@@ -650,7 +670,7 @@ fn test_media_to_proto_basic() {
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.provider, "bilibili");
     assert_eq!(proto.title, "Test Video");
-    assert_eq!(proto.position, 3.0);
+    assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(proto.added_by, "user1");
     assert_eq!(proto.provider_instance_name, "bili_main");
 }
@@ -698,7 +718,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 fn test_room_member_to_proto() {
     let member = make_test_member(RoomRole::Member);
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(member, role_default);
+    let proto = room_member_to_proto(&member, role_default);
 
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.user_id, "user1");
@@ -714,7 +734,7 @@ fn test_room_member_to_proto() {
 fn test_room_member_to_proto_creator() {
     let member = make_test_member(RoomRole::Creator);
     let role_default = RoomRole::Creator.permissions();
-    let proto = room_member_to_proto(member, role_default);
+    let proto = room_member_to_proto(&member, role_default);
     assert_eq!(
         proto.role,
         synctv_proto::common::RoomMemberRole::Creator as i32
@@ -727,7 +747,7 @@ fn test_room_member_to_proto_custom_permissions() {
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(member, role_default);
+    let proto = room_member_to_proto(&member, role_default);
     assert_eq!(proto.added_permissions, 0xFF);
     assert_eq!(proto.removed_permissions, 0x0F);
 }
@@ -836,7 +856,7 @@ fn test_members_to_proto_pattern_multiple_roles() {
         .into_iter()
         .map(|m| {
             let role_default = m.role.permissions();
-            room_member_to_proto(m, role_default)
+            room_member_to_proto(&m, role_default)
         })
         .collect();
 
@@ -875,7 +895,7 @@ fn test_members_to_proto_pattern_preserves_custom_permissions() {
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = member.role.permissions();
-    let result = room_member_to_proto(member, role_default);
+    let result = room_member_to_proto(&member, role_default);
     assert_eq!(result.added_permissions, 0xFF);
     assert_eq!(result.removed_permissions, 0x0F);
 }

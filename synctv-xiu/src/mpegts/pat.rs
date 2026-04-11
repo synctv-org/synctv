@@ -3,7 +3,12 @@ use {
     crate::bytesio::bytes_writer::BytesWriter,
     byteorder::{BigEndian, LittleEndian},
     bytes::BytesMut,
+    std::io::{Error, ErrorKind},
 };
+
+fn invalid_data_error(message: &str) -> Error {
+    Error::new(ErrorKind::InvalidData, message)
+}
 
 #[derive(Debug, Clone)]
 pub struct Pat {
@@ -53,10 +58,14 @@ impl PatMuxer {
 
     pub fn write(&mut self, pat: &Pat) -> Result<BytesMut, MpegTsError> {
         /*table id*/
-        self.bytes_writer.write_u8(epat_pid::PAT_TID_PAS as u8)?;
+        let table_id = u8::try_from(epat_pid::PAT_TID_PAS)
+            .map_err(|_| invalid_data_error("PAT table id exceeds u8"))?;
+        self.bytes_writer.write_u8(table_id)?;
 
         /*section length*/
-        let length = pat.pmt.len() as u16 * 4 + 5 + 4;
+        let pmt_len = u16::try_from(pat.pmt.len())
+            .map_err(|_| invalid_data_error("PAT PMT count exceeds u16"))?;
+        let length = pmt_len.saturating_mul(4).saturating_add(9);
         self.bytes_writer.write_u16::<BigEndian>(0xb000 | length)?;
         /*transport_stream_id*/
         self.bytes_writer
@@ -126,7 +135,10 @@ mod tests {
         // PAT header: table_id(1) + section_length(2) + transport_stream_id(2) + version(1) + section_nums(2) + crc32(4) = 12 bytes
         assert_eq!(data.len(), 12);
         // Check table_id
-        assert_eq!(data[0], epat_pid::PAT_TID_PAS as u8);
+        assert_eq!(
+            data[0],
+            u8::try_from(epat_pid::PAT_TID_PAS).expect("PAT table id must fit in u8")
+        );
     }
 
     #[test]

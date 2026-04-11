@@ -5,6 +5,12 @@ use subtle::ConstantTimeEq;
 use synctv_core::config::{MetricsAuthMode, MetricsConfig};
 
 #[cfg(feature = "k8s")]
+use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec};
+#[cfg(feature = "k8s")]
+use k8s_openapi::api::authorization::v1::{
+    NonResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
+};
+#[cfg(feature = "k8s")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "k8s")]
 use std::sync::Arc;
@@ -30,6 +36,7 @@ impl MetricsAccessController {
         Self::default()
     }
 
+    #[cfg(feature = "k8s")]
     pub async fn authorize(
         &self,
         metrics: &MetricsConfig,
@@ -38,17 +45,38 @@ impl MetricsAccessController {
         method: &str,
     ) -> Result<(), MetricsAccessError> {
         match metrics.auth.mode {
-            MetricsAuthMode::BearerToken => self.authorize_bearer(metrics, headers),
-            MetricsAuthMode::Basic => self.authorize_basic(metrics, headers),
+            MetricsAuthMode::BearerToken => Self::authorize_bearer(metrics, headers),
+            MetricsAuthMode::Basic => Self::authorize_basic(metrics, headers),
+            #[cfg(feature = "k8s")]
             MetricsAuthMode::Kubernetes => {
                 self.authorize_kubernetes(metrics, headers, path, method)
                     .await
+            }
+            #[cfg(not(feature = "k8s"))]
+            MetricsAuthMode::Kubernetes => {
+                self.authorize_kubernetes(metrics, headers, path, method)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "k8s"))]
+    pub fn authorize(
+        &self,
+        metrics: &MetricsConfig,
+        headers: &HeaderMap,
+        path: &str,
+        method: &str,
+    ) -> Result<(), MetricsAccessError> {
+        match metrics.auth.mode {
+            MetricsAuthMode::BearerToken => Self::authorize_bearer(metrics, headers),
+            MetricsAuthMode::Basic => Self::authorize_basic(metrics, headers),
+            MetricsAuthMode::Kubernetes => {
+                self.authorize_kubernetes(metrics, headers, path, method)
             }
         }
     }
 
     fn authorize_bearer(
-        &self,
         metrics: &MetricsConfig,
         headers: &HeaderMap,
     ) -> Result<(), MetricsAccessError> {
@@ -70,7 +98,6 @@ impl MetricsAccessController {
     }
 
     fn authorize_basic(
-        &self,
         metrics: &MetricsConfig,
         headers: &HeaderMap,
     ) -> Result<(), MetricsAccessError> {
@@ -88,6 +115,7 @@ impl MetricsAccessController {
         }
     }
 
+    #[cfg(feature = "k8s")]
     async fn authorize_kubernetes(
         &self,
         metrics: &MetricsConfig,
@@ -121,12 +149,18 @@ impl MetricsAccessController {
                     tracing::warn!(error = ?error, path, method, "metrics request denied");
                 });
         }
+    }
 
-        #[cfg(not(feature = "k8s"))]
-        {
-            let _ = (metrics, headers, path, method);
-            Err(MetricsAccessError::Internal)
-        }
+    #[cfg(not(feature = "k8s"))]
+    fn authorize_kubernetes(
+        &self,
+        metrics: &MetricsConfig,
+        headers: &HeaderMap,
+        path: &str,
+        method: &str,
+    ) -> Result<(), MetricsAccessError> {
+        let _ = (self, metrics, headers, path, method);
+        Err(MetricsAccessError::Internal)
     }
 }
 
@@ -211,12 +245,12 @@ impl KubernetesMetricsAuthorizer {
         let user_info = self
             .authenticate(token, metrics)
             .await
-            .map_err(map_kubernetes_metrics_error)?;
+            .map_err(|error| map_kubernetes_metrics_error(&error))?;
 
         let allowed = self
             .authorize_non_resource(token, &user_info, path, method, metrics)
             .await
-            .map_err(map_kubernetes_metrics_error)?;
+            .map_err(|error| map_kubernetes_metrics_error(&error))?;
 
         if allowed {
             Ok(())
@@ -238,7 +272,6 @@ impl KubernetesMetricsAuthorizer {
             }
         }
 
-        use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec};
         let api: kube::Api<TokenReview> = kube::Api::all(self.client.clone());
         let review = api
             .create(
@@ -306,10 +339,6 @@ impl KubernetesMetricsAuthorizer {
             }
         }
 
-        use k8s_openapi::api::authorization::v1::{
-            NonResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
-        };
-
         let api: kube::Api<SubjectAccessReview> = kube::Api::all(self.client.clone());
         let review = api
             .create(
@@ -332,10 +361,7 @@ impl KubernetesMetricsAuthorizer {
             )
             .await?;
 
-        let allowed = review
-            .status
-            .as_ref()
-            .is_some_and(|status| status.allowed);
+        let allowed = review.status.as_ref().is_some_and(|status| status.allowed);
 
         self.authorization_cache.insert(
             cache_key,
@@ -351,8 +377,8 @@ impl KubernetesMetricsAuthorizer {
 }
 
 #[cfg(feature = "k8s")]
-fn map_kubernetes_metrics_error(error: kube::Error) -> MetricsAccessError {
-    if let kube::Error::Api(response) = &error {
+fn map_kubernetes_metrics_error(error: &kube::Error) -> MetricsAccessError {
+    if let kube::Error::Api(response) = error {
         if response.code == 401 {
             return MetricsAccessError::Unauthorized;
         }
@@ -402,6 +428,20 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "k8s"))]
+    #[test]
+    fn metrics_access_controller_accepts_matching_bearer_token() {
+        let controller = MetricsAccessController::new();
+        let config = bearer_metrics_config("secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+
+        let result = controller.authorize(&config, &headers, "/metrics", "GET");
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(feature = "k8s")]
     #[tokio::test]
     async fn metrics_access_controller_accepts_matching_bearer_token() {
         let controller = MetricsAccessController::new();
@@ -416,6 +456,23 @@ mod tests {
         assert_eq!(result, Ok(()));
     }
 
+    #[cfg(not(feature = "k8s"))]
+    #[test]
+    fn metrics_access_controller_rejects_wrong_basic_password() {
+        let controller = MetricsAccessController::new();
+        let config = basic_metrics_config("metrics", "secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic bWV0cmljczp3cm9uZw=="),
+        );
+
+        let result = controller.authorize(&config, &headers, "/metrics", "GET");
+
+        assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+    }
+
+    #[cfg(feature = "k8s")]
     #[tokio::test]
     async fn metrics_access_controller_rejects_wrong_basic_password() {
         let controller = MetricsAccessController::new();

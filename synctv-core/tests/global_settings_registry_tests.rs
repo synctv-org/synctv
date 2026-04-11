@@ -12,6 +12,7 @@
 //! Run with: cargo test --test `global_settings_registry_tests`
 #![allow(clippy::unwrap_used)]
 
+use base64::Engine;
 use std::time::Duration;
 use synctv_core::service::global_settings::*;
 use synctv_core::service::turn_server::generate_turn_credentials;
@@ -332,7 +333,6 @@ fn test_turn_credential_format() {
 
     // Password should be valid Base64
     assert!(!cred.password.is_empty());
-    use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(&cred.password)
         .expect("password should be valid Base64");
@@ -402,7 +402,6 @@ fn test_turn_credential_base64_encoding() {
         .all(|c| { c.is_alphanumeric() || c == '+' || c == '/' || c == '=' }));
 
     // Should be decodable
-    use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(&cred.password)
         .expect("Should be valid Base64");

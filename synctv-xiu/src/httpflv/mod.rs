@@ -188,7 +188,8 @@ impl HttpFlvSession {
             _ => return Ok(()),
         };
 
-        let data_len = data.len() as u32;
+        let data_len =
+            u32::try_from(data.len()).map_err(|_| anyhow::anyhow!("FLV tag body too large"))?;
 
         self.muxer
             .write_flv_tag_header(tag_type, data_len, timestamp)
@@ -619,9 +620,8 @@ mod tests {
             .expect("subscribe event should be emitted")
             .expect("event channel should stay open");
 
-        let result_sender = match subscribe {
-            StreamHubEvent::Subscribe { result_sender, .. } => result_sender,
-            _ => panic!("expected subscribe event"),
+        let StreamHubEvent::Subscribe { result_sender, .. } = subscribe else {
+            panic!("expected subscribe event");
         };
 
         let (frame_tx, frame_rx) = mpsc::channel(256);

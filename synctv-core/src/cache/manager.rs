@@ -98,10 +98,10 @@ impl CacheManager {
                                 );
                             }
                             InvalidationMessage::All => {
-                                user_cache.clear_l1().await;
-                                room_cache.clear_l1().await;
+                                user_cache.clear_l1();
+                                room_cache.clear_l1();
                                 if let Some(ref uc) = username_cache {
-                                    uc.clear_memory().await;
+                                    uc.clear_memory();
                                 }
                                 debug!("All L1 caches cleared (cross-replica)");
                             }
@@ -161,11 +161,11 @@ impl CacheManager {
     ///
     /// Useful for testing or manual cache clearing.
     /// Note: L2 (Redis) caches are not cleared.
-    pub async fn clear_all_l1(&self) {
-        self.user_cache.clear_l1().await;
-        self.room_cache.clear_l1().await;
+    pub fn clear_all_l1(&self) {
+        self.user_cache.clear_l1();
+        self.room_cache.clear_l1();
         if let Some(ref uc) = self.username_cache {
-            uc.clear_memory().await;
+            uc.clear_memory();
         }
         tracing::debug!("All L1 caches cleared");
     }
@@ -200,7 +200,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache, room_cache);
         // This should not panic
-        manager.clear_all_l1().await;
+        manager.clear_all_l1();
     }
 
     #[tokio::test]

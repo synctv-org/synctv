@@ -6,6 +6,10 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Instant;
 
+fn elapsed_millis_u64(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).expect("test elapsed milliseconds must fit in u64")
+}
+
 /// Helper: compute the expected base delay for a given attempt.
 /// After the B10 fix: base = `initial_ms` * 2^attempt (capped at attempt=16)
 fn expected_base(attempt: u32, initial_ms: u64) -> u64 {
@@ -19,7 +23,7 @@ async fn test_backoff_attempt_0() {
 
     let start = Instant::now();
     synctv_livestream::util::backoff(0, initial_ms, max_ms).await;
-    let elapsed = start.elapsed().as_millis() as u64;
+    let elapsed = elapsed_millis_u64(start);
 
     // attempt=0: base = 100 * 2^0 = 100, with +/- 25% jitter = [75, 125]
     // Allow some scheduling slack
@@ -52,7 +56,7 @@ async fn test_backoff_exponential_growth() {
     // Actually run the backoff for attempt 1 to verify it's longer than attempt 0
     let start = Instant::now();
     synctv_livestream::util::backoff(1, initial_ms, max_ms).await;
-    let elapsed_1 = start.elapsed().as_millis() as u64;
+    let elapsed_1 = elapsed_millis_u64(start);
 
     // attempt 1 base = 200, should be noticeably larger than attempt 0
     assert!(
@@ -68,7 +72,7 @@ async fn test_backoff_caps_at_max() {
 
     let start = Instant::now();
     synctv_livestream::util::backoff(10, initial_ms, max_ms).await;
-    let elapsed = start.elapsed().as_millis() as u64;
+    let elapsed = elapsed_millis_u64(start);
 
     // attempt=10: base = 100 * 1024 = 102400, but capped at max_ms=500
     // With jitter: [375, 500] (75% to 100% of max_ms)
@@ -91,7 +95,7 @@ async fn test_backoff_jitter_within_bounds() {
 
         let start = Instant::now();
         synctv_livestream::util::backoff(attempt, initial_ms, max_ms).await;
-        let elapsed = start.elapsed().as_millis() as u64;
+        let elapsed = elapsed_millis_u64(start);
 
         // Allow generous slack for scheduling jitter
         assert!(
@@ -117,7 +121,7 @@ async fn test_backoff_high_attempt_saturates() {
     // attempt=100 is clamped to 16, so base = 100 * 2^16 = 6553600, capped to 1000
     let start = Instant::now();
     synctv_livestream::util::backoff(100, initial_ms, max_ms).await;
-    let elapsed = start.elapsed().as_millis() as u64;
+    let elapsed = elapsed_millis_u64(start);
 
     assert!(
         elapsed <= 1200,

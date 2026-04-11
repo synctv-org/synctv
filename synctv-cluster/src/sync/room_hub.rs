@@ -50,6 +50,15 @@ const fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
     event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
 }
 
+fn ttl_refresh_interval_secs(ttl_secs: i64) -> u64 {
+    let refresh_secs = ttl_secs.saturating_mul(2).div_euclid(5).clamp(30, 120);
+    u64::try_from(refresh_secs).unwrap_or(30)
+}
+
+fn ttl_secs_unsigned(ttl_secs: i64) -> u64 {
+    u64::try_from(ttl_secs.max(0)).unwrap_or_default()
+}
+
 async fn deliver_reliable_event(
     sender: MessageSender,
     event: ClusterEvent,
@@ -116,7 +125,9 @@ fn block_on_reliable_delivery(
         Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_or(ReliableDeliveryOutcome::Unavailable, |runtime| runtime.block_on(delivery)),
+            .map_or(ReliableDeliveryOutcome::Unavailable, |runtime| {
+                runtime.block_on(delivery)
+            }),
     }
 }
 
@@ -363,8 +374,7 @@ impl RoomMessageHub {
 
         let ttl_cancel = (*self.ttl_refresh_cancel).clone();
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
-        let refresh_interval_secs =
-            (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
+        let refresh_interval_secs = ttl_refresh_interval_secs(self.redis_key_ttl_secs);
         let stale_cancel = (*self.stale_cleanup_cancel).clone();
         let ttl_handle =
             self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel);
@@ -520,7 +530,7 @@ impl RoomMessageHub {
             }
 
             if let Err(e) = conn_clone
-                .set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64)
+                .set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs_unsigned(ttl_secs))
                 .await
             {
                 let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
@@ -679,7 +689,7 @@ impl RoomMessageHub {
     /// a blocking send (via `try_reserve` fallback) is attempted, and slow
     /// subscribers are still disconnected *after* the critical message is queued.
     /// This prevents administrative actions (bans, kicks) from being silently lost.
-    pub fn broadcast(&self, room_id: &RoomId, event: ClusterEvent) -> usize {
+    pub fn broadcast(&self, room_id: &RoomId, event: &ClusterEvent) -> usize {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
         let is_critical = event.is_critical();
@@ -714,10 +724,8 @@ impl RoomMessageHub {
                                     room_id.clone(),
                                     subscriber.connection_id.clone(),
                                 ) {
-                                    ReliableDeliveryOutcome::Delivered => {
-                                        sent_count += 1;
-                                    }
-                                    ReliableDeliveryOutcome::Deferred => {
+                                    ReliableDeliveryOutcome::Delivered
+                                    | ReliableDeliveryOutcome::Deferred => {
                                         sent_count += 1;
                                     }
                                     ReliableDeliveryOutcome::Closed
@@ -862,7 +870,7 @@ impl RoomMessageHub {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        event: ClusterEvent,
+        event: &ClusterEvent,
     ) -> usize {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
@@ -895,10 +903,8 @@ impl RoomMessageHub {
                                         room_id.clone(),
                                         subscriber.connection_id.clone(),
                                     ) {
-                                        ReliableDeliveryOutcome::Delivered => {
-                                            sent_count += 1;
-                                        }
-                                        ReliableDeliveryOutcome::Deferred => {
+                                        ReliableDeliveryOutcome::Delivered
+                                        | ReliableDeliveryOutcome::Deferred => {
                                             sent_count += 1;
                                         }
                                         ReliableDeliveryOutcome::Closed
@@ -1517,7 +1523,7 @@ mod tests {
             color: None,
         };
 
-        let sent_count = hub.broadcast(&room_id, event.clone());
+        let sent_count = hub.broadcast(&room_id, &event);
         assert_eq!(sent_count, 1);
 
         // Receive event
@@ -1576,7 +1582,7 @@ mod tests {
             color: None,
         };
 
-        let sent_count = hub.broadcast(&room_id, event.clone());
+        let sent_count = hub.broadcast(&room_id, &event);
         assert_eq!(sent_count, 2);
 
         // Both should receive
@@ -1612,7 +1618,7 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        let sent_count = hub.broadcast_to_user(&room_id, &user1, event.clone());
+        let sent_count = hub.broadcast_to_user(&room_id, &user1, &event);
         assert_eq!(sent_count, 1);
 
         // Only user1 should receive
@@ -1707,19 +1713,17 @@ mod tests {
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
-            let sent = hub.broadcast(
-                &room_id,
-                ClusterEvent::ChatMessage {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: deleted_by.clone(),
-                    username: "filler".to_string(),
-                    message: "fill".to_string(),
-                    timestamp: Utc::now(),
-                    position: None,
-                    color: None,
-                },
-            );
+            let event = ClusterEvent::ChatMessage {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                user_id: deleted_by.clone(),
+                username: "filler".to_string(),
+                message: "fill".to_string(),
+                timestamp: Utc::now(),
+                position: None,
+                color: None,
+            };
+            let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
         }
 
@@ -1789,19 +1793,17 @@ mod tests {
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
-            let sent = hub.broadcast(
-                &room_id,
-                ClusterEvent::ChatMessage {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: UserId::from_string("filler-user".to_string()),
-                    username: "filler".to_string(),
-                    message: "fill".to_string(),
-                    timestamp: Utc::now(),
-                    position: None,
-                    color: None,
-                },
-            );
+            let event = ClusterEvent::ChatMessage {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                user_id: UserId::from_string("filler-user".to_string()),
+                username: "filler".to_string(),
+                message: "fill".to_string(),
+                timestamp: Utc::now(),
+                position: None,
+                color: None,
+            };
+            let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
         }
 
@@ -1815,7 +1817,7 @@ mod tests {
         let hub_for_task = hub.clone();
         let room_for_task = room_id.clone();
         let broadcast_task =
-            tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, critical) });
+            tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, &critical) });
 
         tokio::task::yield_now().await;
         assert!(
@@ -1868,19 +1870,17 @@ mod tests {
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
-            let sent = hub.broadcast(
-                &room_id,
-                ClusterEvent::ChatMessage {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: UserId::from_string("filler-user".to_string()),
-                    username: "filler".to_string(),
-                    message: "fill".to_string(),
-                    timestamp: Utc::now(),
-                    position: None,
-                    color: None,
-                },
-            );
+            let event = ClusterEvent::ChatMessage {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                user_id: UserId::from_string("filler-user".to_string()),
+                username: "filler".to_string(),
+                message: "fill".to_string(),
+                timestamp: Utc::now(),
+                position: None,
+                color: None,
+            };
+            let sent = hub.broadcast(&room_id, &event);
             assert_eq!(sent, 1, "filler message should enqueue");
         }
 
@@ -1940,30 +1940,32 @@ mod tests {
                 .expect("subscribe should succeed");
 
             for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let event = ClusterEvent::ChatMessage {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: UserId::from_string("filler-user".to_string()),
+                    username: "filler".to_string(),
+                    message: "fill".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                };
                 let sent = hub.broadcast(
                     &room_id,
-                    ClusterEvent::ChatMessage {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: room_id.clone(),
-                        user_id: UserId::from_string("filler-user".to_string()),
-                        username: "filler".to_string(),
-                        message: "fill".to_string(),
-                        timestamp: Utc::now(),
-                        position: None,
-                        color: None,
-                    },
+                    &event,
                 );
                 assert_eq!(sent, 1, "filler message should enqueue");
             }
 
+            let event = ClusterEvent::RoomDeleted {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                deleted_by: UserId::from_string("deleter".to_string()),
+                timestamp: Utc::now(),
+            };
             let sent = hub.broadcast(
                 &room_id,
-                ClusterEvent::RoomDeleted {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    deleted_by: UserId::from_string("deleter".to_string()),
-                    timestamp: Utc::now(),
-                },
+                &event,
             );
 
             assert_eq!(
@@ -2021,32 +2023,30 @@ mod tests {
                 .expect("subscribe should succeed");
 
             for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+                let event = ClusterEvent::ChatMessage {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: room_id.clone(),
+                    user_id: UserId::from_string("filler-user".to_string()),
+                    username: "filler".to_string(),
+                    message: "fill".to_string(),
+                    timestamp: Utc::now(),
+                    position: None,
+                    color: None,
+                };
                 let sent = hub.broadcast(
                     &room_id,
-                    ClusterEvent::ChatMessage {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: room_id.clone(),
-                        user_id: UserId::from_string("filler-user".to_string()),
-                        username: "filler".to_string(),
-                        message: "fill".to_string(),
-                        timestamp: Utc::now(),
-                        position: None,
-                        color: None,
-                    },
+                    &event,
                 );
                 assert_eq!(sent, 1, "filler message should enqueue");
             }
 
-            let sent = hub.broadcast_to_user(
-                &room_id,
-                &user_id,
-                ClusterEvent::RoomDeleted {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    deleted_by: UserId::from_string("deleter".to_string()),
-                    timestamp: Utc::now(),
-                },
-            );
+            let event = ClusterEvent::RoomDeleted {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                deleted_by: UserId::from_string("deleter".to_string()),
+                timestamp: Utc::now(),
+            };
+            let sent = hub.broadcast_to_user(&room_id, &user_id, &event);
 
             assert_eq!(
                 sent, 1,

@@ -7,6 +7,7 @@
 //! transformation logic separately.
 
 #![allow(clippy::unwrap_used)]
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use wiremock::matchers::{method, path};
@@ -287,7 +288,7 @@ fn test_rewrite_m3u8_truncation_vod_adds_endlist() {
 
     // Add MAX_M3U8_URLS + 1 segments (the +1 will trigger truncation)
     for i in 0..=synctv_proxy::MAX_M3U8_URLS {
-        m3u8_content.push_str(&format!("#EXTINF:10,\nsegment{i}.ts\n"));
+        write!(m3u8_content, "#EXTINF:10,\nsegment{i}.ts\n").unwrap();
     }
     m3u8_content.push_str("#EXT-X-ENDLIST\n");
 
@@ -320,7 +321,7 @@ fn test_rewrite_m3u8_truncation_live_no_endlist() {
 
     // Add MAX_M3U8_URLS + 1 segments (the +1 will trigger truncation)
     for i in 0..=synctv_proxy::MAX_M3U8_URLS {
-        m3u8_content.push_str(&format!("#EXTINF:10,\nsegment{i}.ts\n"));
+        write!(m3u8_content, "#EXTINF:10,\nsegment{i}.ts\n").unwrap();
     }
     // NO #EXT-X-ENDLIST - this is a live stream
 

@@ -15,6 +15,8 @@ pub enum NetConnectionErrorValue {
     Amf0WriteError(Amf0WriteError),
     #[error("amf0 read error: {0}")]
     Amf0ReadError(Amf0ReadError),
+    #[error("message too large: {0} bytes")]
+    MessageTooLarge(usize),
     #[error("pack error")]
     PackError(PackError),
 }

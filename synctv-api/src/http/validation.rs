@@ -161,7 +161,24 @@ impl<T> std::ops::DerefMut for ValidatedQuery<T> {
     }
 }
 
-fn map_query_rejection(rejection: QueryRejection) -> super::AppError {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictQuery<T>(pub T);
+
+impl<T> std::ops::Deref for StrictQuery<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for StrictQuery<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
     super::AppError::new(rejection.status(), rejection.body_text())
 }
 
@@ -175,8 +192,23 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Query(value) = Query::<T>::from_request_parts(parts, state)
             .await
-            .map_err(map_query_rejection)?;
+            .map_err(|rejection| map_query_rejection(&rejection))?;
         crate::impls::validate_proto_request(&value).map_err(super::error::map_api_error)?;
+        Ok(Self(value))
+    }
+}
+
+impl<S, T> FromRequestParts<S> for StrictQuery<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Send,
+{
+    type Rejection = super::AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(value) = Query::<T>::from_request_parts(parts, state)
+            .await
+            .map_err(|rejection| map_query_rejection(&rejection))?;
         Ok(Self(value))
     }
 }
@@ -185,7 +217,7 @@ pub fn garde_error(message: impl Into<String>) -> garde::Error {
     garde::Error::new(message.into())
 }
 
-pub fn map_garde_report(report: garde::Report) -> super::AppError {
+pub fn map_garde_report(report: &garde::Report) -> super::AppError {
     super::AppError::bad_request(report.to_string())
 }
 
@@ -1186,7 +1218,7 @@ mod tests {
         assert!(validate_playback_position(-1.0).is_err()); // Negative
         assert!(validate_playback_position(f64::NAN).is_err()); // NaN
         assert!(validate_playback_position(f64::INFINITY).is_err()); // Infinity
-        assert!(validate_playback_position(100000.0).is_err()); // Too large (> 24h)
+        assert!(validate_playback_position(100_000.0).is_err()); // Too large (> 24h)
     }
 
     #[test]
@@ -1233,7 +1265,7 @@ mod tests {
     fn test_validate_page_with_excessive_values() {
         // Values over MAX_PAGE should be clamped
         assert_eq!(validate_page(Some(MAX_PAGE + 1)), MAX_PAGE);
-        assert_eq!(validate_page(Some(100000)), MAX_PAGE);
+        assert_eq!(validate_page(Some(100_000)), MAX_PAGE);
         assert_eq!(validate_page(Some(i32::MAX)), MAX_PAGE);
     }
 
@@ -1300,7 +1332,7 @@ mod tests {
         assert_eq!(page_size, 1);
 
         // Excessive values should be clamped to maximum
-        let (page, page_size) = validate_pagination(Some(100000), Some(1000));
+        let (page, page_size) = validate_pagination(Some(100_000), Some(1000));
         assert_eq!(page, MAX_PAGE);
         assert_eq!(page_size, MAX_PAGE_SIZE);
     }

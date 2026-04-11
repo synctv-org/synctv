@@ -103,6 +103,7 @@ pub struct ClientApiConfig {
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    pub provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
 }
 
 /// Client API implementation
@@ -135,12 +136,14 @@ pub struct ClientApiImpl {
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
     pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
+    /// Per-provider stores for signed playback version mappings
+    pub provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
 }
 
 impl ClientApiImpl {
-    fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {
+    fn parse_room_id(room_id: &str) -> Result<RoomId, ApiError> {
         parse_external_room_id(room_id)
     }
 
@@ -212,6 +215,7 @@ impl ClientApiImpl {
             turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
+            provider_stores: None,
             jwt_validator,
         }
     }
@@ -240,6 +244,7 @@ impl ClientApiImpl {
             turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
+            provider_stores: config.provider_stores,
             jwt_validator,
         }
     }
@@ -285,6 +290,16 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_signing_key(mut self, key: Arc<synctv_core::service::ProxySigningKey>) -> Self {
         self.signing_key = Some(key);
+        self
+    }
+
+    /// Set the per-provider store registry used for signed playback mappings.
+    #[must_use]
+    pub fn with_provider_stores(
+        mut self,
+        stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+    ) -> Self {
+        self.provider_stores = Some(stores);
         self
     }
 

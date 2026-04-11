@@ -473,7 +473,6 @@ mod tests {
                 StatisticData::VideoCodec { .. } => {
                     panic!("VideoCodec should not be sent for non-keyframe")
                 }
-                StatisticData::Video { .. } => {} // This is expected
                 _ => {}
             }
         }

@@ -21,6 +21,28 @@ pub struct RoomMemberRepository {
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
     "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL AND u.status = 1)";
 
+fn permission_bits_to_i64(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        Error::InvalidInput(format!("permission bits value {value} exceeds i64 range"))
+    })
+}
+
+fn db_permission_i64_to_u64(value: i64, column: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| {
+        Error::Internal(format!(
+            "database returned negative permission bits for column {column}"
+        ))
+    })
+}
+
+fn pagination_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn count_i64_to_u64_saturating(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
 impl RoomMemberRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -79,7 +101,7 @@ impl RoomMemberRepository {
 
     fn bind_my_room_filters<'q>(
         qb: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-        search_pattern: &'q Option<String>,
+        search_pattern: Option<&'q str>,
     ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
         match search_pattern {
             Some(pattern) => qb.bind(pattern),
@@ -149,8 +171,8 @@ impl RoomMemberRepository {
         .bind(member.user_id.as_str())
         .bind(member.role)
         .bind(member.status)
-        .bind(member.added_permissions as i64)
-        .bind(member.removed_permissions as i64)
+        .bind(permission_bits_to_i64(member.added_permissions)?)
+        .bind(permission_bits_to_i64(member.removed_permissions)?)
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
@@ -207,8 +229,8 @@ impl RoomMemberRepository {
         .bind(member.user_id.as_str())
         .bind(member.role)
         .bind(member.status)
-        .bind(member.added_permissions as i64)
-        .bind(member.removed_permissions as i64)
+        .bind(permission_bits_to_i64(member.added_permissions)?)
+        .bind(permission_bits_to_i64(member.removed_permissions)?)
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
@@ -269,9 +291,8 @@ impl RoomMemberRepository {
         .fetch_optional(&mut **tx)
         .await?;
 
-        let room_row = match room_row {
-            Some(row) => row,
-            None => return Err(Error::NotFound("Room not found".to_string())),
+        let Some(room_row) = room_row else {
+            return Err(Error::NotFound("Room not found".to_string()));
         };
 
         // 2. Check if room is active (if option enabled)
@@ -333,7 +354,8 @@ impl RoomMemberRepository {
                 .await?;
 
                 let count: i64 = count_row.try_get("count")?;
-                if count as u64 >= max_members {
+                let current_count = count_i64_to_u64_saturating(count);
+                if current_count >= max_members {
                     tracing::warn!(
                         room_id = %member.room_id.as_str(),
                         max_members = max_members,
@@ -377,8 +399,8 @@ impl RoomMemberRepository {
         .bind(member.user_id.as_str())
         .bind(member.role)
         .bind(member.status)
-        .bind(member.added_permissions as i64)
-        .bind(member.removed_permissions as i64)
+        .bind(permission_bits_to_i64(member.added_permissions)?)
+        .bind(permission_bits_to_i64(member.removed_permissions)?)
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
@@ -507,7 +529,7 @@ impl RoomMemberRepository {
         .await?;
 
         rows.into_iter()
-            .map(|row| self.row_to_member_with_user(row))
+            .map(|row| Self::row_to_member_with_user(&row))
             .collect()
     }
 
@@ -546,8 +568,8 @@ impl RoomMemberRepository {
         room_id: &RoomId,
         query: &RoomMemberListQuery,
     ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
 
         let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
@@ -632,7 +654,7 @@ impl RoomMemberRepository {
         let rows = list_builder.build().fetch_all(&self.pool).await?;
         let members: Result<Vec<RoomMemberWithUser>> = rows
             .into_iter()
-            .map(|row| self.row_to_member_with_user(row))
+            .map(|row| Self::row_to_member_with_user(&row))
             .collect();
 
         Ok((members?, total_count))
@@ -668,7 +690,7 @@ impl RoomMemberRepository {
 
         rows.into_iter()
             .map(|row| {
-                let mut member = self.row_to_member_with_user(row)?;
+                let mut member = Self::row_to_member_with_user(&row)?;
                 member.is_online = online_set.contains(member.user_id.as_str());
                 Ok(member)
             })
@@ -852,8 +874,8 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(added_permissions as i64)
-        .bind(removed_permissions as i64)
+        .bind(permission_bits_to_i64(added_permissions)?)
+        .bind(permission_bits_to_i64(removed_permissions)?)
         .bind(current_version)
         .fetch_optional(&self.pool)
         .await?;
@@ -893,8 +915,8 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(added_permissions as i64)
-        .bind(removed_permissions as i64)
+        .bind(permission_bits_to_i64(added_permissions)?)
+        .bind(permission_bits_to_i64(removed_permissions)?)
         .bind(current_version)
         .fetch_optional(&self.pool)
         .await?;
@@ -930,7 +952,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -963,7 +985,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .bind(role)
         .fetch_optional(&self.pool)
         .await?;
@@ -999,7 +1021,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1032,7 +1054,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .bind(role)
         .fetch_optional(&self.pool)
         .await?;
@@ -1068,7 +1090,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1101,7 +1123,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .bind(role)
         .fetch_optional(&self.pool)
         .await?;
@@ -1137,7 +1159,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1170,7 +1192,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .bind(permission as i64)
+        .bind(permission_bits_to_i64(permission)?)
         .bind(role)
         .fetch_optional(&self.pool)
         .await?;
@@ -1386,8 +1408,8 @@ impl RoomMemberRepository {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomId>, i64)> {
-        let limit = pagination.limit() as i64;
-        let offset = pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(pagination.limit());
+        let offset = pagination_u64_to_i64(pagination.offset());
 
         // Single query using COUNT(*) OVER() window function for atomic count + fetch
         let rows = sqlx::query(
@@ -1439,8 +1461,8 @@ impl RoomMemberRepository {
         user_id: &UserId,
         query: &MyRoomListQuery,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
         let wb = Self::build_my_room_list_conditions(query);
         let (where_sql, _) = wb.build(4);
@@ -1471,7 +1493,7 @@ impl RoomMemberRepository {
                 .bind(user_id.as_str())
                 .bind(limit)
                 .bind(offset),
-            &search_pattern,
+            search_pattern.as_deref(),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1515,8 +1537,8 @@ impl RoomMemberRepository {
         user_id: &UserId,
         query: &MyRoomListQuery,
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = pagination_u64_to_i64(query.pagination.limit());
+        let offset = pagination_u64_to_i64(query.pagination.offset());
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
         let wb = Self::build_my_room_list_conditions(query);
         let (where_sql, _) = wb.build(4);
@@ -1547,7 +1569,7 @@ impl RoomMemberRepository {
                 .bind(user_id.as_str())
                 .bind(limit)
                 .bind(offset),
-            &search_pattern,
+            search_pattern.as_deref(),
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1608,7 +1630,7 @@ impl RoomMemberRepository {
         rows.into_iter()
             .map(|row| {
                 let is_active: bool = row.try_get("is_active")?;
-                let mut member = self.row_to_member_with_user(row)?;
+                let mut member = Self::row_to_member_with_user(&row)?;
                 member.is_active = is_active;
                 // is_online stays false — this method doesn't have WebSocket status info
                 Ok(member)
@@ -1765,7 +1787,7 @@ impl RoomMemberRepository {
     }
 
     /// Convert database row to `RoomMemberWithUser`
-    fn row_to_member_with_user(&self, row: PgRow) -> Result<RoomMemberWithUser> {
+    fn row_to_member_with_user(row: &PgRow) -> Result<RoomMemberWithUser> {
         let role: RoomRole = row.try_get("role")?;
         let status: MemberStatus = row.try_get("status")?;
 
@@ -1775,10 +1797,22 @@ impl RoomMemberRepository {
             username: row.try_get("username")?,
             role,
             status,
-            added_permissions: row.try_get::<i64, _>("added_permissions")? as u64,
-            removed_permissions: row.try_get::<i64, _>("removed_permissions")? as u64,
-            admin_added_permissions: row.try_get::<i64, _>("admin_added_permissions")? as u64,
-            admin_removed_permissions: row.try_get::<i64, _>("admin_removed_permissions")? as u64,
+            added_permissions: db_permission_i64_to_u64(
+                row.try_get::<i64, _>("added_permissions")?,
+                "added_permissions",
+            )?,
+            removed_permissions: db_permission_i64_to_u64(
+                row.try_get::<i64, _>("removed_permissions")?,
+                "removed_permissions",
+            )?,
+            admin_added_permissions: db_permission_i64_to_u64(
+                row.try_get::<i64, _>("admin_added_permissions")?,
+                "admin_added_permissions",
+            )?,
+            admin_removed_permissions: db_permission_i64_to_u64(
+                row.try_get::<i64, _>("admin_removed_permissions")?,
+                "admin_removed_permissions",
+            )?,
             joined_at: row.try_get("joined_at")?,
             is_online: false, // Will be populated by connection tracking
             is_active: true,  // Default; overridden by callers that have membership status info

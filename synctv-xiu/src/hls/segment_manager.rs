@@ -341,7 +341,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(storage.key_count().await, 2);
+        assert_eq!(storage.key_count(), 2);
 
         // Sleep
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -359,7 +359,7 @@ mod tests {
         let deleted = storage.cleanup(Duration::from_millis(50)).await.unwrap();
 
         assert_eq!(deleted, 2);
-        assert_eq!(storage.key_count().await, 0);
+        assert_eq!(storage.key_count(), 0);
     }
 
     #[tokio::test]
@@ -477,7 +477,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(storage.key_count().await, 5);
+        assert_eq!(storage.key_count(), 5);
 
         // Enforce max 3 segments
         let deleted = storage
@@ -486,7 +486,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(deleted, 2);
-        assert_eq!(storage.key_count().await, 3);
+        assert_eq!(storage.key_count(), 3);
 
         // Oldest two (seg_0, seg_1) should be deleted
         assert!(!storage.exists("live", "room_123", "seg_0").await.unwrap());
@@ -513,7 +513,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(deleted, 0);
-        assert_eq!(storage.key_count().await, 1);
+        assert_eq!(storage.key_count(), 1);
     }
 
     /// M2: Test list_streams returns all distinct app/stream pairs

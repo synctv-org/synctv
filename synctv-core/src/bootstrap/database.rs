@@ -95,15 +95,17 @@ pub async fn init_database_with_cancel(
                     }
                     _ = ticker.tick() => {}
                 }
-                let size = i64::from(pool_clone.size());
-                let idle = pool_clone.num_idle() as i64;
-                crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(size - idle);
-                crate::metrics::database::DB_CONNECTIONS_IDLE.set(idle);
-                let max = crate::metrics::database::DB_POOL_SIZE_MAX.get();
+                let size = pool_clone.size();
+                let idle = u32::try_from(pool_clone.num_idle()).unwrap_or(u32::MAX);
+                let active = size.saturating_sub(idle);
+                crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(i64::from(active));
+                crate::metrics::database::DB_CONNECTIONS_IDLE.set(i64::from(idle));
+                let max = u32::try_from(crate::metrics::database::DB_POOL_SIZE_MAX.get())
+                    .unwrap_or_default();
                 if max > 0 {
                     crate::metrics::database::DB_POOL_UTILIZATION
                         .with_label_values(&["main"])
-                        .set((size - idle) as f64 / max as f64);
+                        .set(f64::from(active) / f64::from(max));
                 }
             }
         })

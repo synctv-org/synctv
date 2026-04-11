@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
+use url::{Host, Url};
 
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {}
@@ -84,20 +85,96 @@ impl DirectUrlProvider {
     /// extension. This avoids false positives from `contains()` matching
     /// against query parameters or hostnames (e.g., "cdn.flv.com/video").
     fn detect_format(url: &str) -> String {
-        let path = url::Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
+        let path = Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
 
         let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
         match ext.as_str() {
             "m3u8" => "m3u8",
             "flv" => "flv",
-            "mp4" | "m4v" => "mp4",
+            "mp4" | "m4v" | "mov" => "mp4",
             "mkv" => "mkv",
             "webm" => "webm",
             "avi" => "avi",
-            "mov" => "mp4",
             _ => "video",
         }
         .to_string()
+    }
+
+    fn validate_source_url(url: &str) -> Result<Url, ProviderError> {
+        let parsed = Url::parse(url).map_err(|error| {
+            ProviderError::InvalidConfig(format!("DirectUrl URL is invalid: {error}"))
+        })?;
+        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+
+        if guard.acl().is_scheme_allowed(parsed.scheme()).is_denied() {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl only supports http:// and https:// schemes".to_string(),
+            ));
+        }
+
+        match parsed.host() {
+            Some(Host::Domain(host)) if guard.is_host_blocked(host) => {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl host '{host}' is blocked by SSRF policy"
+                )));
+            }
+            Some(Host::Ipv4(ip)) if guard.is_ip_blocked(&ip.into()) => {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl IP '{ip}' is blocked by SSRF policy"
+                )));
+            }
+            Some(Host::Ipv6(ip)) if guard.is_ip_blocked(&ip.into()) => {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl IP '{ip}' is blocked by SSRF policy"
+                )));
+            }
+            Some(_) => {}
+            None => {
+                return Err(ProviderError::InvalidConfig(
+                    "DirectUrl URL must include a host".to_string(),
+                ));
+            }
+        }
+
+        if let Some(port) = parsed.port_or_known_default() {
+            if guard.acl().is_port_allowed(port).is_denied() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl port '{port}' is not allowed"
+                )));
+            }
+        }
+
+        Ok(parsed)
+    }
+
+    fn playback_cache_key(config: &DirectUrlSourceConfig) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(config.url.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(if config.proxy { b"1" } else { b"0" });
+        hasher.update(b"\0");
+
+        let mut header_entries: Vec<_> = config.headers.iter().collect();
+        header_entries.sort_unstable_by(|(left_name, left_value), (right_name, right_value)| {
+            left_name
+                .cmp(right_name)
+                .then_with(|| left_value.cmp(right_value))
+        });
+
+        for (name, value) in header_entries {
+            hasher.update(name.as_bytes());
+            hasher.update(b"=");
+            hasher.update(value.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        let cache_key_suffix: String = format!("{:x}", hasher.finalize())
+            .chars()
+            .take(16)
+            .collect();
+        format!("playback:{cache_key_suffix}")
     }
 }
 
@@ -160,18 +237,39 @@ fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult
         .into_iter()
         .map(|(mode_name, info)| {
             let format = info.format.clone();
+            let default_url = info
+                .urls
+                .get(info.default_url_index)
+                .or_else(|| info.urls.first());
+            let headers = default_url
+                .map(|url| url.headers.clone())
+                .unwrap_or_default();
+            let expires_at =
+                default_url.and_then(|url| url.expire_at.as_ref().map(chrono::DateTime::timestamp));
             let subtitles = info
                 .subtitles
                 .into_iter()
                 .map(|sub| super::traits::SubtitleTrack {
-                    language: sub.language,
-                    name: sub.name,
+                    headers: sub
+                        .urls
+                        .get(sub.default_url_index)
+                        .or_else(|| sub.urls.first())
+                        .map(|url| url.headers.clone())
+                        .unwrap_or_default(),
                     url: sub
                         .urls
                         .get(sub.default_url_index)
+                        .or_else(|| sub.urls.first())
                         .map(|url| url.url.clone())
                         .unwrap_or_default(),
-                    format: format.clone(),
+                    format: sub
+                        .urls
+                        .get(sub.default_url_index)
+                        .or_else(|| sub.urls.first())
+                        .map(|url| url.format.clone())
+                        .unwrap_or_default(),
+                    language: sub.language,
+                    name: sub.name,
                 })
                 .collect();
             (
@@ -179,9 +277,9 @@ fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult
                 PlaybackInfo {
                     urls: info.urls.into_iter().map(|url| url.url).collect(),
                     format,
-                    headers: std::collections::HashMap::new(),
+                    headers,
                     subtitles,
-                    expires_at: None,
+                    expires_at,
                     cors_proxy_required: false,
                 },
             )
@@ -200,6 +298,7 @@ fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult
 // Supported sub_paths (same pattern as other providers):
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 with URL rewriting
+// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
 #[async_trait]
 impl ProviderProxy for DirectUrlProvider {
     async fn resolve_proxy(
@@ -210,6 +309,77 @@ impl ProviderProxy for DirectUrlProvider {
 
         if let Some((version, rest)) = sub_path.split_once('/') {
             let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+
+            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            subtitle_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let subtitle = playback_info
+                    .subtitles
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(ProxyAction::FetchAndForward {
+                    url: subtitle.url.clone(),
+                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                });
+            }
+
+            if let Some(stream_path) = rest.strip_prefix("stream/") {
+                let (playback_info, index_str) =
+                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(mode_name)
+                                .ok_or(ProviderError::NotFound)?,
+                            index_str,
+                        )
+                    } else {
+                        (
+                            versioned
+                                .result
+                                .playback_infos
+                                .get(&versioned.result.default_mode)
+                                .ok_or(ProviderError::NotFound)?,
+                            stream_path,
+                        )
+                    };
+                let Ok(index) = index_str.parse::<usize>() else {
+                    return Err(ProviderError::NotFound);
+                };
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(ProxyAction::FetchAndForward {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
+                });
+            }
+
             let default_info = versioned
                 .result
                 .playback_infos
@@ -263,12 +433,7 @@ impl MediaProvider for DirectUrlProvider {
     ) -> Result<(), ProviderError> {
         let config = DirectUrlSourceConfig::try_from(source_config)?;
 
-        // Validate URL scheme: only allow http(s)
-        if !config.url.starts_with("http://") && !config.url.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(
-                "DirectUrl only supports http:// and https:// schemes".to_string(),
-            ));
-        }
+        Self::validate_source_url(&config.url)?;
 
         // Validate custom headers: reject forbidden header names that could be
         // used for request smuggling or credential injection.
@@ -287,16 +452,9 @@ impl MediaProvider for DirectUrlProvider {
         }
 
         let config = DirectUrlSourceConfig::try_from(source_config)?;
+        Self::validate_source_url(&config.url)?;
 
-        // Build cache key from URL hash
-        let cache_key = {
-            use sha2::{Digest, Sha256};
-            let url_hash: String = format!("{:x}", Sha256::digest(config.url.as_bytes()))
-                .chars()
-                .take(16)
-                .collect();
-            format!("playback:{url_hash}")
-        };
+        let cache_key = Self::playback_cache_key(&config);
         let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
 
         let store = _ctx.store.as_ref();
@@ -309,17 +467,6 @@ impl MediaProvider for DirectUrlProvider {
                         .await;
                 }
             }
-        }
-
-        // Validate URL scheme: only allow http(s) and rtmp(s)
-        if !config.url.starts_with("http://")
-            && !config.url.starts_with("https://")
-            && !config.url.starts_with("rtmp://")
-            && !config.url.starts_with("rtmps://")
-        {
-            return Err(ProviderError::InvalidConfig(
-                "URL must use http, https, rtmp, or rtmps scheme".to_string(),
-            ));
         }
 
         let format = Self::detect_format(&config.url);
@@ -360,6 +507,8 @@ impl MediaProvider for DirectUrlProvider {
 mod tests {
     use super::*;
     use crate::models::media::{PlaybackInfo as ModelPlaybackInfo, PlaybackUrl};
+    use crate::provider::store::InMemoryProviderStore;
+    use std::sync::Arc;
 
     #[test]
     fn test_detect_format() {
@@ -561,5 +710,202 @@ mod tests {
         );
         assert_eq!(result.playback_infos["direct"].format, "mp4");
         assert_eq!(result.metadata.get("filename"), Some(&json!("video.mp4")));
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_embedded_result_preserves_default_transport_fields() {
+        let provider = DirectUrlProvider::new();
+        let source_config = serde_json::json!({
+            "playback_infos": {
+                "direct": ModelPlaybackInfo {
+                    urls: vec![
+                        crate::models::media::PlaybackUrl {
+                            name: "backup".to_string(),
+                            url: "https://example.com/video-backup.mp4".to_string(),
+                            headers: HashMap::from([(
+                                "Authorization".to_string(),
+                                "Bearer backup".to_string(),
+                            )]),
+                            expire_at: Some(
+                                chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                                    .expect("test timestamp should be valid"),
+                            ),
+                            metadata: None,
+                        },
+                        crate::models::media::PlaybackUrl {
+                            name: "primary".to_string(),
+                            url: "https://example.com/video-primary.mp4".to_string(),
+                            headers: HashMap::from([(
+                                "Authorization".to_string(),
+                                "Bearer primary".to_string(),
+                            )]),
+                            expire_at: Some(
+                                chrono::DateTime::from_timestamp(1_700_000_123, 0)
+                                    .expect("test timestamp should be valid"),
+                            ),
+                            metadata: None,
+                        },
+                    ],
+                    default_url_index: 1,
+                    subtitles: vec![crate::models::media::Subtitle {
+                        name: "中文".to_string(),
+                        language: "zh-CN".to_string(),
+                        urls: vec![
+                            crate::models::media::SubtitleUrl {
+                                name: "backup".to_string(),
+                                url: "https://example.com/subtitle.json".to_string(),
+                                headers: HashMap::new(),
+                                format: "json".to_string(),
+                            },
+                            crate::models::media::SubtitleUrl {
+                                name: "default".to_string(),
+                                url: "https://example.com/subtitle.ass".to_string(),
+                                headers: HashMap::new(),
+                                format: "ass".to_string(),
+                            },
+                        ],
+                        default_url_index: 1,
+                    }],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    format: "mp4".to_string(),
+                }
+            },
+            "default_mode": "direct",
+            "metadata": {
+                "filename": "video-primary.mp4"
+            }
+        });
+
+        let result = provider
+            .generate_playback(&ProviderContext::new("synctv"), &source_config)
+            .await
+            .expect("embedded playback result source config should be supported");
+        let direct = &result.playback_infos["direct"];
+
+        assert_eq!(
+            direct.headers.get("Authorization").map(String::as_str),
+            Some("Bearer primary")
+        );
+        assert_eq!(direct.expires_at, Some(1_700_000_123));
+        assert_eq!(direct.subtitles[0].url, "https://example.com/subtitle.ass");
+        assert_eq!(direct.subtitles[0].format, "ass");
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_rejects_rtmp_urls() {
+        let provider = DirectUrlProvider::new();
+        let source_config = serde_json::json!({
+            "url": "rtmp://live.example.com/app/stream-key"
+        });
+
+        let err = provider
+            .generate_playback(&ProviderContext::new("synctv"), &source_config)
+            .await
+            .expect_err("DirectUrl must reject RTMP URLs");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("DirectUrl only supports http:// and https:// schemes")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_rejects_blocked_hosts_and_ips() {
+        let provider = DirectUrlProvider::new();
+        let ctx = ProviderContext::new("synctv");
+
+        for url in [
+            "http://localhost/video.mp4",
+            "http://127.0.0.1/video.mp4",
+            "http://[::1]/video.mp4",
+        ] {
+            let err = provider
+                .validate_source_config(&ctx, &json!({ "url": url }))
+                .await
+                .expect_err("DirectUrl must reject blocked hosts and IP literals");
+
+            assert!(matches!(
+                err,
+                ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_rejects_disallowed_ports() {
+        let provider = DirectUrlProvider::new();
+        let err = provider
+            .validate_source_config(
+                &ProviderContext::new("synctv"),
+                &json!({ "url": "http://example.com:8080/video.mp4" }),
+            )
+            .await
+            .expect_err("DirectUrl must reject ports outside the SSRF allowlist");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg) if msg.contains("port '8080' is not allowed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_rejects_blocked_hosts() {
+        let provider = DirectUrlProvider::new();
+        let err = provider
+            .generate_playback(
+                &ProviderContext::new("synctv"),
+                &json!({ "url": "http://localhost/video.mp4" }),
+            )
+            .await
+            .expect_err("DirectUrl playback must reject blocked hosts even for legacy data");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_cache_key_includes_headers() {
+        let provider = DirectUrlProvider::new();
+        let store = Arc::new(InMemoryProviderStore::new(128));
+        let ctx = ProviderContext::new("synctv").with_store(store);
+
+        let first = provider
+            .generate_playback(
+                &ctx,
+                &json!({
+                    "url": "https://cdn.example.com/video.mp4",
+                    "headers": {
+                        "Referer": "https://site-a.example"
+                    }
+                }),
+            )
+            .await
+            .expect("first playback should be cached");
+
+        let second = provider
+            .generate_playback(
+                &ctx,
+                &json!({
+                    "url": "https://cdn.example.com/video.mp4",
+                    "headers": {
+                        "Referer": "https://site-b.example"
+                    }
+                }),
+            )
+            .await
+            .expect("second playback should not reuse mismatched cached headers");
+
+        assert_eq!(
+            first.playback_infos["direct"].headers.get("Referer"),
+            Some(&"https://site-a.example".to_string())
+        );
+        assert_eq!(
+            second.playback_infos["direct"].headers.get("Referer"),
+            Some(&"https://site-b.example".to_string())
+        );
     }
 }

@@ -13,8 +13,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+use synctv_cluster::sync::ClusterEvent;
 use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{PermissionBits, RoomId, UserId};
 
 // ============================================================================
 // Test: ClusterManager works in single-node mode (no Redis)
@@ -84,10 +86,6 @@ async fn test_local_subscribe_and_broadcast() {
         .subscribe(room_id.clone(), user_id.clone())
         .await
         .expect("subscribe should succeed");
-
-    // Broadcast a chat message
-    use chrono::Utc;
-    use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
@@ -167,10 +165,6 @@ async fn test_multiple_subscribers_receive_broadcasts() {
             .expect("subscribe should succeed");
         subscribers.push((rx, conn_id));
     }
-
-    // Broadcast a message
-    use chrono::Utc;
-    use synctv_cluster::sync::ClusterEvent;
 
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
@@ -284,7 +278,7 @@ impl LocalMessageBroadcaster {
     }
 
     /// Broadcast an event to room subscribers
-    pub fn broadcast(&self, room_id: &RoomId, event: synctv_cluster::sync::ClusterEvent) -> usize {
+    pub fn broadcast(&self, room_id: &RoomId, event: &synctv_cluster::sync::ClusterEvent) -> usize {
         self.message_hub.broadcast(room_id, event)
     }
 
@@ -309,10 +303,6 @@ async fn test_local_message_broadcaster_basic() {
     // Subscribe
     let (mut rx, conn_id) = broadcaster.subscribe(room_id.clone(), user_id).await;
 
-    // Broadcast
-    use chrono::Utc;
-    use synctv_cluster::sync::ClusterEvent;
-
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
@@ -324,7 +314,7 @@ async fn test_local_message_broadcaster_basic() {
         color: None,
     };
 
-    let sent = broadcaster.broadcast(&room_id, event);
+    let sent = broadcaster.broadcast(&room_id, &event);
     assert_eq!(sent, 1, "Should send to 1 subscriber");
 
     // Receive
@@ -359,10 +349,6 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
         conn_ids.push(conn_id);
     }
 
-    // Broadcast
-    use chrono::Utc;
-    use synctv_cluster::sync::ClusterEvent;
-
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),
@@ -374,7 +360,7 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
         color: None,
     };
 
-    let sent = broadcaster.broadcast(&room_id, event);
+    let sent = broadcaster.broadcast(&room_id, &event);
     assert_eq!(sent, 3, "Should send to all 3 subscribers");
 
     // All should receive
@@ -495,11 +481,6 @@ async fn test_local_cluster_manager_supports_room_operations() {
         .subscribe(room_id.clone(), user_id.clone())
         .await
         .expect("subscribe should succeed");
-
-    // Test broadcast
-    use chrono::Utc;
-    use synctv_cluster::sync::ClusterEvent;
-    use synctv_core::models::PermissionBits;
 
     let event = ClusterEvent::UserJoined {
         event_id: synctv_common::snanoid!(16),

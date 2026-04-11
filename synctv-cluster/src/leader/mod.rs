@@ -335,6 +335,7 @@ impl<'a> LeaderRuntimeBuilder<'a> {
         }
     }
 
+    #[cfg(feature = "k8s")]
     pub async fn build(self) -> anyhow::Result<AnyLeaderElector> {
         if !self.cluster_enabled {
             return Err(anyhow::anyhow!(
@@ -375,6 +376,45 @@ impl<'a> LeaderRuntimeBuilder<'a> {
                 Ok(AnyLeaderElector::K8s(elector))
             }
             #[cfg(not(feature = "k8s"))]
+            "k8s_lease" => Err(anyhow::anyhow!(
+                "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
+                 Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
+            )),
+            "redis" => {
+                if self.redis_is_sentinel {
+                    return Err(anyhow::anyhow!(
+                        "cluster.leader_election_mode='redis' is not supported with Redis Sentinel. \
+                         Sentinel failover can create split-brain leader windows; use \
+                         cluster.leader_election_mode='k8s_lease' or a non-Sentinel Redis deployment."
+                    ));
+                }
+                let redis_conn = self.redis_conn.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cluster.enabled=true requires Redis-backed leader election wiring"
+                    )
+                })?;
+                Ok(AnyLeaderElector::Redis(LeaderElector::new(
+                    redis_conn,
+                    self.node_id.to_string(),
+                    self.redis_key_prefix,
+                    self.redis_is_sentinel,
+                )))
+            }
+            other => Err(anyhow::anyhow!(
+                "cluster.leader_election_mode is validated before startup: {other}"
+            )),
+        }
+    }
+
+    #[cfg(not(feature = "k8s"))]
+    pub fn build(self) -> anyhow::Result<AnyLeaderElector> {
+        if !self.cluster_enabled {
+            return Err(anyhow::anyhow!(
+                "LeaderRuntimeBuilder is cluster-only; standalone mode must use AlwaysLeader directly"
+            ));
+        }
+
+        match self.leader_mode {
             "k8s_lease" => Err(anyhow::anyhow!(
                 "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
                  Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
@@ -525,13 +565,8 @@ impl LeaderElector {
         key_prefix: &str,
         is_sentinel: bool,
     ) -> Self {
-        Self::with_config(
-            redis_conn,
-            identity,
-            LeaderElectorConfig::default(),
-            key_prefix,
-            is_sentinel,
-        )
+        let config = LeaderElectorConfig::default();
+        Self::with_config(redis_conn, identity, &config, key_prefix, is_sentinel)
     }
 
     /// Create a new leader elector with custom configuration.
@@ -547,7 +582,7 @@ impl LeaderElector {
     pub fn with_config(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
-        config: LeaderElectorConfig,
+        config: &LeaderElectorConfig,
         key_prefix: &str,
         is_sentinel: bool,
     ) -> Self {
@@ -966,7 +1001,8 @@ impl LeaderElector {
     fn record_election_failure(&self) {
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
         // Update metrics for monitoring
-        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(failures as i64);
+        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES
+            .set(i64::try_from(failures).unwrap_or(i64::MAX));
 
         // Check for prolonged outage
         if failures == PROLONGED_OUTAGE_FAILURE_THRESHOLD {
@@ -1041,7 +1077,8 @@ impl LeaderElector {
         // Update metrics
         synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(i64::from(leader));
         if let Some(epoch) = gained_epoch {
-            synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(epoch as i64);
+            synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH
+                .set(i64::try_from(epoch).unwrap_or(i64::MAX));
         }
         // Reset consecutive failures on successful leadership (gain or maintained)
         if leader {
@@ -1090,14 +1127,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_rejects_standalone_mode() {
-        let error =
-            match LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
+        #[cfg(feature = "k8s")]
+        let Err(error) =
+            LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
                 .build()
                 .await
-            {
-                Ok(_) => panic!("standalone mode must use AlwaysLeader directly"),
-                Err(error) => error,
-            };
+        else {
+            panic!("standalone mode must use AlwaysLeader directly");
+        };
+
+        #[cfg(not(feature = "k8s"))]
+        let Err(error) =
+            LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false).build()
+        else {
+            panic!("standalone mode must use AlwaysLeader directly");
+        };
 
         assert!(
             error
@@ -1109,12 +1153,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_rejects_redis_mode_with_sentinel() {
-        let error = match LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true)
+        #[cfg(feature = "k8s")]
+        let Err(error) = LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true)
             .build()
             .await
-        {
-            Ok(_) => panic!("sentinel-backed redis leader election must fail closed"),
-            Err(error) => error,
+        else {
+            panic!("sentinel-backed redis leader election must fail closed");
+        };
+
+        #[cfg(not(feature = "k8s"))]
+        let Err(error) =
+            LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true).build()
+        else {
+            panic!("sentinel-backed redis leader election must fail closed");
         };
 
         assert!(

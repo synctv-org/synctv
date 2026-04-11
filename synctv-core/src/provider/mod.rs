@@ -46,6 +46,15 @@ pub use registry::*;
 pub use store::*;
 pub use traits::*;
 
+pub(crate) fn subtitle_headers_for_proxy(
+    playback_headers: &std::collections::HashMap<String, String>,
+    subtitle: &SubtitleTrack,
+) -> std::collections::HashMap<String, String> {
+    let mut merged = playback_headers.clone();
+    merged.extend(subtitle.headers.clone());
+    merged
+}
+
 // Re-export providers
 pub use alist::AlistProvider;
 pub use bilibili::BilibiliProvider;
@@ -201,35 +210,56 @@ pub fn sign_playback_urls(
             continue;
         }
 
-        // Determine the action based on the mode/format
-        let action = if info.format == "m3u8" || mode_name.contains("hls") {
-            "m3u8"
+        if info.format == "mpd" {
+            info.urls = info
+                .urls
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    crate::service::proxy_signature::build_signed_proxy_url(
+                        provider_name,
+                        version,
+                        &format!("stream/{mode_name}/{index}"),
+                        signing_key,
+                        room_id,
+                        user_id,
+                        expires_at,
+                    )
+                })
+                .collect();
+            info.headers.clear();
+            info.cors_proxy_required = false;
         } else {
-            "stream"
-        };
+            // Determine the action based on the mode/format
+            let action = if info.format == "m3u8" || mode_name.contains("hls") {
+                "m3u8"
+            } else {
+                "stream"
+            };
 
-        let signed_url = crate::service::proxy_signature::build_signed_proxy_url(
-            provider_name,
-            version,
-            action,
-            signing_key,
-            room_id,
-            user_id,
-            expires_at,
-        );
+            let signed_url = crate::service::proxy_signature::build_signed_proxy_url(
+                provider_name,
+                version,
+                action,
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
 
-        // Replace the first URL with the signed proxy URL
-        info.urls = vec![signed_url];
-        // Proxy handles headers — client doesn't need them
-        info.headers.clear();
-        info.cors_proxy_required = false;
+            // Replace the first URL with the signed proxy URL
+            info.urls = vec![signed_url];
+            // Proxy handles headers — client doesn't need them
+            info.headers.clear();
+            info.cors_proxy_required = false;
+        }
 
         // Also sign subtitle URLs
         for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
             subtitle.url = crate::service::proxy_signature::build_signed_proxy_url(
                 provider_name,
                 version,
-                &format!("subtitle/{idx}"),
+                &format!("subtitle/{mode_name}/{idx}"),
                 signing_key,
                 room_id,
                 user_id,
@@ -268,7 +298,9 @@ const fn signed_proxy_playback_requested(ctx: &ProviderContext<'_>) -> bool {
 }
 
 fn remaining_versioned_ttl(expires_at: i64) -> std::time::Duration {
-    let remaining_secs = (expires_at - chrono::Utc::now().timestamp()).max(1) as u64;
+    let remaining_secs = (expires_at - chrono::Utc::now().timestamp())
+        .max(1)
+        .cast_unsigned();
     std::time::Duration::from_secs(remaining_secs)
 }
 
@@ -327,7 +359,7 @@ pub async fn finalize_versioned_playback(
     let versioned = VersionedPlayback {
         version: synctv_common::snanoid!(16),
         result: result.clone(),
-        expires_at: chrono::Utc::now().timestamp() + cache_ttl.as_secs() as i64,
+        expires_at: chrono::Utc::now().timestamp() + cache_ttl.as_secs().cast_signed(),
     };
 
     if let Some(store) = ctx.store.as_ref() {
@@ -458,6 +490,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_sign_playback_urls_signs_mpd_streams_with_indexed_proxy_paths() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let mut result = PlaybackResult {
+            playback_infos: std::collections::HashMap::from([(
+                "dash".to_string(),
+                PlaybackInfo {
+                    urls: vec![
+                        "https://cdn.example.com/video-1080.m4s".to_string(),
+                        "https://cdn.example.com/video-720.m4s".to_string(),
+                    ],
+                    format: "mpd".to_string(),
+                    headers: std::collections::HashMap::from([(
+                        "Referer".to_string(),
+                        "https://www.bilibili.com".to_string(),
+                    )]),
+                    subtitles: vec![SubtitleTrack {
+                        language: "zh-CN".to_string(),
+                        name: "中文".to_string(),
+                        url: "https://cdn.example.com/subtitle.json".to_string(),
+                        headers: std::collections::HashMap::new(),
+                        format: "json".to_string(),
+                    }],
+                    expires_at: None,
+                    cors_proxy_required: true,
+                },
+            )]),
+            default_mode: "dash".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        sign_playback_urls(
+            &mut result,
+            "bilibili",
+            "ver-1",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        let dash = &result.playback_infos["dash"];
+        assert_eq!(dash.urls.len(), 2);
+        assert!(
+            dash.urls[0].starts_with("/api/providers/proxy/bilibili/ver-1/stream%2Fdash%2F0?"),
+            "first DASH stream should use an indexed signed proxy URL"
+        );
+        assert!(
+            dash.urls[1].starts_with("/api/providers/proxy/bilibili/ver-1/stream%2Fdash%2F1?"),
+            "second DASH stream should use an indexed signed proxy URL"
+        );
+        assert!(dash.headers.is_empty(), "proxy should own DASH headers");
+        assert!(
+            !dash.cors_proxy_required,
+            "signed DASH proxy should clear the client-side CORS proxy requirement"
+        );
+        assert!(
+            dash.subtitles[0]
+                .url
+                .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle%2Fdash%2F0?"),
+            "subtitle URLs may still use the signed proxy contract"
+        );
+    }
+
     #[tokio::test]
     async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
@@ -544,5 +640,48 @@ mod tests {
             .expect("valid signed query");
         assert_eq!(claims.user_id, "user-1");
         assert_eq!(claims.room_id, "room-1");
+    }
+
+    #[test]
+    fn test_subtitle_headers_for_proxy_merges_playback_and_subtitle_headers() {
+        let playback_headers = std::collections::HashMap::from([
+            (
+                "Authorization".to_string(),
+                "Bearer playback-token".to_string(),
+            ),
+            ("Referer".to_string(), "https://player.example".to_string()),
+        ]);
+        let subtitle = SubtitleTrack {
+            language: "en".to_string(),
+            name: "English".to_string(),
+            url: "https://cdn.example.com/subtitle.vtt".to_string(),
+            headers: std::collections::HashMap::from([
+                (
+                    "X-Subtitle-Token".to_string(),
+                    "subtitle-secret".to_string(),
+                ),
+                (
+                    "Referer".to_string(),
+                    "https://subtitle.example".to_string(),
+                ),
+            ]),
+            format: "vtt".to_string(),
+        };
+
+        let headers = subtitle_headers_for_proxy(&playback_headers, &subtitle);
+
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&"Bearer playback-token".to_string())
+        );
+        assert_eq!(
+            headers.get("X-Subtitle-Token"),
+            Some(&"subtitle-secret".to_string())
+        );
+        assert_eq!(
+            headers.get("Referer"),
+            Some(&"https://subtitle.example".to_string()),
+            "subtitle-specific headers should override playback defaults"
+        );
     }
 }

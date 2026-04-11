@@ -117,7 +117,7 @@ pub struct ProviderInstance {
     /// Skip TLS certificate verification (UNSAFE, dev/test only)
     pub insecure_tls: bool,
 
-    /// Supported media provider types (e.g., ["bilibili", "alist", "emby"])
+    /// Supported media provider types (e.g., `["bilibili", "alist", "emby"]`)
     pub providers: Vec<String>,
 
     /// Whether this instance is enabled

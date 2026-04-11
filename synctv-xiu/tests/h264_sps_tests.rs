@@ -62,7 +62,7 @@ fn test_sps_invalid_chroma_format_idc_returns_error() {
     // seq_parameter_set_id = 0 (ue(v) = 1)
     // chroma_format_idc = 4 (ue(v) = 00101)
     // Combined bits: 1 00101 = 100101 = 0x25 as a byte
-    data.extend_from_slice(&[0b10010100]); // 1 for sps_id=0, then 00101 for chroma_format_idc=4
+    data.extend_from_slice(&[0b1001_0100]); // 1 for sps_id=0, then 00101 for chroma_format_idc=4
 
     let reader = BytesReader::new(data);
     let mut parser = SpsParser::new(reader);

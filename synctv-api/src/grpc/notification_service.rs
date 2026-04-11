@@ -10,7 +10,7 @@ use synctv_core::models::id::UserId;
 
 use crate::impls::notification::{
     build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
-    notification_to_proto,
+    notification_counts_to_proto, notification_to_proto,
 };
 use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
@@ -34,7 +34,7 @@ impl NotificationServiceImpl {
 
     /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor)
     #[allow(clippy::result_large_err)]
-    fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
+    fn get_user_id(request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
         super::interceptors::extract_user_id(request)
     }
 }
@@ -48,13 +48,15 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<ListNotificationsRequest>,
     ) -> Result<Response<ListNotificationsResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
 
         let result = self
             .notification_api
             .list_notifications(&user_id, req)
             .await
+            .map_err(map_api_error)?;
+        let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)
             .map_err(map_api_error)?;
 
         Ok(Response::new(ListNotificationsResponse {
@@ -63,8 +65,8 @@ impl NotificationService for NotificationServiceImpl {
                 .into_iter()
                 .map(notification_to_proto)
                 .collect(),
-            total: result.total as i32,
-            unread_count: result.unread_count as i32,
+            total,
+            unread_count,
         }))
     }
 
@@ -72,10 +74,10 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<GetNotificationRequest>,
     ) -> Result<Response<GetNotificationResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_id = build_get_notification_request(req).map_err(map_api_error)?;
+        let notification_id = build_get_notification_request(&req).map_err(map_api_error)?;
 
         let notification = self
             .notification_api
@@ -92,10 +94,10 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<MarkAsReadRequest>,
     ) -> Result<Response<MarkAsReadResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_ids = build_mark_as_read_request(req).map_err(map_api_error)?;
+        let notification_ids = build_mark_as_read_request(&req).map_err(map_api_error)?;
 
         self.notification_api
             .mark_as_read(&user_id, notification_ids)
@@ -109,7 +111,7 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<MarkAllAsReadRequest>,
     ) -> Result<Response<MarkAllAsReadResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
 
         let before = req
@@ -132,10 +134,10 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<DeleteNotificationRequest>,
     ) -> Result<Response<DeleteNotificationResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
         let req = request.into_inner();
 
-        let notification_id = build_delete_notification_request(req).map_err(map_api_error)?;
+        let notification_id = build_delete_notification_request(&req).map_err(map_api_error)?;
 
         self.notification_api
             .delete_notification(&user_id, notification_id)
@@ -149,7 +151,7 @@ impl NotificationService for NotificationServiceImpl {
         &self,
         request: Request<DeleteAllReadRequest>,
     ) -> Result<Response<DeleteAllReadResponse>, Status> {
-        let user_id = self.get_user_id(&request)?;
+        let user_id = Self::get_user_id(&request)?;
 
         self.notification_api
             .delete_all_read(&user_id)

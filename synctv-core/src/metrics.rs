@@ -2032,7 +2032,7 @@ mod tests {
             .with_label_values(&["timeout"])
             .inc();
 
-        cluster::NODE_LAST_HEARTBEAT.set(1234567890.0);
+        cluster::NODE_LAST_HEARTBEAT.set(1_234_567_890.0);
 
         let output = gather_metrics();
         assert!(

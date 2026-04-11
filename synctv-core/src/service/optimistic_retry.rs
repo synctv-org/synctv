@@ -61,7 +61,6 @@ where
                 let backoff = base_backoff_ms * (1 << attempt);
                 let jitter = rand::rng().random_range(0..base_backoff_ms);
                 tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                continue;
             }
             Err(Error::OptimisticLockConflict) => {
                 // Final attempt exhausted
@@ -111,7 +110,6 @@ where
                     let backoff = base_backoff_ms * (1 << attempt);
                     let jitter = rand::rng().random_range(0..base_backoff_ms);
                     tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
                 }
                 Err(Error::OptimisticLockConflict) => {
                     return Err(Error::Internal(error_msg.to_string()));

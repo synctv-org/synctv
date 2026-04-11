@@ -92,7 +92,9 @@ impl RemoteProviderManager {
         match err {
             crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
             crate::Error::Timeout(msg) => ProviderError::NetworkError(msg),
-            crate::Error::ServiceUnavailable(msg) => ProviderError::ApiError(msg),
+            crate::Error::ServiceUnavailable(msg) | crate::Error::RateLimited(msg) => {
+                ProviderError::ApiError(msg)
+            }
             crate::Error::Database(error) => {
                 tracing::warn!(error = %error, "Provider configuration store unavailable");
                 ProviderError::ApiError(
@@ -126,7 +128,6 @@ impl RemoteProviderManager {
             crate::Error::AlreadyExists(msg) => ProviderError::Internal(format!(
                 "Unexpected already exists error while resolving provider instance: {msg}"
             )),
-            crate::Error::RateLimited(msg) => ProviderError::ApiError(msg),
             crate::Error::Internal(msg) => ProviderError::Internal(msg),
             crate::Error::OptimisticLockConflict => {
                 ProviderError::Internal("Optimistic lock conflict".to_string())
@@ -1401,7 +1402,7 @@ impl RemoteProviderManager {
             }
 
             // Try to get channel from cache or create it
-            let connection = if let Some(connection) = self.get(&config.name).await { connection } else {
+            let Some(connection) = self.get(&config.name).await else {
                 results.insert(config.name, false);
                 continue;
             };

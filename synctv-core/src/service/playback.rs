@@ -33,6 +33,15 @@ pub struct SwitchPlaybackTarget {
     pub target: Vec<u8>,
 }
 
+#[derive(Debug)]
+enum NextTarget {
+    Static(crate::models::Media),
+    Dynamic {
+        playlist_id: PlaylistId,
+        target: Vec<u8>,
+    },
+}
+
 /// Result of a broadcast operation from `ClusterManager::broadcast`.
 ///
 /// Indicates whether the event was delivered to local subscribers and/or Redis.
@@ -549,7 +558,7 @@ impl PlaybackService {
     ///
     /// Returns `BroadcastResult` indicating whether the broadcast succeeded.
     /// Logs warnings on partial/complete failure for monitoring.
-    async fn broadcast_state_change(&self, state: &RoomPlaybackState) -> BroadcastResult {
+    fn broadcast_state_change(&self, state: &RoomPlaybackState) -> BroadcastResult {
         // Single broadcast path: cluster broadcaster handles both local delivery
         // (via the in-process message hub) and remote delivery (via Redis pub/sub).
         // Do NOT also call notification_service here — that would send the event
@@ -774,7 +783,7 @@ impl PlaybackService {
             .await?;
 
         // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -812,7 +821,7 @@ impl PlaybackService {
         match result {
             Ok(state) => {
                 // Cache invalidation is already handled inside update_state()
-                self.broadcast_state_change(&state).await;
+                self.broadcast_state_change(&state);
                 Ok(SeekResponse::success(state))
             }
             Err(error)
@@ -865,7 +874,7 @@ impl PlaybackService {
             .await?;
 
         // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -929,15 +938,6 @@ impl PlaybackService {
                 Some(s) => s,
                 None => self.playback_repo.create_or_get(room_id).await?,
             };
-
-            #[derive(Debug)]
-            enum NextTarget {
-                Static(crate::models::Media),
-                Dynamic {
-                    playlist_id: PlaylistId,
-                    target: Vec<u8>,
-                },
-            }
 
             let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
                 let playlist = self
@@ -1157,7 +1157,7 @@ impl PlaybackService {
                         "Auto-played next media"
                     );
 
-                    self.broadcast_state_change(&saved_state).await;
+                    self.broadcast_state_change(&saved_state);
                     return Ok(Some(saved_state));
                 }
                 Err(Error::OptimisticLockConflict) => {
@@ -1339,7 +1339,7 @@ impl PlaybackService {
         state: RoomPlaybackState,
     ) -> BroadcastResult {
         self.invalidate_playback_cache(&state.room_id).await;
-        self.broadcast_state_change(&state).await
+        self.broadcast_state_change(&state)
     }
 
     pub async fn reset_playback_for_creator(
@@ -1359,7 +1359,7 @@ impl PlaybackService {
                 "reset_playback_for_creator",
             )
             .await;
-            self.broadcast_state_change(state).await;
+            self.broadcast_state_change(state);
         }
 
         Ok(states)
@@ -1417,7 +1417,7 @@ impl PlaybackService {
                 })
                 .await?;
 
-            self.broadcast_state_change(&state).await;
+            self.broadcast_state_change(&state);
             return Ok(state);
         }
 
@@ -1478,9 +1478,9 @@ impl PlaybackService {
 
         let state = self
             .update_state(room_id.clone(), |state| {
-                state.playing_media_id = target.media_id.clone();
-                state.playing_playlist_id = target.playlist_id.clone();
-                state.target = target.target.clone();
+                state.playing_media_id.clone_from(&target.media_id);
+                state.playing_playlist_id.clone_from(&target.playlist_id);
+                state.target.clone_from(&target.target);
                 state.current_time = 0.0;
                 state.is_playing = true;
                 state.updated_at = chrono::Utc::now();
@@ -1489,7 +1489,7 @@ impl PlaybackService {
             .await?;
 
         // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -1518,7 +1518,7 @@ impl PlaybackService {
             })
             .await?;
 
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(state)
     }
 
@@ -1545,7 +1545,7 @@ impl PlaybackService {
             })
             .await?;
 
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(Some(state))
     }
 
@@ -1653,7 +1653,7 @@ impl PlaybackService {
             .await?;
 
         // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
+        self.broadcast_state_change(&state);
         Ok(state)
     }
 }
@@ -2153,6 +2153,10 @@ mod tests {
             }
         }
 
+        fn version_to_current_time(version: i64) -> f64 {
+            f64::from(i32::try_from(version).unwrap_or(i32::MAX)) * 10.0
+        }
+
         /// Test: When cache is empty, incoming state should be inserted
         #[tokio::test]
         async fn test_cache_insert_when_empty() {
@@ -2315,7 +2319,7 @@ mod tests {
             // Apply updates in non-monotonic order: v1, v5, v3, v7, v2
             let versions = [1i64, 5, 3, 7, 2];
             for v in versions {
-                let state = make_state(room_id, v, v as f64 * 10.0);
+                let state = make_state(room_id, v, version_to_current_time(v));
                 cache
                     .entry(room_id.to_string())
                     .and_upsert_with(|maybe_entry| {
@@ -2356,7 +2360,7 @@ mod tests {
                     let room_id = room_id.clone();
                     let cache = cache_clone.clone();
                     tokio::spawn(async move {
-                        let state = make_state(&room_id, v, v as f64 * 10.0);
+                        let state = make_state(&room_id, v, version_to_current_time(v));
                         cache
                             .entry(room_id.to_string())
                             .and_upsert_with(|maybe_entry| {

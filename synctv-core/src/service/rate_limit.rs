@@ -88,10 +88,7 @@ struct InMemoryGovernorLimiter {
 
 impl InMemoryGovernorLimiter {
     fn new() -> Self {
-        let cache = MokaCache::builder()
-            .max_capacity(64)
-            .time_to_idle(Duration::from_mins(10))
-            .build();
+        let cache = MokaCache::builder().max_capacity(64).build();
         Self {
             limiters: Arc::new(cache),
         }
@@ -174,7 +171,23 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
 fn current_timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn window_expire_seconds(window_seconds: u64) -> i64 {
+    i64::try_from(window_seconds.saturating_add(1)).unwrap_or(i64::MAX)
+}
+
+fn millis_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn nonnegative_i64_to_u32_saturating(value: i64) -> u32 {
+    if value <= 0 {
+        0
+    } else {
+        u32::try_from(value).unwrap_or(u32::MAX)
+    }
 }
 
 // ============================================================================
@@ -268,7 +281,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
-        let expire_seconds = (window_seconds + 1) as i64;
+        let expire_seconds = window_expire_seconds(window_seconds);
 
         // Lua script returns both current_count and oldest_score atomically,
         // eliminating the TOCTOU window from a separate ZRANGE command.
@@ -294,7 +307,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
 
         let result: Vec<i64> = match script
             .key(&redis_key)
-            .arg(window_start as i64)
+            .arg(millis_to_i64_saturating(window_start))
             .arg(now)
             .arg(expire_seconds)
             .arg(max_requests)
@@ -321,8 +334,8 @@ impl RateLimitBackend for RedisRateLimitBackend {
             }
         };
 
-        let current_count = result.first().copied().unwrap_or(0) as u32;
-        let oldest_score = result.get(1).copied().unwrap_or(0) as u64;
+        let current_count = nonnegative_i64_to_u32_saturating(result.first().copied().unwrap_or(0));
+        let oldest_score = result.get(1).copied().unwrap_or(0).max(0).cast_unsigned();
 
         if current_count > max_requests {
             let retry_after_seconds = if oldest_score > 0 {
@@ -351,7 +364,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
-        let expire_seconds = (window_seconds + 1) as i64;
+        let expire_seconds = window_expire_seconds(window_seconds);
 
         let script = redis::Script::new(
             r"
@@ -368,7 +381,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
 
         let current_count: u32 = match script
             .key(&redis_key)
-            .arg(window_start as i64)
+            .arg(millis_to_i64_saturating(window_start))
             .arg(now)
             .arg(expire_seconds)
             .invoke_async(&mut conn)
@@ -409,7 +422,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
 
         let mut pipe = redis::pipe();
         pipe.atomic()
-            .zrembyscore(&redis_key, 0, window_start as i64)
+            .zrembyscore(&redis_key, 0, millis_to_i64_saturating(window_start))
             .ignore()
             .zcard(&redis_key);
 
@@ -1129,8 +1142,7 @@ mod tests {
         let result = limiter.check_rate_limit("test_key", 10, 1).await;
 
         match &result {
-            Ok(()) => {}
-            Err(RateLimitError::RateLimitExceeded { .. }) => {}
+            Ok(()) | Err(RateLimitError::RateLimitExceeded { .. }) => {}
             Err(RateLimitError::BackendUnavailable(message)) => {
                 panic!(
                     "check_rate_limit should NOT return BackendUnavailable in fail-open mode: {message}"

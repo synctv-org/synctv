@@ -208,8 +208,9 @@ impl From<synctv_core::provider::ProviderError> for AppError {
     fn from(err: synctv_core::provider::ProviderError) -> Self {
         use synctv_core::provider::ProviderError;
         match err {
-            ProviderError::NetworkError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
-            ProviderError::ApiError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
+            ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
+                Self::new(StatusCode::BAD_GATEWAY, msg)
+            }
             ProviderError::UpstreamHttp { status, .. } => {
                 tracing::warn!(status = status, "Upstream HTTP error");
                 if status == 401 || status == 403 {
@@ -225,17 +226,19 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                     Self::bad_request("Upstream provider rejected the request.")
                 }
             }
-            ProviderError::ParseError(msg) => Self::bad_request(msg),
-            ProviderError::InvalidConfig(msg) => Self::bad_request(msg),
-            ProviderError::InvalidUrl(msg) => Self::bad_request(msg),
-            ProviderError::MissingField(msg) => Self::bad_request(msg),
+            ProviderError::ParseError(msg)
+            | ProviderError::InvalidConfig(msg)
+            | ProviderError::InvalidUrl(msg)
+            | ProviderError::MissingField(msg)
+            | ProviderError::UnsupportedFormat(msg) => Self::bad_request(msg),
             ProviderError::NotFound => Self::not_found("Resource not found"),
-            ProviderError::InstanceNotFound(msg) => Self::not_found(msg),
+            ProviderError::InstanceNotFound(msg) | ProviderError::CredentialNotFound(msg) => {
+                Self::not_found(msg)
+            }
             ProviderError::MissingInstance => Self::not_found("Provider instance not configured"),
             ProviderError::AuthRequired => Self::unauthorized("Authentication required"),
             ProviderError::CredentialRequired => Self::unauthorized("Credential required"),
             ProviderError::InvalidCredentialType => Self::bad_request("Invalid credential type"),
-            ProviderError::UnsupportedFormat(msg) => Self::bad_request(msg),
             ProviderError::RouteRegistrationFailed(msg) => {
                 tracing::error!("Route registration failed: {}", msg);
                 Self::internal("Provider route registration failed")
@@ -252,7 +255,6 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                 tracing::error!("Provider encryption required: {}", msg);
                 Self::internal_server_error("Credential encryption not configured")
             }
-            ProviderError::CredentialNotFound(msg) => Self::not_found(msg),
             ProviderError::CredentialExpired(msg) => Self::unauthorized(msg),
             ProviderError::Internal(msg) => {
                 tracing::error!("Provider internal error: {}", msg);

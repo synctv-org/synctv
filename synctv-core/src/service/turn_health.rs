@@ -194,7 +194,7 @@ impl TurnHealthChecker {
     /// Returns a health check result indicating success or failure.
     pub async fn check_server(&self, url: &str) -> HealthCheckResult {
         // Parse TURN URL to extract host:port
-        let addr = match self.parse_turn_url(url) {
+        let addr = match Self::parse_turn_url(url) {
             Ok(addr) => addr,
             Err(e) => {
                 return HealthCheckResult::unhealthy(
@@ -233,7 +233,7 @@ impl TurnHealthChecker {
     /// - `turns:IP:port` (TLS)
     ///
     /// Note: Hostnames will be resolved to IP addresses by the TCP connection.
-    fn parse_turn_url(&self, url: &str) -> Result<String, String> {
+    fn parse_turn_url(url: &str) -> Result<String, String> {
         // Strip the scheme (turn: or turns:)
         let addr_without_scheme = url
             .strip_prefix("turn:")
@@ -519,39 +519,35 @@ mod tests {
 
     #[test]
     fn test_parse_turn_url_valid() {
-        let checker = TurnHealthChecker::new();
-
         // Standard TURN URL with hostname
-        let result = checker.parse_turn_url("turn:example.com:3478");
+        let result = TurnHealthChecker::parse_turn_url("turn:example.com:3478");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "example.com:3478");
 
         // TURN over TLS
-        let result = checker.parse_turn_url("turns:example.com:5349");
+        let result = TurnHealthChecker::parse_turn_url("turns:example.com:5349");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "example.com:5349");
 
         // IP address
-        let result = checker.parse_turn_url("turn:192.168.1.1:3478");
+        let result = TurnHealthChecker::parse_turn_url("turn:192.168.1.1:3478");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "192.168.1.1:3478");
     }
 
     #[test]
     fn test_parse_turn_url_invalid() {
-        let checker = TurnHealthChecker::new();
-
         // Missing scheme
-        assert!(checker.parse_turn_url("example.com:3478").is_err());
+        assert!(TurnHealthChecker::parse_turn_url("example.com:3478").is_err());
 
         // Wrong scheme
-        assert!(checker.parse_turn_url("stun:example.com:3478").is_err());
+        assert!(TurnHealthChecker::parse_turn_url("stun:example.com:3478").is_err());
 
         // Missing port
-        assert!(checker.parse_turn_url("turn:example.com").is_err());
+        assert!(TurnHealthChecker::parse_turn_url("turn:example.com").is_err());
 
         // Invalid format
-        assert!(checker.parse_turn_url("not a url").is_err());
+        assert!(TurnHealthChecker::parse_turn_url("not a url").is_err());
     }
 
     #[tokio::test]

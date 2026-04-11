@@ -36,7 +36,6 @@ pub fn create_publish_key_router() -> Router<AppState> {
 /// - Endpoint: POST /api/room/movie/:movieId/live/publishKey
 /// - Multiple concurrent streams per room (one per media item)
 /// - Each media item can have independent RTMP stream
-#[axum::debug_handler]
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(

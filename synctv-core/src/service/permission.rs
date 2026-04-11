@@ -197,7 +197,7 @@ impl PermissionService {
         self.degraded_cache.invalidate(&cache_key).await;
     }
 
-    pub(crate) async fn invalidate_room_cache_local_only(&self, room_id: &RoomId) {
+    pub(crate) fn invalidate_room_cache_local_only(&self, room_id: &RoomId) {
         let prefix = format!("perm:room:{}:user:", room_id.0);
         let _ = self.cache.invalidate_entries_if({
             let prefix = prefix.clone();
@@ -797,7 +797,7 @@ impl PermissionService {
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
     pub async fn invalidate_room_cache(&self, room_id: &RoomId) {
-        self.invalidate_room_cache_local_only(room_id).await;
+        self.invalidate_room_cache_local_only(room_id);
 
         // Broadcast to other replicas (best effort)
         // Use invalidate_and_broadcast_room_permission which broadcasts both locally
@@ -1860,8 +1860,8 @@ mod tests {
                 Ok(Err(e)) => {
                     panic!("Receiver error: {e:?}");
                 }
-                Err(_) => {
-                    panic!("Timeout waiting for broadcast");
+                Err(timeout_error) => {
+                    panic!("Timeout waiting for broadcast: {timeout_error:?}");
                 }
             }
         });
@@ -1995,12 +1995,12 @@ mod tests {
                 Ok(Err(e)) => {
                     panic!("Receiver error: {e:?}");
                 }
-                Err(_) => {
+                Err(timeout_error) => {
                     // Timeout - this indicates the fix is not yet applied
                     // Currently, broadcast_remote doesn't send to local channel
                     panic!(
-                        "Timeout waiting for broadcast - this indicates invalidate_cache \
-                         is not broadcasting locally. The fix should use \
+                        "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
+                         invalidate_cache is not broadcasting locally. The fix should use \
                          invalidate_and_broadcast_user_permission instead of invalidate_user_permission."
                     );
                 }
@@ -2060,11 +2060,11 @@ mod tests {
                 Ok(Err(e)) => {
                     panic!("Receiver error: {e:?}");
                 }
-                Err(_) => {
+                Err(timeout_error) => {
                     // Timeout - this indicates the fix is not yet applied
                     panic!(
-                        "Timeout waiting for broadcast - this indicates invalidate_room_cache \
-                         is not broadcasting locally. The fix should use \
+                        "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
+                         invalidate_room_cache is not broadcasting locally. The fix should use \
                          invalidate_and_broadcast_room_permission instead of invalidate_room_permission."
                     );
                 }
@@ -2123,11 +2123,11 @@ mod tests {
                 Ok(Err(e)) => {
                     panic!("Receiver error: {e:?}");
                 }
-                Err(_) => {
+                Err(timeout_error) => {
                     // Timeout - this indicates the fix is not yet applied
                     panic!(
-                        "Timeout waiting for broadcast - this indicates clear_cache \
-                         is not broadcasting locally. The fix should use \
+                        "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
+                         clear_cache is not broadcasting locally. The fix should use \
                          broadcast_all instead of invalidate_all."
                     );
                 }

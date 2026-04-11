@@ -4,9 +4,24 @@
 //! and the `ClusterAuthInterceptor`. Also verifies Bug B12 fix (alive flag on clean close).
 
 #![allow(clippy::unwrap_used)]
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
+
 // ============================================================================
 // token_rate_limit_key stability tests (Bug B8 fix)
 // ============================================================================
+
+fn short_sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+
+    let mut hex = String::with_capacity(16);
+    for byte in &hasher.finalize()[..8] {
+        write!(&mut hex, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+
+    hex
+}
 
 /// Verify `token_rate_limit_key` is stable: same input -> same output.
 ///
@@ -28,21 +43,14 @@ fn test_token_rate_limit_key_stable() {
     // produces same hash every time.
     //
     // We use sha2 directly to verify the expected output format.
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let result = hasher.finalize();
-    let hex: String = result[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let hex = short_sha256_hex(token);
     let expected_key = format!("token:{hex}");
 
     // Verify the hash is 16 hex chars (8 bytes)
     assert_eq!(hex.len(), 16);
 
     // Verify running it again produces the same result
-    let mut hasher2 = Sha256::new();
-    hasher2.update(token.as_bytes());
-    let result2 = hasher2.finalize();
-    let hex2: String = result2[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let hex2 = short_sha256_hex(token);
     assert_eq!(hex, hex2, "SHA-256 must be deterministic");
 
     // Verify the key format matches expectations
@@ -53,30 +61,11 @@ fn test_token_rate_limit_key_stable() {
 /// Different tokens must produce different rate limit keys.
 #[test]
 fn test_token_rate_limit_key_different_inputs_different_keys() {
-    use sha2::{Digest, Sha256};
-
     let token_a = "eyJhbGciOiJIUzI1NiJ9.payload.sig-A";
     let token_b = "eyJhbGciOiJIUzI1NiJ9.payload.sig-B";
 
-    let hash_a = {
-        let mut h = Sha256::new();
-        h.update(token_a.as_bytes());
-        let r = h.finalize();
-        r[..8]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    };
-
-    let hash_b = {
-        let mut h = Sha256::new();
-        h.update(token_b.as_bytes());
-        let r = h.finalize();
-        r[..8]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    };
+    let hash_a = short_sha256_hex(token_a);
+    let hash_b = short_sha256_hex(token_b);
 
     assert_ne!(
         hash_a, hash_b,

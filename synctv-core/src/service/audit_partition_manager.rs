@@ -158,7 +158,8 @@ impl AuditPartitionManager {
                 .await
                 .internal_with_err("Failed to drop partitions")?;
 
-        let dropped_count = result_json["dropped_count"].as_i64().unwrap_or(0) as i32;
+        let dropped_count =
+            i32::try_from(result_json["dropped_count"].as_i64().unwrap_or(0)).unwrap_or(i32::MAX);
 
         info!("Successfully dropped {} old partitions", dropped_count);
 
@@ -535,7 +536,7 @@ mod tests {
 
         assert_eq!(deserialized.partition, info.partition);
         assert_eq!(deserialized.row_count, info.row_count);
-        assert_eq!(deserialized.size_mb, info.size_mb);
+        assert!((deserialized.size_mb - info.size_mb).abs() < f64::EPSILON);
     }
 
     #[test]

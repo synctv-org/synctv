@@ -663,9 +663,8 @@ mod tests {
         .await
         .expect("service call should time out instead of hanging forever")
         .expect("service task should complete");
-        let status = match result {
-            Ok(_) => panic!("streamhub subscription stall must fail"),
-            Err(status) => status,
+        let Err(status) = result else {
+            panic!("streamhub subscription stall must fail");
         };
 
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
@@ -779,9 +778,8 @@ mod tests {
             .metadata_mut()
             .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
 
-        let status = match service.pull_rtmp_stream(request).await {
-            Ok(_) => panic!("persistently full queue must fail"),
-            Err(status) => status,
+        let Err(status) = service.pull_rtmp_stream(request).await else {
+            panic!("persistently full queue must fail");
         };
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
     }
@@ -814,9 +812,8 @@ mod tests {
             .metadata_mut()
             .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
 
-        let status = match service.pull_rtmp_stream(request).await {
-            Ok(_) => panic!("closed streamhub queue must fail"),
-            Err(status) => status,
+        let Err(status) = service.pull_rtmp_stream(request).await else {
+            panic!("closed streamhub queue must fail");
         };
         assert_eq!(status.code(), tonic::Code::Internal);
         assert!(

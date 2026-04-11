@@ -155,8 +155,7 @@ where
 
         Box::pin(async move {
             match raw_token {
-                BearerTokenState::Missing => {}
-                BearerTokenState::NonBearer => {}
+                BearerTokenState::Missing | BearerTokenState::NonBearer => {}
                 BearerTokenState::Malformed => {
                     tracing::warn!(
                         "gRPC request rejected: malformed bearer authorization metadata"

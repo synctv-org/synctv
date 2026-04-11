@@ -35,6 +35,11 @@ use std::time::{Duration, Instant};
 
 use crate::Result;
 
+fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> chrono::Duration {
+    let seconds = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
+    chrono::Duration::seconds(seconds)
+}
+
 // ============================================================================
 // TokenBlacklistStore trait
 // ============================================================================
@@ -328,7 +333,7 @@ impl PgTokenBlacklistStore {
             );
             crate::Error::Internal("Failed to cleanup token blacklist".to_string())
         })?;
-        Ok(deleted_count.max(0) as u64)
+        Ok(deleted_count.max(0).cast_unsigned())
     }
 }
 
@@ -362,7 +367,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
         sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
@@ -390,7 +395,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
 
         // xmax = 0 means the row was inserted (no conflict)
         // xmax != 0 means the row already existed (conflict, nothing inserted)
@@ -456,7 +461,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
         sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
              ON CONFLICT (jti) DO UPDATE
@@ -1675,7 +1680,7 @@ mod tests {
     async fn test_l1_positive_family_hit() {
         let store = make_tiered_l1_only();
 
-        let ts = 1700000000_i64;
+        let ts = 1_700_000_000_i64;
         store
             .l1_family
             .insert(
@@ -1738,7 +1743,7 @@ mod tests {
         // Family revocation is fail-closed: if the durable PG write fails, the
         // tiered store must return an error and must not populate L1 as if the
         // revocation were durably committed.
-        let ts = 1700000000_i64;
+        let ts = 1_700_000_000_i64;
         let result = store
             .set_family_revoked("family:write_test", ts, 3600)
             .await;
@@ -1799,7 +1804,7 @@ mod tests {
         let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
         let key = "family:user_42";
-        let timestamp = 1700000000_i64;
+        let timestamp = 1_700_000_000_i64;
 
         assert!(store.get_family_revoked_at(key).await.is_none());
         store
@@ -1847,7 +1852,7 @@ mod tests {
             .await
             .expect("overwrite should leave an expiry entry");
         assert!(
-            expiry > Instant::now() + Duration::from_secs(3000),
+            expiry > Instant::now() + Duration::from_mins(50),
             "TTL overwrite should extend the stored expiry"
         );
     }
@@ -1857,7 +1862,7 @@ mod tests {
         let store = make_in_memory_store();
 
         let key = "family:ttl_test";
-        let timestamp = 1700000000_i64;
+        let timestamp = 1_700_000_000_i64;
 
         store.set_family_revoked(key, timestamp, 1).await.unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
@@ -1879,7 +1884,7 @@ mod tests {
         // Set multiple family revocations
         for i in 0..10 {
             let key = format!("family:user_{i}");
-            let timestamp = 1700000000_i64 + i;
+            let timestamp = 1_700_000_000_i64 + i;
             store
                 .set_family_revoked(&key, timestamp, 86400)
                 .await
@@ -1889,7 +1894,7 @@ mod tests {
         // Verify all are retrievable
         for i in 0..10 {
             let key = format!("family:user_{i}");
-            let expected_ts = 1700000000_i64 + i;
+            let expected_ts = 1_700_000_000_i64 + i;
             assert_eq!(store.get_family_revoked_at(&key).await, Some(expected_ts));
         }
     }
@@ -1927,7 +1932,7 @@ mod tests {
         let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
         let key = "family:fallback_test";
-        let timestamp = 1700000000_i64;
+        let timestamp = 1_700_000_000_i64;
 
         assert!(fallback.get_family_revoked_at(key).await.is_none());
 
@@ -1964,7 +1969,7 @@ mod tests {
         let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
         let key = "family:failing_primary_test";
-        let timestamp = 1700000000_i64;
+        let timestamp = 1_700_000_000_i64;
 
         // Family revocation is security-critical: the API must fail closed if
         // the primary store cannot persist it, even though fallback still
@@ -2039,7 +2044,7 @@ mod tests {
         let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
         let key = "family:fallback_ttl_test";
-        let timestamp = 1700000000_i64;
+        let timestamp = 1_700_000_000_i64;
 
         let result = fallback.set_family_revoked(key, timestamp, 1).await;
         assert!(result.is_err());

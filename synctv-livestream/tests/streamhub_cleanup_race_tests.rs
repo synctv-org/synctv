@@ -497,8 +497,8 @@ async fn test_stress_cleanup_reregister_cycles() {
     let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
     let node_id = "test-node";
 
-    let iterations = 10;
-    let barrier = Arc::new(Barrier::new(iterations as usize));
+    let iterations: usize = 10;
+    let barrier = Arc::new(Barrier::new(iterations));
     let success_count = Arc::new(AtomicUsize::new(0));
 
     let mut handles = vec![];

@@ -101,7 +101,7 @@ impl ChatRepository {
         // Determine next cursor: the (created_at, id) of the oldest (last)
         // message in this page. If we got a full page there may be more;
         // otherwise we're at the beginning.
-        let next_cursor = if messages.len() as i32 == limit {
+        let next_cursor = if i32::try_from(messages.len()).ok() == Some(limit) {
             messages.last().map(|m| (m.created_at, m.id.clone()))
         } else {
             None

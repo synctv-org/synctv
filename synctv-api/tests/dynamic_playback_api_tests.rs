@@ -11,17 +11,18 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        PlayMode, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole, UserStatus,
+        Media, PlayMode, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole,
+        UserStatus,
     },
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
         NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
-    repository::{ProviderInstanceRepository, UserRepository},
+    repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
-        UserService,
+        InMemoryTokenBlacklistStore, ProvidersManager, ProxySigningKey, RemoteProviderManager,
+        RoomService, UserService,
     },
     Config,
 };
@@ -119,7 +120,7 @@ impl FakeDynamicProvider {
         }
     }
 
-    fn item(&self, path: &str) -> NextPlayItem {
+    fn item(path: &str) -> NextPlayItem {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         NextPlayItem {
             name,
@@ -224,7 +225,7 @@ impl DynamicFolder for FakeDynamicProvider {
         let cursor = decode_dynamic_target(target);
         Ok(match cursor.as_str() {
             path if path == self.playback_target_path() || path == self.first_item_path() => {
-                Some(self.item(&cursor))
+                Some(Self::item(&cursor))
             }
             _ => None,
         })
@@ -243,7 +244,7 @@ impl DynamicFolder for FakeDynamicProvider {
             (path, PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::Shuffle)
                 if path == self.playback_target_path() =>
             {
-                Some(self.item(if self.is_bound_instance() {
+                Some(Self::item(if self.is_bound_instance() {
                     "/bound-episode-2.mp4"
                 } else {
                     "/episode-2.mp4"
@@ -257,7 +258,7 @@ impl DynamicFolder for FakeDynamicProvider {
                         "/episode-2.mp4"
                     } =>
             {
-                Some(self.item(self.playback_target_path()))
+                Some(Self::item(self.playback_target_path()))
             }
             (path, PlayMode::RepeatOne)
                 if path == self.playback_target_path()
@@ -639,6 +640,126 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     assert_eq!(
         direct.urls[0].url,
         "https://fake_dynamic_alt.example.com/bound-episode-1.mp4"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_static_provider_playback_with_signing_key_uses_provider_store_registry() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let user_service = Arc::new(make_user_service(pool.clone()));
+
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
+    providers_manager
+        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let mut room_service = RoomService::new_with_providers(
+        pool.clone(),
+        (*user_service).clone(),
+        providers_manager.clone(),
+    );
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let room_service = Arc::new(room_service);
+
+    let owner = user_repo
+        .create(&make_user("api_signed_provider_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "API Signed Provider Playback".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = Media::from_provider(
+        None,
+        room.id.clone(),
+        Some(owner.id.clone()),
+        "Signed Provider Media".to_string(),
+        serde_json::json!({
+            "url": "https://example.com/video.mp4",
+            "headers": {
+                "Authorization": "Bearer provider-token"
+            }
+        }),
+        "direct_url",
+        String::new(),
+        0.0,
+    );
+    media_repo.create(&media).await.unwrap();
+
+    let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::new(
+        None,
+        "test:provider:".to_string(),
+    ));
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service,
+        Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+        Arc::new(Config::default()),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        Some(providers_manager),
+        None,
+    )
+    .with_signing_key(Arc::new(ProxySigningKey::derive_from(
+        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+    )))
+    .with_provider_stores(provider_stores);
+
+    client_api
+        .start_playback(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::StartPlaybackRequest {
+                media_id: media.id.as_str().to_string(),
+                playlist_id: String::new(),
+                target: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let response = client_api
+        .get_playback(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::GetPlaybackRequest {},
+        )
+        .await
+        .unwrap();
+
+    let playback_result = response.playback_result.unwrap();
+    let direct = playback_result.playback_infos.get("direct").unwrap();
+    assert_eq!(direct.urls.len(), 1);
+    assert!(
+        direct.urls[0]
+            .url
+            .starts_with("/api/providers/proxy/direct_url/"),
+        "signed provider playback should expose proxy URL, got {}",
+        direct.urls[0].url
+    );
+    assert!(
+        direct.urls[0].url.contains("/stream?"),
+        "signed direct-url playback should use stream proxy contract, got {}",
+        direct.urls[0].url
+    );
+    assert!(
+        direct.urls[0].headers.is_empty(),
+        "proxy-backed playback should not require client-side secret headers"
     );
 }
 

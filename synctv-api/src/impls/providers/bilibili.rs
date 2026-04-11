@@ -222,15 +222,30 @@ impl BilibiliApiImpl {
         let videos: Vec<VideoInfo> = page_info
             .video_infos
             .into_iter()
-            .map(|v| VideoInfo {
-                bvid: v.bvid,
-                cid: v.cid as i64,
-                epid: v.epid as i64,
-                name: v.name,
-                cover: v.cover_image,
-                is_live: v.live,
+            .map(|v| {
+                let cid = i64::try_from(v.cid).map_err(|_| {
+                    synctv_core::provider::ProviderError::ParseError(format!(
+                        "Bilibili cid {} exceeds int64 range",
+                        v.cid
+                    ))
+                })?;
+                let epid = i64::try_from(v.epid).map_err(|_| {
+                    synctv_core::provider::ProviderError::ParseError(format!(
+                        "Bilibili epid {} exceeds int64 range",
+                        v.epid
+                    ))
+                })?;
+
+                Ok::<_, synctv_core::provider::ProviderError>(VideoInfo {
+                    bvid: v.bvid,
+                    cid,
+                    epid,
+                    name: v.name,
+                    cover: v.cover_image,
+                    is_live: v.live,
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         let actors = if page_info.actors.is_empty() {
             vec![]

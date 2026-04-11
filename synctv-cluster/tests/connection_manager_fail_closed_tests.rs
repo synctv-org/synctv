@@ -57,7 +57,7 @@ async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable(
     let manager = ConnectionManager::new(ConnectionLimits::default())
         .with_redis(conn, "fail_closed_register:");
 
-    redis.terminate_container().await;
+    redis.terminate_container();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let result = tokio::time::timeout(
@@ -94,7 +94,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
         .await
         .expect("initial room join should succeed while Redis is healthy");
 
-    redis.terminate_container().await;
+    redis.terminate_container();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let target_room = rid("room_b");
@@ -138,7 +138,7 @@ async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailab
         .await
         .expect("initial room join should succeed while Redis is healthy");
 
-    redis.terminate_container().await;
+    redis.terminate_container();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let user_err = tokio::time::timeout(

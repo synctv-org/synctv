@@ -78,11 +78,14 @@ impl NetConnection {
 
     async fn write_chunk(&mut self) -> Result<(), NetConnectionError> {
         let data = self.amf0_writer.extract_current_bytes();
+        let data_len = u32::try_from(data.len()).map_err(|_| NetConnectionError {
+            value: super::errors::NetConnectionErrorValue::MessageTooLarge(data.len()),
+        })?;
         let mut chunk_info = ChunkInfo::new(
             chunk_define::csid_type::COMMAND_AMF0_AMF3,
             chunk_define::chunk_type::TYPE_0,
             0,
-            data.len() as u32,
+            data_len,
             messages_define::msg_type_id::COMMAND_AMF0,
             0,
             data,

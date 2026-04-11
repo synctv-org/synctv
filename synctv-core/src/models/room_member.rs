@@ -331,10 +331,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
             user_id: row.try_get("user_id")?,
             role: row.try_get("role")?,
             status: row.try_get("status")?,
-            added_permissions: row.try_get::<i64, _>("added_permissions")? as u64,
-            removed_permissions: row.try_get::<i64, _>("removed_permissions")? as u64,
-            admin_added_permissions: row.try_get::<i64, _>("admin_added_permissions")? as u64,
-            admin_removed_permissions: row.try_get::<i64, _>("admin_removed_permissions")? as u64,
+            added_permissions: permission_bits_from_row(row, "added_permissions")?,
+            removed_permissions: permission_bits_from_row(row, "removed_permissions")?,
+            admin_added_permissions: permission_bits_from_row(row, "admin_added_permissions")?,
+            admin_removed_permissions: permission_bits_from_row(row, "admin_removed_permissions")?,
             joined_at: row.try_get("joined_at")?,
             left_at: row.try_get("left_at")?,
             version: row.try_get("version")?,
@@ -343,6 +343,13 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
             banned_reason: row.try_get("banned_reason")?,
         })
     }
+}
+
+fn permission_bits_from_row(row: &sqlx::postgres::PgRow, column: &str) -> Result<u64, sqlx::Error> {
+    use sqlx::Row;
+
+    let bits = row.try_get::<i64, _>(column)?;
+    u64::try_from(bits).map_err(|error| sqlx::Error::Decode(Box::new(error)))
 }
 
 impl RoomMember {

@@ -13,6 +13,10 @@ use synctv_core::service::{
     FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
 };
 
+fn nonnegative_i64_to_u64(value: i64) -> u64 {
+    u64::try_from(value.max(0)).unwrap_or(0)
+}
+
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -103,7 +107,7 @@ fn test_access_token_has_jti_for_blacklisting() {
 
     // Token should have remaining TTL
     let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
     assert!(
         remaining_ttl > 0,
         "Access token should have remaining TTL for blacklisting"
@@ -128,7 +132,7 @@ async fn test_blacklist_with_working_store_succeeds() {
     // Parse token to get JTI
     let claims = jwt.verify_access_token(&token).unwrap();
     let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
 
     // Blacklist should succeed
     let result = store.blacklist(&claims.jti, remaining_ttl).await;
@@ -162,7 +166,7 @@ async fn test_blacklist_with_failing_store_returns_error() {
     // Parse token to get JTI
     let claims = jwt.verify_access_token(&token).unwrap();
     let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
 
     // Blacklist should fail
     let result = store.blacklist(&claims.jti, remaining_ttl).await;
@@ -197,7 +201,7 @@ async fn test_fallback_store_succeeds_when_primary_fails() {
     // Parse token to get JTI
     let claims = jwt.verify_access_token(&token).unwrap();
     let now = chrono::Utc::now().timestamp();
-    let remaining_ttl = (claims.exp - now).max(0) as u64;
+    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
 
     // Blacklist should succeed via fallback
     let result = fallback.blacklist(&claims.jti, remaining_ttl).await;
@@ -238,7 +242,7 @@ async fn test_logout_simulation_working_store() {
                     Ok(())
                 } else {
                     let now = chrono::Utc::now().timestamp();
-                    let remaining_ttl = (claims.exp - now).max(0) as u64;
+                    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
                     if remaining_ttl > 0 {
                         store.blacklist(&claims.jti, remaining_ttl).await
                     } else {
@@ -302,7 +306,7 @@ async fn test_logout_simulation_failing_store_must_fail() {
                     Ok(())
                 } else {
                     let now = chrono::Utc::now().timestamp();
-                    let remaining_ttl = (claims.exp - now).max(0) as u64;
+                    let remaining_ttl = nonnegative_i64_to_u64(claims.exp - now);
                     if remaining_ttl > 0 {
                         // This is the key difference: we expect blacklist failure to be returned
                         store.blacklist(&claims.jti, remaining_ttl).await

@@ -103,7 +103,7 @@ impl MessageDeduplicator {
     pub fn len(&self) -> usize {
         // Run pending tasks to get accurate count
         self.cache.run_pending_tasks();
-        self.cache.entry_count() as usize
+        usize::try_from(self.cache.entry_count()).unwrap_or(usize::MAX)
     }
 
     /// Check if there are any tracked events

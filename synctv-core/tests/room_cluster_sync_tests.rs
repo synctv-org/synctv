@@ -20,8 +20,8 @@
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{
-        room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        User, UserId, UserRole, UserStatus,
+        room_settings::MaxMembers, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings,
+        RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{member::MemberService, permission::PermissionService},
@@ -68,7 +68,7 @@ impl TestInfra {
     #[allow(dead_code)]
     async fn cleanup(mut self) {
         if let Some(redis) = self.redis.take() {
-            redis.cleanup().await;
+            redis.cleanup();
         }
         if let Some(postgres) = self.postgres.take() {
             postgres.cleanup().await;
@@ -506,8 +506,8 @@ async fn test_cache_consistency_after_partition_recovery() {
         "Permissions should have changed after recovery"
     );
     assert_eq!(
-        perms_after.0 & 12345,
-        12345,
+        perms_after.0 & 0x3039,
+        0x3039,
         "Should see the added permission bits after recovery"
     );
 }
@@ -901,7 +901,6 @@ async fn test_ban_visible_across_replicas() {
         .expect("Failed to get member")
         .expect("Member should exist");
 
-    use synctv_core::models::MemberStatus;
     assert_eq!(
         member_b.status,
         MemberStatus::Banned,

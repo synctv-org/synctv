@@ -6,6 +6,12 @@ use {
     indexmap::IndexMap,
 };
 
+fn usize_to_u16(value: usize) -> Result<u16, Amf0WriteError> {
+    u16::try_from(value).map_err(|_| Amf0WriteError {
+        value: Amf0WriteErrorValue::NormalStringTooLong,
+    })
+}
+
 #[derive(Default)]
 pub struct Amf0Writer {
     writer: BytesWriter,
@@ -57,7 +63,8 @@ impl Amf0Writer {
         }
 
         self.writer.write_u8(amf0_markers::STRING)?;
-        self.writer.write_u16::<BigEndian>(value.len() as u16)?;
+        self.writer
+            .write_u16::<BigEndian>(usize_to_u16(value.len())?)?;
         self.writer.write(value.as_bytes())?;
 
         Ok(())
@@ -81,7 +88,8 @@ impl Amf0Writer {
         self.writer.write_u8(amf0_markers::OBJECT)?;
 
         for (key, value) in properties {
-            self.writer.write_u16::<BigEndian>(key.len() as u16)?;
+            self.writer
+                .write_u16::<BigEndian>(usize_to_u16(key.len())?)?;
             self.writer.write(key.as_bytes())?;
             self.write_any(value)?;
         }
@@ -96,10 +104,15 @@ impl Amf0Writer {
     ) -> Result<(), Amf0WriteError> {
         self.writer.write_u8(amf0_markers::ECMA_ARRAY)?;
         self.writer
-            .write_u32::<BigEndian>(properties.len() as u32)?;
+            .write_u32::<BigEndian>(u32::try_from(properties.len()).map_err(|_| {
+                Amf0WriteError {
+                    value: Amf0WriteErrorValue::NormalStringTooLong,
+                }
+            })?)?;
 
         for (key, value) in properties {
-            self.writer.write_u16::<BigEndian>(key.len() as u16)?;
+            self.writer
+                .write_u16::<BigEndian>(usize_to_u16(key.len())?)?;
             self.writer.write(key.as_bytes())?;
             self.write_any(value)?;
         }

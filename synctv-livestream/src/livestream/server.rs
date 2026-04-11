@@ -113,7 +113,18 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
     }
 
     let storage: Arc<dyn HlsStorage> = if config.hls_memory_max_mb > 0 {
-        let max_bytes = config.hls_memory_max_mb as usize * 1024 * 1024;
+        let max_bytes_mb = usize::try_from(config.hls_memory_max_mb).map_err(|_| {
+            crate::error::StreamError::InvalidState(format!(
+                "hls_memory_max_mb={} exceeds platform usize",
+                config.hls_memory_max_mb
+            ))
+        })?;
+        let max_bytes = max_bytes_mb.checked_mul(1024 * 1024).ok_or_else(|| {
+            crate::error::StreamError::InvalidState(format!(
+                "hls_memory_max_mb={} overflows byte capacity",
+                config.hls_memory_max_mb
+            ))
+        })?;
         info!(
             "HLS memory storage max set to {} MB",
             config.hls_memory_max_mb,
@@ -466,7 +477,7 @@ impl LivestreamServer {
     /// Creates `StreamHub`, RTMP server, HLS remuxer, `PullStreamManager`,
     /// `ExternalPublishManager`, `PublisherManager`, and `LiveStreamingInfrastructure`.
     /// Returns a handle with public components.
-    pub async fn start(self) -> StreamResult<LivestreamHandle> {
+    pub fn start(self) -> StreamResult<LivestreamHandle> {
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
@@ -516,7 +527,19 @@ impl LivestreamServer {
 
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
-            let max_bytes = self.config.gop_cache_max_memory_mb as usize * 1024 * 1024;
+            let max_bytes_mb =
+                usize::try_from(self.config.gop_cache_max_memory_mb).map_err(|_| {
+                    crate::error::StreamError::InvalidState(format!(
+                        "gop_cache_max_memory_mb={} exceeds platform usize",
+                        self.config.gop_cache_max_memory_mb
+                    ))
+                })?;
+            let max_bytes = max_bytes_mb.checked_mul(1024 * 1024).ok_or_else(|| {
+                crate::error::StreamError::InvalidState(format!(
+                    "gop_cache_max_memory_mb={} overflows byte capacity",
+                    self.config.gop_cache_max_memory_mb
+                ))
+            })?;
             info!(
                 "GOP cache max memory set to {} MB per stream",
                 self.config.gop_cache_max_memory_mb,
@@ -568,7 +591,6 @@ impl LivestreamServer {
                                 warn!(
                                     "Internal-to-external broadcast forwarder lagged by {n} events"
                                 );
-                                continue;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                 break;
@@ -1127,7 +1149,7 @@ mod tests {
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
-        let handle = server.start().await.expect("Failed to start server");
+        let handle = server.start().expect("Failed to start server");
 
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1165,7 +1187,7 @@ mod tests {
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
-        let mut handle = server.start().await.expect("Failed to start server");
+        let mut handle = server.start().expect("Failed to start server");
 
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1201,7 +1223,7 @@ mod tests {
         let tracker = test_tracker();
 
         let server = LivestreamServer::new(test_config(), registry.clone(), tracker.clone());
-        let mut handle = server.start().await.expect("Failed to start server");
+        let mut handle = server.start().expect("Failed to start server");
 
         registry
             .try_register_publisher(
@@ -1250,7 +1272,7 @@ mod tests {
         let server = LivestreamServer::new(test_config(), registry.clone(), test_tracker());
 
         // Start the server
-        let handle = server.start().await.expect("Failed to start server");
+        let handle = server.start().expect("Failed to start server");
 
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1301,7 +1323,7 @@ mod tests {
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
-        let handle = server.start().await.expect("Failed to start server");
+        let handle = server.start().expect("Failed to start server");
 
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1355,7 +1377,7 @@ mod tests {
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server - this starts the HLS segment cleanup task
-        let handle = server.start().await.expect("Failed to start server");
+        let handle = server.start().expect("Failed to start server");
 
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1382,7 +1404,7 @@ mod tests {
             let handle = runtime.block_on(async {
                 let registry = Arc::new(MockStreamRegistry::new());
                 let server = LivestreamServer::new(test_config(), registry, test_tracker());
-                server.start().await.expect("Failed to start server")
+                server.start().expect("Failed to start server")
             });
 
             drop(runtime);
@@ -1437,7 +1459,6 @@ mod tests {
         // Start should succeed because we already have the port
         let handle = server
             .start()
-            .await
             .expect("Failed to start server with pre-bound listener");
 
         // Give tasks a moment to start
@@ -1476,7 +1497,6 @@ mod tests {
 
         let handle = server
             .start()
-            .await
             .expect("Failed to start server with pre-bound listener");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1520,7 +1540,6 @@ mod tests {
 
         let mut handle = server
             .start()
-            .await
             .expect("Failed to start server with pre-bound listener");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1579,7 +1598,6 @@ mod tests {
         // Start without pre-binding should still work
         let handle = server
             .start()
-            .await
             .expect("Server should start without pre-bound listener");
 
         // Give tasks a moment to start

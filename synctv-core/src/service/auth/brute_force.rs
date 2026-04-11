@@ -87,6 +87,14 @@ const IP_LOCKOUT_SECS: u64 = 600;
 /// TTL for the per-IP failure counter (10 minutes).
 pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 
+fn nonnegative_i64_to_u64(value: i64) -> u64 {
+    u64::try_from(value.max(0)).unwrap_or_default()
+}
+
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 // ============================================================================
 // BruteForceConfig (Task #64)
 // ============================================================================
@@ -477,7 +485,7 @@ impl RedisAttemptTracker {
     ///
     /// This indicates a potential security issue - all login attempts will be
     /// blocked until Redis recovers.
-    fn log_fail_closed_rejection(&self, operation: &'static str, error: &str, key: &str) {
+    fn log_fail_closed_rejection(operation: &'static str, error: &str, key: &str) {
         tracing::error!(
             operation = operation,
             key = %key,
@@ -503,12 +511,10 @@ impl AttemptTracker for RedisAttemptTracker {
         let redis_result =
             tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(key)).await;
 
-        let redis_result = if let Ok(inner) = redis_result {
-            inner
-        } else {
+        let Ok(redis_result) = redis_result else {
             // Timeout
             if self.fail_closed {
-                self.log_fail_closed_rejection("get_attempts", "Redis timeout", key);
+                Self::log_fail_closed_rejection("get_attempts", "Redis timeout", key);
                 return Err(Self::fail_closed_backend_error("please try again later"));
             }
             self.mark_degraded();
@@ -532,7 +538,7 @@ impl AttemptTracker for RedisAttemptTracker {
             Err(e) => {
                 // Redis error
                 if self.fail_closed {
-                    self.log_fail_closed_rejection("get_attempts", &e.to_string(), key);
+                    Self::log_fail_closed_rejection("get_attempts", &e.to_string(), key);
                     return Err(Self::fail_closed_backend_error("please try again later"));
                 }
                 self.mark_degraded();
@@ -569,7 +575,7 @@ impl AttemptTracker for RedisAttemptTracker {
             script
                 .key(key)
                 .arg(now)
-                .arg(ttl_secs as i64)
+                .arg(u64_to_i64_saturating(ttl_secs))
                 .invoke_async(&mut conn),
         )
         .await
@@ -589,7 +595,7 @@ impl AttemptTracker for RedisAttemptTracker {
             Err(e) => {
                 // Redis error
                 if self.fail_closed {
-                    self.log_fail_closed_rejection("record_failure", &e.to_string(), key);
+                    Self::log_fail_closed_rejection("record_failure", &e.to_string(), key);
                     // Still return error - caller should know tracking failed
                     return Err(Self::fail_closed_backend_error("please try again later"));
                 }
@@ -616,7 +622,7 @@ impl AttemptTracker for RedisAttemptTracker {
             }
             Ok(Err(e)) => {
                 if self.fail_closed {
-                    self.log_fail_closed_rejection("reset", &e.to_string(), key);
+                    Self::log_fail_closed_rejection("reset", &e.to_string(), key);
                     return Err(Self::fail_closed_backend_error("reset failed"));
                 }
                 self.mark_degraded();
@@ -625,7 +631,7 @@ impl AttemptTracker for RedisAttemptTracker {
             }
             Err(e) => {
                 if self.fail_closed {
-                    self.log_fail_closed_rejection("reset", &e.to_string(), key);
+                    Self::log_fail_closed_rejection("reset", &e.to_string(), key);
                     return Err(Self::fail_closed_backend_error("reset timed out"));
                 }
                 self.mark_degraded();
@@ -871,7 +877,7 @@ impl BruteForceProtection {
             let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
-                let elapsed = (now - ip_last_failure_at).max(0) as u64;
+                let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
                 if elapsed < self.config.ip_lockout_secs {
                     let remaining = self.config.ip_lockout_secs - elapsed;
                     tracing::warn!(
@@ -893,7 +899,7 @@ impl BruteForceProtection {
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
-            let elapsed = (now - last_failure_at).max(0) as u64;
+            let elapsed = nonnegative_i64_to_u64(now - last_failure_at);
             if elapsed < lockout_secs {
                 let remaining = lockout_secs - elapsed;
                 tracing::warn!(
@@ -974,7 +980,7 @@ impl BruteForceProtection {
             let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
-                let elapsed = (now - ip_last_failure_at).max(0) as u64;
+                let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
                 if elapsed < self.config.ip_lockout_secs {
                     let remaining = self.config.ip_lockout_secs - elapsed;
                     tracing::warn!(

@@ -536,14 +536,15 @@ impl PlaylistRepository {
         .fetch_all(&mut **tx)
         .await?;
 
-        for (index, row) in rows.into_iter().enumerate() {
+        let mut position = Self::ORDER_STEP;
+        for row in rows {
             let playlist_id: String = row.try_get("id")?;
-            let position = Self::ORDER_STEP * ((index + 1) as f64);
             sqlx::query("UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1")
                 .bind(playlist_id)
                 .bind(position)
                 .execute(&mut **tx)
                 .await?;
+            position += Self::ORDER_STEP;
         }
 
         Ok(())
@@ -614,11 +615,11 @@ impl PlaylistRepository {
     }
 
     /// Get the next append position within a scope.
-    pub async fn get_next_append_position_with_tx<'e>(
+    pub async fn get_next_append_position_with_tx(
         &self,
         room_id: &RoomId,
         parent_id: Option<&PlaylistId>,
-        tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<f64> {
         self.lock_scope_with_tx(room_id, parent_id, tx).await?;
 
@@ -689,14 +690,12 @@ impl PlaylistRepository {
         after_playlist_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<Playlist> {
-        let anchor_id = match (before_playlist_id, after_playlist_id) {
-            (Some(anchor_id), None) | (None, Some(anchor_id)) => anchor_id,
-            _ => {
-                return Err(crate::Error::InvalidInput(
-                    "Exactly one of before_playlist_id or after_playlist_id must be set"
-                        .to_string(),
-                ))
-            }
+        let ((Some(anchor_id), None) | (None, Some(anchor_id))) =
+            (before_playlist_id, after_playlist_id)
+        else {
+            return Err(crate::Error::InvalidInput(
+                "Exactly one of before_playlist_id or after_playlist_id must be set".to_string(),
+            ));
         };
 
         if playlist_id == anchor_id {
@@ -901,7 +900,7 @@ impl PlaylistRepository {
             .execute(executor)
             .await?;
 
-        Ok(result.rows_affected() as usize)
+        Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
     }
 
     /// Convert database row to Playlist
@@ -945,6 +944,13 @@ mod tests {
     use super::*;
     use sqlx::Execute;
     use synctv_core_testing::create_test_pool;
+
+    fn assert_position_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < f64::EPSILON,
+            "expected position {expected}, got {actual}"
+        );
+    }
 
     /// Unit test: Repository constructor is const
     #[test]
@@ -1071,7 +1077,7 @@ mod tests {
         let created = playlist_repo.create(&playlist).await.unwrap();
 
         assert!(created.is_top_level());
-        assert_eq!(created.position, 0.0);
+        assert_position_eq(created.position, 0.0);
 
         // Get by ID
         let fetched = playlist_repo.get_by_id(&created.id).await.unwrap();
@@ -1216,7 +1222,7 @@ mod tests {
 
         let query = PlaylistListQuery {
             source_provider: Some("alist".to_string()),
-            provider_instance_name: Some("".to_string()),
+            provider_instance_name: Some(String::new()),
             dynamic_only: Some(true),
             ..PlaylistListQuery::default()
         };
@@ -1335,7 +1341,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.name, "Updated Name");
-        assert_eq!(result.position, 5.0);
+        assert_position_eq(result.position, 5.0);
         assert!(result.version > created.version); // Version should increment
     }
 
@@ -1528,7 +1534,7 @@ mod tests {
             .get_next_append_position_with_tx(&room.id, Some(&created_root.id), &mut tx)
             .await
             .unwrap();
-        assert_eq!(next_pos, 1024.0);
+        assert_position_eq(next_pos, 1024.0);
 
         // Create children with explicit positions
         for i in 0..3 {
@@ -1548,7 +1554,7 @@ mod tests {
             .get_next_append_position_with_tx(&room.id, Some(&created_root.id), &mut tx)
             .await
             .unwrap();
-        assert_eq!(next_pos, 4096.0);
+        assert_position_eq(next_pos, 4096.0);
         tx.commit().await.unwrap();
     }
 
@@ -1595,8 +1601,10 @@ mod tests {
         assert_eq!(children.len(), 3);
 
         // Should be sorted by position
-        for (i, child) in children.iter().enumerate() {
-            assert_eq!(child.position, i as f64);
+        let mut expected_position = 0.0;
+        for child in &children {
+            assert_position_eq(child.position, expected_position);
+            expected_position += 1.0;
         }
     }
 
@@ -1893,6 +1901,6 @@ mod tests {
             .create_with_executor(&child_explicit, &pool)
             .await;
         let created = result.expect("create with executor should succeed");
-        assert_eq!(created.position, 2048.0);
+        assert_position_eq(created.position, 2048.0);
     }
 }

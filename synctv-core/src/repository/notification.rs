@@ -93,8 +93,8 @@ impl NotificationRepository {
         user_id: &UserId,
         query: &NotificationListQuery,
     ) -> Result<(Vec<Notification>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = query.pagination.limit().cast_signed();
+        let offset = query.pagination.offset().cast_signed();
 
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT id, user_id, type, title, content, data, is_read, created_at, updated_at, \

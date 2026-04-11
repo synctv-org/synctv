@@ -27,6 +27,18 @@ pub struct TsMuxer {
     packet_number: usize,
 }
 
+fn usize_to_u8_saturating(value: usize) -> u8 {
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+fn pid_high_bits(pid: u16) -> u8 {
+    u8::try_from((pid >> 8) & 0x1F).unwrap_or_default()
+}
+
+fn pid_low_byte(pid: u16) -> u8 {
+    u8::try_from(pid & 0x00FF).unwrap_or_default()
+}
+
 impl Default for TsMuxer {
     fn default() -> Self {
         Self::new()
@@ -153,10 +165,9 @@ impl TsMuxer {
         /*sync byte*/
         self.bytes_writer.write_u8(0x47)?; //0
                                            /*PID 13 bits*/
-        self.bytes_writer
-            .write_u8(0x40 | ((pid >> 8) as u8 & 0x1F))?; //1
+        self.bytes_writer.write_u8(0x40 | pid_high_bits(pid))?; //1
 
-        self.bytes_writer.write_u8(pid as u8)?; //2
+        self.bytes_writer.write_u8(pid_low_byte(pid))?; //2
 
         self.bytes_writer.write_u8(0x10 | continuity_counter)?;
 
@@ -167,7 +178,7 @@ impl TsMuxer {
         self.bytes_writer.write(payload)?;
 
         let left_size = ts::TS_PACKET_SIZE
-            .saturating_sub(payload.len() as u8)
+            .saturating_sub(usize_to_u8_saturating(payload.len()))
             .saturating_sub(5);
         for _ in 0..left_size {
             self.bytes_writer.write_u8(0xFF)?;
@@ -265,8 +276,8 @@ impl TsMuxer {
         ts_header.write_u8(0x47)?; //0
 
         /*PID 13 bits*/
-        ts_header.write_u8((stream_data.pid >> 8) as u8 & 0x1F)?; //1
-        ts_header.write_u8((stream_data.pid & 0xFF) as u8)?; //2
+        ts_header.write_u8(pid_high_bits(stream_data.pid))?; //1
+        ts_header.write_u8(pid_low_byte(stream_data.pid))?; //2
 
         /*continuity counter 4 bits*/
         ts_header.write_u8(0x10 | (stream_data.continuity_counter & 0x0F))?; //3
@@ -325,8 +336,13 @@ impl TsMuxer {
         // then stuffling bytes need to be filled in the adaptation field,
 
         let ts_header_length = ts_header.len();
-        let mut stuffing_length = define::TS_PACKET_SIZE as i32
-            - (ts_header_length + pes_header_length + payload_data_length) as i32;
+        let total_payload_length = ts_header_length + pes_header_length + payload_data_length;
+        let Some(mut stuffing_length) = define::TS_PACKET_SIZE.checked_sub(total_payload_length)
+        else {
+            return Ok(define::TS_PACKET_SIZE
+                .saturating_sub(ts_header_length)
+                .saturating_sub(pes_header_length));
+        };
 
         if stuffing_length > 0 {
             // Check adaptation field control bit (bit 5 of byte 3)
@@ -334,14 +350,14 @@ impl TsMuxer {
             let has_adaptation_field = ts_header.get(3).is_some_and(|b| (b & 0x20) > 0);
             if has_adaptation_field {
                 /*adaption filed length -- add 6 for pcr length*/
-                ts_header.add_u8_at(4, stuffing_length as u8)?;
+                ts_header.add_u8_at(4, usize_to_u8_saturating(stuffing_length))?;
             } else {
                 /*adaption field control*/
                 ts_header.or_u8_at(3, 0x20)?;
                 /*AF length，because it occupys one byte,so here sub one.*/
                 stuffing_length -= 1;
                 /*adaption filed length*/
-                ts_header.write_u8(stuffing_length as u8)?;
+                ts_header.write_u8(usize_to_u8_saturating(stuffing_length))?;
                 /*add flag*/
                 if stuffing_length >= 1 {
                     /*adaptation field flags flag occupies one byte, sub one.*/

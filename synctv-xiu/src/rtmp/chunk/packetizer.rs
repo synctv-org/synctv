@@ -1,7 +1,8 @@
 use {
     super::{
-        define::CHUNK_SIZE, errors::PackError, ChunkBasicHeader, ChunkHeader, ChunkInfo,
-        ChunkMessageHeader, ExtendTimestampType,
+        define::CHUNK_SIZE,
+        errors::{PackError, PackErrorValue},
+        ChunkBasicHeader, ChunkHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType,
     },
     crate::bytesio::{bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
     byteorder::{BigEndian, LittleEndian},
@@ -98,13 +99,19 @@ impl ChunkPacketizer {
 
     fn write_basic_header(&mut self, fmt: u8, csid: u32) -> Result<(), PackError> {
         if csid >= 64 + 255 {
+            let extended_csid =
+                u16::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
             self.writer.write_u8(fmt << 6 | 1)?;
-            self.writer.write_u16::<BigEndian>((csid - 64) as u16)?;
+            self.writer.write_u16::<BigEndian>(extended_csid)?;
         } else if csid >= 64 {
+            let extended_csid =
+                u8::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
             self.writer.write_u8(fmt << 6)?;
-            self.writer.write_u8((csid - 64) as u8)?;
+            self.writer.write_u8(extended_csid)?;
         } else {
-            self.writer.write_u8(fmt << 6 | csid as u8)?;
+            let basic_csid =
+                u8::try_from(csid).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
+            self.writer.write_u8(fmt << 6 | basic_csid)?;
         }
 
         Ok(())

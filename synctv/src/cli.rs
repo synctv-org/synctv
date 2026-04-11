@@ -142,7 +142,7 @@ impl CliConfigContext {
         };
 
         match cache.get_or_init(|| {
-            load_config_with_options(self.global.load_options(validate))
+            load_config_with_options(&self.global.load_options(validate))
                 .map_err(|error| error.to_string())
         }) {
             Ok(config) => Ok(config.clone()),
@@ -2091,9 +2091,9 @@ pub enum CompletionShell {
 pub async fn execute(cli: Cli) -> Result<()> {
     let cli = apply_root_global_overrides(cli);
     match cli.command {
-        Commands::Serve(serve) => execute_serve(serve).await,
+        Commands::Serve(serve) => Box::pin(execute_serve(serve)).await,
         Commands::Stop(stop) => execute_stop(stop).await,
-        Commands::Config(config) => execute_config(config).await,
+        Commands::Config(config) => execute_config(config),
         Commands::Db(db) => execute_db(db).await,
         Commands::User(user) => execute_user(user).await,
         Commands::Room(room) => execute_room(room).await,
@@ -2102,7 +2102,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Provider(provider) => execute_provider(provider).await,
         Commands::Settings(settings) => execute_settings(settings).await,
         Commands::System(system) => execute_system(system).await,
-        Commands::Completion(args) => execute_completion(args),
+        Commands::Completion(args) => {
+            execute_completion(&args);
+            Ok(())
+        }
         Commands::Version => {
             println!("{}", version_string());
             Ok(())
@@ -2299,8 +2302,8 @@ async fn execute_serve(args: ServeArgs) -> Result<()> {
     tracing::info!("SyncTV server starting...");
     tracing::info!("API address: {}", config.api_address());
 
-    let app = Application::build(config).await?;
-    app.run().await
+    let app = Box::pin(Application::build(config)).await?;
+    Box::pin(app.run()).await
 }
 
 async fn spawn_daemonized_serve(
@@ -2472,7 +2475,8 @@ fn daemon_log_path(config: &synctv_core::Config) -> Result<PathBuf> {
 
 fn daemon_runtime_dir(config: &synctv_core::Config) -> PathBuf {
     Path::new(&config.management.unix_socket_path)
-        .parent().map_or_else(default_management_runtime_dir, Path::to_path_buf)
+        .parent()
+        .map_or_else(default_management_runtime_dir, Path::to_path_buf)
 }
 
 async fn execute_stop(args: StopArgs) -> Result<()> {
@@ -2557,7 +2561,7 @@ fn stop_stream_disconnect_can_be_treated_as_success(
         || message.contains("transport error")
 }
 
-async fn execute_config(config_command: ConfigCommand) -> Result<()> {
+fn execute_config(config_command: ConfigCommand) -> Result<()> {
     let context = CliConfigContext::new(config_command.global.clone());
     match config_command.command {
         ConfigSubcommand::Validate(_) => {
@@ -3833,8 +3837,9 @@ fn format_management_status_error(
         tonic::Code::InvalidArgument => {
             format!("management {operation} failed: invalid request: {detail}")
         }
-        tonic::Code::NotFound => format!("management {operation} failed: {detail}"),
-        tonic::Code::AlreadyExists => format!("management {operation} failed: {detail}"),
+        tonic::Code::NotFound | tonic::Code::AlreadyExists | tonic::Code::Unknown => {
+            format!("management {operation} failed: {detail}")
+        }
         tonic::Code::PermissionDenied => {
             format!("management {operation} failed: permission denied: {detail}")
         }
@@ -3854,7 +3859,6 @@ fn format_management_status_error(
             format!("management {operation} failed: resource exhausted: {detail}")
         }
         tonic::Code::Internal => format!("management {operation} failed: internal error"),
-        tonic::Code::Unknown => format!("management {operation} failed: {detail}"),
         _ => format!("management {operation} failed: {}: {detail}", status.code()),
     };
 
@@ -4144,7 +4148,7 @@ fn print_toml(value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn execute_completion(args: CompletionArgs) -> Result<()> {
+fn execute_completion(args: &CompletionArgs) {
     let mut command = Cli::command();
     match args.shell {
         CompletionShell::Bash => print_completion(&mut command, clap_complete::Shell::Bash),
@@ -4155,7 +4159,6 @@ fn execute_completion(args: CompletionArgs) -> Result<()> {
         }
         CompletionShell::Elvish => print_completion(&mut command, clap_complete::Shell::Elvish),
     }
-    Ok(())
 }
 
 fn print_completion(command: &mut clap::Command, shell: clap_complete::Shell) {
@@ -5305,11 +5308,15 @@ where
     Ok(serde_json::to_value(value.to_human())?)
 }
 
+fn i64_to_i32(raw: i64) -> Option<i32> {
+    i32::try_from(raw).ok()
+}
+
 fn humanize_user_role(raw: i64) -> Option<String> {
     use synctv_proto::common::UserRole;
 
     Some(
-        match UserRole::try_from(raw as i32).ok()? {
+        match UserRole::try_from(i64_to_i32(raw)?).ok()? {
             UserRole::Unspecified => "unspecified",
             UserRole::User => "user",
             UserRole::Admin => "admin",
@@ -5323,7 +5330,7 @@ fn humanize_user_status(raw: i64) -> Option<String> {
     use synctv_proto::common::UserStatus;
 
     Some(
-        match UserStatus::try_from(raw as i32).ok()? {
+        match UserStatus::try_from(i64_to_i32(raw)?).ok()? {
             UserStatus::Unspecified => "unspecified",
             UserStatus::Active => "active",
             UserStatus::Pending => "pending",
@@ -5338,7 +5345,7 @@ fn humanize_room_status(raw: i64) -> Option<String> {
     use synctv_proto::common::RoomStatus;
 
     Some(
-        match RoomStatus::try_from(raw as i32).ok()? {
+        match RoomStatus::try_from(i64_to_i32(raw)?).ok()? {
             RoomStatus::Unspecified => "unspecified",
             RoomStatus::Active => "active",
             RoomStatus::Pending => "pending",
@@ -5353,7 +5360,7 @@ fn humanize_room_member_role(raw: i64) -> Option<String> {
     use synctv_proto::common::RoomMemberRole;
 
     Some(
-        match RoomMemberRole::try_from(raw as i32).ok()? {
+        match RoomMemberRole::try_from(i64_to_i32(raw)?).ok()? {
             RoomMemberRole::Unspecified => "unspecified",
             RoomMemberRole::Guest => "guest",
             RoomMemberRole::Member => "member",
@@ -5368,7 +5375,7 @@ fn humanize_provider_instance_status(raw: i64) -> Option<String> {
     use synctv_proto::admin::ProviderInstanceStatus;
 
     Some(
-        match ProviderInstanceStatus::try_from(raw as i32).ok()? {
+        match ProviderInstanceStatus::try_from(i64_to_i32(raw)?).ok()? {
             ProviderInstanceStatus::Unspecified => "unspecified",
             ProviderInstanceStatus::Connected => "connected",
             ProviderInstanceStatus::Disconnected => "disconnected",

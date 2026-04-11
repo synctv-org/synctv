@@ -153,7 +153,6 @@ impl LiveStreamingInfrastructure {
             );
             if let Err(e) = self.kick_stream(&room_id, &media_id).await {
                 error!("Failed to kick publisher for user {}: {}", user_id, e);
-                continue;
             }
         }
     }
@@ -206,7 +205,6 @@ impl LiveStreamingInfrastructure {
             }
             if let Err(e) = self.kick_stream(room_id, &media_id).await {
                 error!("Failed to kick publisher in room {}: {}", room_id, e);
-                continue;
             }
         }
     }
@@ -468,11 +466,8 @@ impl HlsStreamingApi {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
-        let publisher_info = match publisher_info {
-            Some(info) => info,
-            None => {
-                return Ok(None);
-            }
+        let Some(publisher_info) = publisher_info else {
+            return Ok(None);
         };
 
         // Check if publisher is local
@@ -481,7 +476,12 @@ impl HlsStreamingApi {
 
         if is_local {
             // Local publisher: read from local HLS stream registry
-            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
+            Ok(Self::generate_playlist_local(
+                infrastructure,
+                room_id,
+                media_id,
+                url_generator,
+            ))
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
             // Validate API address before attempting remote proxy
             let api_addr = publisher_info
@@ -511,7 +511,12 @@ impl HlsStreamingApi {
             Ok(playlist)
         } else {
             // No proxy configured, try local anyway (single-node mode)
-            Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
+            Ok(Self::generate_playlist_local(
+                infrastructure,
+                room_id,
+                media_id,
+                url_generator,
+            ))
         }
     }
 
@@ -524,7 +529,7 @@ impl HlsStreamingApi {
         room_id: &str,
         media_id: &str,
         url_generator: F,
-    ) -> Result<Option<String>>
+    ) -> Option<String>
     where
         F: Fn(&str) -> String,
     {
@@ -536,16 +541,16 @@ impl HlsStreamingApi {
                 Some(stream_state) => {
                     let state = stream_state.read();
                     // Use caller-provided URL generator for maximum flexibility
-                    Ok(Some(state.generate_m3u8(url_generator)))
+                    Some(state.generate_m3u8(url_generator))
                 }
                 None => {
                     // Stream not in registry yet — signal caller to return 404
-                    Ok(None)
+                    None
                 }
             }
         } else {
             // No HLS registry configured — signal caller to return 404
-            Ok(None)
+            None
         }
     }
 
@@ -584,11 +589,8 @@ impl HlsStreamingApi {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
-        let publisher_info = match publisher_info {
-            Some(info) => info,
-            None => {
-                return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
-            }
+        let Some(publisher_info) = publisher_info else {
+            return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
         };
 
         // Check if publisher is local

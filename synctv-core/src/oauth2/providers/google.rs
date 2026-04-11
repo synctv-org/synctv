@@ -24,8 +24,18 @@ pub struct GoogleConfig {
 pub struct GoogleProvider {
     client:
         Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
-    oauth2_http_client: Arc<oauth2::reqwest::Client>,
+    oauth2_http_client: Arc<super::OAuth2HttpClient>,
     http_client: Arc<Client>,
+}
+
+#[derive(Deserialize)]
+struct GoogleUser {
+    id: String,
+    name: String,
+    email: String,
+    #[serde(default)]
+    verified_email: bool,
+    picture: Option<String>,
 }
 
 impl GoogleProvider {
@@ -106,16 +116,6 @@ impl Provider for GoogleProvider {
             .map_err(|err| map_provider_http_error("Failed to fetch user info", err))?
             .error_for_status()
             .internal_with_err("Google API error")?;
-
-        #[derive(Deserialize)]
-        struct GoogleUser {
-            id: String,
-            name: String,
-            email: String,
-            #[serde(default)]
-            verified_email: bool,
-            picture: Option<String>,
-        }
 
         let user: GoogleUser = resp
             .json()

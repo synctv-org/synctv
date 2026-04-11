@@ -37,6 +37,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
+const RECV_TIMEOUT_MS: u64 = 65000;
+const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
+const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000;
+
+fn duration_ms_to_secs_f64(duration_ms: i64) -> f64 {
+    Duration::from_millis(u64::try_from(duration_ms.max(0)).unwrap_or(u64::MAX)).as_secs_f64()
+}
 
 /// Segment metadata for M3U8 generation
 #[derive(Debug, Clone)]
@@ -144,7 +151,7 @@ impl StreamProcessorState {
                 m3u8_content.push_str("#EXT-X-DISCONTINUITY\n");
             }
 
-            let duration_sec = segment.duration as f64 / 1000.0;
+            let duration_sec = duration_ms_to_secs_f64(segment.duration);
             let _ = writeln!(m3u8_content, "#EXTINF:{duration_sec:.3},");
 
             // Use closure to generate segment URL (allows custom auth, CDN URLs, etc)
@@ -816,12 +823,9 @@ impl StreamProcessor {
         // Now we use a timeout-based approach instead.
         // Must not be less than the silent publisher timeout (60s) to avoid
         // false stream-end detection while the publisher is still connected.
-        const RECV_TIMEOUT_MS: u64 = 65000; // 65 seconds of no data = stream ended
-
         // Throttle activity callbacks to avoid excessive overhead.
         // The silent publisher timeout is 60s, so recording every 10s is sufficient.
         let mut last_activity_record = Instant::now();
-        const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
 
         loop {
             match tokio::time::timeout(
@@ -968,7 +972,6 @@ impl StreamProcessor {
 
         // Detect DTS regression (timestamp going backward) which indicates dropped frames
         // or a stream discontinuity. Set the flag so the next segment gets #EXT-X-DISCONTINUITY.
-        const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000; // ignore sub-1s jitter
         if self.last_dts > 0 && dts < self.last_dts - DTS_REGRESSION_THRESHOLD_MS {
             tracing::warn!(
                 "DTS regression detected for {}/{}: last_dts={}, current_dts={} — marking discontinuity",

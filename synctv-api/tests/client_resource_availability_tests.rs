@@ -96,16 +96,46 @@ fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) 
     }
 }
 
-async fn create_client_api_fixture() -> (
-    TestContainer,
-    ClientApiImpl,
-    UserRepository,
-    PlaylistRepository,
-    MediaRepository,
-    User,
-    User,
-    synctv_core::models::Room,
-) {
+struct ClientApiFixture {
+    postgres: TestContainer,
+    pool: sqlx::PgPool,
+    client_api: ClientApiImpl,
+    user_repo: UserRepository,
+    playlist_repo: PlaylistRepository,
+    media_repo: MediaRepository,
+    owner: User,
+    creator: User,
+    room: synctv_core::models::Room,
+}
+
+impl ClientApiFixture {
+    async fn cleanup(self) {
+        let Self {
+            postgres,
+            pool,
+            client_api,
+            user_repo,
+            playlist_repo,
+            media_repo,
+            owner,
+            creator,
+            room,
+        } = self;
+
+        drop(client_api);
+        drop(user_repo);
+        drop(playlist_repo);
+        drop(media_repo);
+        drop(owner);
+        drop(creator);
+        drop(room);
+
+        pool.close().await;
+        postgres.cleanup().await;
+    }
+}
+
+async fn create_client_api_fixture() -> ClientApiFixture {
     let (postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
@@ -147,8 +177,9 @@ async fn create_client_api_fixture() -> (
         None,
     );
 
-    (
+    ClientApiFixture {
         postgres,
+        pool,
         client_api,
         user_repo,
         playlist_repo,
@@ -156,14 +187,23 @@ async fn create_client_api_fixture() -> (
         owner,
         creator,
         room,
-    )
+    }
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlist_items_root_includes_unavailable_resources_and_marks_availability() {
-    let (_postgres, client_api, user_repo, playlist_repo, media_repo, owner, creator, room) =
-        create_client_api_fixture().await;
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        user_repo,
+        playlist_repo,
+        media_repo,
+        owner,
+        creator,
+        room,
+        ..
+    } = &fixture;
 
     let available_playlist = playlist_repo
         .create(&make_playlist(&room.id, &owner.id, "available-folder", 1))
@@ -256,13 +296,24 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         unavailable_file.availability,
         synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
     );
+
+    fixture.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlist_items_root_availability_filter_updates_counts_and_pagination() {
-    let (_postgres, client_api, user_repo, playlist_repo, media_repo, owner, creator, room) =
-        create_client_api_fixture().await;
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        user_repo,
+        playlist_repo,
+        media_repo,
+        owner,
+        creator,
+        room,
+        ..
+    } = &fixture;
 
     playlist_repo
         .create(&make_playlist(&room.id, &owner.id, "available-folder", 1))
@@ -345,13 +396,23 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
     assert!(page_two.playlists.is_empty());
     assert_eq!(page_two.media.len(), 1);
     assert_eq!(page_two.media[0].id, unavailable_media.id.as_str());
+
+    fixture.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlists_availability_filter_updates_total_and_response_items() {
-    let (_postgres, client_api, user_repo, playlist_repo, _media_repo, owner, creator, room) =
-        create_client_api_fixture().await;
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        user_repo,
+        playlist_repo,
+        owner,
+        creator,
+        room,
+        ..
+    } = &fixture;
 
     playlist_repo
         .create(&make_playlist(&room.id, &owner.id, "available-folder", 1))
@@ -399,4 +460,6 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         response.playlists[0].availability,
         synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
     );
+
+    fixture.cleanup().await;
 }

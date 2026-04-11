@@ -28,7 +28,7 @@ use {
     utils::Uuid,
 };
 
-fn map_task_join_error(task_name: &str, error: tokio::task::JoinError) -> StreamHubError {
+fn map_task_join_error(task_name: &str, error: &tokio::task::JoinError) -> StreamHubError {
     let detail = if error.is_panic() {
         format!("{task_name} panicked")
     } else if error.is_cancelled() {
@@ -127,11 +127,13 @@ pub async fn subscribe_with_rollback_on_timeout(
     )
     .await?;
 
-    if let Ok(result) = tokio::time::timeout(timeout, result_receiver).await { result
-    .map_err(|_| StreamHubError {
-        value: StreamHubErrorValue::SendError,
-    })?
-    .map_err(SubscribeWithRollbackError::StreamHub) } else {
+    if let Ok(result) = tokio::time::timeout(timeout, result_receiver).await {
+        result
+            .map_err(|_| StreamHubError {
+                value: StreamHubErrorValue::SendError,
+            })?
+            .map_err(SubscribeWithRollbackError::StreamHub)
+    } else {
         if let Err(err) = send_event_with_backpressure_timeout(
             sender,
             StreamHubEvent::UnSubscribe { identifier, info },
@@ -769,7 +771,7 @@ impl StreamDataTransceiver {
             tasks.spawn(async move {
                 handle
                     .await
-                    .map_err(|error| map_task_join_error("frame loop", error))
+                    .map_err(|error| map_task_join_error("frame loop", &error))
             });
         }
 
@@ -785,7 +787,7 @@ impl StreamDataTransceiver {
             tasks.spawn(async move {
                 handle
                     .await
-                    .map_err(|error| map_task_join_error("packet loop", error))
+                    .map_err(|error| map_task_join_error("packet loop", &error))
             });
         }
 
@@ -798,7 +800,7 @@ impl StreamDataTransceiver {
         tasks.spawn(async move {
             stats_handle
                 .await
-                .map_err(|error| map_task_join_error("statistics loop", error))
+                .map_err(|error| map_task_join_error("statistics loop", &error))
         });
 
         let event_handle = Self::receive_event_loop(
@@ -814,7 +816,7 @@ impl StreamDataTransceiver {
         );
         let event_result = event_handle
             .await
-            .map_err(|error| map_task_join_error("event loop", error));
+            .map_err(|error| map_task_join_error("event loop", &error));
         tasks.abort_all();
 
         let mut first_error = event_result.err();
@@ -828,7 +830,7 @@ impl StreamDataTransceiver {
                 }
                 Err(error) => {
                     if first_error.is_none() && !error.is_cancelled() {
-                        first_error = Some(map_task_join_error("transceiver child task", error));
+                        first_error = Some(map_task_join_error("transceiver child task", &error));
                     }
                 }
             }
@@ -969,10 +971,12 @@ impl StreamsHub {
                         }
                     };
 
-                    let result = match self
-                        .publish(identifier.clone(), info.pub_type, receiver, stream_handler)
-                        .await
-                    {
+                    let result = match self.publish(
+                        identifier.clone(),
+                        info.pub_type,
+                        receiver,
+                        stream_handler,
+                    ) {
                         Ok(statistic_data_sender) => {
                             Ok((frame_sender, packet_sender, Some(statistic_data_sender)))
                         }
@@ -1099,7 +1103,7 @@ impl StreamsHub {
     }
 
     //publish a stream
-    pub async fn publish(
+    pub fn publish(
         &mut self,
         identifier: StreamIdentifier,
         pub_type: define::PublishType,

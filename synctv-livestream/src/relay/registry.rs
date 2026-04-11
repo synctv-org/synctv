@@ -16,11 +16,14 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 /// TTL multiplier: TTL = `HEARTBEAT_INTERVAL_SECS` * `TTL_MULTIPLIER`.
 /// A multiplier of 5 means up to 4 consecutive missed heartbeats are tolerated
 /// before the registry entry expires.
-const TTL_MULTIPLIER: u64 = 5;
+const HEARTBEAT_INTERVAL_SECS_I64: i64 = 60;
+const TTL_MULTIPLIER_U64: u64 = 5;
+const TTL_MULTIPLIER_I64: i64 = 5;
 
 /// Publisher TTL in seconds, derived from heartbeat interval.
 /// This is the Redis key expiration set on publisher entries.
-pub const PUBLISHER_TTL_SECS: i64 = (HEARTBEAT_INTERVAL_SECS * TTL_MULTIPLIER) as i64;
+pub const PUBLISHER_TTL_SECS_U64: u64 = HEARTBEAT_INTERVAL_SECS * TTL_MULTIPLIER_U64;
+pub const PUBLISHER_TTL_SECS: i64 = HEARTBEAT_INTERVAL_SECS_I64 * TTL_MULTIPLIER_I64;
 
 /// Default timeout for Redis operations (5 seconds).
 /// This prevents indefinite blocking on Redis server issues or network problems.
@@ -51,7 +54,7 @@ where
 // Compile-time safety check: TTL must be at least 3x the heartbeat interval
 // to tolerate transient network issues.
 const _: () = assert!(
-    PUBLISHER_TTL_SECS as u64 >= HEARTBEAT_INTERVAL_SECS * 3,
+    PUBLISHER_TTL_SECS_U64 >= HEARTBEAT_INTERVAL_SECS * 3,
     "PUBLISHER_TTL_SECS must be at least 3x HEARTBEAT_INTERVAL_SECS"
 );
 
@@ -328,7 +331,8 @@ impl StreamRegistry {
         .map_err(|e| anyhow!("Lua script execution failed: {e}"))?;
 
         let registered = result[0] == 1;
-        let actual_epoch = result[1] as u64;
+        let actual_epoch = u64::try_from(result[1])
+            .map_err(|_| anyhow!("Lua script returned invalid epoch: {}", result[1]))?;
 
         if registered {
             info!(
@@ -426,7 +430,9 @@ impl StreamRegistry {
 
         // Use -1 to mean "no epoch check" (unconditional delete)
         let epoch_arg: i64 = match expected_epoch {
-            Some(e) => e as i64,
+            Some(e) => {
+                i64::try_from(e).map_err(|_| anyhow!("Epoch {e} exceeds Redis Lua i64 range"))?
+            }
             None => -1,
         };
 
@@ -826,9 +832,8 @@ impl StreamRegistry {
             for key in keys {
                 // Extract room_id and media_id from key: "stream:publisher:{room_id}:{media_id}"
                 let publisher_prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:"));
-                let key_suffix = match key.strip_prefix(&publisher_prefix) {
-                    Some(s) => s,
-                    None => continue,
+                let Some(key_suffix) = key.strip_prefix(&publisher_prefix) else {
+                    continue;
                 };
                 let (room_id, media_id) = match key_suffix.split_once(':') {
                     Some((r, m)) => (r.to_string(), m.to_string()),

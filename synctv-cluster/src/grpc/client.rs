@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use moka::sync::Cache;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
@@ -172,7 +173,7 @@ impl ClusterClient {
     }
 
     /// Create an authenticated client for a given channel
-    fn make_client(&self, channel: Channel) -> ClusterServiceClient<Channel> {
+    fn make_client(channel: Channel) -> ClusterServiceClient<Channel> {
         ClusterServiceClient::new(channel)
     }
 
@@ -311,8 +312,6 @@ impl ClusterClient {
         // Fan out to all remote nodes in parallel using FuturesUnordered
         // so that on aggregate timeout we can collect already-completed results
         // instead of discarding everything.
-        use futures::stream::{FuturesUnordered, StreamExt};
-
         let mut futs: FuturesUnordered<_> = query_nodes
             .iter()
             .map(|node| {
@@ -452,7 +451,7 @@ impl ClusterClient {
         }
 
         let channel = self.get_channel(node_id, address).await?;
-        let mut client = self.make_client(channel);
+        let mut client = Self::make_client(channel);
 
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids });
         self.attach_secret(&mut request)?;
@@ -510,7 +509,7 @@ impl ClusterClient {
         }
 
         let channel = self.get_channel(node_id, address).await?;
-        let mut client = self.make_client(channel);
+        let mut client = Self::make_client(channel);
 
         let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });
         self.attach_secret(&mut request)?;

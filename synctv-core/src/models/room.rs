@@ -78,17 +78,12 @@ impl RoomStatus {
             (a, b) if *a == *b => true,
 
             // Pending can transition to Active (approved) or Rejected.
-            (Self::Pending, Self::Active) => true,
-            (Self::Pending, Self::Rejected) => true,
-
             // Rejected rooms may be approved later.
-            (Self::Rejected, Self::Active) => true,
-
             // Active can transition to Closed (room closed)
-            (Self::Active, Self::Closed) => true,
-
             // Closed can transition to Active (room reopened)
-            (Self::Closed, Self::Active) => true,
+            (Self::Pending | Self::Rejected | Self::Closed, Self::Active)
+            | (Self::Pending, Self::Rejected)
+            | (Self::Active, Self::Closed) => true,
 
             // All other transitions are invalid
             _ => false,
@@ -138,11 +133,11 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomStatus {
 impl From<synctv_proto::common::RoomStatus> for RoomStatus {
     fn from(value: synctv_proto::common::RoomStatus) -> Self {
         match value {
-            synctv_proto::common::RoomStatus::Active => Self::Active,
             synctv_proto::common::RoomStatus::Pending => Self::Pending,
             synctv_proto::common::RoomStatus::Rejected => Self::Rejected,
             synctv_proto::common::RoomStatus::Closed => Self::Closed,
-            synctv_proto::common::RoomStatus::Unspecified => Self::Active,
+            synctv_proto::common::RoomStatus::Active
+            | synctv_proto::common::RoomStatus::Unspecified => Self::Active,
         }
     }
 }

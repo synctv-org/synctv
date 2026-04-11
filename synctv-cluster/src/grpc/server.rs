@@ -15,6 +15,10 @@ use super::ClusterAuthInterceptor;
 use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
 use crate::sync::connection_manager::ConnectionManager;
 
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 /// Cluster gRPC service
 ///
 /// Handles cluster discovery and state synchronization.
@@ -104,7 +108,7 @@ impl ClusterServer {
     ///
     /// Proto enum `NodeStatus` mapping (see `synctv.cluster.proto`):
     ///   0 = Unknown, 1 = Active, 2 = Draining, 3 = Offline
-    fn discovery_to_proto_node(&self, discovery: &DiscoveryNodeInfo) -> NodeInfo {
+    fn discovery_to_proto_node(discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
             address: discovery.api_address.clone(),
@@ -154,10 +158,8 @@ impl ClusterService for ClusterServer {
                 synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                     .with_label_values(&["cluster", "get_nodes", "ok"])
                     .inc();
-                let proto_nodes: Vec<NodeInfo> = nodes
-                    .iter()
-                    .map(|n| self.discovery_to_proto_node(n))
-                    .collect();
+                let proto_nodes: Vec<NodeInfo> =
+                    nodes.iter().map(Self::discovery_to_proto_node).collect();
 
                 Ok(Response::new(GetNodesResponse { nodes: proto_nodes }))
             }
@@ -321,9 +323,10 @@ impl ClusterService for ClusterServer {
                 let now_unix = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs() as i64;
-                let connected_secs_ago = conn.connected_at.elapsed().as_secs() as i64;
-                let last_activity_secs_ago = conn.last_activity.elapsed().as_secs() as i64;
+                    .as_secs();
+                let now_unix = u64_to_i64(now_unix);
+                let connected_secs_ago = u64_to_i64(conn.connected_at.elapsed().as_secs());
+                let last_activity_secs_ago = u64_to_i64(conn.last_activity.elapsed().as_secs());
 
                 RoomConnection {
                     user_id: conn.user_id.as_str().to_string(),

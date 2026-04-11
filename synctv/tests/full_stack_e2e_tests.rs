@@ -195,7 +195,7 @@ async fn shared_server() -> &'static SharedServer {
             // independently until the process exits.
             let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
             DEDICATED_RT.spawn(async move {
-                let app = Application::build_with_options(
+                let app = Box::pin(Application::build_with_options(
                     config,
                     ApplicationBuildOptions {
                         provider_test_address_overrides: HashMap::from([(
@@ -206,11 +206,11 @@ async fn shared_server() -> &'static SharedServer {
                             TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
                         ),
                     },
-                )
+                ))
                 .await
                 .expect("shared application build");
                 // `pending()` means the server never receives a shutdown signal.
-                app.run_with_shutdown_signal(std::future::pending()).await
+                Box::pin(app.run_with_shutdown_signal(std::future::pending())).await
             });
 
             let api_base_url = format!("http://127.0.0.1:{api_port}");
@@ -815,7 +815,7 @@ async fn recv_server_message(
                 return Some(ServerMessage::decode(bytes.as_ref()).expect("decode server message"));
             }
             Ok(tungstenite::Message::Close(_)) => return None,
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(error) => panic!("websocket read failed: {error}"),
         }
     }
@@ -859,12 +859,14 @@ async fn recv_grpc_server_message_skip_membership(
 ) -> Option<synctv_proto::client::ServerMessage> {
     loop {
         let message = recv_grpc_server_message(stream).await?;
-        match &message.message {
+        if !matches!(
+            &message.message,
             Some(
                 synctv_proto::client::server_message::Message::UserJoined(_)
-                | synctv_proto::client::server_message::Message::UserLeft(_),
-            ) => continue,
-            _ => return Some(message),
+                    | synctv_proto::client::server_message::Message::UserLeft(_),
+            )
+        ) {
+            return Some(message);
         }
     }
 }
@@ -2115,7 +2117,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
-    let app = Application::build_with_options(
+    let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
             credential_encryption_hex_key_override: Some(
@@ -2123,15 +2125,15 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
             ),
             ..ApplicationBuildOptions::default()
         },
-    )
+    ))
     .await
     .expect("unix management application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        app.run_with_shutdown_signal(async move {
+        Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
-        })
+        }))
         .await
     });
 
@@ -2175,12 +2177,11 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without_overrides() {
-    let socket_guard = match DefaultManagementSocketGuard::acquire()
+    let Some(socket_guard) = DefaultManagementSocketGuard::acquire()
         .await
         .expect("default management socket guard should inspect the default path")
-    {
-        Some(guard) => guard,
-        None => return,
+    else {
+        return;
     };
 
     let (postgres, database_url) = create_test_database_url_with_label(
@@ -2203,7 +2204,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     config.management = synctv_core::config::ManagementConfig::default();
     config.management.enable_reflection = false;
 
-    let app = Application::build_with_options(
+    let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
             credential_encryption_hex_key_override: Some(
@@ -2211,15 +2212,15 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
             ),
             ..ApplicationBuildOptions::default()
         },
-    )
+    ))
     .await
     .expect("default unix management application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        app.run_with_shutdown_signal(async move {
+        Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
-        })
+        }))
         .await
     });
 
@@ -2289,7 +2290,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     let config_yaml = serde_yaml::to_string(&config).expect("config should serialize to yaml");
     std::fs::write(&config_path, config_yaml).expect("config file should be written");
 
-    let app = Application::build_with_options(
+    let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
             credential_encryption_hex_key_override: Some(
@@ -2297,15 +2298,15 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
             ),
             ..ApplicationBuildOptions::default()
         },
-    )
+    ))
     .await
     .expect("unix management auth application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        app.run_with_shutdown_signal(async move {
+        Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
-        })
+        }))
         .await
     });
 
@@ -2375,7 +2376,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
-    let app = Application::build_with_options(
+    let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
             credential_encryption_hex_key_override: Some(
@@ -2383,11 +2384,11 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
             ),
             ..ApplicationBuildOptions::default()
         },
-    )
+    ))
     .await
     .expect("stop test application should build");
 
-    let server_handle = tokio::spawn(async move { app.run().await });
+    let server_handle = tokio::spawn(async move { Box::pin(app.run()).await });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
     wait_until_live(&api_base_url).await;
@@ -2449,7 +2450,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     );
     configure_management_unix_socket(&mut config, &socket_path);
 
-    let app = Application::build_with_options(
+    let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
             credential_encryption_hex_key_override: Some(
@@ -2457,11 +2458,11 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
             ),
             ..ApplicationBuildOptions::default()
         },
-    )
+    ))
     .await
     .expect("force stop test application should build");
 
-    let server_handle = tokio::spawn(async move { app.run().await });
+    let server_handle = tokio::spawn(async move { Box::pin(app.run()).await });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
     wait_until_live(&api_base_url).await;

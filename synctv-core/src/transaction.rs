@@ -181,7 +181,7 @@ pub struct UnitOfWork {
     rolled_back: bool,
     /// For testing: simulate having an active uncommitted transaction
     #[cfg(test)]
-    _test_simulate_uncommitted: bool,
+    test_simulate_uncommitted: bool,
 }
 
 impl UnitOfWork {
@@ -193,7 +193,7 @@ impl UnitOfWork {
             committed: false,
             rolled_back: false,
             #[cfg(test)]
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         })
     }
 
@@ -247,7 +247,7 @@ impl UnitOfWork {
             tx: None,
             committed: false,
             rolled_back: false,
-            _test_simulate_uncommitted: true,
+            test_simulate_uncommitted: true,
         }
     }
 
@@ -269,13 +269,13 @@ impl Drop for UnitOfWork {
     fn drop(&mut self) {
         // Check if the transaction needs explicit handling
         // In production: tx.is_some() means we have an uncommitted transaction
-        // In testing: _test_simulate_uncommitted simulates having an uncommitted tx
+        // In testing: test_simulate_uncommitted simulates having an uncommitted tx
         #[cfg(not(test))]
         let needs_handling = self.tx.is_some() && !self.is_handled();
 
         #[cfg(test)]
         let needs_handling =
-            (self.tx.is_some() || self._test_simulate_uncommitted) && !self.is_handled();
+            (self.tx.is_some() || self.test_simulate_uncommitted) && !self.is_handled();
 
         // Transaction was not explicitly committed/rolled back.
         // sqlx will automatically rollback when the Transaction is dropped,
@@ -341,7 +341,7 @@ mod tests {
             tx: None,
             committed: false,
             rolled_back: false,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         let result = uow.transaction();
         assert!(result.is_err());
@@ -355,7 +355,7 @@ mod tests {
             tx: None,
             committed: false,
             rolled_back: false,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         assert!(!uow.is_active());
     }
@@ -367,7 +367,7 @@ mod tests {
             tx: None,
             committed: true,
             rolled_back: false,
-            _test_simulate_uncommitted: true, // Simulates having had a transaction
+            test_simulate_uncommitted: true, // Simulates having had a transaction
         };
         drop(uow); // Should not panic because committed = true
     }
@@ -379,7 +379,7 @@ mod tests {
             tx: None,
             committed: false,
             rolled_back: true,
-            _test_simulate_uncommitted: true, // Simulates having had a transaction
+            test_simulate_uncommitted: true, // Simulates having had a transaction
         };
         drop(uow); // Should not panic because rolled_back = true
     }
@@ -513,7 +513,7 @@ mod tests {
             tx: None,
             committed: true,
             rolled_back: false,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         assert!(uow.is_handled());
 
@@ -522,7 +522,7 @@ mod tests {
             tx: None,
             committed: false,
             rolled_back: true,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         assert!(uow.is_handled());
 
@@ -531,7 +531,7 @@ mod tests {
             tx: None,
             committed: false,
             rolled_back: false,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         assert!(!uow.is_handled());
 
@@ -540,7 +540,7 @@ mod tests {
             tx: None,
             committed: true,
             rolled_back: true,
-            _test_simulate_uncommitted: false,
+            test_simulate_uncommitted: false,
         };
         assert!(uow.is_handled());
     }

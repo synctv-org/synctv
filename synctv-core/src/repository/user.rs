@@ -444,14 +444,14 @@ impl UserRepository {
     /// This is used by both count and list queries to avoid duplicating bind logic.
     fn bind_user_filters<'q, O>(
         mut qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
-        search_pattern: &'q Option<String>,
-        status_enum: &'q Option<crate::models::UserStatus>,
-        role_enum: &'q Option<crate::models::UserRole>,
+        search_pattern: Option<&'q String>,
+        status_enum: Option<&'q crate::models::UserStatus>,
+        role_enum: Option<&'q crate::models::UserRole>,
     ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
     where
         O: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
     {
-        if let Some(ref pattern) = search_pattern {
+        if let Some(pattern) = search_pattern {
             qb = qb.bind(pattern);
         }
         if let Some(status) = status_enum {
@@ -465,8 +465,8 @@ impl UserRepository {
 
     /// List users with pagination
     pub async fn list(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = i64::try_from(query.pagination.limit()).unwrap_or(i64::MAX);
+        let offset = i64::try_from(query.pagination.offset()).unwrap_or(i64::MAX);
 
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
 
@@ -506,7 +506,12 @@ impl UserRepository {
         let list_qb = sqlx::query_as::<_, User>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let list_qb = Self::bind_user_filters(list_qb, &search_pattern, &query.status, &query.role);
+        let list_qb = Self::bind_user_filters(
+            list_qb,
+            search_pattern.as_ref(),
+            query.status.as_ref(),
+            query.role.as_ref(),
+        );
         let users: Vec<User> = list_qb.fetch_all(&self.pool).await?;
 
         Ok((users, count))
@@ -514,8 +519,8 @@ impl UserRepository {
 
     /// List admin-capable users (root + admin) with pagination.
     pub async fn list_admins(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        let limit = query.pagination.limit() as i64;
-        let offset = query.pagination.offset() as i64;
+        let limit = i64::try_from(query.pagination.limit()).unwrap_or(i64::MAX);
+        let offset = i64::try_from(query.pagination.offset()).unwrap_or(i64::MAX);
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
         let order_by = Self::build_order_by(query);
 

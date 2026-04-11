@@ -496,21 +496,18 @@ impl SliceCache {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard =
-            if let Ok(guard) = tokio::time::timeout(Duration::from_secs(5), lock.lock()).await {
-                guard
-            } else {
-                // Lock acquisition timed out -- serve stale data if available,
-                // otherwise return an error.
-                if let Some(entry) = self.backend.get(&key).await {
-                    if entry.is_stale(self.config.stale_max_age) {
-                        return Ok((entry.data, CacheStatus::Stale));
-                    }
+        let Ok(_guard) = tokio::time::timeout(Duration::from_secs(5), lock.lock()).await else {
+            // Lock acquisition timed out -- serve stale data if available,
+            // otherwise return an error.
+            if let Some(entry) = self.backend.get(&key).await {
+                if entry.is_stale(self.config.stale_max_age) {
+                    return Ok((entry.data, CacheStatus::Stale));
                 }
-                return Err(anyhow::anyhow!(
-                    "Cache lock timeout for slice {slice_index} (possible upstream hang)",
-                ));
-            };
+            }
+            return Err(anyhow::anyhow!(
+                "Cache lock timeout for slice {slice_index} (possible upstream hang)",
+            ));
+        };
 
         // Double-check after acquiring lock.
         if let Some(entry) = self.backend.get(&key).await {

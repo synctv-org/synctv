@@ -11,6 +11,7 @@
 //! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
 //!   Redis. Uses `moka::sync::Cache` with TTL-based expiry and bounded capacity.
 
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -144,7 +145,6 @@ impl OAuthStateStore for RedisOAuthStateStore {
             serde_json::to_string(state).internal_with_err("Failed to serialize OAuth2 state")?;
 
         let mut conn = self.get_conn().await;
-        use redis::AsyncCommands;
         let _: () = self
             .run_redis_op(
                 "store OAuth2 state in Redis",
@@ -303,6 +303,7 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
 
 /// Default TTL for `OAuth2` states (5 minutes)
 const OAUTH2_STATE_TTL_SECONDS: u64 = 300;
+const OAUTH2_STATE_TTL_SECONDS_I64: i64 = 300;
 
 /// `OAuth2` state (for CSRF protection and PKCE during authorization flow)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -465,7 +466,7 @@ impl OAuth2Service {
                 // This provides an additional layer of protection even if the storage backend
                 // fails to properly enforce TTL (e.g., Redis downgraded to in-memory store).
                 let age = chrono::Utc::now().signed_duration_since(state.created_at);
-                if age.num_seconds() > OAUTH2_STATE_TTL_SECONDS as i64 {
+                if age.num_seconds() > OAUTH2_STATE_TTL_SECONDS_I64 {
                     debug!(
                         "OAuth2 state expired based on created_at (age: {}s, max: {}s)",
                         age.num_seconds(),
@@ -907,8 +908,10 @@ impl OAuth2Service {
             return Ok((mapping.user_id, false));
         }
 
-        let (base_username, candidates) = user_service
-            .oauth2_username_candidates(&user_info.provider_user_id, &user_info.username)?;
+        let (base_username, candidates) = UserService::oauth2_username_candidates(
+            &user_info.provider_user_id,
+            &user_info.username,
+        )?;
         let random_password = synctv_common::snanoid!(32);
         let password_hash = crate::service::auth::hash_password(&random_password).await?;
         let user_email = user_info.email.clone();
@@ -976,7 +979,6 @@ impl OAuth2Service {
                         .internal_with_err(
                             "Failed to roll back OAuth2 user savepoint after username collision",
                         )?;
-                    continue;
                 }
                 Err(err) => {
                     sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
@@ -2331,7 +2333,7 @@ mod tests {
         // Create a state just past the TTL boundary (TTL + 1 second ago)
         // This ensures the test is deterministic regardless of execution timing
         let past_boundary_time =
-            chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS as i64 + 1);
+            chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS_I64 + 1);
         let state = OAuth2State {
             instance_name: "github".to_string(),
             redirect_url: None,

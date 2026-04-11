@@ -23,11 +23,54 @@ struct AddMediaBatchBuildResult {
 }
 const DEFAULT_MEDIA_TITLE: &str = "Unknown";
 
-pub(crate) fn resolve_add_media_provider_instance(
-    provider_instance_name: String,
-) -> Result<String, ApiError> {
-    let trimmed = provider_instance_name.trim();
-    Ok(trimmed.to_string())
+fn page_i32_to_usize(value: i32) -> usize {
+    usize::try_from(value.max(1)).unwrap_or(usize::MAX)
+}
+
+fn page_size_i32_to_usize(value: i32, max: i32) -> usize {
+    usize::try_from(value.clamp(1, max)).unwrap_or(usize::MAX)
+}
+
+fn page_i32_to_u32(value: i32) -> u32 {
+    value.max(1).cast_unsigned()
+}
+
+fn page_size_i32_to_u32(value: i32, max: i32) -> u32 {
+    value.clamp(1, max).cast_unsigned()
+}
+
+fn i64_to_usize_saturating(value: i64) -> usize {
+    if value.is_negative() {
+        0
+    } else {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+}
+
+fn usize_to_i32_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn i64_to_i32_saturating(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn resolve_add_media_provider_instance(provider_instance_name: &str) -> String {
+    provider_instance_name.trim().to_string()
 }
 
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
@@ -173,7 +216,7 @@ pub(crate) fn build_add_media_request(
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
     };
 
-    let provider_instance_name = resolve_add_media_provider_instance(provider_instance_name)?;
+    let provider_instance_name = resolve_add_media_provider_instance(&provider_instance_name);
 
     Ok(CoreAddMediaRequest {
         playlist_id,
@@ -298,7 +341,7 @@ impl ClientApiImpl {
         req: crate::proto::client::AddMediaRequest,
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let service_req = build_add_media_request(req)?;
         let playlist_id = service_req.playlist_id.clone();
         let mut cluster_events = self
@@ -311,13 +354,15 @@ impl ClientApiImpl {
                 .media_service()
                 .count_playlist_media(playlist_id)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         } else {
             self.room_service
                 .media_service()
                 .count_room_root_media(&rid)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         };
         if existing_count >= Self::MAX_PLAYLIST_SIZE {
             return Err(ApiError::InvalidInput(format!(
@@ -378,7 +423,7 @@ impl ClientApiImpl {
         req: crate::proto::client::DeleteEntriesRequest,
     ) -> Result<crate::proto::client::DeleteEntriesResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let (service_req, media_id_strings) = build_delete_entries_request(req)?;
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
         let cluster_events = self
@@ -426,8 +471,8 @@ impl ClientApiImpl {
         }
 
         Ok(crate::proto::client::DeleteEntriesResponse {
-            deleted_playlists: result.deleted_playlists as i32,
-            deleted_media: result.deleted_media as i32,
+            deleted_playlists: usize_to_i32_saturating(result.deleted_playlists),
+            deleted_media: usize_to_i32_saturating(result.deleted_media),
         })
     }
 
@@ -439,7 +484,7 @@ impl ClientApiImpl {
         req: crate::proto::client::EditMediaRequest,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let service_req = build_edit_media_request(req)?;
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
         let mut cluster_events = self
@@ -494,7 +539,7 @@ impl ClientApiImpl {
         room_id: &str,
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
         let mut cluster_events = self
             .reserve_media_cluster_events(
@@ -548,7 +593,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,
-            deleted_count: result.deleted_count as i32,
+            deleted_count: i64_to_i32_saturating(result.deleted_count),
         })
     }
 
@@ -566,7 +611,7 @@ impl ClientApiImpl {
         req: crate::proto::client::AddMediaBatchRequest,
     ) -> Result<crate::proto::client::AddMediaBatchResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let AddMediaBatchBuildResult { items, playlist_id } = build_add_media_batch_request(req)?;
         let cluster_events = self
             .reserve_media_cluster_events(
@@ -579,13 +624,15 @@ impl ClientApiImpl {
                 .media_service()
                 .count_playlist_media(playlist_id)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         } else {
             self.room_service
                 .media_service()
                 .count_room_root_media(&rid)
                 .await
-                .map_err(ApiError::from)? as usize
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?
         };
         let new_total = existing_count + items.len();
         if new_total > Self::MAX_PLAYLIST_SIZE {
@@ -650,7 +697,7 @@ impl ClientApiImpl {
         req: crate::proto::client::MoveMediaRequest,
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let service_req = build_move_media_request(req)?;
 
         self.room_service
@@ -675,7 +722,7 @@ impl ClientApiImpl {
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
-            moved_count: media.len() as i32,
+            moved_count: usize_to_i32_saturating(media.len()),
             media: media.iter().map(media_to_proto).collect(),
         })
     }
@@ -695,7 +742,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -713,8 +760,8 @@ impl ClientApiImpl {
             }
             let playlist_query = CorePlaylistListQuery {
                 pagination: synctv_core::models::PageParams::new(
-                    Some(req.page.max(1) as u32),
-                    Some(req.page_size.clamp(1, 100) as u32),
+                    Some(page_i32_to_u32(req.page)),
+                    Some(page_size_i32_to_u32(req.page_size, 100)),
                 ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -726,8 +773,8 @@ impl ClientApiImpl {
             };
             let media_query = CoreMediaListQuery {
                 pagination: synctv_core::models::PageParams::new(
-                    Some(req.page.max(1) as u32),
-                    Some(req.page_size.clamp(1, 100) as u32),
+                    Some(page_i32_to_u32(req.page)),
+                    Some(page_size_i32_to_u32(req.page_size, 100)),
                 ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -740,15 +787,17 @@ impl ClientApiImpl {
                 .room_service
                 .count_client_playlists(&rid, None, &playlist_query)
                 .await
-                .map_err(ApiError::from)? as usize;
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?;
             let file_count = self
                 .room_service
                 .count_client_media(&rid, None, &media_query)
                 .await
-                .map_err(ApiError::from)? as usize;
+                .map_err(ApiError::from)
+                .map(i64_to_usize_saturating)?;
             let total = folder_count + file_count;
-            let page_size = req.page_size.clamp(1, 100) as usize;
-            let skip = (req.page.max(1) as usize - 1) * page_size;
+            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let skip = (page_i32_to_usize(req.page) - 1) * page_size;
             let (playlists, media) = if skip < folder_count {
                 let playlists = self
                     .room_service
@@ -756,15 +805,21 @@ impl ClientApiImpl {
                         &rid,
                         None,
                         &playlist_query,
-                        page_size as i64,
-                        skip as i64,
+                        usize_to_i64_saturating(page_size),
+                        usize_to_i64_saturating(skip),
                     )
                     .await
                     .map_err(ApiError::from)?;
                 let remaining = page_size.saturating_sub(playlists.len());
                 let media = if remaining > 0 {
                     self.room_service
-                        .list_client_media(&rid, None, &media_query, remaining as i64, 0)
+                        .list_client_media(
+                            &rid,
+                            None,
+                            &media_query,
+                            usize_to_i64_saturating(remaining),
+                            0,
+                        )
                         .await
                         .map_err(ApiError::from)?
                 } else {
@@ -779,8 +834,8 @@ impl ClientApiImpl {
                         &rid,
                         None,
                         &media_query,
-                        page_size as i64,
-                        media_skip as i64,
+                        usize_to_i64_saturating(page_size),
+                        usize_to_i64_saturating(media_skip),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -797,8 +852,9 @@ impl ClientApiImpl {
             let proto_playlists = playlists
                 .iter()
                 .map(|entry| {
-                    let item_count =
-                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                    let item_count = i64_to_i32_saturating(
+                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                    );
                     playlist_to_proto_with_availability(
                         &entry.playlist,
                         item_count,
@@ -814,9 +870,9 @@ impl ClientApiImpl {
             return Ok(crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
-                total: total as i32,
-                folder_count: folder_count as i32,
-                file_count: file_count as i32,
+                total: usize_to_i32_saturating(total),
+                folder_count: usize_to_i32_saturating(folder_count),
+                file_count: usize_to_i32_saturating(file_count),
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
             });
@@ -858,8 +914,8 @@ impl ClientApiImpl {
                 });
             }
 
-            let page = req.page.max(1) as usize;
-            let page_size = req.page_size.clamp(1, 100) as usize;
+            let page = page_i32_to_usize(req.page);
+            let page_size = page_size_i32_to_usize(req.page_size, 100);
             let items = self
                 .room_service
                 .media_service()
@@ -883,13 +939,25 @@ impl ClientApiImpl {
                         ItemType::Playlist => crate::proto::client::ItemType::Playlist as i32,
                         ItemType::Media => crate::proto::client::ItemType::Media as i32,
                     };
+                    let thumbnail = match item.thumbnail {
+                        Some(thumbnail) => Some(
+                            crate::http::providers::emby::sign_emby_thumbnail_url(
+                                &thumbnail,
+                                rid.as_str(),
+                                uid.as_str(),
+                                self.signing_key.as_deref(),
+                            )
+                            .map_err(ApiError::Internal)?,
+                        ),
+                        None => None,
+                    };
 
                     Ok(crate::proto::client::PlaylistItem {
                         name: item.name,
                         item_type,
                         target: item.target,
-                        size: item.size.map(|s| s as i64),
-                        thumbnail: Some(item.thumbnail.unwrap_or_default()),
+                        size: item.size.map(u64_to_i64_saturating),
+                        thumbnail: Some(thumbnail.unwrap_or_default()),
                         modified_at: Some(item.modified_at.unwrap_or(0)),
                     })
                 })
@@ -938,8 +1006,8 @@ impl ClientApiImpl {
 
         let playlist_query = CorePlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(req.page.max(1) as u32),
-                Some(req.page_size.clamp(1, 100) as u32),
+                Some(page_i32_to_u32(req.page)),
+                Some(page_size_i32_to_u32(req.page_size, 100)),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -951,8 +1019,8 @@ impl ClientApiImpl {
         };
         let media_query = CoreMediaListQuery {
             pagination: synctv_core::models::PageParams::new(
-                Some(req.page.max(1) as u32),
-                Some(req.page_size.clamp(1, 100) as u32),
+                Some(page_i32_to_u32(req.page)),
+                Some(page_size_i32_to_u32(req.page_size, 100)),
             ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
@@ -965,15 +1033,17 @@ impl ClientApiImpl {
             .room_service
             .count_client_playlists(&rid, Some(&playlist_id), &playlist_query)
             .await
-            .map_err(ApiError::from)? as usize;
+            .map_err(ApiError::from)
+            .map(i64_to_usize_saturating)?;
         let file_count = self
             .room_service
             .count_client_media(&rid, Some(&playlist_id), &media_query)
             .await
-            .map_err(ApiError::from)? as usize;
+            .map_err(ApiError::from)
+            .map(i64_to_usize_saturating)?;
         let total = folder_count + file_count;
-        let page_size = req.page_size.clamp(1, 100) as usize;
-        let skip = (req.page.max(1) as usize - 1) * page_size;
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let skip = (page_i32_to_usize(req.page) - 1) * page_size;
         let (playlists, media) = if skip < folder_count {
             let playlists = self
                 .room_service
@@ -981,15 +1051,21 @@ impl ClientApiImpl {
                     &rid,
                     Some(&playlist_id),
                     &playlist_query,
-                    page_size as i64,
-                    skip as i64,
+                    usize_to_i64_saturating(page_size),
+                    usize_to_i64_saturating(skip),
                 )
                 .await
                 .map_err(ApiError::from)?;
             let remaining = page_size.saturating_sub(playlists.len());
             let media = if remaining > 0 {
                 self.room_service
-                    .list_client_media(&rid, Some(&playlist_id), &media_query, remaining as i64, 0)
+                    .list_client_media(
+                        &rid,
+                        Some(&playlist_id),
+                        &media_query,
+                        usize_to_i64_saturating(remaining),
+                        0,
+                    )
                     .await
                     .map_err(ApiError::from)?
             } else {
@@ -1004,8 +1080,8 @@ impl ClientApiImpl {
                     &rid,
                     Some(&playlist_id),
                     &media_query,
-                    page_size as i64,
-                    media_skip as i64,
+                    usize_to_i64_saturating(page_size),
+                    usize_to_i64_saturating(media_skip),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -1021,8 +1097,9 @@ impl ClientApiImpl {
         let proto_playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count =
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0) as i32;
+                let item_count = i64_to_i32_saturating(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                );
                 playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
             })
             .collect();
@@ -1034,9 +1111,9 @@ impl ClientApiImpl {
         Ok(crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
-            total: total as i32,
-            folder_count: folder_count as i32,
-            file_count: file_count as i32,
+            total: usize_to_i32_saturating(total),
+            folder_count: usize_to_i32_saturating(folder_count),
+            file_count: usize_to_i32_saturating(file_count),
             dynamic_items: Vec::new(),
             current_path,
         })
@@ -1050,7 +1127,7 @@ impl ClientApiImpl {
         media_id: &str,
     ) -> Result<crate::proto::client::Media, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let mid = crate::impls::parse_media_id_param(media_id, "media_id")?;
 
         // Check VIEW_PLAYLIST permission
@@ -1119,13 +1196,13 @@ mod tests {
 
     #[test]
     fn test_resolve_add_media_provider_instance_preserves_empty_binding_for_default_provider() {
-        let resolved = resolve_add_media_provider_instance(String::new()).unwrap();
+        let resolved = resolve_add_media_provider_instance("");
         assert_eq!(resolved, "");
     }
 
     #[test]
     fn test_resolve_add_media_provider_instance_uses_explicit_binding() {
-        let resolved = resolve_add_media_provider_instance("alist_main".to_string()).unwrap();
+        let resolved = resolve_add_media_provider_instance("alist_main");
         assert_eq!(resolved, "alist_main");
     }
 
@@ -1156,7 +1233,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            request.playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            request
+                .playlist_id
+                .as_ref()
+                .map(synctv_core::models::PlaylistId::as_str),
             Some(playlist_id.as_str())
         );
         assert_eq!(request.name, "Episode 1");
@@ -1225,7 +1305,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            result.playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            result
+                .playlist_id
+                .as_ref()
+                .map(synctv_core::models::PlaylistId::as_str),
             Some(playlist_id.as_str())
         );
         assert_eq!(result.items.len(), 1);
@@ -1376,11 +1459,17 @@ mod tests {
         assert_eq!(request.media_ids.len(), 1);
         assert_eq!(request.media_ids[0].as_str(), media_id);
         assert_eq!(
-            request.target_playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            request
+                .target_playlist_id
+                .as_ref()
+                .map(synctv_core::models::PlaylistId::as_str),
             Some(playlist_id.as_str())
         );
         assert_eq!(
-            request.after_media_id.as_ref().map(synctv_core::models::MediaId::as_str),
+            request
+                .after_media_id
+                .as_ref()
+                .map(synctv_core::models::MediaId::as_str),
             Some(before_media_id.as_str())
         );
     }

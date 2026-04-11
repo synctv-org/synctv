@@ -28,6 +28,9 @@ pub struct SubtitleTrack {
     pub name: String,
     /// Subtitle URL
     pub url: String,
+    /// Request headers required for subtitle fetching
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Format (srt, vtt, ass)
     pub format: String,
 }

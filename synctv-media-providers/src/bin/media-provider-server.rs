@@ -39,7 +39,7 @@ use tower::{Layer, Service};
 use tracing::{info, warn, Level};
 
 const PROVIDER_GRPC_MESSAGE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
-const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = PROVIDER_GRPC_MESSAGE_SIZE_LIMIT as u32;
+const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
 
 trait GrpcStatusHeaders {
     fn grpc_status_headers(&self) -> &HeaderMap;

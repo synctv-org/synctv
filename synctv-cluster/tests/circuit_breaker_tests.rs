@@ -179,7 +179,7 @@ async fn test_cluster_degraded_threshold() {
     }
 
     let open_count = breakers.iter().filter(|cb| !cb.is_call_permitted()).count();
-    let is_degraded = open_count as f64 / f64::from(endpoint_count) > 0.5;
+    let is_degraded = open_count * 2 > breakers.len();
 
     assert!(
         is_degraded,

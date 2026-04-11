@@ -443,14 +443,13 @@ impl PublisherManager {
     /// been successfully authenticated and registered.
     async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
         // Extract app_name and stream_name from RTMP identifier
-        let (app_name, stream_name) = if let StreamIdentifier::Rtmp {
+        let identifier_debug = format!("{identifier:?}");
+        let StreamIdentifier::Rtmp {
             app_name,
             stream_name,
         } = identifier
-        {
-            (app_name, stream_name)
-        } else {
-            warn!("Ignoring non-RTMP publish event: {:?}", identifier);
+        else {
+            warn!("Ignoring non-RTMP publish event: {identifier_debug}");
             return Ok(());
         };
 
@@ -509,14 +508,12 @@ impl PublisherManager {
 
     /// Handle `UnPublish` event - Remove publisher from Redis
     async fn handle_unpublish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
-        let (app_name, stream_name) = match identifier {
-            StreamIdentifier::Rtmp {
-                app_name,
-                stream_name,
-            } => (app_name, stream_name),
-            _ => {
-                return Ok(());
-            }
+        let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier
+        else {
+            return Ok(());
         };
 
         info!(

@@ -251,7 +251,8 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast_to_user(&room, &user, chat_event(&room, &uid("u2")));
+        let event = chat_event(&room, &uid("u2"));
+        let sent = hub.broadcast_to_user(&room, &user, &event);
         assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
     }
 
@@ -266,7 +267,7 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
         timestamp: chrono::Utc::now(),
     };
     let notify = tokio::spawn(async move {
-        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, event)
+        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, &event)
     });
 
     tokio::task::yield_now().await;
@@ -318,7 +319,8 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast(&room, chat_event(&room, &uid("u2")));
+        let event = chat_event(&room, &uid("u2"));
+        let sent = hub.broadcast(&room, &event);
         assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
     }
 
@@ -331,7 +333,7 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
 
     let hub_for_task = hub.clone();
     let room_for_task = room.clone();
-    let notify = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, event) });
+    let notify = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, &event) });
 
     tokio::task::yield_now().await;
 
@@ -375,7 +377,8 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
         .expect("subscribe should succeed");
 
     for _ in 0..512 {
-        let sent = hub.broadcast_to_user(&room, &user, chat_event(&room, &uid("u2")));
+        let event = chat_event(&room, &uid("u2"));
+        let sent = hub.broadcast_to_user(&room, &user, &event);
         assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
     }
 
@@ -391,7 +394,7 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
     let room_for_task = room.clone();
     let user_for_task = user.clone();
     let notify = tokio::spawn(async move {
-        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, event)
+        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, &event)
     });
 
     tokio::task::yield_now().await;
@@ -492,7 +495,7 @@ async fn test_broadcast_to_user_multi_connection() {
         .expect("subscribe should succeed");
 
     let event = chat_event(&room, &user);
-    let sent = hub.broadcast_to_user(&room, &user, event);
+    let sent = hub.broadcast_to_user(&room, &user, &event);
     assert_eq!(sent, 2, "Both user connections should receive");
 
     // Both user connections receive

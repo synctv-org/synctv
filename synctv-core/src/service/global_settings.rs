@@ -11,7 +11,7 @@
 //! // Initialize during app startup
 //! let registry = SettingsRegistry::new(settings_service);
 //! let cancel = tokio_util::sync::CancellationToken::new();
-//! registry.init(cancel).await.unwrap();
+//! registry.init(cancel).unwrap();
 //!
 //! // Read - type-safe, returns cached value
 //! if registry.signup_enabled.get().unwrap() {
@@ -232,7 +232,7 @@ impl PublicSettings {
             max_members_per_room: 100,
             disable_create_room: false,
             create_room_need_review: false,
-            room_ttl: 172800,
+            room_ttl: 172_800,
             room_must_need_pwd: false,
             room_must_no_need_pwd: false,
             signup_need_review: false,
@@ -356,7 +356,7 @@ impl SettingsRegistry {
                 storage.clone(),
                 100,
                 |v: &i64| -> crate::Result<()> {
-                    if *v > 0 && *v <= MaxMembers::MAX as i64 {
+                    if *v > 0 && *v <= MaxMembers::MAX.cast_signed() {
                         Ok(())
                     } else {
                         Err(crate::Error::InvalidInput(format!(
@@ -387,14 +387,14 @@ impl SettingsRegistry {
                 u64,
                 "permissions.admin_default",
                 storage.clone(),
-                1073741823
+                1_073_741_823
             ),
             // Member default: Basic member permissions (262143 = 0x3FFFF)
             member_default_permissions: setting!(
                 u64,
                 "permissions.member_default",
                 storage.clone(),
-                262143
+                262_143
             ),
             // Guest default: Read-only permissions (511 = 0x1FF)
             guest_default_permissions: setting!(
@@ -416,7 +416,7 @@ impl SettingsRegistry {
                 i64,
                 "room.room_ttl",
                 storage.clone(),
-                172800, // 48 hours in seconds
+                172_800, // 48 hours in seconds
                 |v: &i64| -> crate::Result<()> {
                     if *v >= 0 {
                         Ok(())
@@ -501,7 +501,7 @@ impl SettingsRegistry {
                 storage.clone(),
                 500,
                 |v: &u64| -> crate::Result<()> {
-                    if *v <= 100000 {
+                    if *v <= 100_000 {
                         Ok(())
                     } else {
                         Err(crate::Error::InvalidInput(
@@ -540,10 +540,10 @@ impl SettingsRegistry {
     ///
     /// The `cancel` token is forwarded to the background reload listener so it
     /// can be stopped cleanly during graceful shutdown.
-    pub async fn init(&self, cancel: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
+    pub fn init(&self, cancel: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
         // Load raw values from database into shared storage
         // Individual settings will lazy-load on first get()
-        self.storage.init().await?;
+        self.storage.init()?;
 
         // Start background listener to keep SettingsStorage in sync with
         // remote replica changes propagated via PostgreSQL LISTEN/NOTIFY
@@ -574,57 +574,57 @@ impl SettingsRegistry {
     #[must_use]
     pub fn to_public_settings(&self) -> PublicSettings {
         PublicSettings {
-            signup_enabled: self.get_or_warn("signup_enabled", &self.signup_enabled, true),
-            allow_room_creation: self.get_or_warn(
+            signup_enabled: Self::get_or_warn("signup_enabled", &self.signup_enabled, true),
+            allow_room_creation: Self::get_or_warn(
                 "allow_room_creation",
                 &self.allow_room_creation,
                 true,
             ),
-            max_rooms_per_user: self.get_or_warn(
+            max_rooms_per_user: Self::get_or_warn(
                 "max_rooms_per_user",
                 &self.max_rooms_per_user,
                 10,
             ),
-            max_members_per_room: self.get_or_warn(
+            max_members_per_room: Self::get_or_warn(
                 "max_members_per_room",
                 &self.max_members_per_room,
                 100,
             ),
-            disable_create_room: self.get_or_warn(
+            disable_create_room: Self::get_or_warn(
                 "disable_create_room",
                 &self.disable_create_room,
                 false,
             ),
-            create_room_need_review: self.get_or_warn(
+            create_room_need_review: Self::get_or_warn(
                 "create_room_need_review",
                 &self.create_room_need_review,
                 false,
             ),
-            room_ttl: self.get_or_warn("room_ttl", &self.room_ttl, 172800),
-            room_must_need_pwd: self.get_or_warn(
+            room_ttl: Self::get_or_warn("room_ttl", &self.room_ttl, 172_800),
+            room_must_need_pwd: Self::get_or_warn(
                 "room_must_need_pwd",
                 &self.room_must_need_pwd,
                 false,
             ),
-            room_must_no_need_pwd: self.get_or_warn(
+            room_must_no_need_pwd: Self::get_or_warn(
                 "room_must_no_need_pwd",
                 &self.room_must_no_need_pwd,
                 false,
             ),
-            signup_need_review: self.get_or_warn(
+            signup_need_review: Self::get_or_warn(
                 "signup_need_review",
                 &self.signup_need_review,
                 false,
             ),
-            enable_password_signup: self.get_or_warn(
+            enable_password_signup: Self::get_or_warn(
                 "enable_password_signup",
                 &self.enable_password_signup,
                 true,
             ),
-            enable_guest: self.get_or_warn("enable_guest", &self.enable_guest, true),
-            movie_proxy: self.get_or_warn("movie_proxy", &self.movie_proxy, true),
-            live_proxy: self.get_or_warn("live_proxy", &self.live_proxy, true),
-            ts_disguised_as_png: self.get_or_warn(
+            enable_guest: Self::get_or_warn("enable_guest", &self.enable_guest, true),
+            movie_proxy: Self::get_or_warn("movie_proxy", &self.movie_proxy, true),
+            live_proxy: Self::get_or_warn("live_proxy", &self.live_proxy, true),
+            ts_disguised_as_png: Self::get_or_warn(
                 "ts_disguised_as_png",
                 &self.ts_disguised_as_png,
                 true,
@@ -637,7 +637,7 @@ impl SettingsRegistry {
                 );
                 String::new()
             }),
-            email_whitelist_enabled: self.get_or_warn(
+            email_whitelist_enabled: Self::get_or_warn(
                 "email_whitelist_enabled",
                 &self.email_whitelist_enabled,
                 false,
@@ -646,7 +646,7 @@ impl SettingsRegistry {
     }
 
     /// Helper to get a setting value with a warning log on failure.
-    fn get_or_warn<T>(&self, name: &str, setting: &Setting<T>, default: T) -> T
+    fn get_or_warn<T>(name: &str, setting: &Setting<T>, default: T) -> T
     where
         T: Clone + std::fmt::Display + std::str::FromStr + Send + Sync + 'static,
         <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,

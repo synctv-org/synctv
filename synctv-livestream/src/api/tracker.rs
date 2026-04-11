@@ -240,8 +240,12 @@ impl StreamTracker {
             }
             // Decrement stream count for all removed streams
             let count = removed.len();
-            if count > 0 {
-                synctv_core::metrics::http::STREAMS_ACTIVE.sub(count as i64);
+            if let Ok(metric_count) = i64::try_from(count) {
+                if metric_count > 0 {
+                    synctv_core::metrics::http::STREAMS_ACTIVE.sub(metric_count);
+                }
+            } else {
+                debug!(count, "Skipped metric decrement because count exceeded i64");
             }
         }
         removed
@@ -433,9 +437,16 @@ impl StreamTracker {
         inner.rtmp_reverse.clear();
 
         // Decrement stream count for all removed streams
-        if stream_count > 0 {
-            synctv_core::metrics::http::STREAMS_ACTIVE.sub(stream_count as i64);
+        if let Ok(metric_count) = i64::try_from(stream_count) {
+            if metric_count > 0 {
+                synctv_core::metrics::http::STREAMS_ACTIVE.sub(metric_count);
+            }
             info!(removed = stream_count, "Cleared all stream tracker entries");
+        } else {
+            debug!(
+                stream_count,
+                "Skipped metric decrement because stream count exceeded i64"
+            );
         }
     }
 

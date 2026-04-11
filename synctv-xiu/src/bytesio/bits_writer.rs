@@ -12,6 +12,10 @@ pub struct BitsWriter {
     cur_bit_num: u8,
 }
 
+fn usize_to_u8(value: usize) -> Result<u8, BitError> {
+    u8::try_from(value).map_err(|_| BitErrorValue::TooBig.into())
+}
+
 impl BitsWriter {
     #[must_use]
     pub const fn new(writer: BytesWriter) -> Self {
@@ -75,7 +79,8 @@ impl BitsWriter {
 
         //read left bits  for current byte
         data_mut <<= 64 - bit_num;
-        self.cur_byte |= (data_mut >> (56 + self.cur_bit_num)) as u8;
+        self.cur_byte |=
+            u8::try_from(data_mut >> (56 + self.cur_bit_num)).map_err(|_| BitErrorValue::TooBig)?;
 
         let cur_byte_left_bit_num = 8 - self.cur_bit_num as usize;
         if bit_num_mut >= cur_byte_left_bit_num {
@@ -86,12 +91,12 @@ impl BitsWriter {
             self.flush()?;
         } else {
             // not full, only update bit num
-            self.cur_bit_num += bit_num_mut as u8;
+            self.cur_bit_num += usize_to_u8(bit_num_mut)?;
             return Ok(());
         }
 
         while bit_num_mut > 0 {
-            self.cur_byte = (data_mut >> 56) as u8;
+            self.cur_byte = u8::try_from(data_mut >> 56).map_err(|_| BitErrorValue::TooBig)?;
 
             if bit_num_mut > 8 {
                 self.cur_bit_num = 8;
@@ -99,7 +104,7 @@ impl BitsWriter {
                 data_mut <<= 8;
                 bit_num_mut -= 8;
             } else {
-                self.cur_bit_num = bit_num_mut as u8;
+                self.cur_bit_num = usize_to_u8(bit_num_mut)?;
                 break;
             }
         }

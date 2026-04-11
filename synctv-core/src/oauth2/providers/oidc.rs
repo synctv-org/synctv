@@ -1,6 +1,9 @@
 //! Generic OIDC provider
 
-use super::{build_oauth2_http_client, build_provider_http_client, map_provider_http_error};
+use super::{
+    build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
+    validate_provider_url,
+};
 use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
@@ -32,10 +35,10 @@ pub struct OidcConfig {
 /// Discovered OIDC endpoints from .well-known/openid-configuration
 #[derive(Debug, Clone, Deserialize)]
 struct OidcDiscoveryDocument {
-    authorization_endpoint: String,
-    token_endpoint: String,
+    authorization: String,
+    token: String,
     #[serde(default)]
-    userinfo_endpoint: Option<String>,
+    userinfo: Option<String>,
 }
 
 /// Resolved OIDC client and endpoints, initialized lazily via discovery or static config.
@@ -53,7 +56,7 @@ pub struct OidcProvider {
     resolved: OnceCell<ResolvedOidc>,
     /// Stored config for lazy initialization (only used in issuer-only mode)
     init_config: OidcInitConfig,
-    oauth2_http_client: Arc<oauth2::reqwest::Client>,
+    oauth2_http_client: Arc<super::OAuth2HttpClient>,
     http_client: Arc<Client>,
 }
 
@@ -68,9 +71,19 @@ struct OidcInitConfig {
 }
 
 struct StaticEndpoints {
-    auth_url: String,
-    token_url: String,
-    userinfo_url: Option<String>,
+    auth: String,
+    token: String,
+    userinfo: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OidcUserInfoResponse {
+    sub: String,
+    name: Option<String>,
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
+    picture: Option<String>,
 }
 
 impl OidcProvider {
@@ -87,13 +100,15 @@ impl OidcProvider {
         redirect_url: String,
         issuer: &str,
     ) -> Result<Self, Error> {
+        let issuer = issuer.trim_end_matches('/');
+        validate_provider_url(issuer, "Invalid OIDC issuer URL")?;
         Ok(Self {
             resolved: OnceCell::new(),
             init_config: OidcInitConfig {
                 client_id,
                 client_secret,
                 redirect_url,
-                issuer: issuer.trim_end_matches('/').to_string(),
+                issuer: issuer.to_string(),
                 static_endpoints: None,
             },
             oauth2_http_client: build_oauth2_http_client()?,
@@ -115,6 +130,16 @@ impl OidcProvider {
         userinfo_url: Option<String>,
     ) -> Result<Self, Error> {
         let issuer_trimmed = issuer.trim_end_matches('/');
+        if !issuer_trimmed.is_empty() {
+            validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL")?;
+        }
+        let auth = auth_url.unwrap_or_else(|| format!("{issuer_trimmed}/authorize"));
+        let token = token_url.unwrap_or_else(|| format!("{issuer_trimmed}/token"));
+        validate_provider_url(&auth, "Invalid OIDC auth URL")?;
+        validate_provider_url(&token, "Invalid OIDC token URL")?;
+        if let Some(userinfo) = userinfo_url.as_deref() {
+            validate_provider_url(userinfo, "Invalid OIDC userinfo URL")?;
+        }
         Ok(Self {
             resolved: OnceCell::new(),
             init_config: OidcInitConfig {
@@ -123,9 +148,9 @@ impl OidcProvider {
                 redirect_url,
                 issuer: issuer_trimmed.to_string(),
                 static_endpoints: Some(StaticEndpoints {
-                    auth_url: auth_url.unwrap_or_else(|| format!("{issuer_trimmed}/authorize")),
-                    token_url: token_url.unwrap_or_else(|| format!("{issuer_trimmed}/token")),
-                    userinfo_url,
+                    auth,
+                    token,
+                    userinfo: userinfo_url,
                 }),
             },
             oauth2_http_client: build_oauth2_http_client()?,
@@ -143,14 +168,15 @@ impl OidcProvider {
                     &config.static_endpoints
                 {
                     (
-                        static_ep.auth_url.clone(),
-                        static_ep.token_url.clone(),
-                        static_ep.userinfo_url.clone(),
+                        static_ep.auth.clone(),
+                        static_ep.token.clone(),
+                        static_ep.userinfo.clone(),
                     )
                 } else {
                     // Perform .well-known/openid-configuration discovery
                     let discovery_url =
                         format!("{}/.well-known/openid-configuration", config.issuer);
+                    validate_provider_url(&discovery_url, "Invalid OIDC discovery document URL")?;
                     tracing::info!("OIDC: fetching discovery document from {}", discovery_url);
 
                     let resp = self
@@ -177,16 +203,18 @@ impl OidcProvider {
 
                     tracing::info!(
                         "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}",
-                        doc.authorization_endpoint,
-                        doc.token_endpoint,
-                        doc.userinfo_endpoint
+                        doc.authorization,
+                        doc.token,
+                        doc.userinfo
                     );
 
-                    (
-                        doc.authorization_endpoint,
-                        doc.token_endpoint,
-                        doc.userinfo_endpoint,
-                    )
+                    validate_provider_url(&doc.authorization, "Invalid OIDC auth URL")?;
+                    validate_provider_url(&doc.token, "Invalid OIDC token URL")?;
+                    if let Some(userinfo) = doc.userinfo.as_deref() {
+                        validate_provider_url(userinfo, "Invalid OIDC userinfo URL")?;
+                    }
+
+                    (doc.authorization, doc.token, doc.userinfo)
                 };
 
                 let auth = AuthUrl::new(auth_url_str)
@@ -265,17 +293,7 @@ impl Provider for OidcProvider {
             .error_for_status()
             .internal_with_err("OIDC API error")?;
 
-        #[derive(Deserialize)]
-        struct OidcUser {
-            sub: String,
-            name: Option<String>,
-            email: Option<String>,
-            #[serde(default)]
-            email_verified: bool,
-            picture: Option<String>,
-        }
-
-        let user: OidcUser = resp
+        let user: OidcUserInfoResponse = resp
             .json()
             .await
             .internal_with_err("Failed to parse user info")?;
@@ -349,6 +367,18 @@ mod tests {
     }
 
     #[test]
+    fn test_create_provider_rejects_loopback_issuer() {
+        let provider = OidcProvider::create(
+            "oidc_client_id".to_string(),
+            "oidc_secret".to_string(),
+            "https://example.com/callback".to_string(),
+            "http://127.0.0.1:8443",
+        );
+
+        assert!(matches!(provider, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
+    }
+
+    #[test]
     fn test_create_provider_issuer_trailing_slash_trimmed() {
         let provider = OidcProvider::create(
             "id".to_string(),
@@ -376,12 +406,27 @@ mod tests {
         assert!(provider.is_ok());
         let p = provider.unwrap();
         let endpoints = p.init_config.static_endpoints.as_ref().unwrap();
-        assert_eq!(endpoints.auth_url, "https://issuer.example.com/authorize");
-        assert_eq!(endpoints.token_url, "https://issuer.example.com/token");
+        assert_eq!(endpoints.auth, "https://issuer.example.com/authorize");
+        assert_eq!(endpoints.token, "https://issuer.example.com/token");
         assert_eq!(
-            endpoints.userinfo_url.as_deref(),
+            endpoints.userinfo.as_deref(),
             Some("https://issuer.example.com/userinfo")
         );
+    }
+
+    #[test]
+    fn test_create_with_endpoints_rejects_loopback_token_url() {
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("http://127.0.0.1:8443/token".to_string()),
+            Some("https://issuer.example.com/userinfo".to_string()),
+        );
+
+        assert!(matches!(provider, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
     }
 
     #[test]
@@ -398,9 +443,9 @@ mod tests {
         .unwrap();
         let endpoints = provider.init_config.static_endpoints.as_ref().unwrap();
         // Issuer trailing slash is trimmed, so defaults use trimmed version
-        assert_eq!(endpoints.auth_url, "https://issuer.example.com/authorize");
-        assert_eq!(endpoints.token_url, "https://issuer.example.com/token");
-        assert!(endpoints.userinfo_url.is_none());
+        assert_eq!(endpoints.auth, "https://issuer.example.com/authorize");
+        assert_eq!(endpoints.token, "https://issuer.example.com/token");
+        assert!(endpoints.userinfo.is_none());
     }
 
     // ==================== Provider Type ====================

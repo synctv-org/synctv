@@ -47,18 +47,21 @@ impl TestUser {
     }
 
     /// Sets the username
+    #[must_use]
     pub fn with_username(mut self, username: impl Into<String>) -> Self {
         self.username = username.into();
         self
     }
 
     /// Sets the email
+    #[must_use]
     pub fn with_email(mut self, email: impl Into<String>) -> Self {
         self.email = Some(email.into());
         self
     }
 
     /// Sets the password (will be hashed)
+    #[must_use]
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(password.into());
         self
@@ -187,6 +190,7 @@ impl TestRoom {
     }
 
     /// Sets the room name
+    #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -207,6 +211,7 @@ impl TestRoom {
     }
 
     /// Sets the room description
+    #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
         self

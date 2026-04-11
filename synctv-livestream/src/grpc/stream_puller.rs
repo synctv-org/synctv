@@ -272,7 +272,7 @@ impl GrpcStreamPuller {
         info!("Connected to remote publisher, receiving stream data");
 
         let mut dropped_frames: u64 = 0;
-        const DROP_LOG_INTERVAL: u64 = 100;
+        let drop_log_interval: u64 = 100;
 
         loop {
             match next_packet_with_timeout(&mut stream).await {
@@ -312,7 +312,7 @@ impl GrpcStreamPuller {
                 Err(e) => {
                     self.connection_pool
                         .record_connection_error(&self.publisher_node_addr);
-                    if dropped_frames >= DROP_LOG_INTERVAL {
+                    if dropped_frames >= drop_log_interval {
                         warn!(
                             room_id = %self.room_id,
                             media_id = %self.media_id,

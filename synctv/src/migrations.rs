@@ -17,9 +17,10 @@ const PG_ADVISORY_LOCK_MAX_WAIT: Duration = MIGRATION_MAX_WAIT;
 const PG_ADVISORY_LOCK_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 /// Maximum per-retry backoff for `pg_try_advisory_lock`.
 const PG_ADVISORY_LOCK_MAX_BACKOFF: Duration = Duration::from_secs(8);
+const MAX_CONSECUTIVE_REDIS_ERRORS: u32 = 5;
 /// Stable integer key used with `pg_try_advisory_lock` / `pg_advisory_unlock`.
 /// Hash of "`synctv_migration`" kept in sync with `PgAdvisoryMigrationLock`.
-const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
+const PG_ADVISORY_LOCK_KEY: i64 = 0x7379_6E63_7476_6D69_i64;
 
 /// Run database migrations using a distributed lock for multi-replica
 /// deployments.
@@ -126,9 +127,8 @@ fn describe_migration_error(err: &sqlx::migrate::MigrateError) -> String {
 /// Check whether all known migrations have already been applied by comparing
 /// the migrator's list against the `_sqlx_migrations` table.
 async fn migrations_already_applied(pool: &PgPool) -> bool {
-    let mut conn = match pool.acquire().await {
-        Ok(conn) => conn,
-        Err(_) => return false,
+    let Ok(mut conn) = pool.acquire().await else {
+        return false;
     };
 
     migrations_already_applied_with_connection(&mut conn).await
@@ -338,12 +338,13 @@ fn is_transient_redis_error(err: &anyhow::Error) -> bool {
         use redis::ServerErrorKind;
         return match redis_err.kind() {
             // Network / IO errors (broken pipe, connection reset, refused, etc.)
-            redis::ErrorKind::Io => true,
             // Cluster connection not yet established — retryable.
-            redis::ErrorKind::ClusterConnectionNotFound => true,
             // Server asked us to retry (TRYAGAIN / BUSYLOADING).
-            redis::ErrorKind::Server(ServerErrorKind::TryAgain) => true,
-            redis::ErrorKind::Server(ServerErrorKind::BusyLoading) => true,
+            redis::ErrorKind::Io
+            | redis::ErrorKind::ClusterConnectionNotFound
+            | redis::ErrorKind::Server(ServerErrorKind::TryAgain | ServerErrorKind::BusyLoading) => {
+                true
+            }
             _ => false,
         };
     }
@@ -370,10 +371,9 @@ async fn wait_for_lock_and_migrate(
 ) -> Result<()> {
     info!("Another node is running migrations, waiting...");
 
-    let max_attempts = (MIGRATION_MAX_WAIT.as_secs() / MIGRATION_POLL_INTERVAL.as_secs()) as u32;
-    let mut attempts: u32 = 0;
+    let max_attempts = MIGRATION_MAX_WAIT.as_secs() / MIGRATION_POLL_INTERVAL.as_secs();
+    let mut attempts = 0_u64;
     let mut consecutive_redis_errors: u32 = 0;
-    const MAX_CONSECUTIVE_REDIS_ERRORS: u32 = 5;
 
     loop {
         tokio::time::sleep(MIGRATION_POLL_INTERVAL).await;
@@ -402,12 +402,11 @@ async fn wait_for_lock_and_migrate(
             }
             Ok(None) if attempts < max_attempts => {
                 consecutive_redis_errors = 0;
-                continue;
             }
             Ok(None) => {
                 return Err(anyhow::anyhow!(
                     "Timed out waiting for migration lock after {}s",
-                    u64::from(attempts) * MIGRATION_POLL_INTERVAL.as_secs()
+                    attempts * MIGRATION_POLL_INTERVAL.as_secs()
                 ));
             }
             Err(e) => {
@@ -496,14 +495,11 @@ where
 
     let result = migrate_result.expect("migrate branch must produce a result");
     match keepalive.await {
-        Ok(Ok(())) => result,
         Ok(Err(err)) if result.is_ok() => Err(err),
-        Ok(Err(_)) => result,
-        Err(join_err) if join_err.is_cancelled() => result,
         Err(join_err) if result.is_ok() => Err(anyhow::anyhow!(
             "Migration lock keepalive task panicked: {join_err}"
         )),
-        Err(_) => result,
+        _ => result,
     }
 }
 
@@ -853,7 +849,7 @@ mod tests {
     #[test]
     fn version_mismatch_error_includes_rebuild_guidance() {
         let message = describe_migration_error(&sqlx::migrate::MigrateError::VersionMismatch(
-            20240101000004,
+            20_240_101_000_004,
         ));
 
         assert!(message.contains("20240101000004"));

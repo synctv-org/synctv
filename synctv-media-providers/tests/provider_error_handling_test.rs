@@ -723,7 +723,7 @@ mod bilibili_type_tests {
         assert_eq!(resp.data.dash.audio.len(), 1);
         assert_eq!(resp.data.dash.video[0].width, 1920);
         assert_eq!(resp.data.dash.video[0].height, 1080);
-        assert_eq!(resp.data.dash.duration, 120.5);
+        assert!((resp.data.dash.duration - 120.5).abs() < f64::EPSILON);
     }
 
     #[test]

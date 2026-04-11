@@ -222,9 +222,8 @@ async fn test_redis_stream_catchup() {
             Ok(Some(ClusterEvent::ChatMessage { message, .. })) => {
                 historical_messages.push(message);
             }
-            Ok(Some(_)) => {}
+            Ok(Some(_)) | Err(_) => {}
             Ok(None) => panic!("room channel closed unexpectedly during catch-up"),
-            Err(_) => {}
         }
     }
     assert_eq!(

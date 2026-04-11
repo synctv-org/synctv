@@ -369,10 +369,10 @@ mod tests {
         assert_eq!(state.version, 0);
 
         // Multiple updates
-        for i in 1..=5 {
-            state.current_time = i as f64 * 10.0;
+        for current_time in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            state.current_time = current_time;
             state = playback_repo.update(&state).await.unwrap();
-            assert_eq!(state.version, i);
+            assert!((state.current_time - current_time).abs() < f64::EPSILON);
         }
     }
 

@@ -7,7 +7,9 @@ use synctv_core::models::{PlaylistId, UserId};
 use synctv_core::provider::ProviderContext;
 
 use super::convert::{
+    bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
     playback_result_to_proto, playback_state_to_proto, provider_playback_info_to_model,
+    sign_local_bilibili_danmaku_urls,
 };
 use super::ClientApiImpl;
 use crate::impls::ApiError;
@@ -141,7 +143,7 @@ pub(crate) fn build_update_playback_request(
 }
 
 impl ClientApiImpl {
-    async fn build_provider_context<'a>(
+    fn build_provider_context<'a>(
         &'a self,
         user_id: &'a str,
         room_id: &'a str,
@@ -161,12 +163,33 @@ impl ClientApiImpl {
         ctx
     }
 
+    fn attach_provider_store<'a>(
+        &self,
+        ctx: ProviderContext<'a>,
+        provider: &dyn synctv_core::provider::MediaProvider,
+    ) -> ProviderContext<'a> {
+        match &self.provider_stores {
+            Some(stores) => ctx.with_store(stores.load(provider.name())),
+            None => ctx,
+        }
+    }
+
     async fn build_static_media_playback_result(
         &self,
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
     ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+        if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
+            sign_local_bilibili_danmaku_urls(
+                &mut embedded_result,
+                user_id,
+                self.signing_key.as_deref(),
+                None,
+            );
+            return Ok(playback_result_to_proto(&embedded_result));
+        }
+
         let providers_manager = self
             .providers_manager
             .as_ref()
@@ -185,11 +208,24 @@ impl ClientApiImpl {
                 .ok_or_else(|| ApiError::NotFound(format!("Provider '{provider_key}' not found")))?
         };
 
-        let ctx = self.build_provider_context(user_id, room_id).await;
+        let ctx = self.attach_provider_store(
+            self.build_provider_context(user_id, room_id),
+            provider.as_ref(),
+        );
         let provider_result = provider
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
+        let default_mode_expires_at = provider_result
+            .playback_infos
+            .get(&provider_result.default_mode)
+            .and_then(|info| info.expires_at);
+        let live_danmaku = bilibili_live_danmaku_for_static_media(
+            &media,
+            user_id,
+            self.signing_key.as_deref(),
+            default_mode_expires_at,
+        );
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id.clone(),
@@ -201,16 +237,25 @@ impl ClientApiImpl {
         .default_mode(provider_result.default_mode.clone());
 
         for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
+            let mut info = provider_playback_info_to_model(&provider_info);
+            if let Some(ref danmaku) = live_danmaku {
+                info.danmakus.push(danmaku.clone());
+            }
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
             builder = builder.add_metadata(key, value);
         }
 
-        let full_result = builder
+        let mut full_result = builder
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        sign_local_bilibili_danmaku_urls(
+            &mut full_result,
+            user_id,
+            self.signing_key.as_deref(),
+            default_mode_expires_at,
+        );
         Ok(playback_result_to_proto(&full_result))
     }
 
@@ -277,7 +322,10 @@ impl ClientApiImpl {
                 })?
         };
 
-        let ctx = self.build_provider_context(user_id, room_id).await;
+        let ctx = self.attach_provider_store(
+            self.build_provider_context(user_id, room_id),
+            provider.as_ref(),
+        );
         let provider_result = provider
             .generate_playback(&ctx, &item.source_config)
             .await
@@ -318,7 +366,7 @@ impl ClientApiImpl {
         req: crate::proto::client::StartPlaybackRequest,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
         let target = build_start_playback_request(req)?;
 
         self.room_service
@@ -348,7 +396,7 @@ impl ClientApiImpl {
         _req: crate::proto::client::StopPlaybackRequest,
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
         self.room_service
@@ -372,7 +420,7 @@ impl ClientApiImpl {
         _req: crate::proto::client::GetPlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -433,7 +481,7 @@ impl ClientApiImpl {
     /// Handle Play command from WebSocket
     pub async fn handle_play_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         self.room_service
@@ -449,7 +497,7 @@ impl ClientApiImpl {
     /// Handle Pause command from WebSocket
     pub async fn handle_pause_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         self.room_service
@@ -470,7 +518,7 @@ impl ClientApiImpl {
         current_time: f64,
     ) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
         let response = self
@@ -504,7 +552,7 @@ impl ClientApiImpl {
         speed: f64,
     ) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let rid = self.parse_room_id(room_id)?;
+        let rid = Self::parse_room_id(room_id)?;
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
         self.room_service
@@ -549,7 +597,10 @@ mod start_playback_builder_tests {
 
         assert!(parsed.media_id.is_none());
         assert_eq!(
-            parsed.playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+            parsed
+                .playlist_id
+                .as_ref()
+                .map(synctv_core::models::PlaylistId::as_str),
             Some(playlist_id.as_str())
         );
         assert_eq!(parsed.target, target);
@@ -618,7 +669,9 @@ mod start_playback_builder_tests {
             } => {
                 assert!(media_id.is_none());
                 assert_eq!(
-                    parsed_playlist_id.as_ref().map(synctv_core::models::PlaylistId::as_str),
+                    parsed_playlist_id
+                        .as_ref()
+                        .map(synctv_core::models::PlaylistId::as_str),
                     Some(playlist_id.as_str())
                 );
                 assert_eq!(parsed_target, target);

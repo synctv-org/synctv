@@ -182,17 +182,17 @@ impl MemoryStorage {
     }
 
     /// Get current memory usage in bytes
-    pub async fn memory_usage(&self) -> usize {
+    pub fn memory_usage(&self) -> usize {
         self.inner.read().total_bytes
     }
 
     /// Get number of stored keys
-    pub async fn key_count(&self) -> usize {
+    pub fn key_count(&self) -> usize {
         self.inner.read().data.len()
     }
 
     /// Clear all data (for testing/cleanup)
-    pub async fn clear(&self) {
+    pub fn clear(&self) {
         let mut inner = self.inner.write();
         inner.data.clear();
         inner.time_index.clear();
@@ -476,8 +476,8 @@ mod tests {
             .unwrap();
         assert!(exists);
 
-        assert_eq!(storage.memory_usage().await, data.len());
-        assert_eq!(storage.key_count().await, 1);
+        assert_eq!(storage.memory_usage(), data.len());
+        assert_eq!(storage.key_count(), 1);
 
         let result = storage.delete("live", "room_123", "segment_0").await;
         assert!(result.is_ok());
@@ -488,8 +488,8 @@ mod tests {
             .unwrap();
         assert!(!exists);
 
-        assert_eq!(storage.memory_usage().await, 0);
-        assert_eq!(storage.key_count().await, 0);
+        assert_eq!(storage.memory_usage(), 0);
+        assert_eq!(storage.key_count(), 0);
     }
 
     #[tokio::test]
@@ -515,12 +515,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(storage.key_count().await, 2);
+        assert_eq!(storage.key_count(), 2);
 
-        storage.clear().await;
+        storage.clear();
 
-        assert_eq!(storage.key_count().await, 0);
-        assert_eq!(storage.memory_usage().await, 0);
+        assert_eq!(storage.key_count(), 0);
+        assert_eq!(storage.memory_usage(), 0);
     }
 
     #[tokio::test]
@@ -559,14 +559,14 @@ mod tests {
             .write("a", "b", "key3", Bytes::from_static(b"data3"))
             .await
             .unwrap();
-        assert_eq!(storage.key_count().await, 3);
+        assert_eq!(storage.key_count(), 3);
 
         // Writing a 4th key should evict the oldest (key1)
         storage
             .write("a", "b", "key4", Bytes::from_static(b"data4"))
             .await
             .unwrap();
-        assert_eq!(storage.key_count().await, 3);
+        assert_eq!(storage.key_count(), 3);
         assert!(!storage.exists("a", "b", "key1").await.unwrap());
         assert!(storage.exists("a", "b", "key4").await.unwrap());
     }
@@ -583,15 +583,15 @@ mod tests {
             .write("a", "b", "key2", Bytes::from_static(b"12345"))
             .await
             .unwrap(); // 5 bytes, total 10
-        assert_eq!(storage.key_count().await, 2);
-        assert_eq!(storage.memory_usage().await, 10);
+        assert_eq!(storage.key_count(), 2);
+        assert_eq!(storage.memory_usage(), 10);
 
         // Writing 10 more bytes would exceed 15 byte limit, oldest (key1) should be evicted
         storage
             .write("a", "b", "key3", Bytes::from_static(b"1234567890"))
             .await
             .unwrap(); // 10 bytes
-        assert!(storage.memory_usage().await <= 15);
+        assert!(storage.memory_usage() <= 15);
         assert!(!storage.exists("a", "b", "key1").await.unwrap());
         assert!(storage.exists("a", "b", "key3").await.unwrap());
     }
@@ -617,7 +617,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(storage.key_count().await, 100);
+        assert_eq!(storage.key_count(), 100);
     }
 
     #[tokio::test]
@@ -628,15 +628,15 @@ mod tests {
             .write("a", "b", "key1", Bytes::from_static(b"hello"))
             .await
             .unwrap();
-        assert_eq!(storage.memory_usage().await, 5);
+        assert_eq!(storage.memory_usage(), 5);
 
         // Overwriting same key should update data and not double-count memory
         storage
             .write("a", "b", "key1", Bytes::from_static(b"world!"))
             .await
             .unwrap();
-        assert_eq!(storage.memory_usage().await, 6);
-        assert_eq!(storage.key_count().await, 1);
+        assert_eq!(storage.memory_usage(), 6);
+        assert_eq!(storage.key_count(), 1);
 
         let data = storage.read("a", "b", "key1").await.unwrap();
         assert_eq!(data, Bytes::from_static(b"world!"));

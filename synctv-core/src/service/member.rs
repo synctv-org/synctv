@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::{
-    cache::CacheInvalidationService,
+    cache::CacheInvalidationRuntime,
     models::{
         MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Room, RoomId, RoomMember,
         RoomMemberWithUser, RoomRole, RoomSettings, UserId,
@@ -137,8 +137,8 @@ pub struct MemberService {
     room_settings_repo: Option<RoomSettingsRepository>,
     permission_service: PermissionService,
     audit_service: Option<Arc<AuditService>>,
-    cache_invalidation: Option<Arc<CacheInvalidationService>>,
-    notification_service: Option<NotificationService>,
+    cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    notification_service: NotificationService,
     event_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn MemberEventBroadcaster>>>>,
 }
 
@@ -182,6 +182,7 @@ impl MemberService {
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
         permission_service: PermissionService,
+        notification_service: NotificationService,
     ) -> Self {
         Self {
             member_repo,
@@ -190,7 +191,7 @@ impl MemberService {
             permission_service,
             audit_service: None,
             cache_invalidation: None,
-            notification_service: None,
+            notification_service,
             event_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
@@ -206,15 +207,10 @@ impl MemberService {
     }
 
     /// Set the cache invalidation service for cross-replica permission cache sync
-    pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         self.permission_service
             .set_invalidation_service(Arc::clone(&service));
         self.cache_invalidation = Some(service);
-    }
-
-    /// Set the notification service for broadcasting member events to local WebSocket clients
-    pub fn set_notification_service(&mut self, service: NotificationService) {
-        self.notification_service = Some(service);
     }
 
     /// Set the cluster event broadcaster for cross-replica kick/ban propagation
@@ -385,15 +381,16 @@ impl MemberService {
             .await;
 
         // Notify local WebSocket clients that member was kicked
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to notify local clients of member kick"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_member_kicked(&room_id, &target_user_id)
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                user_id = %target_user_id.as_str(),
+                "Failed to notify local clients of member kick"
+            );
         }
 
         // Broadcast kick event to all cluster replicas for cross-replica disconnect
@@ -443,15 +440,16 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to notify local clients of admin member kick"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_member_kicked(&room_id, &target_user_id)
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                user_id = %target_user_id.as_str(),
+                "Failed to notify local clients of admin member kick"
+            );
         }
 
         if let Some(ref broadcaster) = *self.event_broadcaster.read() {
@@ -1066,15 +1064,16 @@ impl MemberService {
             .await;
 
         // Notify local WebSocket clients that member was kicked (ban implies kick)
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to notify local clients of member ban"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_member_kicked(&room_id, &target_user_id)
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                user_id = %target_user_id.as_str(),
+                "Failed to notify local clients of member ban"
+            );
         }
 
         // Broadcast kick event to all cluster replicas for cross-replica disconnect.
@@ -1129,15 +1128,16 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to notify local clients of admin member ban"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_member_kicked(&room_id, &target_user_id)
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                user_id = %target_user_id.as_str(),
+                "Failed to notify local clients of admin member ban"
+            );
         }
 
         if let Some(ref broadcaster) = *self.event_broadcaster.read() {

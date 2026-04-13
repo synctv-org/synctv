@@ -6,10 +6,9 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::{
-    bootstrap::RedisHandles,
     cache::{
-        CacheInvalidationService, CacheL2Backend, CacheManager, NoopCacheL2, RedisCacheL2,
-        RoomCache, UserCache, UsernameCache,
+        build_l2_cache_backend_from_profile, CacheInvalidationRuntime, CacheL2Backend,
+        CacheManager, RoomCache, UserCache, UsernameCache,
     },
     repository::{
         ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
@@ -23,8 +22,13 @@ use crate::{
         RateLimitConfig, RateLimiter, RemoteProviderManager, RoomService, RoomSettingsService,
         SettingsRegistry, SettingsService, UserNotificationService, UserService,
     },
-    Config,
+    Config, SharedStateMode, SharedStateProfile,
 };
+
+#[cfg(test)]
+use crate::cache::NoopCacheL2;
+#[cfg(test)]
+use crate::ManagedRedisRuntime;
 
 const WEAK_JWT_SECRETS: &[&str] = &[
     "change-me-in-production",
@@ -69,30 +73,26 @@ pub struct Services {
     pub email_service: Option<Arc<EmailService>>,
     /// Email token service for verification codes (optional, requires SMTP configuration)
     pub email_token_service: Option<Arc<EmailTokenService>>,
+    /// Shared WebSocket ticket service reused across transports.
+    pub ws_ticket_service: Arc<crate::service::WsTicketService>,
     /// Publish key service for RTMP streaming
     pub publish_key_service: Arc<PublishKeyService>,
     /// User notification service
     pub notification_service: Arc<UserNotificationService>,
     /// Chat service for message handling with business logic
     pub chat_service: Arc<ChatService>,
+    /// Shared room event notification service used for realtime room events.
+    pub room_notification_service: Arc<RoomNotificationService>,
     /// Audit logging service for security and compliance
     pub audit_service: Arc<AuditService>,
     /// Cache invalidation service for cross-replica cache sync
-    pub cache_invalidation: Arc<CacheInvalidationService>,
+    pub cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     /// Cache manager coordinating all cache layers
     pub cache_manager: CacheManager,
     /// Shared user cache for fast-path auth checks and hot user lookups.
     pub user_cache: Arc<UserCache>,
-    /// Shared Redis connection (optional in standalone mode).
-    ///
-    /// In Sentinel mode, the background health check hot-swaps the inner
-    /// `ConnectionManager` on failover. In Standalone mode the inner
-    /// `ConnectionManager` handles transient reconnections transparently.
-    ///
-    /// Use `.read().await.clone()` to obtain a working connection handle.
-    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-    /// Shared Redis client (for operations that need a `Client`, e.g. Pub/Sub).
-    pub redis_client: Option<redis::Client>,
+    /// Shared runtime for Redis-backed shared-state features.
+    pub redis_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
     /// `CancellationToken` for settings listen task (cancel on shutdown)
     pub settings_cancel: tokio_util::sync::CancellationToken,
     /// Settings listen task handle (joined on shutdown).
@@ -142,14 +142,9 @@ impl std::fmt::Debug for InitServicesOptions {
 }
 
 impl Services {
-    /// Return a plain `ConnectionManager` snapshot from the shared connection.
-    ///
-    /// Returns `None` when Redis is not configured (standalone mode without Redis).
-    pub async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_conn {
-            Some(conn) => Some(conn.read().await.clone()),
-            None => None,
-        }
+    #[must_use]
+    pub fn redis_runtime(&self) -> Option<Arc<dyn crate::RedisConnectionRuntime>> {
+        self.redis_runtime.clone()
     }
 }
 
@@ -171,6 +166,93 @@ fn build_email_token_service(
         rate_limiter.clone(),
         None,
     )))
+}
+
+fn build_brute_force_protection(
+    profile: &SharedStateProfile,
+) -> Result<crate::service::BruteForceProtection, anyhow::Error> {
+    let service = crate::service::BruteForceProtection::from_shared_state_profile(profile)
+        .map_err(anyhow::Error::from)?;
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            info!("Brute-force protection initialized (shared state required)");
+        }
+        SharedStateMode::SharedBestEffort => {
+            info!("Brute-force protection initialized (shared state preferred)");
+        }
+        SharedStateMode::LocalOnly => {
+            info!("Brute-force protection initialized (local state)");
+        }
+    }
+    Ok(service)
+}
+
+fn configure_refresh_token_rate_limiter(
+    user_service: &mut UserService,
+    profile: &SharedStateProfile,
+) -> Result<(), anyhow::Error> {
+    let rate_limit_prefix = format!("{}refresh_rl:", profile.key_prefix());
+    let refresh_profile = SharedStateProfile::new(
+        profile.state_mode(),
+        profile.shared_runtime(),
+        rate_limit_prefix,
+    );
+    if !matches!(refresh_profile.state_mode(), SharedStateMode::LocalOnly) {
+        user_service.set_refresh_rate_limiter(
+            crate::service::RateLimiter::from_shared_state_profile(&refresh_profile)
+                .map_err(anyhow::Error::from)?,
+        );
+        match refresh_profile.state_mode() {
+            SharedStateMode::SharedRequired => {
+                info!("Refresh token rate limiter initialized (shared state required)");
+            }
+            SharedStateMode::SharedBestEffort => {
+                info!("Refresh token rate limiter initialized (shared state preferred)");
+            }
+            SharedStateMode::LocalOnly => {}
+        }
+    }
+    Ok(())
+}
+
+fn build_ws_ticket_service(
+    profile: &SharedStateProfile,
+) -> Result<Arc<crate::service::WsTicketService>, anyhow::Error> {
+    crate::service::WsTicketService::from_shared_state_profile(profile, None)
+        .map(Arc::new)
+        .map_err(anyhow::Error::from)
+}
+
+fn build_migration_lock_from_runtime(
+    pool: PgPool,
+    deployment_mode: &crate::config::RedisDeploymentMode,
+    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
+) -> Arc<dyn crate::service::MigrationLock> {
+    if matches!(
+        deployment_mode,
+        crate::config::RedisDeploymentMode::Sentinel
+    ) || shared_runtime.is_none()
+    {
+        return Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool));
+    }
+
+    Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
+        shared_runtime.expect("checked is_some above"),
+        false,
+    ))
+}
+
+#[must_use]
+pub fn build_migration_lock(
+    pool: PgPool,
+    config: &Config,
+    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
+) -> Arc<dyn crate::service::MigrationLock> {
+    build_migration_lock_from_runtime(
+        pool,
+        &config.redis.deployment_mode,
+        shared_runtime,
+    )
 }
 
 fn handle_provider_invalidation_listener_result(
@@ -234,25 +316,25 @@ async fn build_providers_manager(
 
 /// Initialize all core services
 ///
-/// The caller must supply optional `RedisHandles` (created by `init_redis`)
+/// The caller must supply optional shared runtime wiring
 /// and a pre-built `CacheInvalidationService` so that the same instance (with
 /// the correct cluster node ID) is shared across every component.  The caller
 /// is also responsible for calling `.start()` on the cache invalidation service
 /// after this function returns, so there is exactly one Redis subscriber.
 ///
-/// When `redis_handles` is `None` (standalone mode without Redis), all services
+/// When `shared_runtime` is `None` (standalone mode without Redis), all services
 /// use in-memory fallbacks.
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
-    redis_handles: Option<RedisHandles>,
-    cache_invalidation: Arc<CacheInvalidationService>,
+    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     cache_invalidation_listener_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 ) -> Result<Services, anyhow::Error> {
     init_services_with_options(
         pool,
         config,
-        redis_handles,
+        shared_runtime,
         cache_invalidation,
         cache_invalidation_listener_task,
         InitServicesOptions::default(),
@@ -263,8 +345,8 @@ pub async fn init_services(
 pub async fn init_services_with_options(
     pool: PgPool,
     config: &Config,
-    redis_handles: Option<RedisHandles>,
-    cache_invalidation: Arc<CacheInvalidationService>,
+    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     cache_invalidation_listener_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     options: InitServicesOptions,
 ) -> Result<Services, anyhow::Error> {
@@ -276,6 +358,12 @@ pub async fn init_services_with_options(
     info!("Loading JWT keys...");
     let jwt_service = load_jwt_service(config)?;
     info!("JWT service initialized");
+
+    let shared_state_profile = SharedStateProfile::from_runtime(
+        shared_runtime.clone(),
+        &config.redis.key_prefix,
+        cluster_mode,
+    );
 
     // Extract a plain ConnectionManager snapshot for passing to individual services.
     //
@@ -292,11 +380,8 @@ pub async fn init_services_with_options(
     // In Sentinel mode, use the shared Arc<RwLock<ConnectionManager>> so that
     // the L2 backend automatically follows Sentinel failover without holding a
     // stale snapshot.
-    let cache_l2: Arc<dyn CacheL2Backend> = if let Some(ref rh) = redis_handles {
-        Arc::new(RedisCacheL2::new_shared(rh.conn.clone()))
-    } else {
-        Arc::new(NoopCacheL2)
-    };
+    let cache_l2: Arc<dyn CacheL2Backend> =
+        build_l2_cache_backend_from_profile(&shared_state_profile);
     info!("Cache L2 backend: {}", cache_l2.backend_name());
 
     // Initialize username cache (using config values)
@@ -335,46 +420,16 @@ pub async fn init_services_with_options(
     );
 
     // Initialize brute-force protection
-    //
-    // In cluster mode, use fail-closed mode to prevent security degradation.
-    // When Redis is unavailable, login attempts will be rejected rather than
-    // falling back to per-replica independent counters.
-    //
-    // In standalone mode with Redis, use fallback mode for better availability.
-    // In standalone mode without Redis, use in-memory tracker.
-    let brute_force = if cluster_mode {
-        let redis_handles = redis_handles.as_ref().expect(
-            "cluster mode requires Redis handles; this invariant is validated before init_services",
-        );
-        let bf = crate::service::BruteForceProtection::with_redis_fail_closed(
-            redis_handles.conn.clone(),
-            config.redis.key_prefix.clone(),
-        );
-        info!("Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)");
-        bf
-    } else if let Some(ref rh) = redis_handles {
-        let bf = crate::service::BruteForceProtection::with_redis(
-            rh.conn.clone(),
-            config.redis.key_prefix.clone(),
-        );
-        info!("Brute-force protection initialized (Redis-backed with fallback)");
-        bf
-    } else {
-        let bf = crate::service::BruteForceProtection::in_memory(config.redis.key_prefix.clone());
-        info!("Brute-force protection initialized (in-memory)");
-        bf
-    };
+    let brute_force = build_brute_force_protection(&shared_state_profile)?;
 
     // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
-    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> =
-        Arc::new(crate::service::TieredTokenBlacklistStore::new(
-            crate::service::PgTokenBlacklistStore::new(pool.clone()),
-            redis_handles.as_ref().map(|h| h.conn.clone()),
-            config.redis.key_prefix.clone(),
-        ));
+    let token_blacklist = crate::service::auth::token_blacklist::token_blacklist_store_from_shared_state_profile(
+        pool.clone(),
+        &shared_state_profile,
+    );
     info!(
         "Token blacklist store initialized (tiered: PG primary{})",
-        if redis_handles.is_some() {
+        if shared_runtime.is_some() {
             " + Redis L2"
         } else {
             ""
@@ -397,25 +452,8 @@ pub async fn init_services_with_options(
         user_service.set_password_hasher(Arc::clone(password_hasher));
     }
 
-    // Upgrade refresh token rate limiter to Redis-backed when available.
-    // This ensures the refresh rate limit is enforced globally across all replicas
-    // in cluster mode, preventing N * limit bypass with N replicas.
-    if cluster_mode {
-        let redis_handles = redis_handles.as_ref().expect(
-            "cluster mode requires Redis handles; this invariant is validated before init_services",
-        );
-        user_service.set_refresh_rate_limiter_redis_strict(
-            redis_handles.conn.clone(),
-            format!("{}refresh_rl:", config.redis.key_prefix),
-        );
-        info!("Refresh token rate limiter upgraded to Redis-backed (cross-replica)");
-    } else if let Some(ref rh) = redis_handles {
-        user_service.set_refresh_rate_limiter_redis(
-            rh.conn.clone(),
-            format!("{}refresh_rl:", config.redis.key_prefix),
-        );
-        info!("Refresh token rate limiter upgraded to Redis-backed (cross-replica)");
-    }
+    // Shared-state refresh limiting prevents N * limit bypass across replicas.
+    configure_refresh_token_rate_limiter(&mut user_service, &shared_state_profile)?;
     info!("UserService initialized");
 
     // Initialize credential encryption (shared by both repositories and media providers)
@@ -454,8 +492,8 @@ pub async fn init_services_with_options(
     };
 
     // Initialize rate limiter
-    let rate_limiter = RateLimiter::new(
-        redis_handles.as_ref().map(|h| h.conn.clone()),
+    let rate_limiter = RateLimiter::from_redis_runtime(
+        shared_runtime.clone(),
         config.redis.key_prefix.clone(),
     );
     let rate_limit_config = RateLimitConfig {
@@ -479,7 +517,7 @@ pub async fn init_services_with_options(
     info!("Initializing RemoteProviderManager...");
     let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
         provider_instance_repo.clone(),
-        Some((*cache_invalidation).clone()),
+        Some(cache_invalidation.clone()),
         options.provider_test_address_overrides,
     ));
 
@@ -503,6 +541,11 @@ pub async fn init_services_with_options(
 
     // Initialize RoomService after ProvidersManager so media/playback paths use
     // the same provider graph and HTTP client configuration as bootstrap.
+    let room_runtime = build_room_service_runtime(
+        &shared_state_profile,
+        &config.redis.deployment_mode,
+        config.cache.l2_ttl_seconds,
+    );
     let mut room_service = build_room_service(RoomServiceBuildArgs {
         pool: pool.clone(),
         user_service: user_service.clone(),
@@ -510,14 +553,7 @@ pub async fn init_services_with_options(
         providers_manager: providers_manager.clone(),
         cache_invalidation: cache_invalidation.clone(),
         brute_force: brute_force.clone(),
-        redis_handles: redis_handles.as_ref(),
-        cluster_mode,
-        is_sentinel: matches!(
-            config.redis.deployment_mode,
-            crate::config::RedisDeploymentMode::Sentinel
-        ),
-        redis_key_prefix: &config.redis.key_prefix,
-        cache_l2_ttl_seconds: config.cache.l2_ttl_seconds,
+        runtime: room_runtime,
     });
     if let Some(ref encryption) = credential_encryption_for_services {
         room_service.set_media_credential_encryption(encryption.clone());
@@ -544,12 +580,7 @@ pub async fn init_services_with_options(
         .as_object()
         .is_some_and(|m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
-        init_oauth2_service(
-            pool.clone(),
-            config,
-            redis_handles.as_ref().map(|h| h.conn.clone()),
-            cluster_mode,
-        )
+        init_oauth2_service(pool.clone(), config, &shared_state_profile)
         .await?
     } else {
         None
@@ -584,7 +615,7 @@ pub async fn init_services_with_options(
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
-    let email_service = init_email_service(config, redis_handles.as_ref().map(|h| h.conn.clone()))?;
+    let email_service = init_email_service(config)?;
     if email_service.is_some() {
         info!("Email service initialized");
     } else {
@@ -604,16 +635,18 @@ pub async fn init_services_with_options(
         info!("Email token service not configured (requires email service)");
     }
 
+    let ws_ticket_service = build_ws_ticket_service(&shared_state_profile)?;
+    info!(
+        backend = %ws_ticket_service.backend_name(),
+        "WebSocket ticket service initialized"
+    );
+
     // Initialize Publish Key service (for RTMP streaming)
     //
     // Use Redis-backed JTI dedup when available (shared handle follows Sentinel failover).
     // Falls back to in-memory for standalone mode.
-    let publish_key_service = build_publish_key_service(
-        jwt_service.clone(),
-        redis_handles.as_ref(),
-        &config.redis.key_prefix,
-        cluster_mode,
-    )?;
+    let publish_key_service =
+        build_publish_key_service(jwt_service.clone(), &shared_state_profile)?;
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -645,23 +678,28 @@ pub async fn init_services_with_options(
     // Initialize ChatService with proper business logic (permissions, rate limiting, filtering)
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let room_settings_repo_for_chat = RoomSettingsRepo::new(pool.clone());
-    let room_notification_service = Arc::new(RoomNotificationService::default());
+    let room_notification_service = Arc::new(room_service.notification_service().clone());
     let room_settings_service_for_chat = RoomSettingsService::new(
         room_settings_repo_for_chat,
         Some(cache_invalidation.clone()),
-        room_notification_service,
+        room_notification_service.clone(),
         None,
         None,
     );
     let permission_service_for_chat = room_service.permission_service().clone();
     let chat_service = ChatService::new(
         chat_repo,
-        rate_limiter.clone(),
-        rate_limit_config.clone(),
-        content_filter.clone(),
-        username_cache.clone(),
-        permission_service_for_chat,
-        room_settings_service_for_chat,
+        crate::service::chat::ChatRuntime {
+            rate_limiter: rate_limiter.clone(),
+            rate_limit_config: rate_limit_config.clone(),
+            content_filter: content_filter.clone(),
+            username_cache: username_cache.clone(),
+        },
+        crate::service::chat::ChatDependencies {
+            permission_service: permission_service_for_chat,
+            room_settings_service: room_settings_service_for_chat,
+            notification_service: (*room_service.notification_service()).clone(),
+        },
     );
     info!("ChatService initialized");
 
@@ -684,15 +722,16 @@ pub async fn init_services_with_options(
         settings_registry,
         email_service,
         email_token_service,
+        ws_ticket_service,
         publish_key_service: Arc::new(publish_key_service),
         notification_service,
         chat_service: Arc::new(chat_service),
+        room_notification_service,
         audit_service,
         cache_invalidation,
         cache_manager,
         user_cache,
-        redis_conn: redis_handles.as_ref().map(|h| h.conn.clone()),
-        redis_client: redis_handles.as_ref().map(|h| h.client.clone()),
+        redis_runtime: shared_runtime,
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         cache_invalidation_listener_task,
@@ -710,8 +749,7 @@ pub async fn init_services_with_options(
 async fn init_oauth2_service(
     pool: PgPool,
     config: &Config,
-    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-    cluster_mode: bool,
+    profile: &SharedStateProfile,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     let provider_registry = crate::oauth2::providers::provider_registry();
     info!("OAuth2 provider registry initialized");
@@ -732,40 +770,14 @@ async fn init_oauth2_service(
     }
 
     // 2. Create OAuth2 provider repository and service.
-    // Cluster mode must fail before wiring if Redis is missing; only standalone
-    // mode may use an in-memory state store.
+    // Cluster runtime must fail before wiring if shared single-use state is missing.
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
-    let state_store: Arc<dyn crate::service::OAuthStateStore> = match (cluster_mode, redis_conn) {
-        (true, Some(conn)) => {
-            info!("OAuth2 state store: Redis (cluster mode)");
-            Arc::new(crate::service::RedisOAuthStateStore::new(
-                conn,
-                config.redis.key_prefix.clone(),
-            ))
-        }
-        (true, None) => {
-            return Err(anyhow::anyhow!(
-                "Redis is required for OAuth2 state storage in cluster mode. \
-                 Refusing to fall back to in-memory state because OAuth2 callbacks may land on a different replica."
-            ));
-        }
-        (false, Some(conn)) => {
-            info!("OAuth2 state store: Redis");
-            Arc::new(crate::service::RedisOAuthStateStore::new(
-                conn,
-                config.redis.key_prefix.clone(),
-            ))
-        }
-        (false, None) => {
-            info!("OAuth2 state store: in-memory (standalone mode)");
-            Arc::new(crate::service::InMemoryOAuthStateStore::new())
-        }
-    };
+    let state_store = build_oauth_state_store(profile)?;
     let oauth2_service = OAuth2Service::new(
         oauth2_repo,
         state_store,
         provider_registry.clone(),
-        cluster_mode,
+        matches!(profile.state_mode(), SharedStateMode::SharedRequired),
     )
     .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
     let oauth2_service = Arc::new(oauth2_service);
@@ -842,6 +854,15 @@ async fn init_oauth2_service(
     Ok(Some(oauth2_service))
 }
 
+fn build_oauth_state_store(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn crate::service::OAuthStateStore>, anyhow::Error> {
+    let store = crate::service::oauth2::state_store_from_shared_state_profile(profile)
+        .map_err(anyhow::Error::from)?;
+    info!(backend = store.backend_name(), "OAuth2 state store initialized");
+    Ok(store)
+}
+
 /// Load JWT service from secret in configuration
 fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     if config.jwt.secret.is_empty() {
@@ -865,21 +886,56 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     .map_err(|e| anyhow::anyhow!("Failed to initialize JWT service: {e}"))
 }
 
-struct RoomServiceBuildArgs<'a> {
+struct RoomServiceBuildArgs {
     pool: PgPool,
     user_service: UserService,
     credential_repo: Arc<UserProviderCredentialRepository>,
     providers_manager: Arc<ProvidersManager>,
-    cache_invalidation: Arc<CacheInvalidationService>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     brute_force: crate::service::auth::BruteForceProtection,
-    redis_handles: Option<&'a RedisHandles>,
-    cluster_mode: bool,
-    is_sentinel: bool,
-    redis_key_prefix: &'a str,
-    cache_l2_ttl_seconds: u64,
+    runtime: RoomServiceRuntime,
 }
 
-fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
+struct RoomServiceRuntime {
+    distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
+    playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
+}
+
+fn build_room_service_runtime(
+    profile: &SharedStateProfile,
+    deployment_mode: &crate::config::RedisDeploymentMode,
+    cache_l2_ttl_seconds: u64,
+) -> RoomServiceRuntime {
+    let distributed_lock = if matches!(profile.state_mode(), SharedStateMode::SharedRequired) {
+        let redis_runtime = profile.require_shared_runtime("room coordination locking").expect(
+            "cluster.enabled=true requires shared runtime and is validated before service initialization",
+        );
+        Some(Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
+            redis_runtime,
+            matches!(deployment_mode, crate::config::RedisDeploymentMode::Sentinel),
+        )) as Arc<dyn crate::service::distributed_lock::CoordinationLock>)
+    } else {
+        None
+    };
+
+    let playback_l2_cache = profile.shared_runtime().map(|redis_runtime| {
+        crate::cache::PlaybackStateCache::new(
+            Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime)),
+            crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+            crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+            cache_l2_ttl_seconds,
+            format!("{}playback:", profile.key_prefix()),
+        )
+        .expect("playback L2 cache configuration should be valid")
+    });
+
+    RoomServiceRuntime {
+        distributed_lock,
+        playback_l2_cache,
+    }
+}
+
+fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
     let RoomServiceBuildArgs {
         pool,
         user_service,
@@ -887,11 +943,7 @@ fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
         providers_manager,
         cache_invalidation,
         brute_force,
-        redis_handles,
-        cluster_mode,
-        is_sentinel,
-        redis_key_prefix,
-        cache_l2_ttl_seconds,
+        runtime,
     } = args;
     let permission_service = PermissionService::with_invalidation(
         RoomMemberRepository::new(pool.clone()),
@@ -908,30 +960,13 @@ fn build_room_service(args: RoomServiceBuildArgs<'_>) -> RoomService {
         permission_service,
     );
     room_service.set_media_credential_repo(credential_repo);
-    if cluster_mode {
-        let redis_handles = redis_handles.expect(
-            "cluster.enabled=true requires Redis and is validated before service initialization",
-        );
-        let lock = crate::service::DistributedLock::new_shared_with_mode(
-            redis_handles.conn.clone(),
-            is_sentinel,
-        );
+    if let Some(lock) = runtime.distributed_lock {
         room_service.set_distributed_lock(lock);
     }
     room_service.set_brute_force_service(brute_force);
     room_service.set_cache_invalidation(cache_invalidation.clone());
     room_service.set_playback_cache_invalidation(cache_invalidation);
-    if let Some(redis_handles) = redis_handles {
-        let playback_l2 = crate::cache::PlaybackStateCache::new(
-            Arc::new(crate::cache::RedisCacheL2::new_shared(
-                redis_handles.conn.clone(),
-            )),
-            crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
-            crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
-            cache_l2_ttl_seconds,
-            format!("{redis_key_prefix}playback:"),
-        )
-        .expect("playback L2 cache configuration should be valid");
+    if let Some(playback_l2) = runtime.playback_l2_cache {
         room_service.set_playback_l2_cache(playback_l2);
     }
     room_service
@@ -947,61 +982,24 @@ fn test_providers_manager(pool: &PgPool) -> Arc<ProvidersManager> {
     Arc::new(ProvidersManager::new(provider_instance_manager))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PublishKeyBackendMode {
-    Memory,
-    RedisBestEffort,
-    RedisFailClosed,
-}
-
-const fn publish_key_backend_mode(cluster_mode: bool, has_redis: bool) -> PublishKeyBackendMode {
-    match (cluster_mode, has_redis) {
-        (true, _) => PublishKeyBackendMode::RedisFailClosed,
-        (false, true) => PublishKeyBackendMode::RedisBestEffort,
-        (_, false) => PublishKeyBackendMode::Memory,
-    }
-}
-
 fn build_publish_key_service(
     jwt_service: JwtService,
-    redis_handles: Option<&RedisHandles>,
-    key_prefix: &str,
-    cluster_mode: bool,
+    profile: &SharedStateProfile,
 ) -> Result<PublishKeyService, anyhow::Error> {
-    match publish_key_backend_mode(cluster_mode, redis_handles.is_some()) {
-        PublishKeyBackendMode::RedisFailClosed => {
-            let redis_handles = redis_handles.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cluster mode requires Redis handles for fail-closed publish key deduplication"
-                )
-            })?;
-            info!("Publish key service initialized with Redis JTI deduplication (fail-closed)");
-            Ok(PublishKeyService::with_redis_shared_fail_closed(
-                jwt_service,
-                24,
-                redis_handles.conn.clone(),
-                key_prefix.to_string(),
-            ))
+    let service = PublishKeyService::from_shared_state_profile(jwt_service, 24, profile)
+        .map_err(anyhow::Error::from)?;
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            info!("Publish key service initialized with shared JTI deduplication (required)");
         }
-        PublishKeyBackendMode::RedisBestEffort => {
-            let redis_handles = redis_handles.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Redis-backed publish key mode requires Redis handles to be present"
-                )
-            })?;
-            info!("Publish key service initialized with Redis JTI deduplication");
-            Ok(PublishKeyService::with_redis_shared(
-                jwt_service,
-                24,
-                redis_handles.conn.clone(),
-                key_prefix.to_string(),
-            ))
+        SharedStateMode::SharedBestEffort => {
+            info!("Publish key service initialized with shared JTI deduplication");
         }
-        PublishKeyBackendMode::Memory => {
-            info!("Publish key service initialized with in-memory JTI deduplication");
-            Ok(PublishKeyService::with_default_ttl(jwt_service))
+        SharedStateMode::LocalOnly => {
+            info!("Publish key service initialized with local JTI deduplication");
         }
     }
+    Ok(service)
 }
 
 /// Initialize credential encryption from environment variable or secret file
@@ -1045,7 +1043,6 @@ fn init_credential_encryption(
 /// Initialize Email service (optional - requires SMTP configuration).
 fn init_email_service(
     config: &Config,
-    _redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
 ) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
@@ -1076,33 +1073,45 @@ fn init_email_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheInvalidationService;
+
+    struct FakeRedisRuntime;
+
+    #[async_trait::async_trait]
+    impl crate::RedisConnectionRuntime for FakeRedisRuntime {
+        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            panic!("snapshot should not be called in this unit test");
+        }
+    }
 
     #[test]
-    fn test_publish_key_backend_mode_is_fail_closed_in_cluster() {
+    fn test_shared_state_profile_requires_shared_runtime_in_cluster() {
         assert_eq!(
-            publish_key_backend_mode(true, true),
-            PublishKeyBackendMode::RedisFailClosed
+            SharedStateProfile::from_runtime(None, "test:", true).state_mode(),
+            SharedStateMode::SharedRequired
         );
     }
 
     #[test]
-    fn test_publish_key_backend_mode_is_best_effort_in_standalone_with_redis() {
+    fn test_shared_state_profile_prefers_shared_runtime_when_available() {
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedBestEffort,
+            Some(Arc::new(FakeRedisRuntime)),
+            "test:",
+        );
+        assert_eq!(profile.state_mode(), SharedStateMode::SharedBestEffort);
+    }
+
+    #[test]
+    fn test_shared_state_profile_uses_local_mode_without_shared_runtime() {
         assert_eq!(
-            publish_key_backend_mode(false, true),
-            PublishKeyBackendMode::RedisBestEffort
+            SharedStateProfile::from_runtime(None, "test:", false).state_mode(),
+            SharedStateMode::LocalOnly
         );
     }
 
     #[test]
-    fn test_publish_key_backend_mode_is_memory_without_redis() {
-        assert_eq!(
-            publish_key_backend_mode(false, false),
-            PublishKeyBackendMode::Memory
-        );
-    }
-
-    #[test]
-    fn test_build_publish_key_service_returns_error_without_redis_in_cluster_mode() {
+    fn test_build_publish_key_service_returns_error_without_shared_runtime_in_cluster_mode() {
         let jwt_service = JwtService::with_durations(
             "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
             24,
@@ -1112,13 +1121,66 @@ mod tests {
         )
         .expect("jwt service");
 
-        let error = build_publish_key_service(jwt_service, None, "test:", true)
-            .expect_err("cluster mode publish key service must return an error without Redis");
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let error = build_publish_key_service(jwt_service, &profile)
+            .expect_err("cluster runtime must reject local publish-key deduplication");
 
         assert!(
             error.to_string().contains(
-                "cluster mode requires Redis handles for fail-closed publish key deduplication"
+                "cluster runtime requires shared publish-key deduplication state"
             ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_build_brute_force_protection_returns_error_without_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let error = build_brute_force_protection(&profile)
+            .expect_err("cluster runtime must reject local brute-force tracking");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared brute-force protection state"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_refresh_token_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode(
+    ) {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let jwt_service = JwtService::new(
+            "test-jwt-secret-key-for-refresh-limit-minimum-32-chars",
+        )
+        .expect("jwt service");
+        let username_cache = crate::cache::UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:username:".to_string(),
+            64,
+            60,
+        );
+        let mut user_service = UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            crate::config::PasswordComplexityConfig::default(),
+            Arc::new(crate::service::InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test".to_string()),
+        );
+
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let error = configure_refresh_token_rate_limiter(&mut user_service, &profile)
+            .expect_err("cluster runtime must reject local refresh-token rate limiting");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared rate-limit state"),
             "unexpected error: {error}"
         );
     }
@@ -1151,6 +1213,94 @@ mod tests {
     }
 
     #[test]
+    fn test_build_ws_ticket_service_uses_memory_backend_without_runtime() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let service = build_ws_ticket_service(&profile)
+            .expect("standalone mode should allow local WebSocket ticket storage");
+
+        assert_eq!(service.backend_name(), "memory");
+    }
+
+    #[tokio::test]
+    async fn test_build_migration_lock_uses_pg_advisory_without_shared_runtime() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+
+        let lock = build_migration_lock_from_runtime(
+            pool,
+            &crate::config::RedisDeploymentMode::Standalone,
+            None,
+        );
+
+        assert_eq!(lock.backend_name(), "pg-advisory");
+    }
+
+    #[tokio::test]
+    async fn test_build_migration_lock_uses_pg_advisory_in_sentinel_mode() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+
+        let lock = build_migration_lock_from_runtime(
+            pool,
+            &crate::config::RedisDeploymentMode::Sentinel,
+            Some(Arc::new(FakeRedisRuntime)),
+        );
+
+        assert_eq!(lock.backend_name(), "pg-advisory");
+    }
+
+    #[tokio::test]
+    async fn test_build_migration_lock_uses_redis_backend_in_standalone_redis_mode() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+
+        let lock = build_migration_lock_from_runtime(
+            pool,
+            &crate::config::RedisDeploymentMode::Standalone,
+            Some(Arc::new(FakeRedisRuntime)),
+        );
+
+        assert_eq!(lock.backend_name(), "redis");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_build_ws_ticket_service_uses_distributed_backend_when_runtime_available() {
+        let (_redis_container, redis_client) = synctv_core_testing::start_redis_with_client().await;
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
+            .await
+            .expect("redis connection manager");
+        let redis_runtime = Arc::new(ManagedRedisRuntime::new(
+            redis_client,
+            Arc::new(tokio::sync::RwLock::new(redis_conn)),
+        ));
+
+        let profile =
+            SharedStateProfile::from_runtime(Some(redis_runtime), "test:", false);
+        let service = build_ws_ticket_service(&profile)
+            .expect("distributed ticket storage should be accepted");
+
+        assert_eq!(service.backend_name(), "redis");
+    }
+
+    #[test]
+    fn test_build_ws_ticket_service_rejects_local_backend_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let error = build_ws_ticket_service(&profile)
+            .expect_err("cluster runtime must reject local-only WebSocket ticket storage");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared WebSocket ticket storage"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn test_provider_manager_init_failure_is_fatal() {
         let err = handle_provider_manager_init_result(Err(crate::Error::Internal(
             "provider init failed".to_string(),
@@ -1180,7 +1330,7 @@ mod tests {
         config.email.from_name = "SyncTV".to_string();
         config.email.use_tls = true;
 
-        let standalone = init_email_service(&config, None).expect("standalone email service");
+        let standalone = init_email_service(&config).expect("standalone email service");
         let standalone = standalone.expect("email service");
         assert!(standalone.is_configured());
     }
@@ -1210,9 +1360,7 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
 
@@ -1225,11 +1373,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: None,
-            cluster_mode: false,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(None, "test:", false),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
 
         assert!(room_service.has_brute_force_service());
@@ -1246,7 +1394,22 @@ mod tests {
 
     #[test]
     fn test_build_room_service_signature_supports_redis_lock_wiring() {
-        let _: fn(RoomServiceBuildArgs<'_>) -> RoomService = build_room_service;
+        let _: fn(RoomServiceBuildArgs) -> RoomService = build_room_service;
+    }
+
+    #[test]
+    fn test_build_migration_lock_signature_uses_runtime_abstraction() {
+        fn assert_signature<F>(_f: F)
+        where
+            F: Fn(
+                PgPool,
+                &Config,
+                Option<Arc<dyn crate::RedisConnectionRuntime>>,
+            ) -> Arc<dyn crate::service::MigrationLock>,
+        {
+        }
+
+        assert_signature(build_migration_lock);
     }
 
     #[tokio::test]
@@ -1256,10 +1419,10 @@ mod tests {
         let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
             .await
             .expect("redis connection manager");
-        let redis_handles = RedisHandles {
-            client: redis_client,
-            conn: Arc::new(tokio::sync::RwLock::new(redis_conn)),
-        };
+        let redis_runtime = Arc::new(ManagedRedisRuntime::new(
+            redis_client,
+            Arc::new(tokio::sync::RwLock::new(redis_conn)),
+        ));
 
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let jwt_service = JwtService::with_durations(
@@ -1284,9 +1447,7 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
 
@@ -1299,11 +1460,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: Some(&redis_handles),
-            cluster_mode: false,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
         assert!(
             !standalone_room_service.has_distributed_lock(),
@@ -1323,11 +1484,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: Some(&redis_handles),
-            cluster_mode: true,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
         assert!(
             cluster_room_service.has_distributed_lock(),
@@ -1370,9 +1531,7 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let mut room_service = build_room_service(RoomServiceBuildArgs {
@@ -1384,11 +1543,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: None,
-            cluster_mode: false,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(None, "test:", false),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool),
@@ -1427,9 +1586,7 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
@@ -1443,11 +1600,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: None,
-            cluster_mode: false,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(None, "test:", false),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
 
         assert!(
@@ -1481,9 +1638,7 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
@@ -1496,11 +1651,11 @@ mod tests {
             brute_force: crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             ),
-            redis_handles: None,
-            cluster_mode: false,
-            is_sentinel: false,
-            redis_key_prefix: "test:",
-            cache_l2_ttl_seconds: Config::default().cache.l2_ttl_seconds,
+            runtime: build_room_service_runtime(
+                &SharedStateProfile::from_runtime(None, "test:", false),
+                &crate::config::RedisDeploymentMode::Standalone,
+                Config::default().cache.l2_ttl_seconds,
+            ),
         });
 
         let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
@@ -1551,7 +1706,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_oauth2_service_rejects_cluster_mode_without_redis_at_bootstrap_layer() {
+    async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let mut config = Config::default();
         config.cluster.enabled = true;
@@ -1564,14 +1719,15 @@ mod tests {
             }
         });
 
-        let error = init_oauth2_service(pool, &config, None, true)
+        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, true);
+        let error = init_oauth2_service(pool, &config, &profile)
             .await
             .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
 
         assert!(
             error
                 .to_string()
-                .contains("Redis is required for OAuth2 state storage in cluster mode"),
+                .contains("cluster runtime requires shared single-use OAuth2 state storage"),
             "unexpected error: {error}"
         );
     }
@@ -1588,7 +1744,8 @@ mod tests {
             }
         });
 
-        let error = init_oauth2_service(pool, &config, None, false)
+        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
+        let error = init_oauth2_service(pool, &config, &profile)
             .await
             .expect_err("frontend-driven OAuth2 must require an explicit redirect_url");
 
@@ -1612,7 +1769,8 @@ mod tests {
             }
         });
 
-        init_oauth2_service(pool, &config, None, false)
+        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
+        init_oauth2_service(pool, &config, &profile)
             .await
             .expect("explicit frontend/client redirect_url should be accepted");
     }
@@ -1629,7 +1787,8 @@ mod tests {
             }
         });
 
-        let error = init_oauth2_service(pool, &config, None, false)
+        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
+        let error = init_oauth2_service(pool, &config, &profile)
             .await
             .expect_err("invalid configured provider must fail startup instead of being skipped");
 

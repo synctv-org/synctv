@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::{PgTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core::service::{auth::token_blacklist::PgTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::create_test_pool;
 
 #[tokio::test]

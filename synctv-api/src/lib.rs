@@ -4,6 +4,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod client_ip;
+pub mod cluster_fanout;
+pub mod fanout;
 pub mod grpc;
 pub mod http;
 pub mod impls;
@@ -11,6 +13,7 @@ pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 pub mod proto;
+pub mod runtime;
 
 // Shared validation utilities
 pub mod room_id_validation;

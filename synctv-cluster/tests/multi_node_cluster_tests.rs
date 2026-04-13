@@ -98,14 +98,29 @@ async fn test_node_discovery_three_nodes() {
     let redis_client_c =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client C");
 
-    let registry_a = NodeRegistry::new(redis_client_a, "node_a".to_string(), 30, &redis.key_prefix)
-        .expect("Failed to create registry A");
+    let registry_a = NodeRegistry::new(
+        synctv_core::coordination_runtime_from_client(redis_client_a),
+        "node_a".to_string(),
+        30,
+        &redis.key_prefix,
+    )
+    .expect("Failed to create registry A");
 
-    let registry_b = NodeRegistry::new(redis_client_b, "node_b".to_string(), 30, &redis.key_prefix)
-        .expect("Failed to create registry B");
+    let registry_b = NodeRegistry::new(
+        synctv_core::coordination_runtime_from_client(redis_client_b),
+        "node_b".to_string(),
+        30,
+        &redis.key_prefix,
+    )
+    .expect("Failed to create registry B");
 
-    let registry_c = NodeRegistry::new(redis_client_c, "node_c".to_string(), 30, &redis.key_prefix)
-        .expect("Failed to create registry C");
+    let registry_c = NodeRegistry::new(
+        synctv_core::coordination_runtime_from_client(redis_client_c),
+        "node_c".to_string(),
+        30,
+        &redis.key_prefix,
+    )
+    .expect("Failed to create registry C");
 
     // Register all three nodes
     registry_a
@@ -213,7 +228,7 @@ async fn test_node_epoch_fencing() {
         redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
 
     let registry = NodeRegistry::new(
-        redis_client,
+        synctv_core::coordination_runtime_from_client(redis_client),
         "fencing_node".to_string(),
         30,
         &redis.key_prefix,

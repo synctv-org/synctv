@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::AsyncCommands;
-use synctv_core::service::{PgTokenBlacklistStore, TieredTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core::service::{
+    auth::token_blacklist::{PgTokenBlacklistStore, TieredTokenBlacklistStore},
+    TokenBlacklistStore,
+};
 use synctv_core_testing::start_redis_with_client;
 use tokio::sync::RwLock;
 

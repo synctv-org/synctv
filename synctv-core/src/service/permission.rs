@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage},
+    cache::{CacheInvalidationRuntime, InvalidationMessage},
     models::{PermissionBits, RoomId, RoomSettings, UserId},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::SettingsRegistry,
@@ -42,9 +42,17 @@ impl PermissionInvalidationRuntime {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct SharedInvalidationService {
-    service: parking_lot::RwLock<Option<Arc<CacheInvalidationService>>>,
+    service: parking_lot::RwLock<Option<Arc<dyn CacheInvalidationRuntime>>>,
+}
+
+impl std::fmt::Debug for SharedInvalidationService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedInvalidationService")
+            .field("configured", &self.service.read().is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -145,7 +153,7 @@ impl PermissionService {
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
-        invalidation_service: Arc<CacheInvalidationService>,
+        invalidation_service: Arc<dyn CacheInvalidationRuntime>,
     ) -> Self {
         let mut service = Self::new(
             member_repo,
@@ -213,11 +221,11 @@ impl PermissionService {
         self.degraded_cache.invalidate_all();
     }
 
-    fn invalidation_service(&self) -> Option<Arc<CacheInvalidationService>> {
+    fn invalidation_service(&self) -> Option<Arc<dyn CacheInvalidationRuntime>> {
         self.invalidation_service.service.read().clone()
     }
 
-    pub fn set_invalidation_service(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         *self.invalidation_service.service.write() = Some(service);
     }
 
@@ -1483,9 +1491,7 @@ mod tests {
     fn test_set_invalidation_service_propagates_to_clones() {
         let mut service = make_service();
         let cloned = service.clone();
-        let invalidation_service = Arc::new(crate::cache::CacheInvalidationService::new(
-            None,
-            "permission-clone-node".to_string(),
+        let invalidation_service = Arc::new(crate::cache::CacheInvalidationService::new("permission-clone-node".to_string(),
             "permission-clone-stream".to_string(),
         ));
 
@@ -1574,8 +1580,7 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
         );
 
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None, // No Redis - local only
+        let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis - local only
             "test-node".to_string(),
             "test-stream".to_string(),
         ));
@@ -1938,8 +1943,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(
-                None, // No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));
@@ -2015,8 +2019,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(
-                None, // No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));
@@ -2079,8 +2082,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(
-                None, // No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));

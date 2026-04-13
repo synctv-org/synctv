@@ -9,8 +9,10 @@ pub mod sync;
 #[cfg(feature = "k8s")]
 pub use discovery::K8sDnsDiscovery;
 pub use discovery::{
-    ClusterMode, HealthMonitor, HeartbeatResult, LoadBalancer, LoadBalancingStrategy, NodeHealth,
-    NodeInfo, NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
+    ClusterHealthRuntime, ClusterMode, ClusterNodeDirectory, ClusterNodeDirectoryFactory,
+    HealthMonitor, HeartbeatResult, LoadBalancer, LoadBalancingStrategy,
+    LocalClusterNodeDirectoryFactory, NodeHealth, NodeInfo, NodeRegistry, NodeViewMode,
+    RedisClusterNodeDirectoryFactory, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
 };
 pub use error::{Error, Result};
 pub use grpc::{
@@ -21,7 +23,10 @@ pub use grpc::{
 pub use leader::{K8sLeaderElector, K8sLeaderElectorConfig};
 pub use leader::{LeaderElector, LeaderElectorConfig};
 pub use sync::{
-    BroadcastResult, ClusterConfig, ClusterManager, ClusterMetrics, ConnectionId,
-    ConnectionManager, DedupKey, MessageDeduplicator, MessageSender as ClusterMessageSender,
-    PublishRequest, RoomMessageHub, Subscriber,
+    build_connection_manager, build_connection_runtime, build_room_message_runtime,
+    BroadcastResult, ClusterConfig, ClusterManager, ClusterMessageTransport,
+    ClusterMessageTransportConfig, ClusterMessageTransportFactory, ClusterMessageTransportRuntime,
+    ClusterMetrics, ConnectionId, ConnectionManager, ConnectionRuntime, DedupKey,
+    MessageDeduplicator, MessageSender as ClusterMessageSender, PublishRequest,
+    RedisClusterMessageTransportFactory, RoomMessageHub, RoomMessageRuntime, Subscriber,
 };

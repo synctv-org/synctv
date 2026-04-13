@@ -14,16 +14,11 @@
 //! # Usage
 //!
 //! ```text
-//! // Redis-based (any deployment):
-//! let is_sentinel = matches!(redis_deployment_mode, RedisDeploymentMode::Sentinel);
-//! let elector = LeaderElector::new(redis_conn, node_id, "synctv:", is_sentinel);
-//! elector.start(cancel_token.clone());
+//! let leader_runtime = build_managed_leader_runtime(&config, &node_id, &shared_state_profile)
+//!     .await?;
+//! let _handle = leader_runtime.start(cancel_token.clone());
 //!
-//! // K8s Lease-based (K8s only, requires "k8s" feature):
-//! let elector = K8sLeaderElector::new(pod_name, namespace, config).await?;
-//! elector.start(cancel_token.clone());
-//!
-//! if elector.is_leader() {
+//! if leader_runtime.is_leader() {
 //!     // run singleton tasks
 //! }
 //! ```
@@ -33,12 +28,8 @@ pub mod k8s_lease;
 #[cfg(feature = "k8s")]
 pub use k8s_lease::{K8sLeaderElector, K8sLeaderElectorConfig};
 
-/// Unified leader elector that supports both Redis and K8s modes.
-///
-/// This enum allows the application to dynamically switch between
-/// Redis-based and K8s Lease-based leader election at runtime.
 #[derive(Clone)]
-pub enum AnyLeaderElector {
+enum AnyLeaderElector {
     /// Redis-based leader election (works in any deployment)
     Redis(LeaderElector),
     /// Kubernetes Lease-based leader election (K8s only, requires `k8s` feature)
@@ -115,6 +106,14 @@ impl AnyLeaderElector {
         }
     }
 
+    const fn mode_label(&self) -> &'static str {
+        match self {
+            Self::Redis(_) => "redis",
+            #[cfg(feature = "k8s")]
+            Self::K8s(_) => "k8s_lease",
+        }
+    }
+
     /// Gracefully resign leadership by releasing the distributed lock.
     ///
     /// This method is called when:
@@ -133,12 +132,12 @@ impl AnyLeaderElector {
     ///
     /// ```rust,no_run
     /// # async fn example(
-    /// #     elector: synctv_cluster::leader::AnyLeaderElector,
+    /// #     leader_runtime: std::sync::Arc<dyn synctv_cluster::leader::ManagedLeaderRuntime>,
     /// #     is_quarantined: bool,
     /// # ) {
     /// // When entering quarantine due to epoch mismatch
-    /// if is_quarantined && elector.is_leader() {
-    ///     elector.resign().await;
+    /// if is_quarantined && leader_runtime.is_leader() {
+    ///     leader_runtime.resign().await;
     /// }
     /// # }
     /// ```
@@ -153,11 +152,7 @@ impl AnyLeaderElector {
 
 impl LeaderElect for AnyLeaderElector {
     fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
-        match self {
-            Self::Redis(e) => e.event_tx.subscribe(),
-            #[cfg(feature = "k8s")]
-            Self::K8s(e) => e.subscribe(),
-        }
+        Self::subscribe(self)
     }
 }
 
@@ -165,6 +160,13 @@ impl synctv_core::service::LeaderCheck for AnyLeaderElector {
     fn is_leader(&self) -> bool {
         self.is_leader()
     }
+}
+
+/// Unified leader runtime consumed by application code.
+pub trait ManagedLeaderRuntime: LeaderRuntime {
+    fn mode_label(&self) -> &'static str;
+
+    fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()>;
 }
 
 impl LeaderElect for synctv_core::service::AlwaysLeader {
@@ -194,6 +196,18 @@ impl LeaderRuntime for synctv_core::service::AlwaysLeader {
     async fn resign(&self) {}
 }
 
+impl ManagedLeaderRuntime for synctv_core::service::AlwaysLeader {
+    fn mode_label(&self) -> &'static str {
+        "standalone"
+    }
+
+    fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            cancel_token.cancelled().await;
+        })
+    }
+}
+
 #[async_trait]
 impl LeaderRuntime for AnyLeaderElector {
     fn current_leader_identity(&self) -> Option<String> {
@@ -209,6 +223,16 @@ impl LeaderRuntime for AnyLeaderElector {
     }
 }
 
+impl ManagedLeaderRuntime for AnyLeaderElector {
+    fn mode_label(&self) -> &'static str {
+        Self::mode_label(self)
+    }
+
+    fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+        Self::start(self, cancel_token)
+    }
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -219,7 +243,10 @@ use tokio::sync::{broadcast, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use synctv_core::service::DistributedLock;
+use synctv_core::{
+    config::RedisDeploymentMode, service::DistributedLock, Config, RedisConnectionRuntime,
+    SharedStateProfile,
+};
 
 /// Leadership change event for observers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,145 +332,104 @@ pub trait LeaderElect {
     }
 }
 
-/// Startup inputs for constructing the configured leader election backend.
-pub struct LeaderRuntimeBuilder<'a> {
-    pub cluster_enabled: bool,
-    pub leader_mode: &'a str,
-    pub node_id: &'a str,
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
-    pub redis_key_prefix: &'a str,
-    pub redis_is_sentinel: bool,
+#[cfg(feature = "k8s")]
+pub async fn build_managed_leader_runtime(
+    config: &Config,
+    node_id: &str,
+    shared_state_profile: &SharedStateProfile,
+) -> anyhow::Result<Arc<dyn ManagedLeaderRuntime>> {
+    if !config.cluster.enabled {
+        return Err(anyhow::anyhow!(
+            "Leader election runtime is cluster-only; standalone mode must use AlwaysLeader directly"
+        ));
+    }
+
+    match config.cluster.leader_election_mode.as_str() {
+        "k8s_lease" => {
+            let pod_name = std::env::var("POD_NAME").map_err(|_| {
+                anyhow::anyhow!(
+                    "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
+                     this should have been caught by configuration validation"
+                )
+            })?;
+            let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
+                anyhow::anyhow!(
+                    "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE; \
+                     this should have been caught by configuration validation"
+                )
+            })?;
+
+            let elector = K8sLeaderElector::new(
+                pod_name,
+                namespace,
+                K8sLeaderElectorConfig::default(),
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "K8s leader election initialization failed: {e}. \
+                     Cannot safely continue in cluster mode. \
+                     Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
+                )
+            })?;
+
+            Ok(Arc::new(AnyLeaderElector::K8s(elector)))
+        }
+        "redis" => build_redis_leader_runtime(config, node_id, shared_state_profile),
+        other => Err(anyhow::anyhow!(
+            "cluster.leader_election_mode is validated before startup: {other}"
+        )),
+    }
 }
 
-impl<'a> LeaderRuntimeBuilder<'a> {
-    #[must_use]
-    pub const fn new(
-        cluster_enabled: bool,
-        leader_mode: &'a str,
-        node_id: &'a str,
-        redis_conn: Option<redis::aio::ConnectionManager>,
-        redis_key_prefix: &'a str,
-        redis_is_sentinel: bool,
-    ) -> Self {
-        Self {
-            cluster_enabled,
-            leader_mode,
-            node_id,
-            redis_conn,
-            redis_key_prefix,
-            redis_is_sentinel,
-        }
+#[cfg(not(feature = "k8s"))]
+pub fn build_managed_leader_runtime(
+    config: &Config,
+    node_id: &str,
+    shared_state_profile: &SharedStateProfile,
+) -> anyhow::Result<Arc<dyn ManagedLeaderRuntime>> {
+    if !config.cluster.enabled {
+        return Err(anyhow::anyhow!(
+            "Leader election runtime is cluster-only; standalone mode must use AlwaysLeader directly"
+        ));
     }
 
-    #[cfg(feature = "k8s")]
-    pub async fn build(self) -> anyhow::Result<AnyLeaderElector> {
-        if !self.cluster_enabled {
-            return Err(anyhow::anyhow!(
-                "LeaderRuntimeBuilder is cluster-only; standalone mode must use AlwaysLeader directly"
-            ));
-        }
+    match config.cluster.leader_election_mode.as_str() {
+        "k8s_lease" => Err(anyhow::anyhow!(
+            "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
+             Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
+        )),
+        "redis" => build_redis_leader_runtime(config, node_id, shared_state_profile),
+        other => Err(anyhow::anyhow!(
+            "cluster.leader_election_mode is validated before startup: {other}"
+        )),
+    }
+}
 
-        match self.leader_mode {
-            #[cfg(feature = "k8s")]
-            "k8s_lease" => {
-                let pod_name = std::env::var("POD_NAME").map_err(|_| {
-                    anyhow::anyhow!(
-                        "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
-                         this should have been caught by configuration validation"
-                    )
-                })?;
-                let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
-                    anyhow::anyhow!(
-                        "cluster.leader_election_mode='k8s_lease' requires POD_NAMESPACE; \
-                         this should have been caught by configuration validation"
-                    )
-                })?;
-
-                let elector = K8sLeaderElector::new(
-                    pod_name,
-                    namespace,
-                    K8sLeaderElectorConfig::default(),
-                )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "K8s leader election initialization failed: {e}. \
-                         Cannot safely continue in cluster mode. \
-                         Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
-                    )
-                })?;
-
-                Ok(AnyLeaderElector::K8s(elector))
-            }
-            #[cfg(not(feature = "k8s"))]
-            "k8s_lease" => Err(anyhow::anyhow!(
-                "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
-                 Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
-            )),
-            "redis" => {
-                if self.redis_is_sentinel {
-                    return Err(anyhow::anyhow!(
-                        "cluster.leader_election_mode='redis' is not supported with Redis Sentinel. \
-                         Sentinel failover can create split-brain leader windows; use \
-                         cluster.leader_election_mode='k8s_lease' or a non-Sentinel Redis deployment."
-                    ));
-                }
-                let redis_conn = self.redis_conn.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "cluster.enabled=true requires Redis-backed leader election wiring"
-                    )
-                })?;
-                Ok(AnyLeaderElector::Redis(LeaderElector::new(
-                    redis_conn,
-                    self.node_id.to_string(),
-                    self.redis_key_prefix,
-                    self.redis_is_sentinel,
-                )))
-            }
-            other => Err(anyhow::anyhow!(
-                "cluster.leader_election_mode is validated before startup: {other}"
-            )),
-        }
+fn build_redis_leader_runtime(
+    config: &Config,
+    node_id: &str,
+    shared_state_profile: &SharedStateProfile,
+) -> anyhow::Result<Arc<dyn ManagedLeaderRuntime>> {
+    let is_sentinel = matches!(config.redis.deployment_mode, RedisDeploymentMode::Sentinel);
+    if is_sentinel {
+        return Err(anyhow::anyhow!(
+            "cluster.leader_election_mode='redis' is not supported with Redis Sentinel. \
+             Sentinel failover can create split-brain leader windows; use \
+             cluster.leader_election_mode='k8s_lease' or a non-Sentinel Redis deployment."
+        ));
     }
 
-    #[cfg(not(feature = "k8s"))]
-    pub fn build(self) -> anyhow::Result<AnyLeaderElector> {
-        if !self.cluster_enabled {
-            return Err(anyhow::anyhow!(
-                "LeaderRuntimeBuilder is cluster-only; standalone mode must use AlwaysLeader directly"
-            ));
-        }
+    let redis_runtime = shared_state_profile.shared_runtime().ok_or_else(|| {
+        anyhow::anyhow!("cluster.enabled=true requires Redis-backed leader election wiring")
+    })?;
 
-        match self.leader_mode {
-            "k8s_lease" => Err(anyhow::anyhow!(
-                "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
-                 Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
-            )),
-            "redis" => {
-                if self.redis_is_sentinel {
-                    return Err(anyhow::anyhow!(
-                        "cluster.leader_election_mode='redis' is not supported with Redis Sentinel. \
-                         Sentinel failover can create split-brain leader windows; use \
-                         cluster.leader_election_mode='k8s_lease' or a non-Sentinel Redis deployment."
-                    ));
-                }
-                let redis_conn = self.redis_conn.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "cluster.enabled=true requires Redis-backed leader election wiring"
-                    )
-                })?;
-                Ok(AnyLeaderElector::Redis(LeaderElector::new(
-                    redis_conn,
-                    self.node_id.to_string(),
-                    self.redis_key_prefix,
-                    self.redis_is_sentinel,
-                )))
-            }
-            other => Err(anyhow::anyhow!(
-                "cluster.leader_election_mode is validated before startup: {other}"
-            )),
-        }
-    }
+    Ok(Arc::new(AnyLeaderElector::Redis(LeaderElector::from_runtime(
+        redis_runtime,
+        node_id.to_string(),
+        shared_state_profile.key_prefix(),
+        is_sentinel,
+    ))))
 }
 
 /// Default Redis key for leader election lock (used when no prefix is configured).
@@ -521,8 +507,8 @@ pub struct LeaderElector {
     /// Number of consecutive election failures (acquire or renew).
     /// Used to detect prolonged leader vacancy.
     consecutive_failures: Arc<AtomicU64>,
-    /// Redis connection manager for TIME command
-    redis_conn: redis::aio::ConnectionManager,
+    /// Shared Redis runtime used by both distributed locking and TIME sampling.
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
     /// Tracks whether we've experienced a prolonged Redis outage.
     /// When true and Redis recovers, we apply an extended grace period
     /// to prevent multiple nodes from simultaneously claiming leadership.
@@ -586,6 +572,38 @@ impl LeaderElector {
         key_prefix: &str,
         is_sentinel: bool,
     ) -> Self {
+        let redis_runtime = synctv_core::direct_runtime(redis_conn);
+        Self::with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
+    }
+
+    pub fn from_runtime(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        identity: String,
+        key_prefix: &str,
+        is_sentinel: bool,
+    ) -> Self {
+        let config = LeaderElectorConfig::default();
+        Self::with_runtime_config(redis_runtime, identity, &config, key_prefix, is_sentinel)
+    }
+
+    pub fn with_shared(
+        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        identity: String,
+        config: &LeaderElectorConfig,
+        key_prefix: &str,
+        is_sentinel: bool,
+    ) -> Self {
+        let redis_runtime = synctv_core::shared_runtime(redis_conn);
+        Self::with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
+    }
+
+    pub fn with_runtime_config(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        identity: String,
+        config: &LeaderElectorConfig,
+        key_prefix: &str,
+        is_sentinel: bool,
+    ) -> Self {
         assert!(
             config.renew_interval_secs < config.lease_duration_secs,
             "renew_interval_secs ({}) must be less than lease_duration_secs ({})",
@@ -594,10 +612,18 @@ impl LeaderElector {
         );
 
         let (event_tx, _) = broadcast::channel(16);
-        let redis_conn_clone = redis_conn.clone();
-
-        // Use new_with_mode to log warning if using Sentinel
-        let lock = DistributedLock::new_with_mode(redis_conn, is_sentinel);
+        let lock = DistributedLock::from_runtime(redis_runtime.clone());
+        if is_sentinel {
+            tracing::warn!(
+                "Distributed lock is running behind Redis Sentinel. \
+                 During a Sentinel failover, there is a brief split-brain window where \
+                 locks held on the old master may be lost because Redis replication is \
+                 asynchronous. Fencing tokens mitigate this for database writes, but \
+                 non-idempotent side effects (notifications, billing) cannot be fenced. \
+                 For production Sentinel deployments, consider using the Redlock algorithm \
+                 with multiple independent Redis masters."
+            );
+        }
 
         Self {
             is_leader: Arc::new(AtomicBool::new(false)),
@@ -611,7 +637,7 @@ impl LeaderElector {
             leadership_lost_at_redis_ts: Arc::new(TokioMutex::new(None)),
             event_tx: Arc::new(event_tx),
             consecutive_failures: Arc::new(AtomicU64::new(0)),
-            redis_conn: redis_conn_clone,
+            redis_runtime,
             in_prolonged_outage: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -637,7 +663,7 @@ impl LeaderElector {
     /// Uses Redis TIME command to get authoritative server-side timestamp,
     /// avoiding clock skew issues when multiple nodes have NTP drift.
     async fn get_redis_time(&self) -> Result<u64, redis::RedisError> {
-        let mut conn = self.redis_conn.clone();
+        let mut conn = self.redis_runtime.snapshot().await;
         // TIME returns: [seconds, microseconds]
         let time_result: (u64, u64) = redis::cmd("TIME").query_async(&mut conn).await?;
         Ok(time_result.0)
@@ -1107,6 +1133,8 @@ impl LeaderElect for LeaderElector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::config::RedisDeploymentMode;
+    use synctv_core::{Config, RedisConnectionRuntime, SharedStateProfile};
 
     #[test]
     #[should_panic(expected = "renew_interval_secs")]
@@ -1127,18 +1155,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_rejects_standalone_mode() {
+        let config = Config::default();
+        let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
+
         #[cfg(feature = "k8s")]
-        let Err(error) =
-            LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false)
-                .build()
-                .await
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile).await
         else {
             panic!("standalone mode must use AlwaysLeader directly");
         };
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) =
-            LeaderRuntimeBuilder::new(false, "redis", "node-1", None, "synctv:", false).build()
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile)
         else {
             panic!("standalone mode must use AlwaysLeader directly");
         };
@@ -1146,24 +1173,27 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("LeaderRuntimeBuilder is cluster-only"),
+                .contains("Leader election runtime is cluster-only"),
             "unexpected error: {error}"
         );
     }
 
     #[tokio::test]
     async fn test_builder_rejects_redis_mode_with_sentinel() {
+        let mut config = Config::default();
+        config.cluster.enabled = true;
+        config.cluster.leader_election_mode = "redis".to_string();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
+
         #[cfg(feature = "k8s")]
-        let Err(error) = LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true)
-            .build()
-            .await
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile).await
         else {
             panic!("sentinel-backed redis leader election must fail closed");
         };
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) =
-            LeaderRuntimeBuilder::new(true, "redis", "node-1", None, "synctv:", true).build()
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile)
         else {
             panic!("sentinel-backed redis leader election must fail closed");
         };
@@ -1193,6 +1223,46 @@ mod tests {
         assert!(
             leader.is_leader(),
             "resign() on AlwaysLeader should remain a no-op in standalone mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builder_returns_managed_leader_runtime_trait_object() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let mut config = Config::default();
+        config.cluster.enabled = true;
+        config.cluster.leader_election_mode = "redis".to_string();
+        let profile = SharedStateProfile::from_runtime(
+            Some(Arc::new(FakeRedisRuntime) as Arc<dyn RedisConnectionRuntime>),
+            "synctv:",
+            true,
+        );
+
+        #[cfg(feature = "k8s")]
+        let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
+            build_managed_leader_runtime(&config, "node-1", &profile)
+                .await
+        .expect("redis leader runtime should be built through the unified trait");
+
+        #[cfg(not(feature = "k8s"))]
+        let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
+            build_managed_leader_runtime(&config, "node-1", &profile)
+                .expect("redis leader runtime should be built through the unified trait");
+
+        assert_eq!(leader_runtime.mode_label(), "redis");
+        assert_eq!(
+            leader_runtime.current_leader_identity(),
+            None,
+            "freshly constructed redis runtime should not claim leadership before start"
         );
     }
 

@@ -24,7 +24,7 @@ use synctv_core::{
         RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{member::MemberService, permission::PermissionService},
+    service::{member::MemberService, permission::PermissionService, NotificationService},
 };
 
 use chrono::Utc;
@@ -62,6 +62,22 @@ async fn create_test_infra() -> TestInfra {
         postgres: Some(postgres),
         redis: Some(redis),
     }
+}
+
+async fn distributed_invalidation_service(
+    redis_client: redis::Client,
+    node_id: &str,
+    stream_key: String,
+) -> Arc<CacheInvalidationService> {
+    Arc::new(CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(
+            redis::aio::ConnectionManager::new(redis_client)
+                .await
+                .expect("redis connection manager"),
+        ),
+        node_id.to_string(),
+        stream_key,
+    ))
 }
 
 impl TestInfra {
@@ -233,16 +249,12 @@ async fn test_member_join_synchronized_via_redis() {
     let (_owner, room) = setup_test_room(pool, "Member Sync Room").await;
 
     // Create cache invalidation services for two nodes
-    let cache_invalidation_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        "test:member:sync".to_string(),
-    ));
-    let cache_invalidation_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_b".to_string(),
-        "test:member:sync".to_string(),
-    ));
+    let cache_invalidation_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", "test:member:sync".to_string())
+            .await;
+    let cache_invalidation_b =
+        distributed_invalidation_service(redis_client.clone(), "node_b", "test:member:sync".to_string())
+            .await;
 
     cache_invalidation_a
         .start()
@@ -342,16 +354,12 @@ async fn test_member_role_change_synchronized() {
         .expect("Failed to add member");
 
     // Create cache invalidation services
-    let cache_invalidation_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        "test:role:sync".to_string(),
-    ));
-    let cache_invalidation_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_b".to_string(),
-        "test:role:sync".to_string(),
-    ));
+    let cache_invalidation_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", "test:role:sync".to_string())
+            .await;
+    let cache_invalidation_b =
+        distributed_invalidation_service(redis_client.clone(), "node_b", "test:role:sync".to_string())
+            .await;
 
     cache_invalidation_a
         .start()
@@ -568,16 +576,10 @@ async fn test_room_invalidation_message_delivery() {
     let stream_key = unique_invalidation_key("test:room:invalidate");
 
     // Create two cache invalidation services
-    let service_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        stream_key.clone(),
-    ));
-    let service_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node_b".to_string(),
-        stream_key,
-    ));
+    let service_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", stream_key.clone()).await;
+    let service_b =
+        distributed_invalidation_service(redis_client, "node_b", stream_key).await;
 
     service_a.start().await.expect("Failed to start service_a");
     service_b.start().await.expect("Failed to start service_b");
@@ -618,16 +620,10 @@ async fn test_user_invalidation_message_delivery() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_invalidation_key("test:user:invalidate");
 
-    let service_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        stream_key.clone(),
-    ));
-    let service_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node_b".to_string(),
-        stream_key,
-    ));
+    let service_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", stream_key.clone()).await;
+    let service_b =
+        distributed_invalidation_service(redis_client, "node_b", stream_key).await;
 
     service_a.start().await.expect("Failed to start service_a");
     service_b.start().await.expect("Failed to start service_b");
@@ -665,16 +661,10 @@ async fn test_room_permission_invalidation_message_delivery() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_invalidation_key("test:perm:invalidate");
 
-    let service_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        stream_key.clone(),
-    ));
-    let service_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node_b".to_string(),
-        stream_key,
-    ));
+    let service_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", stream_key.clone()).await;
+    let service_b =
+        distributed_invalidation_service(redis_client, "node_b", stream_key).await;
 
     service_a.start().await.expect("Failed to start service_a");
     service_b.start().await.expect("Failed to start service_b");
@@ -712,16 +702,10 @@ async fn test_concurrent_invalidation_messages_ordered() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_invalidation_key("test:concurrent:invalidate");
 
-    let service_a = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
-        stream_key.clone(),
-    ));
-    let service_b = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node_b".to_string(),
-        stream_key,
-    ));
+    let service_a =
+        distributed_invalidation_service(redis_client.clone(), "node_a", stream_key.clone()).await;
+    let service_b =
+        distributed_invalidation_service(redis_client, "node_b", stream_key).await;
 
     service_a.start().await.expect("Failed to start service_a");
     service_b.start().await.expect("Failed to start service_b");
@@ -880,6 +864,7 @@ async fn test_ban_visible_across_replicas() {
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
         permission_service,
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 

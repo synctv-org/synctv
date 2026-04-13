@@ -21,7 +21,7 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         member::MemberEventBroadcaster,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
     },
     Error,
 };
@@ -1002,8 +1002,12 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
     let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
     let perm_service = room_service.permission_service().clone();
 
-    let member_service =
-        synctv_core::service::MemberService::new(member_repo, room_repo, perm_service);
+    let member_service = synctv_core::service::MemberService::new(
+        member_repo,
+        room_repo,
+        perm_service,
+        NotificationService::default(),
+    );
     member_service.set_event_broadcaster(broadcaster);
 
     let start = std::time::Instant::now();
@@ -1070,8 +1074,12 @@ async fn test_set_member_status_banned_broadcasts_disconnect_event() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
     let perm_service = room_service.permission_service().clone();
-    let member_service =
-        synctv_core::service::MemberService::new(member_repo, room_repo, perm_service);
+    let member_service = synctv_core::service::MemberService::new(
+        member_repo,
+        room_repo,
+        perm_service,
+        NotificationService::default(),
+    );
 
     let broadcaster = Arc::new(MockKickBroadcaster::new());
     member_service.set_event_broadcaster(broadcaster.clone());

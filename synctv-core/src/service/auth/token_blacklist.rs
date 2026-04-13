@@ -33,7 +33,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::Result;
+use crate::{RedisConnectionRuntime, Result, SharedStateProfile};
 
 fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> chrono::Duration {
     let seconds = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
@@ -133,6 +133,21 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// This is a security-critical write. Callers must be able to fail closed
     /// if persistence does not succeed.
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()>;
+}
+
+/// Build the production token-blacklist store from the shared-state profile.
+///
+/// Callers should depend on the returned trait object instead of composing the
+/// PG primary and optional Redis cache layers manually.
+#[must_use]
+pub fn token_blacklist_store_from_shared_state_profile(
+    pool: PgPool,
+    profile: &SharedStateProfile,
+) -> Arc<dyn TokenBlacklistStore> {
+    Arc::new(TieredTokenBlacklistStore::from_shared_state_profile(
+        PgTokenBlacklistStore::new(pool),
+        profile,
+    ))
 }
 
 // ============================================================================
@@ -539,8 +554,8 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 /// L1 (moka) + PG.
 pub struct TieredTokenBlacklistStore {
     pg: PgTokenBlacklistStore,
-    /// Shared Redis connection handle that follows Sentinel failover.
-    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    /// Optional Redis runtime for L2 caching.
+    redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// L1 cache: JTI key -> (`is_blacklisted`, expiry)
     l1_blacklist: moka::future::Cache<String, (bool, Instant)>,
     /// L1 cache: family key -> (Option<`revoked_at_timestamp`>, expiry)
@@ -565,9 +580,18 @@ impl TieredTokenBlacklistStore {
         redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         key_prefix: String,
     ) -> Self {
+        Self::from_runtime(pg, crate::shared_runtime_from_conn(redis_conn), key_prefix)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        pg: PgTokenBlacklistStore,
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: String,
+    ) -> Self {
         Self {
             pg,
-            redis_conn,
+            redis_runtime,
             // L1 blacklist: max 100k entries, background eviction at 120s
             l1_blacklist: moka::future::Cache::builder()
                 .max_capacity(100_000)
@@ -581,6 +605,15 @@ impl TieredTokenBlacklistStore {
             key_prefix,
             blacklist_locks: Arc::new(dashmap::DashMap::new()),
         }
+    }
+
+    #[must_use]
+    pub fn from_shared_state_profile(pg: PgTokenBlacklistStore, profile: &SharedStateProfile) -> Self {
+        Self::from_runtime(
+            pg,
+            profile.shared_runtime(),
+            profile.key_prefix().to_string(),
+        )
     }
 
     /// Redis key for a blacklist entry.
@@ -609,6 +642,13 @@ impl TieredTokenBlacklistStore {
             .blacklist_locks
             .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex));
     }
+
+    async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_runtime {
+            Some(runtime) => Some(runtime.snapshot().await),
+            None => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -623,12 +663,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         }
 
         // --- L2 check (Redis) ---
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
-            let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.read().await.clone();
-                conn.get(&redis_key).await
-            };
+            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
             match result {
                 Ok(Some(val)) => {
                     let is_bl = val == "1";
@@ -659,9 +696,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_blacklist
                 .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 // Use a reasonable TTL; we don't know the token's TTL here,
                 // so use L1_POSITIVE_TTL as a safe upper bound for L2.
                 let _: redis::RedisResult<()> = conn
@@ -673,9 +709,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_blacklist
                 .insert(key.to_string(), (false, Instant::now() + L1_NEGATIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -694,12 +729,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         }
 
         // --- L2 check (Redis) ---
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
-            let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.read().await.clone();
-                conn.get(&redis_key).await
-            };
+            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
             match result {
                 Ok(Some(val)) => {
                     let is_bl = val == "1";
@@ -730,9 +762,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_blacklist
                 .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> = conn
                     .set_ex(&redis_key, "1", L1_POSITIVE_TTL.as_secs())
                     .await;
@@ -742,9 +773,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_blacklist
                 .insert(key.to_string(), (false, Instant::now() + L1_NEGATIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -758,10 +788,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         self.pg.blacklist(key, ttl_secs).await?;
 
         // 2. Write to L2 Redis (positive, overwrites any stale negative sentinel)
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.read().await.clone();
             let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
         }
 
@@ -813,13 +842,10 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         };
 
         // Best-effort L2 population after the durable PG write succeeds.
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let cache_result: redis::RedisResult<()> = {
-                let mut conn = redis_conn.read().await.clone();
-                conn.set_ex(&redis_key, "1", l2_ttl).await
-            };
+            let cache_result: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
             if let Err(e) = cache_result {
                 tracing::warn!(
                     key = %key,
@@ -850,12 +876,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         }
 
         // --- L2 check (Redis) ---
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
-            let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.read().await.clone();
-                conn.get(&redis_key).await
-            };
+            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
             match result {
                 Ok(Some(val)) => {
                     if val == "_" {
@@ -898,9 +921,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                     (Some(ts), Instant::now() + L1_POSITIVE_TTL),
                 )
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> = conn
                     .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
                     .await;
@@ -911,9 +933,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_family
                 .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -928,12 +949,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             }
         }
 
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
-            let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.read().await.clone();
-                conn.get(&redis_key).await
-            };
+            let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
             match result {
                 Ok(Some(val)) => {
                     if val == "_" {
@@ -969,9 +987,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                     (Some(ts), Instant::now() + L1_POSITIVE_TTL),
                 )
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> = conn
                     .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
                     .await;
@@ -981,9 +998,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             self.l1_family
                 .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
                 .await;
-            if let Some(ref redis_conn) = self.redis_conn {
+            if let Some(mut conn) = self.redis_conn_snapshot().await {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -996,10 +1012,9 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         self.pg.set_family_revoked(key, timestamp, ttl_secs).await?;
 
         // 2. Write to L2 Redis (positive, overwrites any stale negative sentinel)
-        if let Some(ref redis_conn) = self.redis_conn {
+        if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.read().await.clone();
             let _: redis::RedisResult<()> =
                 conn.set_ex(&redis_key, timestamp.to_string(), l2_ttl).await;
         }
@@ -1559,6 +1574,8 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
 
     struct AlwaysFailTokenBlacklistStore;
 
@@ -1598,6 +1615,90 @@ mod tests {
         Instant::now()
             .checked_sub(Duration::from_secs(1))
             .expect("expired instant should be representable")
+    }
+
+    #[tokio::test]
+    async fn test_tiered_token_blacklist_store_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let database_url = "postgres://postgres:postgres@127.0.0.1:1/synctv";
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy(database_url)
+            .expect("lazy PG pool construction should succeed");
+        let pg = PgTokenBlacklistStore::new(pool);
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let store = TieredTokenBlacklistStore::from_runtime(
+            pg,
+            Some(runtime.clone()),
+            "synctv:".to_string(),
+        );
+
+        assert!(
+            store.redis_runtime.as_ref().is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            "tiered token blacklist store should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tiered_token_blacklist_store_from_shared_state_profile_uses_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/synctv")
+            .expect("lazy PG pool construction should succeed");
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let profile = crate::SharedStateProfile::new(
+            crate::SharedStateMode::SharedBestEffort,
+            Some(runtime.clone()),
+            "synctv:",
+        );
+
+        let store = TieredTokenBlacklistStore::from_shared_state_profile(
+            PgTokenBlacklistStore::new(pool),
+            &profile,
+        );
+
+        assert!(
+            store.redis_runtime.as_ref().is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            "shared-state builder should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tiered_token_blacklist_store_from_shared_state_profile_allows_pg_only_mode() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/synctv")
+            .expect("lazy PG pool construction should succeed");
+        let profile = crate::SharedStateProfile::from_runtime(None, "synctv:", false);
+
+        let store = TieredTokenBlacklistStore::from_shared_state_profile(
+            PgTokenBlacklistStore::new(pool),
+            &profile,
+        );
+
+        assert!(
+            store.redis_runtime.is_none(),
+            "standalone shared-state profile should allow PG+L1 token blacklist mode"
+        );
     }
 
     // Helper: create a TieredTokenBlacklistStore with no Redis and a lazy PG pool

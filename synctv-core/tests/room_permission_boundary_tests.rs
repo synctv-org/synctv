@@ -29,6 +29,7 @@ use synctv_core::{
     service::{
         member::{AddMemberOptions, MemberService},
         permission::PermissionService,
+        NotificationService,
     },
     Error,
 };
@@ -127,7 +128,12 @@ fn make_member_service(pool: PgPool) -> MemberService {
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
 
-    let mut member_service = MemberService::new(member_repo, room_repo, permission_service);
+    let mut member_service = MemberService::new(
+        member_repo,
+        room_repo,
+        permission_service,
+        NotificationService::default(),
+    );
     member_service.set_room_settings_repo(RoomSettingsRepository::new(pool));
     member_service
 }

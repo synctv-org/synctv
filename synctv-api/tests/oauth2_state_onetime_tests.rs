@@ -19,7 +19,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::UserId;
-use synctv_core::service::{InMemoryOAuthStateStore, OAuth2State, OAuthStateStore};
+use synctv_core::service::{
+    oauth2::InMemoryOAuthStateStore, OAuth2State, OAuthStateStore,
+};
 
 // ============================================================================
 // Helper functions

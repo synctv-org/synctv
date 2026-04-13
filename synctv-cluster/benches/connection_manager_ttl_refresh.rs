@@ -8,7 +8,8 @@ use criterion::{criterion_group, criterion_main, Criterion};
 mod integration_test_helpers;
 
 use integration_test_helpers::TestRedis;
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+use synctv_cluster::sync::{build_connection_manager, ConnectionLimits};
+use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
 
 fn uid(s: &str) -> UserId {
@@ -39,7 +40,15 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
                 max_per_room: 5000,
                 ..Default::default()
             };
-            let manager = ConnectionManager::new(limits).with_redis(conn.clone(), "ttl_large:");
+            let manager = build_connection_manager(
+                limits,
+                &SharedStateProfile::from_runtime(
+                    Some(synctv_core::direct_runtime(conn.clone())),
+                    "ttl_large:",
+                    true,
+                ),
+            )
+            .expect("shared realtime connection runtime should initialize");
 
             let num_connections = 1000;
             let num_users = 100;

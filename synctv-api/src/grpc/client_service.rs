@@ -6,12 +6,12 @@ use tonic::{Request, Response, Status};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, StreamMessage, StreamMessageHandler,
 };
-use synctv_cluster::sync::{ClusterManager, ConnectionManager};
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RateLimiter, RoomService as CoreRoomService,
     UserService as CoreUserService,
 };
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 // Use synctv_proto for all gRPC traits and types
 use crate::proto::client::{
@@ -160,11 +160,11 @@ pub struct ClientServiceConfig {
     pub user_service: CoreUserService,
     pub room_service: CoreRoomService,
     pub chat_service: Arc<synctv_core::service::ChatService>,
-    pub cluster_manager: Option<Arc<ClusterManager>>,
+    pub event_service: Option<Arc<dyn RealtimeEventService>>,
     pub rate_limiter: RateLimiter,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
-    pub connection_manager: ConnectionManager,
+    pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
@@ -180,11 +180,11 @@ pub struct ClientServiceImpl {
     user_service: Arc<CoreUserService>,
     room_service: Arc<CoreRoomService>,
     chat_service: Arc<synctv_core::service::ChatService>,
-    cluster_manager: Option<Arc<ClusterManager>>,
+    event_service: Option<Arc<dyn RealtimeEventService>>,
     rate_limiter: Arc<RateLimiter>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
-    connection_manager: Arc<ConnectionManager>,
+    connection_service: Arc<dyn RealtimeConnectionService>,
     email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
@@ -205,11 +205,11 @@ impl ClientServiceImpl {
         user_service: CoreUserService,
         room_service: CoreRoomService,
         chat_service: Arc<synctv_core::service::ChatService>,
-        cluster_manager: Option<Arc<ClusterManager>>,
+        event_service: Option<Arc<dyn RealtimeEventService>>,
         rate_limiter: RateLimiter,
         rate_limit_config: RateLimitConfig,
         content_filter: ContentFilter,
-        connection_manager: ConnectionManager,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         email_api: Option<Arc<crate::impls::EmailApiImpl>>,
         _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
@@ -220,11 +220,11 @@ impl ClientServiceImpl {
             user_service: Arc::new(user_service),
             room_service: Arc::new(room_service),
             chat_service,
-            cluster_manager,
+            event_service,
             rate_limiter: Arc::new(rate_limiter),
             rate_limit_config: Arc::new(rate_limit_config),
             content_filter: Arc::new(content_filter),
-            connection_manager: Arc::new(connection_manager),
+            connection_service,
             email_api,
             client_api,
             config,
@@ -240,11 +240,11 @@ impl ClientServiceImpl {
             user_service: Arc::new(config.user_service),
             room_service: Arc::new(config.room_service),
             chat_service: config.chat_service,
-            cluster_manager: config.cluster_manager,
+            event_service: config.event_service,
             rate_limiter: Arc::new(config.rate_limiter),
             rate_limit_config: Arc::new(config.rate_limit_config),
             content_filter: Arc::new(config.content_filter),
-            connection_manager: Arc::new(config.connection_manager),
+            connection_service: config.connection_service,
             email_api: config.email_api,
             client_api: config.client_api,
             config: config.config,
@@ -784,7 +784,7 @@ impl RoomService for ClientServiceImpl {
 
         // ClusterManager is required for real-time messaging; in single-node mode
         // without Redis, streaming is not supported.
-        let cluster_manager = self.cluster_manager.clone().ok_or_else(|| {
+        let event_service = self.event_service.clone().ok_or_else(|| {
             Status::unavailable(
                 "Real-time messaging requires cluster manager (Redis not configured)",
             )
@@ -803,8 +803,8 @@ impl RoomService for ClientServiceImpl {
             username.clone(),
             self.room_service.clone(),
             self.chat_service.clone(),
-            cluster_manager,
-            (*self.connection_manager).clone(),
+            event_service,
+            self.connection_service.clone(),
             self.rate_limiter.clone(),
             self.rate_limit_config.clone(),
             self.content_filter.clone(),

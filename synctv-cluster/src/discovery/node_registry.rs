@@ -2,16 +2,19 @@
 //!
 //! Uses Redis to track active nodes in the cluster.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use failsafe::{backoff, failure_policy, Config as CbConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 
+use super::runtime::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
 use crate::error::{Error, Result};
 
 /// Staleness threshold in seconds. If `last_refreshed` is older than this,
@@ -214,8 +217,8 @@ const REREGISTER_BACKOFF_MULTIPLIER: u64 = 2;
 /// For non-cluster deployments, use [`new_local_only`] to create a registry
 /// that operates without Redis, using only local in-memory node discovery.
 pub struct NodeRegistry {
-    /// Redis client (None in local-only mode)
-    redis_client: Option<redis::Client>,
+    /// Redis coordination runtime (None in local-only mode)
+    redis_runtime: Option<Arc<dyn RedisCoordinationRuntime>>,
     /// Cached multiplexed connection, reused across operations
     cached_conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
     /// Timestamp of last successful connection health check (Unix seconds)
@@ -248,6 +251,60 @@ pub struct NodeRegistry {
     reregister_backoff_ms: AtomicU64,
     /// Whether we're in local-only mode (no Redis)
     local_only: bool,
+}
+
+#[derive(Clone)]
+pub struct RedisClusterNodeDirectoryFactory {
+    redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+}
+
+impl RedisClusterNodeDirectoryFactory {
+    #[must_use]
+    pub fn new(redis_runtime: Arc<dyn RedisCoordinationRuntime>) -> Self {
+        Self { redis_runtime }
+    }
+}
+
+impl ClusterNodeDirectoryFactory for RedisClusterNodeDirectoryFactory {
+    fn build(
+        &self,
+        node_id: String,
+        heartbeat_timeout_secs: i64,
+        key_prefix: &str,
+    ) -> Result<Arc<dyn ClusterNodeDirectory>> {
+        Ok(Arc::new(NodeRegistry::new(
+            self.redis_runtime.clone(),
+            node_id,
+            heartbeat_timeout_secs,
+            key_prefix,
+        )?))
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct LocalClusterNodeDirectoryFactory;
+
+impl ClusterNodeDirectoryFactory for LocalClusterNodeDirectoryFactory {
+    fn build(
+        &self,
+        node_id: String,
+        heartbeat_timeout_secs: i64,
+        key_prefix: &str,
+    ) -> Result<Arc<dyn ClusterNodeDirectory>> {
+        Ok(Arc::new(NodeRegistry::new_local_only(
+            node_id,
+            heartbeat_timeout_secs,
+            key_prefix,
+        )?))
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "local"
+    }
 }
 
 impl NodeRegistry {
@@ -306,7 +363,7 @@ impl NodeRegistry {
     /// The `key_prefix` is prepended to cluster node keys in Redis (e.g. `"synctv:"` produces
     /// keys like `synctv:cluster:nodes:<node_id>`). Pass an empty string to use unprefixed keys.
     pub fn new(
-        redis_client: redis::Client,
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
         node_id: String,
         heartbeat_timeout_secs: i64,
         key_prefix: &str,
@@ -317,7 +374,7 @@ impl NodeRegistry {
             .build();
 
         Ok(Self {
-            redis_client: Some(redis_client),
+            redis_runtime: Some(redis_runtime),
             cached_conn: tokio::sync::Mutex::new(None),
             last_health_check: AtomicU64::new(0),
             node_id,
@@ -359,7 +416,7 @@ impl NodeRegistry {
             .build();
 
         Ok(Self {
-            redis_client: None,
+            redis_runtime: None,
             cached_conn: tokio::sync::Mutex::new(None),
             last_health_check: AtomicU64::new(0),
             node_id,
@@ -387,7 +444,7 @@ impl NodeRegistry {
     ///
     /// Returns an error in local-only mode (no Redis client configured).
     async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
-        let Some(client) = &self.redis_client else {
+        let Some(runtime) = &self.redis_runtime else {
             return Err(Error::Database(
                 "Redis not configured (local-only mode)".to_string(),
             ));
@@ -450,7 +507,7 @@ impl NodeRegistry {
         // Create new connection
         let conn = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            client.get_multiplexed_async_connection(),
+            runtime.multiplexed_connection(),
         )
         .await
         .map_err(|_| Error::Timeout("Redis connection timed out".to_string()))?
@@ -494,8 +551,8 @@ impl NodeRegistry {
                     *mode = ClusterMode::Degraded;
                 }
             }
-            if let Some(client) = self.redis_client.clone() {
-                self.maybe_start_health_probe(client);
+            if let Some(runtime) = self.redis_runtime.clone() {
+                self.maybe_start_health_probe(runtime);
             }
             return Err(Error::Database(
                 "Redis circuit breaker is open, request rejected".to_string(),
@@ -517,7 +574,7 @@ impl NodeRegistry {
     ///
     /// The probe task automatically stops when the circuit closes, the
     /// `CancellationToken` is cancelled, or the NodeRegistry is dropped.
-    fn maybe_start_health_probe(&self, client: redis::Client) {
+    fn maybe_start_health_probe(&self, runtime: Arc<dyn RedisCoordinationRuntime>) {
         let Some(circuit_breaker) = &self.circuit_breaker else {
             return;
         };
@@ -574,7 +631,7 @@ impl NodeRegistry {
                 // Attempt to connect and PING
                 let probe_result =
                     tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
-                        let mut conn = client.get_multiplexed_async_connection().await?;
+                        let mut conn = runtime.multiplexed_connection().await?;
                         redis::cmd("PING").query_async::<String>(&mut conn).await
                     })
                     .await;
@@ -1488,8 +1545,7 @@ impl NodeRegistry {
     /// This only removes the entry when it is still marked with the expected
     /// discovery source, preventing DNS disappearance from evicting a real node
     /// record that has since been refreshed from Redis.
-    #[cfg(feature = "k8s")]
-    pub(crate) async fn remove_discovered_local_node(
+    pub async fn remove_discovered_local_node(
         &self,
         node_id: &str,
         discovery_source: &str,
@@ -1507,6 +1563,30 @@ impl NodeRegistry {
         }
 
         false
+    }
+
+    /// Upsert a transient discovery-only node into the local cache.
+    ///
+    /// Entries from the same discovery source are replaced so refreshed peer
+    /// metadata becomes visible immediately. Entries owned by another source are
+    /// left untouched to avoid transient discovery data clobbering Redis-backed
+    /// state.
+    pub async fn upsert_discovered_local_node(&self, node_info: NodeInfo, discovery_source: &str) {
+        let mut nodes = self.local_nodes.write().await;
+        match nodes.get_mut(&node_info.node_id) {
+            Some(existing)
+                if existing
+                    .metadata
+                    .get("discovery")
+                    .is_some_and(|value| value == discovery_source) =>
+            {
+                *existing = node_info;
+            }
+            Some(_) => {}
+            None => {
+                nodes.insert(node_info.node_id.clone(), node_info);
+            }
+        }
     }
 
     /// Read all non-stale nodes from the local in-memory cache.
@@ -1750,6 +1830,65 @@ impl NodeRegistry {
     }
 }
 
+#[async_trait]
+impl ClusterNodeDirectory for NodeRegistry {
+    async fn register(&self, api_address: String) -> Result<()> {
+        Self::register(self, api_address).await
+    }
+
+    async fn heartbeat(&self) -> Result<HeartbeatResult> {
+        Self::heartbeat(self).await
+    }
+
+    async fn unregister(&self) -> Result<()> {
+        Self::unregister(self).await
+    }
+
+    async fn register_remote(&self, node_info: NodeInfo) -> Result<()> {
+        Self::register_remote(self, node_info).await
+    }
+
+    async fn unregister_remote(&self, node_id: &str, expected_epoch: Option<u64>) -> Result<()> {
+        Self::unregister_remote(self, node_id, expected_epoch).await
+    }
+
+    async fn get_all_nodes(&self) -> Result<Vec<NodeInfo>> {
+        Self::get_all_nodes(self).await
+    }
+
+    async fn get_routable_nodes(&self) -> Result<(Vec<NodeInfo>, NodeViewMode)> {
+        Self::get_routable_nodes(self).await
+    }
+
+    async fn update_local_metadata(&self, key: &str, value: String) {
+        Self::update_local_metadata(self, key, value).await;
+    }
+
+    async fn upsert_discovered_local_node(&self, node_info: NodeInfo, discovery_source: &str) {
+        Self::upsert_discovered_local_node(self, node_info, discovery_source).await;
+    }
+
+    async fn remove_discovered_local_node(&self, node_id: &str, discovery_source: &str) -> bool {
+        Self::remove_discovered_local_node(self, node_id, discovery_source).await
+    }
+
+    fn heartbeat_timeout_secs(&self) -> i64 {
+        self.heartbeat_timeout_secs
+    }
+
+    fn cluster_mode(&self) -> ClusterMode {
+        Self::cluster_mode(self)
+    }
+
+    fn cancel_token(&self) -> CancellationToken {
+        Self::cancel_token(self)
+    }
+
+    fn is_nodes_stale(&self) -> bool {
+        Self::is_nodes_stale(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1820,7 +1959,9 @@ mod tests {
     fn test_node_registry_creation_and_fencing_token() {
         // redis::Client::open succeeds even without a running Redis server
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "test_node".to_string(),
             30,
             "synctv:",
@@ -1864,7 +2005,9 @@ mod tests {
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "self".to_string(),
             30,
             "synctv:",
@@ -1883,7 +2026,9 @@ mod tests {
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "self".to_string(),
             30,
             "synctv:",
@@ -1949,7 +2094,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_routable_nodes_excludes_k8s_dns_only_candidates() {
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "self".to_string(),
             30,
             "synctv:",
@@ -2013,7 +2160,9 @@ mod tests {
     async fn test_local_cache_empty_address_scenario() {
         // Test that when local cache has empty addresses, we can detect it
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "test_node".to_string(),
             30,
             "synctv:",
@@ -2042,7 +2191,9 @@ mod tests {
     async fn test_local_cache_missing_scenario() {
         // Test that when local cache is missing, we can detect it
         let registry = NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "test_node".to_string(),
             30,
             "synctv:",
@@ -2065,7 +2216,7 @@ mod tests {
         let redis_client = redis::Client::open(redis_url.as_str()).unwrap();
 
         let registry = NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "self-node".to_string(),
             30,
             "cl-unregister:",

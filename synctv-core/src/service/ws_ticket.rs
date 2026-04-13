@@ -26,10 +26,10 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::models::{RoomId, UserId};
-use crate::{Error, Result};
+use crate::{Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 
 /// User validation result returned by `UserValidator` callback
 #[derive(Debug, Clone)]
@@ -140,6 +140,12 @@ pub trait TicketStore: Send + Sync {
 
     /// A label for logging/debug purposes (e.g. "redis", "memory").
     fn backend_name(&self) -> &'static str;
+
+    /// Whether this store can safely validate and consume tickets across nodes.
+    ///
+    /// Clustered WebSocket authentication requires a shared backend because the
+    /// node that validates a ticket may differ from the node that issued it.
+    fn supports_cluster_runtime(&self) -> bool;
 }
 
 // ============================================================================
@@ -152,7 +158,7 @@ pub trait TicketStore: Send + Sync {
 /// background health check can hot-swap the inner connection on failover and
 /// this store automatically picks up the new master.
 pub struct RedisTicketStore {
-    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
 }
 
@@ -178,14 +184,22 @@ impl RedisTicketStore {
         shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: impl Into<String>,
     ) -> Self {
+        Self::from_runtime(crate::shared_runtime(shared_conn), key_prefix)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
-            shared_conn,
+            redis_runtime,
             key_prefix: Self::normalize_key_prefix(key_prefix),
         }
     }
 
     async fn conn(&self) -> redis::aio::ConnectionManager {
-        self.shared_conn.read().await.clone()
+        self.redis_runtime.snapshot().await
     }
 
     fn redis_key(&self, ticket: &str, room_id: &RoomId) -> String {
@@ -325,6 +339,10 @@ impl TicketStore for RedisTicketStore {
     fn backend_name(&self) -> &'static str {
         "redis"
     }
+
+    fn supports_cluster_runtime(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================================
@@ -459,6 +477,10 @@ impl TicketStore for InMemoryTicketStore {
     fn backend_name(&self) -> &'static str {
         "memory"
     }
+
+    fn supports_cluster_runtime(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
@@ -493,47 +515,40 @@ impl WsTicketService {
         }
     }
 
-    /// Create a new WebSocket ticket service with Redis (multi-replica mode).
-    ///
-    /// Accepts a shared `Arc<RwLock<ConnectionManager>>` that follows Sentinel failover.
-    #[must_use]
-    pub fn with_redis(
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    fn with_redis_runtime(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
         ticket_ttl_secs: Option<u64>,
     ) -> Self {
         Self::from_store(
-            Arc::new(RedisTicketStore::new(shared_conn, key_prefix)),
+            Arc::new(RedisTicketStore::from_runtime(redis_runtime, key_prefix)),
             ticket_ttl_secs,
         )
     }
 
-    /// Create a new WebSocket ticket service with memory storage (single-replica mode).
-    #[must_use]
-    pub fn with_memory(ticket_ttl_secs: Option<u64>) -> Self {
+    fn with_memory(ticket_ttl_secs: Option<u64>) -> Self {
         let ttl = ticket_ttl_secs.unwrap_or(DEFAULT_TICKET_TTL_SECS);
         Self::from_store(Arc::new(InMemoryTicketStore::new(ttl)), ticket_ttl_secs)
     }
 
-    /// Create a new WebSocket ticket service, choosing backend based on Redis availability.
-    ///
-    /// Backend capability decisions belong to configuration validation and
-    /// startup wiring. This constructor only maps an already-chosen storage
-    /// dependency to the correct implementation.
-    #[must_use]
-    pub fn new(
-        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-        key_prefix: impl Into<String>,
+    pub fn from_shared_state_profile(
+        profile: &SharedStateProfile,
         ticket_ttl_secs: Option<u64>,
-    ) -> Self {
-        if let Some(shared_conn) = redis_conn {
-            Self::with_redis(shared_conn, key_prefix, ticket_ttl_secs)
-        } else {
-            warn!(
-                "WebSocket ticket service using in-memory storage. \
-                 This is only suitable for deployments that intentionally run without cluster-backed tickets."
-            );
-            Self::with_memory(ticket_ttl_secs)
+    ) -> Result<Self> {
+        match profile.state_mode() {
+            SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime(
+                profile.require_shared_runtime("WebSocket ticket storage")?,
+                profile.key_prefix(),
+                ticket_ttl_secs,
+            )),
+            SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
+                profile
+                    .shared_runtime()
+                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.key_prefix(),
+                ticket_ttl_secs,
+            )),
+            SharedStateMode::LocalOnly => Ok(Self::with_memory(ticket_ttl_secs)),
         }
     }
 
@@ -547,6 +562,12 @@ impl WsTicketService {
     #[must_use]
     pub fn backend_name(&self) -> &'static str {
         self.store.backend_name()
+    }
+
+    /// Whether the configured store is safe to use when cluster runtime is enabled.
+    #[must_use]
+    pub fn supports_cluster_runtime(&self) -> bool {
+        self.store.supports_cluster_runtime()
     }
 
     /// Create a new ticket for a user bound to a specific room.
@@ -806,6 +827,8 @@ impl WsTicketService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
 
     fn create_test_user_id(id: &str) -> UserId {
         UserId::from_string(id.to_string())
@@ -813,6 +836,46 @@ mod tests {
 
     fn create_test_room_id(id: &str) -> RoomId {
         RoomId::from_string(id.to_string())
+    }
+
+    #[tokio::test]
+    async fn test_redis_ticket_store_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let store = RedisTicketStore::from_runtime(runtime.clone(), "synctv:");
+
+        assert!(
+            Arc::ptr_eq(&store.redis_runtime, &runtime),
+            "Redis ticket store should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_ticket_service_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let service = WsTicketService::with_redis_runtime(runtime, "synctv:", Some(30));
+
+        assert_eq!(service.backend_name(), "redis");
+        assert_eq!(service.ticket_ttl_secs(), 30);
     }
 
     #[test]
@@ -1212,7 +1275,7 @@ mod tests {
 
     #[test]
     fn test_non_cluster_mode_allows_memory() {
-        let service = WsTicketService::new(None, "synctv:", None);
+        let service = WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), None);
         assert_eq!(service.store.backend_name(), "memory");
     }
 
@@ -1223,13 +1286,15 @@ mod tests {
     /// Test: backend selection without Redis uses memory.
     #[test]
     fn test_new_without_redis_uses_memory_backend() {
-        let service = WsTicketService::new(None, "synctv:", Some(30));
+        let service =
+            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), Some(30));
         assert_eq!(service.backend_name(), "memory");
     }
 
     #[test]
     fn test_new_without_redis_preserves_custom_ttl() {
-        let service = WsTicketService::new(None, "synctv:", Some(60));
+        let service =
+            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(60)), Some(60));
         assert_eq!(service.ticket_ttl_secs(), 60);
     }
 
@@ -1237,7 +1302,8 @@ mod tests {
     /// Single-replica deployments should still function without Redis.
     #[test]
     fn test_non_cluster_mode_without_redis_succeeds() {
-        let service = WsTicketService::new(None, "synctv:", Some(30));
+        let service =
+            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), Some(30));
         assert_eq!(
             service.backend_name(),
             "memory",

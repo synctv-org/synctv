@@ -40,9 +40,7 @@ pub use audit::{AuditAction, AuditFlushHandle, AuditLog, AuditService, AuditTarg
 pub use audit_partition_manager::{
     ensure_audit_partitions_on_startup, AuditPartitionManager, PartitionHealth, PartitionStats,
 };
-pub use auth::brute_force::{
-    AttemptTracker, BruteForceConfig, InMemoryAttemptTracker, RedisAttemptTracker,
-};
+pub use auth::brute_force::{AttemptTracker, BruteForceConfig};
 pub use auth::guest_validator::GuestTokenValidator;
 pub use auth::security_pipeline::{
     BlacklistEnforcement, SecurityPipelineBuildError, SecurityPipelineBuilder,
@@ -63,7 +61,10 @@ pub use cleanup::{CleanupConfig, CleanupResult, CleanupService};
 pub use content_filter::{ContentFilter, ContentFilterError};
 pub use credential_encryption::CredentialEncryption;
 pub use db_maintenance::DatabaseMaintenanceService;
-pub use distributed_lock::{DistributedLock, LockGuard, MigrationLock, PgAdvisoryMigrationLock};
+pub use distributed_lock::{
+    with_coordination_lock, CoordinationLock, DistributedLock, LockGuard, MigrationLock,
+    PgAdvisoryMigrationLock,
+};
 pub use email::{mask_email, EmailConfig, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::{EmailTokenService, EmailTokenType};
@@ -77,10 +78,7 @@ pub use notification_partition_manager::{
     ensure_notification_partitions_on_startup, NotificationPartitionHealth,
     NotificationPartitionManager,
 };
-pub use oauth2::{
-    InMemoryOAuthStateStore, OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore,
-    RedisOAuthStateStore,
-};
+pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore};
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
@@ -89,11 +87,8 @@ pub use providers_manager::ProvidersManager;
 pub use proxy_signature::{
     build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
 };
-pub use publish_key::{InMemoryJtiStore, JtiStore, PublishKey, PublishKeyService, RedisJtiStore};
-pub use rate_limit::{
-    InMemoryRateLimitBackend, RateLimitBackend, RateLimitConfig, RateLimitError, RateLimiter,
-    RedisRateLimitBackend,
-};
+pub use publish_key::{JtiStore, PublishKey, PublishKeyService};
+pub use rate_limit::{RateLimitBackend, RateLimitConfig, RateLimitError, RateLimiter};
 pub use remote_provider_manager::RemoteProviderManager;
 pub use room::RoomService;
 pub use room_settings::{CacheStats, RoomSettingsService};
@@ -106,8 +101,8 @@ pub use turn_server::{resolve_external_ip, validate_external_addr, StunServer, S
 pub use user::UserService;
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{
-    InMemoryTicketStore, PendingValidatedTicket, RedisTicketStore, TicketStore,
-    UserValidationResult, UserValidator, WsTicketData, WsTicketService,
+    PendingValidatedTicket, TicketStore, UserValidationResult, UserValidator, WsTicketData,
+    WsTicketService,
 };
 
 /// Trait for checking if the current node is the cluster leader.

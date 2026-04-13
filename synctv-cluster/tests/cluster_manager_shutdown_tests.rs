@@ -15,21 +15,28 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-use synctv_cluster::sync::cluster_manager::ClusterConfig;
+use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
 use synctv_cluster::sync::ClusterManager;
 
 /// Helper to create a `NodeRegistry` for testing (local mode, no actual Redis connection needed)
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     let client = redis::Client::open("redis://localhost:6379").unwrap();
-    Arc::new(NodeRegistry::new(client, node_id.to_string(), 30, "test:").unwrap())
+    Arc::new(
+        NodeRegistry::new(
+            synctv_core::coordination_runtime_from_client(client),
+            node_id.to_string(),
+            30,
+            "test:",
+        )
+        .unwrap(),
+    )
 }
 
 /// Helper to create a `ClusterManager` in single-node mode (no Redis)
 async fn make_cluster_manager(node_id: &str) -> ClusterManager {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(1),
@@ -370,9 +377,8 @@ async fn test_parent_cancel_token_propagates_cancellation() {
     let parent = CancellationToken::new();
 
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "child-token-test".to_string(),
         dedup_window: Duration::from_secs(1),
@@ -411,9 +417,8 @@ async fn test_parent_cancel_token_propagates_cancellation() {
 #[tokio::test]
 async fn test_without_parent_cancel_token_uses_independent_token() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "independent-token-test".to_string(),
         dedup_window: Duration::from_secs(1),

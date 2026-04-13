@@ -5,15 +5,224 @@ use super::convert::*;
 use super::{validate_password_for_set, validate_password_for_verify};
 use super::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 use crate::impls::ApiError;
+use async_trait::async_trait;
+use std::sync::Arc;
 use synctv_core::models::{
     MediaId, MemberStatus, PlaylistId, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
+use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
+use synctv_core::RedisConnectionRuntime;
 
 // === Timing Attack Protection Tests ===
 
 /// Minimum delay constant used in password verification during `join_room`.
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
+
+#[tokio::test]
+async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
+    #[derive(Clone)]
+    struct FakeRedisRuntime;
+
+    #[async_trait]
+    impl RedisConnectionRuntime for FakeRedisRuntime {
+        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            panic!("snapshot should not be called in constructor-only test");
+        }
+    }
+
+    let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+    let api = super::ClientApiImpl::new(
+        Arc::new(synctv_core::service::UserService::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                .expect("lazy pool"),
+            synctv_core::service::JwtService::new(
+                "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
+            )
+            .expect("jwt"),
+            synctv_core::cache::UsernameCache::new(
+                Arc::new(synctv_core::cache::NoopCacheL2),
+                "test:username:".to_string(),
+                128,
+                60,
+            ),
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                128, 3600, 86400,
+            )),
+            synctv_core::cache::KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        )),
+        Arc::new(synctv_core::service::RoomService::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                .expect("lazy pool"),
+            synctv_core::service::UserService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
+                )
+                .expect("jwt"),
+                synctv_core::cache::UsernameCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    "test:username:".to_string(),
+                    128,
+                    60,
+                ),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                )),
+                synctv_core::cache::KeyBuilder::new("test"),
+                synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+            ),
+        )),
+        Arc::new(synctv_cluster::sync::ConnectionManager::new(
+            synctv_cluster::sync::ConnectionLimits::default(),
+        )),
+        Arc::new(synctv_core::Config::default()),
+        None,
+        synctv_core::service::JwtService::new(
+            "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
+        )
+        .expect("jwt"),
+        None,
+        None,
+        None,
+    )
+    .with_shared_runtime(Some(runtime.clone()));
+
+    assert!(
+        api.redis_runtime
+            .as_ref()
+            .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+        "client API should retain the injected Redis runtime object"
+    );
+}
+
+#[tokio::test]
+async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
+    #[derive(Clone)]
+    struct FakeProviderStore;
+
+    #[async_trait]
+    impl ProviderStore for FakeProviderStore {
+        async fn get_raw(&self, _key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            panic!("store access should not be called in constructor-only test");
+        }
+
+        async fn set_raw(
+            &self,
+            _key: &str,
+            _value: &[u8],
+            _ttl: std::time::Duration,
+        ) -> Result<(), StoreError> {
+            panic!("store access should not be called in constructor-only test");
+        }
+
+        async fn delete(&self, _key: &str) -> Result<(), StoreError> {
+            panic!("store access should not be called in constructor-only test");
+        }
+
+        async fn lock(
+            &self,
+            _key: &str,
+            _ttl: std::time::Duration,
+        ) -> Result<StoreLockGuard, StoreError> {
+            panic!("store access should not be called in constructor-only test");
+        }
+    }
+
+    struct FakeProviderStoreResolver {
+        store: Arc<dyn ProviderStore>,
+    }
+
+    impl ProviderStoreResolver for FakeProviderStoreResolver {
+        fn load(&self, _name: &str) -> Arc<dyn ProviderStore> {
+            self.store.clone()
+        }
+
+        fn key_prefix(&self) -> &'static str {
+            "test:"
+        }
+    }
+
+    let resolver: Arc<dyn ProviderStoreResolver> = Arc::new(FakeProviderStoreResolver {
+        store: Arc::new(FakeProviderStore),
+    });
+    let api = super::ClientApiImpl::new(
+        Arc::new(synctv_core::service::UserService::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                .expect("lazy pool"),
+            synctv_core::service::JwtService::new(
+                "test-secret-key-for-client-api-provider-store-minimum-32-chars",
+            )
+            .expect("jwt"),
+            synctv_core::cache::UsernameCache::new(
+                Arc::new(synctv_core::cache::NoopCacheL2),
+                "test:username:".to_string(),
+                128,
+                60,
+            ),
+            synctv_core::config::PasswordComplexityConfig::default(),
+            Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                128, 3600, 86400,
+            )),
+            synctv_core::cache::KeyBuilder::new("test"),
+            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+        )),
+        Arc::new(synctv_core::service::RoomService::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                .expect("lazy pool"),
+            synctv_core::service::UserService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+                    .expect("lazy pool"),
+                synctv_core::service::JwtService::new(
+                    "test-secret-key-for-client-api-provider-store-minimum-32-chars",
+                )
+                .expect("jwt"),
+                synctv_core::cache::UsernameCache::new(
+                    Arc::new(synctv_core::cache::NoopCacheL2),
+                    "test:username:".to_string(),
+                    128,
+                    60,
+                ),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                )),
+                synctv_core::cache::KeyBuilder::new("test"),
+                synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
+            ),
+        )),
+        Arc::new(synctv_cluster::sync::ConnectionManager::new(
+            synctv_cluster::sync::ConnectionLimits::default(),
+        )),
+        Arc::new(synctv_core::Config::default()),
+        None,
+        synctv_core::service::JwtService::new(
+            "test-secret-key-for-client-api-provider-store-minimum-32-chars",
+        )
+        .expect("jwt"),
+        None,
+        None,
+        None,
+    )
+    .with_provider_stores(resolver.clone());
+
+    assert!(
+        api.provider_stores
+            .as_ref()
+            .is_some_and(|injected| Arc::ptr_eq(injected, &resolver)),
+        "client API should retain the injected provider store resolver object"
+    );
+}
 
 /// Test that the timing delay calculation logic works correctly.
 #[test]

@@ -6,8 +6,9 @@
 use rand::prelude::IndexedRandom;
 use std::sync::Arc;
 
-use super::health_monitor::{HealthMonitor, NodeHealth};
-use super::node_registry::{NodeInfo, NodeRegistry};
+use super::health_monitor::NodeHealth;
+use super::node_registry::NodeInfo;
+use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::{Error, Result};
 
 /// Load balancing strategy
@@ -24,8 +25,8 @@ pub enum LoadBalancingStrategy {
 
 /// Load balancer for cluster node selection
 pub struct LoadBalancer {
-    node_registry: Arc<NodeRegistry>,
-    health_monitor: Option<Arc<HealthMonitor>>,
+    node_registry: Arc<dyn ClusterNodeDirectory>,
+    health_monitor: Option<Arc<dyn ClusterHealthRuntime>>,
     strategy: LoadBalancingStrategy,
     round_robin_index: std::sync::atomic::AtomicUsize,
 }
@@ -33,7 +34,18 @@ pub struct LoadBalancer {
 impl LoadBalancer {
     /// Create a new load balancer
     #[must_use]
-    pub const fn new(node_registry: Arc<NodeRegistry>, strategy: LoadBalancingStrategy) -> Self {
+    pub fn new<N>(node_registry: Arc<N>, strategy: LoadBalancingStrategy) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::from_runtime(node_registry, strategy)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
+        strategy: LoadBalancingStrategy,
+    ) -> Self {
         Self {
             node_registry,
             health_monitor: None,
@@ -44,7 +56,15 @@ impl LoadBalancer {
 
     /// Attach a health monitor to filter out unhealthy nodes
     #[must_use]
-    pub fn with_health_monitor(mut self, monitor: Arc<HealthMonitor>) -> Self {
+    pub fn with_health_monitor<H>(self, monitor: Arc<H>) -> Self
+    where
+        H: ClusterHealthRuntime + 'static,
+    {
+        self.with_health_runtime(monitor)
+    }
+
+    #[must_use]
+    pub fn with_health_runtime(mut self, monitor: Arc<dyn ClusterHealthRuntime>) -> Self {
         self.health_monitor = Some(monitor);
         self
     }
@@ -196,6 +216,7 @@ impl LoadBalancer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{HealthMonitor, NodeRegistry};
     use std::collections::HashSet;
 
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
@@ -450,7 +471,9 @@ mod tests {
     async fn test_select_node_by_id_fails_closed_when_degraded_cache_is_stale() {
         let registry = Arc::new(
             NodeRegistry::new(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                synctv_core::coordination_runtime_from_client(
+                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                ),
                 "self".to_string(),
                 30,
                 "test-stale-select:",
@@ -518,7 +541,9 @@ mod tests {
     async fn test_select_node_fails_closed_when_degraded_cache_is_stale() {
         let registry = Arc::new(
             NodeRegistry::new(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                synctv_core::coordination_runtime_from_client(
+                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                ),
                 "self".to_string(),
                 30,
                 "test-stale:",

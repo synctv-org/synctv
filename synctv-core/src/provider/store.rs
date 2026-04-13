@@ -9,6 +9,8 @@ use parking_lot::Mutex;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::{RedisConnectionRuntime, SharedRedisConnectionRuntime, SharedStateProfile};
+
 /// Errors returned by provider store operations.
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -52,6 +54,16 @@ pub trait ProviderStore: Send + Sync {
     async fn set_raw(&self, key: &str, value: &[u8], ttl: Duration) -> Result<(), StoreError>;
     async fn delete(&self, key: &str) -> Result<(), StoreError>;
     async fn lock(&self, key: &str, ttl: Duration) -> Result<StoreLockGuard, StoreError>;
+}
+
+/// Resolver for provider-scoped stores.
+///
+/// Callers depend on this trait instead of the concrete registry so storage
+/// backends remain pluggable.
+pub trait ProviderStoreResolver: Send + Sync {
+    fn load(&self, name: &str) -> Arc<dyn ProviderStore>;
+
+    fn key_prefix(&self) -> &str;
 }
 
 /// Extension trait providing typed (serde) convenience methods on top of `ProviderStore`.
@@ -220,17 +232,22 @@ impl ProviderStore for InMemoryProviderStore {
 /// background health check can hot-swap the inner connection on failover and
 /// this store automatically picks up the new master.
 pub struct RedisProviderStore {
-    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
 }
 
 impl RedisProviderStore {
-    pub const fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
-        Self { shared_conn }
+    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+        Self::from_runtime(Arc::new(SharedRedisConnectionRuntime::new(shared_conn)))
+    }
+
+    #[must_use]
+    pub fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>) -> Self {
+        Self { redis_runtime }
     }
 
     /// Get a cloned connection snapshot for the current operation.
     async fn conn(&self) -> redis::aio::ConnectionManager {
-        self.shared_conn.read().await.clone()
+        self.redis_runtime.snapshot().await
     }
 }
 
@@ -282,7 +299,7 @@ impl ProviderStore for RedisProviderStore {
 
             if result.is_some() {
                 let key_owned = key.to_string();
-                let shared = self.shared_conn.clone();
+                let redis_runtime = self.redis_runtime.clone();
                 let owner_token_owned = owner_token.clone();
                 return Ok(StoreLockGuard::new(move || {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -295,7 +312,7 @@ impl ProviderStore for RedisProviderStore {
                                 return 0
                             "#,
                             );
-                            let mut conn = shared.read().await.clone();
+                            let mut conn = redis_runtime.snapshot().await;
                             let _: Result<i32, _> = delete_if_owner
                                 .key(&key_owned)
                                 .arg(&owner_token_owned)
@@ -370,7 +387,7 @@ impl<S: ProviderStore> ProviderStore for PrefixedProviderStore<S> {
 /// No need to pre-register provider names — calling `load("some_new_provider")`
 /// automatically creates a prefixed store backed by Redis (if available) or in-memory.
 pub struct ProviderStoreRegistry {
-    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     stores: Mutex<HashMap<String, Arc<dyn ProviderStore>>>,
     key_prefix: Arc<str>,
 }
@@ -381,8 +398,22 @@ impl ProviderStoreRegistry {
         redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         key_prefix: impl Into<String>,
     ) -> Self {
+        Self::from_runtime(
+            redis.map(|shared_conn| {
+                Arc::new(SharedRedisConnectionRuntime::new(shared_conn))
+                    as Arc<dyn RedisConnectionRuntime>
+            }),
+            key_prefix,
+        )
+    }
+
+    /// Create a new registry from an injected runtime abstraction.
+    pub fn from_runtime(
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
-            redis,
+            redis_runtime,
             stores: Mutex::new(HashMap::new()),
             key_prefix: key_prefix.into().into(),
         }
@@ -398,9 +429,9 @@ impl ProviderStoreRegistry {
             .entry(name.to_string())
             .or_insert_with(|| {
                 let prefix = format!("{}provider:{name}", self.key_prefix);
-                match &self.redis {
-                    Some(shared_conn) => Arc::new(PrefixedProviderStore::new(
-                        RedisProviderStore::new(shared_conn.clone()),
+                match &self.redis_runtime {
+                    Some(runtime) => Arc::new(PrefixedProviderStore::new(
+                        RedisProviderStore::from_runtime(runtime.clone()),
                         prefix,
                     )),
                     None => Arc::new(PrefixedProviderStore::new(
@@ -416,6 +447,49 @@ impl ProviderStoreRegistry {
     pub fn key_prefix(&self) -> &str {
         &self.key_prefix
     }
+}
+
+impl ProviderStoreResolver for ProviderStoreRegistry {
+    fn load(&self, name: &str) -> Arc<dyn ProviderStore> {
+        Self::load(self, name)
+    }
+
+    fn key_prefix(&self) -> &str {
+        Self::key_prefix(self)
+    }
+}
+
+pub fn build_provider_store_resolver(
+    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn ProviderStoreResolver> {
+    Arc::new(ProviderStoreRegistry::new(redis, key_prefix))
+}
+
+pub fn build_provider_store_resolver_from_shared_conn(
+    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn ProviderStoreResolver> {
+    build_provider_store_resolver_from_runtime(
+        crate::shared_runtime_from_conn(redis),
+        key_prefix,
+    )
+}
+
+pub fn build_provider_store_resolver_from_runtime(
+    redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn ProviderStoreResolver> {
+    Arc::new(ProviderStoreRegistry::from_runtime(redis_runtime, key_prefix))
+}
+
+pub fn build_provider_store_resolver_from_profile(
+    profile: &SharedStateProfile,
+) -> Arc<dyn ProviderStoreResolver> {
+    build_provider_store_resolver_from_runtime(
+        profile.shared_runtime(),
+        profile.key_prefix().to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +517,8 @@ impl VersionedPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
     use redis::AsyncCommands;
     use std::sync::Arc;
     use testcontainers::{runners::AsyncRunner, ContainerAsync};
@@ -452,6 +528,27 @@ mod tests {
     struct TestData {
         name: String,
         count: u32,
+    }
+
+    #[tokio::test]
+    async fn test_redis_provider_store_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let store = RedisProviderStore::from_runtime(runtime.clone());
+
+        assert!(
+            Arc::ptr_eq(&store.redis_runtime, &runtime),
+            "Redis provider store should retain the injected runtime object"
+        );
     }
 
     async fn start_redis() -> (
@@ -628,6 +725,13 @@ mod tests {
             other.get_raw("cache-key").await.unwrap().is_none(),
             "different configured prefixes must isolate provider cache state"
         );
+    }
+
+    #[test]
+    fn test_build_provider_store_resolver_from_runtime_uses_configured_prefix() {
+        let resolver = build_provider_store_resolver_from_runtime(None, "tenant-local:");
+        assert_eq!(resolver.key_prefix(), "tenant-local:");
+        let _store = resolver.load("demo");
     }
 
     #[test]

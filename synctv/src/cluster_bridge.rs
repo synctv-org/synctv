@@ -81,7 +81,7 @@ mod tests {
     use super::ClusterPlaybackBroadcaster;
     use std::sync::Arc;
     use std::time::Duration;
-    use synctv_cluster::sync::{ClusterConfig, ClusterManager};
+    use synctv_cluster::sync::{ClusterConfig, ClusterManager, RoomMessageHub};
     use synctv_core::models::{MediaId, PlaylistId, RoomId, RoomPlaybackState};
 
     fn sample_state() -> RoomPlaybackState {
@@ -103,9 +103,8 @@ mod tests {
         let cluster_manager = Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
-                    shared_redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: Arc::new(RoomMessageHub::new()),
                     cluster_enabled: false,
                     node_id: "node-local".to_string(),
                     dedup_window: Duration::from_secs(30),

@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::{
-    cache::CacheInvalidationService,
+    cache::CacheInvalidationRuntime,
     models::{
         ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
         PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
@@ -114,7 +114,7 @@ pub struct RoomService {
     pool: PgPool,
 
     // Optional distributed lock (requires Redis, used in multi-replica mode)
-    distributed_lock: Option<crate::service::DistributedLock>,
+    distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
 
     // Core repositories
     room_repo: RoomRepository,
@@ -135,7 +135,7 @@ pub struct RoomService {
     user_service: UserService,
 
     /// Optional cache invalidation service for cross-replica room cache sync
-    cache_invalidation: Option<Arc<CacheInvalidationService>>,
+    cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
 
     /// Optional audit service for logging security-sensitive operations
     audit_service: Option<Arc<AuditService>>,
@@ -498,7 +498,10 @@ impl RoomService {
     }
 
     /// Set the distributed lock (enables multi-replica safety for room creation)
-    pub fn set_distributed_lock(&mut self, lock: crate::service::DistributedLock) {
+    pub fn set_distributed_lock(
+        &mut self,
+        lock: Arc<dyn crate::service::distributed_lock::CoordinationLock>,
+    ) {
         self.distributed_lock = Some(lock);
     }
 
@@ -506,7 +509,7 @@ impl RoomService {
     ///
     /// Also propagates to the inner `MemberService` so that permission/role
     /// changes are broadcast to other replicas.
-    pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         self.permission_service
             .set_invalidation_service(Arc::clone(&service));
         self.member_service
@@ -534,7 +537,7 @@ impl RoomService {
 
     /// Wire the cache invalidation service into the inner playback service
     /// so it can broadcast invalidation messages to other replicas on updates.
-    pub fn set_playback_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_playback_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         self.playback_service.set_invalidation_service(service);
     }
 
@@ -599,11 +602,14 @@ impl RoomService {
         let mut permission_service = permission_service;
         permission_service.set_room_settings_repo(room_settings_repo.clone());
 
+        let notification_service = NotificationService::default();
+
         // Initialize domain services
         let mut member_service = MemberService::new(
             member_repo.clone(),
             room_repo.clone(),
             permission_service.clone(),
+            notification_service.clone(),
         );
         member_service.set_room_settings_repo(room_settings_repo.clone());
         let playlist_service = PlaylistService::new(
@@ -616,15 +622,14 @@ impl RoomService {
             playlist_repo.clone(),
             permission_service.clone(),
             providers_manager,
+            notification_service.clone(),
         );
-        let notification_service = NotificationService::default();
-        let mut playback_service = PlaybackService::new(
+        let playback_service = PlaybackService::new(
             playback_repo.clone(),
             permission_service.clone(),
             media_service.clone(),
             user_service.clone(),
         );
-        playback_service.set_notification_service(notification_service.clone());
 
         Self {
             pool,
@@ -796,8 +801,11 @@ impl RoomService {
         // Acquire distributed lock to prevent duplicate creation by the same user
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("create_room:{}", created_by.as_str());
-            return lock
-                .with_lock(&lock_key, Self::CREATE_ROOM_LOCK_TTL_SECS, || {
+            return crate::service::distributed_lock::with_coordination_lock(
+                lock.as_ref(),
+                &lock_key,
+                Self::CREATE_ROOM_LOCK_TTL_SECS,
+                || {
                     let name = name.clone();
                     let description = description.clone();
                     let created_by = created_by.clone();
@@ -807,8 +815,9 @@ impl RoomService {
                         self.do_create_room(name, description, created_by, password, settings)
                             .await
                     }
-                })
-                .await;
+                },
+            )
+            .await;
         }
 
         self.do_create_room(name, description, created_by, password, settings)
@@ -1247,11 +1256,15 @@ impl RoomService {
         // and the add_member call.
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("join_room:{}:{}", room_id.as_str(), user_id.as_str());
-            return lock.with_lock(&lock_key, 10, || {
-                let room_id = room_id.clone();
-                let user_id = user_id.clone();
-                let password = password.clone();
-                async move {
+            return crate::service::distributed_lock::with_coordination_lock(
+                lock.as_ref(),
+                &lock_key,
+                10,
+                || {
+                    let room_id = room_id.clone();
+                    let user_id = user_id.clone();
+                    let password = password.clone();
+                    async move {
                     // Re-validate state under lock to catch changes that occurred
                     // between the initial check and lock acquisition
                     let fresh_ctx = self
@@ -1300,8 +1313,10 @@ impl RoomService {
 
                     self.do_join_room(fresh_ctx.room, fresh_ctx.settings, room_id, user_id)
                         .await
-                }
-            }).await;
+                    }
+                },
+            )
+            .await;
         }
 
         // Single-replica path: no distributed lock, rely on DB-level constraints
@@ -1413,7 +1428,7 @@ impl RoomService {
         let _ = self
             .notification_service
             .notify_user_joined(&room_id, &user_id, &username)
-            .await;
+            ;
 
         tracing::info!(
             room_id = %room_id,
@@ -1950,7 +1965,7 @@ impl RoomService {
         let _ = self
             .notification_service
             .notify_user_left(&room_id, &user_id, &username)
-            .await;
+            ;
 
         tracing::info!(room_id = %room_id, user_id = %user_id, username = %username, "User left room");
 
@@ -2077,7 +2092,7 @@ impl RoomService {
         let _ = self
             .notification_service
             .notify_room_deleted(&room_id)
-            .await;
+            ;
 
         tracing::info!(
             room_id = %room_id,
@@ -2363,7 +2378,7 @@ impl RoomService {
                     })?;
                     let _ = notification_service
                         .notify_settings_updated(&room_id, settings_json.clone())
-                        .await;
+                        ;
 
                     // Audit log
                     if let Some(ref audit) = audit_service {
@@ -3269,7 +3284,6 @@ impl RoomService {
                 if let Err(error) = self
                     .notification_service
                     .notify_media_removed(&room_id, media_id.as_str())
-                    .await
                 {
                     tracing::warn!(
                         error = %error,
@@ -3381,7 +3395,6 @@ impl RoomService {
                 if let Err(error) = self
                     .notification_service
                     .notify_media_removed(&room_id, media_id.as_str())
-                    .await
                 {
                     tracing::warn!(
                         error = %error,
@@ -3544,7 +3557,6 @@ impl RoomService {
             if let Err(error) = self
                 .notification_service
                 .notify_media_removed(&room_id, media_id.as_str())
-                .await
             {
                 tracing::warn!(
                     error = %error,
@@ -3574,7 +3586,6 @@ impl RoomService {
                                 .as_ref()
                                 .map(|id| id.as_str().to_string()),
                         )
-                        .await
                     {
                         tracing::warn!(
                             error = %error,
@@ -3798,7 +3809,7 @@ impl RoomService {
         self.invalidate_room_caches(room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
-        let _ = self.notification_service.notify_room_deleted(room_id).await;
+        let _ = self.notification_service.notify_room_deleted(room_id);
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
 
@@ -3913,7 +3924,7 @@ impl RoomService {
         self.invalidate_room_caches(room_id).await;
 
         // Notify after commit
-        let _ = self.notification_service.notify_room_deleted(room_id).await;
+        let _ = self.notification_service.notify_room_deleted(room_id);
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
 
@@ -4060,7 +4071,7 @@ impl RoomService {
         self.bump_room_guest_version(room_id).await?;
         self.notification_service
             .kick_all_guests(room_id, reason)
-            .await?;
+            ?;
         Ok(())
     }
 
@@ -4291,7 +4302,7 @@ impl RoomService {
     /// deleted transactionally elsewhere.
     pub async fn finalize_deleted_room_after_commit(&self, room_id: &RoomId) {
         self.invalidate_room_caches(room_id).await;
-        let _ = self.notification_service.notify_room_deleted(room_id).await;
+        let _ = self.notification_service.notify_room_deleted(room_id);
     }
 
     /// Run best-effort post-commit side effects after a room became unusable
@@ -4331,7 +4342,6 @@ impl RoomService {
             if let Err(error) = self
                 .notification_service
                 .notify_media_removed(room_id, media_id.as_str())
-                .await
             {
                 tracing::warn!(
                     error = %error,
@@ -4914,6 +4924,7 @@ mod tests {
             InMemoryTokenBlacklistStore, UserService,
         },
     };
+    use async_trait::async_trait;
     use sqlx::PgPool;
     use std::sync::Arc;
 
@@ -5022,15 +5033,52 @@ mod tests {
             "plain RoomService::new should start without permission invalidation wiring"
         );
 
-        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new(
-            None,
-            "room-service-node".to_string(),
+        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new("room-service-node".to_string(),
             "room-service-stream".to_string(),
         )));
 
         assert!(
             room_service.permission_service().has_invalidation_service(),
             "post-construction cache invalidation wiring must reach the shared permission service"
+        );
+    }
+
+    struct FailingCoordinationLock;
+
+    #[async_trait]
+    impl crate::service::distributed_lock::CoordinationLock for FailingCoordinationLock {
+        async fn acquire(&self, key: &str, _ttl_secs: u64) -> crate::Result<Option<String>> {
+            Err(Error::ServiceUnavailable(format!(
+                "synthetic lock failure for {key}"
+            )))
+        }
+
+        async fn release(&self, _key: &str, _lock_value: &str) -> crate::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_room_uses_injected_coordination_lock_trait_object() {
+        let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
+        let user_service = make_user_service(pool.clone());
+        let mut room_service = RoomService::new(pool, user_service);
+        room_service.set_distributed_lock(Arc::new(FailingCoordinationLock));
+
+        let error = room_service
+            .create_room(
+                "locked room".to_string(),
+                "desc".to_string(),
+                crate::models::UserId::new(),
+                None,
+                None,
+            )
+            .await
+            .expect_err("lock failure should short-circuit before any database work");
+
+        assert!(
+            matches!(error, Error::ServiceUnavailable(ref message) if message.contains("synthetic lock failure")),
+            "unexpected error: {error:?}"
         );
     }
 

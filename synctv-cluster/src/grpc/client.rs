@@ -32,7 +32,7 @@ use super::synctv::cluster::{
     GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
     GetUserOnlineStatusResponse, RoomConnection, UserOnlineStatus,
 };
-use crate::discovery::NodeRegistry;
+use crate::discovery::ClusterNodeDirectory;
 use crate::error::{Error, Result};
 
 /// Configuration for the cluster fan-out client
@@ -98,7 +98,7 @@ const CHANNEL_CACHE_MAX_CAPACITY: u64 = 256;
 /// Skips the local node (identified by `self_node_id`) since local data
 /// should be queried directly via `ConnectionManager`.
 pub struct ClusterClient {
-    node_registry: Arc<NodeRegistry>,
+    node_registry: Arc<dyn ClusterNodeDirectory>,
     config: ClusterClientConfig,
     /// Cached gRPC channels keyed by `"{node_id}|{address}"`.
     ///
@@ -117,7 +117,17 @@ pub struct ClusterClient {
 
 impl ClusterClient {
     /// Create a new cluster client
-    pub fn new(node_registry: Arc<NodeRegistry>, config: ClusterClientConfig) -> Self {
+    pub fn new<N>(node_registry: Arc<N>, config: ClusterClientConfig) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::from_runtime(node_registry, config)
+    }
+
+    pub fn from_runtime(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
+        config: ClusterClientConfig,
+    ) -> Self {
         let channels = Cache::builder()
             .max_capacity(CHANNEL_CACHE_MAX_CAPACITY)
             .time_to_idle(Duration::from_secs(CHANNEL_CACHE_TTL_SECS))
@@ -586,6 +596,7 @@ fn partition_degraded_query_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeRegistry;
 
     #[test]
     fn test_fan_out_result_is_complete() {
@@ -828,7 +839,13 @@ mod tests {
         drop(conn);
 
         let registry = Arc::new(
-            NodeRegistry::new(redis_client, "self_node".to_string(), 30, "synctv:").unwrap(),
+            NodeRegistry::new(
+                synctv_core::coordination_runtime_from_client(redis_client),
+                "self_node".to_string(),
+                30,
+                "synctv:",
+            )
+            .unwrap(),
         );
         // Populate local cache directly (no Redis connection needed)
         {

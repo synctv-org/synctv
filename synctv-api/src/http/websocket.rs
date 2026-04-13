@@ -36,6 +36,7 @@ use crate::impls::messaging::{
     MessageSender, ProtoCodec, RealtimeJoinError, StreamMessage, StreamMessageHandler,
 };
 use crate::proto::client::{ClientMessage, ServerMessage};
+use crate::runtime::RealtimeConnectionService;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
 use synctv_core::service::{ContentFilter, PendingValidatedTicket};
@@ -376,7 +377,7 @@ fn default_port_for_scheme(scheme: &str) -> Option<u16> {
 }
 
 pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {
-    state.cluster_manager.is_some() && state.chat_service.is_some()
+    state.event_service.is_some() && state.chat_service.is_some()
 }
 
 pub(crate) fn validate_websocket_runtime_dependencies(state: &AppState) -> Result<(), AppError> {
@@ -506,7 +507,7 @@ async fn forward_websocket_messages<S>(
     mut outbound_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
     mut ws_sender_sink: S,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
-    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    connection_service: Arc<dyn RealtimeConnectionService>,
     connection_id: String,
 ) where
     S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
@@ -634,7 +635,7 @@ async fn forward_websocket_messages<S>(
                 "Failed to send WebSocket message"
             );
             is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-            connection_manager.disconnect_connection(&connection_id);
+            connection_service.disconnect_connection(&connection_id);
             break;
         }
     }
@@ -881,18 +882,18 @@ async fn run_websocket_handshake_with_timeout<T>(
 }
 
 struct ReservationCleanupGuard {
-    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    connection_service: Arc<dyn RealtimeConnectionService>,
     reservation: HandshakeReservation,
     armed: bool,
 }
 
 impl ReservationCleanupGuard {
     const fn new(
-        connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         reservation: HandshakeReservation,
     ) -> Self {
         Self {
-            connection_manager,
+            connection_service,
             reservation,
             armed: true,
         }
@@ -909,7 +910,7 @@ impl Drop for ReservationCleanupGuard {
             return;
         }
 
-        self.reservation.release(&self.connection_manager);
+        self.reservation.release(self.connection_service.as_ref());
     }
 }
 
@@ -920,28 +921,28 @@ struct HandshakeReservation {
 }
 
 impl HandshakeReservation {
-    fn release(&self, connection_manager: &synctv_cluster::sync::ConnectionManager) {
-        connection_manager.release_room_reservation(&self.room_id);
-        connection_manager.release_user_reservation(&self.user_id);
+    fn release(&self, connection_service: &dyn RealtimeConnectionService) {
+        connection_service.release_room_reservation(&self.room_id);
+        connection_service.release_user_reservation(&self.user_id);
     }
 }
 
 fn reserve_websocket_upgrade_slots(
-    connection_manager: &synctv_cluster::sync::ConnectionManager,
+    connection_service: &dyn RealtimeConnectionService,
     room_id: &RoomId,
     user_id: &UserId,
 ) -> Result<HandshakeReservation, AppError> {
-    connection_manager
+    connection_service
         .reserve_user_slot(user_id)
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)?;
 
-    if let Err(error) = connection_manager
+    if let Err(error) = connection_service
         .reserve_room_slot(room_id)
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)
     {
-        connection_manager.release_user_reservation(user_id);
+        connection_service.release_user_reservation(user_id);
         return Err(error);
     }
 
@@ -991,7 +992,8 @@ async fn prepare_websocket_upgrade(
     validate_websocket_runtime_dependencies(state)?;
     let username = load_websocket_username(state, &user_id).await?;
     let connection_id = StreamMessageHandler::generate_connection_id(&user_id);
-    let reservation = reserve_websocket_upgrade_slots(&state.connection_manager, &rid, &user_id)?;
+    let reservation =
+        reserve_websocket_upgrade_slots(state.connection_manager.as_ref(), &rid, &user_id)?;
 
     Ok(PreparedWebSocketUpgrade {
         room_id: rid,
@@ -1003,7 +1005,7 @@ async fn prepare_websocket_upgrade(
 }
 
 fn build_failed_upgrade_cleanup(
-    connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    connection_service: Arc<dyn RealtimeConnectionService>,
     reservation: HandshakeReservation,
 ) -> impl FnOnce(axum::Error) + Send + 'static {
     move |error| {
@@ -1013,7 +1015,7 @@ fn build_failed_upgrade_cleanup(
             error = %error,
             "WebSocket upgrade failed after reserving connection capacity; releasing reservation"
         );
-        reservation.release(&connection_manager);
+        reservation.release(connection_service.as_ref());
     }
 }
 
@@ -1056,10 +1058,10 @@ async fn handle_socket(
     // Check if cluster_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
     // so there's nothing to decrement.
-    let cluster_manager = if let Some(ref cm) = state.cluster_manager {
-        cm.clone()
+    let event_service = if let Some(ref service) = state.event_service {
+        service.clone()
     } else {
-        error!("ClusterManager not available, WebSocket connection not supported");
+        error!("Realtime event service not available, WebSocket connection not supported");
         return;
     };
 
@@ -1100,8 +1102,8 @@ async fn handle_socket(
         username.clone(),
         state.room_service.clone(),
         chat_service,
-        cluster_manager,
-        (*state.connection_manager).clone(),
+        event_service,
+        state.connection_manager.clone(),
         rate_limiter,
         rate_limit_config,
         content_filter,
@@ -1133,21 +1135,21 @@ async fn handle_socket(
     }
 
     reservation_cleanup.disarm();
-    reservation.release(&state.connection_manager);
+    reservation.release(state.connection_manager.as_ref());
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
 
     // Spawn task to handle server messages -> WebSocket
     let is_alive_clone = is_alive.clone();
-    let connection_manager = state.connection_manager.clone();
+    let connection_service = state.connection_manager.clone();
     tokio::spawn(async move {
         forward_websocket_messages(
             critical_rx,
             rx,
             &mut ws_sender_sink,
             is_alive_clone,
-            connection_manager,
+            connection_service,
             connection_id,
         )
         .await;
@@ -1514,9 +1516,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_websocket_runtime_dependency_flags_require_cluster_and_chat_services() {
+    fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services() {
         let err = validate_websocket_runtime_dependency_flags(false)
-            .expect_err("missing cluster manager must fail before websocket upgrade");
+            .expect_err("missing realtime event service must fail before websocket upgrade");
         assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
         validate_websocket_runtime_dependency_flags(true)
@@ -1950,10 +1952,12 @@ mod tests {
         };
 
         state
+            .router_config
             .connection_manager
             .reserve_user_slot(&user_id)
             .expect("handshake should reserve a user slot");
         state
+            .router_config
             .connection_manager
             .reserve_room_slot(&room_id)
             .expect("handshake should reserve a room slot");
@@ -1984,7 +1988,10 @@ mod tests {
             .await
             .expect("handshake commit should consume the ticket before switching protocols");
 
-        let cleanup = build_failed_upgrade_cleanup(state.connection_manager.clone(), reservation);
+        let cleanup = build_failed_upgrade_cleanup(
+            state.router_config.connection_manager.clone(),
+            reservation,
+        );
         cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
 
         let validated = ws_ticket_service
@@ -2004,8 +2011,12 @@ mod tests {
         let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
 
         let reservation =
-            reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
-                .expect("handshake should reserve websocket capacity");
+            reserve_websocket_upgrade_slots(
+                state.router_config.connection_manager.as_ref(),
+                &room_id,
+                &user_id,
+            )
+            .expect("handshake should reserve websocket capacity");
 
         let ticket = ws_ticket_service
             .create_ticket(&user_id, &room_id, 0)
@@ -2038,10 +2049,12 @@ mod tests {
         assert_eq!(error.status, StatusCode::UNAUTHORIZED);
 
         state
+            .router_config
             .connection_manager
             .reserve_user_slot(&user_id)
             .expect("failed commit should release the reserved user slot");
         state
+            .router_config
             .connection_manager
             .reserve_room_slot(&room_id)
             .expect("failed commit should release the reserved room slot");
@@ -2054,8 +2067,12 @@ mod tests {
         let user_id = UserId::from_string("user-ticket-timeout".to_string());
         let room_id = RoomId::from_string("room-ticket-timeout".to_string());
         let reservation =
-            reserve_websocket_upgrade_slots(&state.connection_manager, &room_id, &user_id)
-                .expect("handshake should reserve websocket capacity");
+            reserve_websocket_upgrade_slots(
+                state.router_config.connection_manager.as_ref(),
+                &room_id,
+                &user_id,
+            )
+            .expect("handshake should reserve websocket capacity");
 
         let prepared = PreparedWebSocketUpgrade {
             room_id: room_id.clone(),
@@ -2087,10 +2104,12 @@ mod tests {
         assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
 
         state
+            .router_config
             .connection_manager
             .reserve_user_slot(&user_id)
             .expect("timed out commit should release the reserved user slot");
         state
+            .router_config
             .connection_manager
             .reserve_room_slot(&room_id)
             .expect("timed out commit should release the reserved room slot");
@@ -2145,7 +2164,7 @@ mod tests {
             "active room membership must keep room capacity full before reservation release"
         );
 
-        reservation.release(&manager);
+        reservation.release(manager.as_ref());
 
         assert!(
             manager.reserve_user_slot(&user_id).is_err(),

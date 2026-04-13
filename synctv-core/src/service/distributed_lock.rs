@@ -56,10 +56,11 @@
 //! - Uniqueness even during network partitions
 //! - Simplicity without requiring clock synchronization
 
-use crate::{Error, InternalExt, Result};
+use crate::{Error, InternalExt, RedisConnectionRuntime, Result};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
+use std::sync::Arc;
 
 async fn run_distributed_lock_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
 where
@@ -91,6 +92,9 @@ where
 /// program against this trait instead of depending on Redis directly.
 #[async_trait::async_trait]
 pub trait MigrationLock: Send + Sync {
+    /// A label for logging and diagnostics (for example `redis` or `pg-advisory`).
+    fn backend_name(&self) -> &'static str;
+
     /// Try to acquire the lock.
     ///
     /// Returns `Ok(Some(lock_value))` if acquired, `Ok(None)` if already held,
@@ -111,9 +115,69 @@ pub trait MigrationLock: Send + Sync {
     async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool>;
 }
 
+/// Object-safe coordination lock for application-layer critical sections.
+///
+/// Unlike [`MigrationLock`], this trait uses the crate's native [`Result`]
+/// type so business services can depend on it directly without knowing the
+/// concrete coordination backend.
+#[async_trait::async_trait]
+pub trait CoordinationLock: Send + Sync {
+    /// Try to acquire the lock.
+    ///
+    /// Returns `Ok(Some(lock_value))` if acquired, `Ok(None)` if already held,
+    /// or `Err` on infrastructure failure.
+    async fn acquire(&self, key: &str, ttl_secs: u64) -> Result<Option<String>>;
+
+    /// Release a previously acquired lock.
+    async fn release(&self, key: &str, lock_value: &str) -> Result<bool>;
+}
+
+/// Execute an operation under an acquired [`CoordinationLock`].
+///
+/// This preserves the same client-side timeout and best-effort unlock behavior
+/// previously provided by [`DistributedLock::with_lock`], while allowing the
+/// caller to depend on a trait object instead of a concrete Redis lock.
+pub async fn with_coordination_lock<L, F, Fut, T>(
+    lock: &L,
+    key: &str,
+    ttl_seconds: u64,
+    operation: F,
+) -> Result<T>
+where
+    L: CoordinationLock + ?Sized,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
+
+    run_distributed_lock_client_op(key, client_timeout, async {
+        let lock_value = lock
+            .acquire(key, ttl_seconds)
+            .await?
+            .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
+
+        let result = operation().await;
+
+        if let Err(error) = lock.release(key, &lock_value).await {
+            tracing::error!(
+                key = %key,
+                error = %error,
+                "Failed to release lock after operation"
+            );
+        }
+
+        result
+    })
+    .await
+}
+
 /// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
 #[async_trait::async_trait]
 impl MigrationLock for DistributedLock {
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+
     async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
         Self::acquire(self, key, ttl_secs)
             .await
@@ -130,6 +194,17 @@ impl MigrationLock for DistributedLock {
         Self::extend(self, key, lock_value, ttl_secs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+#[async_trait::async_trait]
+impl CoordinationLock for DistributedLock {
+    async fn acquire(&self, key: &str, ttl_secs: u64) -> Result<Option<String>> {
+        Self::acquire(self, key, ttl_secs).await
+    }
+
+    async fn release(&self, key: &str, lock_value: &str) -> Result<bool> {
+        Self::release(self, key, lock_value).await
     }
 }
 
@@ -163,6 +238,10 @@ impl PgAdvisoryMigrationLock {
 
 #[async_trait::async_trait]
 impl MigrationLock for PgAdvisoryMigrationLock {
+    fn backend_name(&self) -> &'static str {
+        "pg-advisory"
+    }
+
     async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
         let mut conn = self.pool.acquire().await.map_err(|e| {
             anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")
@@ -214,25 +293,45 @@ impl MigrationLock for PgAdvisoryMigrationLock {
 /// details.
 #[derive(Clone)]
 pub struct DistributedLock {
-    backend: DistributedLockBackend,
-}
-
-#[derive(Clone)]
-enum DistributedLockBackend {
-    Direct(RedisConnectionManager),
-    Shared(std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>),
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
 }
 
 impl DistributedLock {
+    #[must_use]
+    pub fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>) -> Self {
+        Self { redis_runtime }
+    }
+
+    fn log_sentinel_warning() {
+        tracing::warn!(
+            "Distributed lock is running behind Redis Sentinel. \
+             During a Sentinel failover, there is a brief split-brain window where \
+             locks held on the old master may be lost because Redis replication is \
+             asynchronous. Fencing tokens mitigate this for database writes, but \
+             non-idempotent side effects (notifications, billing) cannot be fenced. \
+             For production Sentinel deployments, consider using the Redlock algorithm \
+             with multiple independent Redis masters."
+        );
+    }
+
+    #[must_use]
+    pub fn from_runtime_with_mode(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        is_sentinel: bool,
+    ) -> Self {
+        if is_sentinel {
+            Self::log_sentinel_warning();
+        }
+        Self::from_runtime(redis_runtime)
+    }
+
     /// Create a new distributed lock service.
     ///
     /// If `redis_url` is provided, checks whether it uses Sentinel (contains
     /// "sentinel" in the URL) and emits a startup warning about lock safety.
     #[must_use]
-    pub const fn new(redis: RedisConnectionManager) -> Self {
-        Self {
-            backend: DistributedLockBackend::Direct(redis),
-        }
+    pub fn new(redis: RedisConnectionManager) -> Self {
+        Self::from_runtime(crate::direct_runtime(redis))
     }
 
     /// Create a distributed lock service from the shared Redis handle used by
@@ -241,12 +340,8 @@ impl DistributedLock {
     /// This keeps the lock service aligned with Sentinel failover hot-swaps so
     /// it does not keep talking to a stale master after reconnection.
     #[must_use]
-    pub const fn new_shared(
-        redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>,
-    ) -> Self {
-        Self {
-            backend: DistributedLockBackend::Shared(redis),
-        }
+    pub fn new_shared(redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>) -> Self {
+        Self::from_runtime(crate::shared_runtime(redis))
     }
 
     /// Create a new distributed lock service and log a warning if the Redis URL
@@ -254,12 +349,7 @@ impl DistributedLock {
     /// Redis URL is available.
     pub fn new_with_sentinel_check(redis: RedisConnectionManager, redis_url: &str) -> Self {
         if redis_url.contains("sentinel") || redis_url.contains("SENTINEL") {
-            tracing::warn!(
-                "Distributed lock is using a single Redis instance behind Sentinel. \
-                 Locks may be LOST during Sentinel failover due to asynchronous replication. \
-                 For production Sentinel deployments, consider using the Redlock algorithm \
-                 with multiple independent Redis masters. See module-level documentation."
-            );
+            Self::log_sentinel_warning();
         }
         Self::new(redis)
     }
@@ -270,45 +360,17 @@ impl DistributedLock {
     /// window during Sentinel failover. This is more reliable than URL-based
     /// detection in `new_with_sentinel_check`.
     pub fn new_with_mode(redis: RedisConnectionManager, is_sentinel: bool) -> Self {
-        if is_sentinel {
-            tracing::warn!(
-                "Distributed lock is running behind Redis Sentinel. \
-                 During a Sentinel failover, there is a brief split-brain window where \
-                 locks held on the old master may be lost because Redis replication is \
-                 asynchronous. Fencing tokens mitigate this for database writes, but \
-                 non-idempotent side effects (notifications, billing) cannot be fenced. \
-                 For production Sentinel deployments, consider using the Redlock algorithm \
-                 with multiple independent Redis masters."
-            );
-        }
-        Self::new(redis)
+        Self::from_runtime_with_mode(crate::direct_runtime(redis), is_sentinel)
     }
 
     /// Create a distributed lock service from the shared Redis handle with
     /// deployment-mode awareness.
-    pub fn new_shared_with_mode(
-        redis: std::sync::Arc<tokio::sync::RwLock<RedisConnectionManager>>,
-        is_sentinel: bool,
-    ) -> Self {
-        if is_sentinel {
-            tracing::warn!(
-                "Distributed lock is running behind Redis Sentinel. \
-                 During a Sentinel failover, there is a brief split-brain window where \
-                 locks held on the old master may be lost because Redis replication is \
-                 asynchronous. Fencing tokens mitigate this for database writes, but \
-                 non-idempotent side effects (notifications, billing) cannot be fenced. \
-                 For production Sentinel deployments, consider using the Redlock algorithm \
-                 with multiple independent Redis masters."
-            );
-        }
-        Self::new_shared(redis)
+    pub fn new_shared_with_mode(redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>, is_sentinel: bool) -> Self {
+        Self::from_runtime_with_mode(crate::shared_runtime(redis), is_sentinel)
     }
 
     async fn conn(&self) -> RedisConnectionManager {
-        match &self.backend {
-            DistributedLockBackend::Direct(conn) => conn.clone(),
-            DistributedLockBackend::Shared(conn) => conn.read().await.clone(),
-        }
+        self.redis_runtime.snapshot().await
     }
 
     /// Generate a fencing token for a lock key using Redis INCR
@@ -1297,6 +1359,7 @@ impl Drop for RedlockGuard {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use async_trait::async_trait;
 
     // ========== Unit Tests (No Docker Required) ==========
 
@@ -1332,6 +1395,48 @@ mod tests {
         let ttl_seconds: u64 = 10;
         let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
         assert_eq!(client_timeout, std::time::Duration::from_secs(15));
+    }
+
+    #[tokio::test]
+    async fn test_distributed_lock_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> RedisConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let lock = DistributedLock::from_runtime(runtime.clone());
+
+        assert!(
+            Arc::ptr_eq(&lock.redis_runtime, &runtime),
+            "distributed lock should retain the injected Redis runtime object"
+        );
+    }
+
+    #[test]
+    fn test_distributed_lock_from_runtime_with_mode_retains_injected_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> RedisConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let lock = DistributedLock::from_runtime_with_mode(runtime.clone(), false);
+
+        assert!(
+            Arc::ptr_eq(&lock.redis_runtime, &runtime),
+            "distributed lock should retain the injected runtime even in deployment-aware mode"
+        );
     }
 
     #[tokio::test(start_paused = true)]

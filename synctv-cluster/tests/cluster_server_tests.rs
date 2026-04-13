@@ -2,7 +2,7 @@
 //!
 //! - `validate_node_id`: empty/long/invalid -> error
 //! - `get_user_online_status`: `MAX_USER_IDS+1` -> `invalid_argument`
-//! - `connection_manager=None` -> empty results
+//! - `connection_runtime=None` -> empty results
 //! - `deregister_node`: epoch-required check
 
 #![allow(clippy::unwrap_used)]
@@ -18,11 +18,13 @@ use synctv_cluster::grpc::synctv::cluster::{
     DeregisterNodeRequest, GetRoomConnectionsRequest, GetUserOnlineStatusRequest,
 };
 
-/// Helper: create a `ClusterServer` with no `ConnectionManager`.
+/// Helper: create a `ClusterServer` with no connection query runtime.
 fn make_server() -> ClusterServer {
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "test-node".to_string(),
             30,
             "cl5test:",
@@ -311,7 +313,7 @@ async fn test_deregister_node_valid_epoch_returns_error_when_cleanup_fails() {
 }
 
 // ============================================================================
-// With ConnectionManager: actual user/room queries
+// With connection runtime: actual user/room queries
 // ============================================================================
 
 #[tokio::test]
@@ -321,7 +323,9 @@ async fn test_get_user_online_status_with_connection_manager() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "test-node".to_string(),
             30,
             "cl5cm:",
@@ -339,7 +343,7 @@ async fn test_get_user_online_status_with_connection_manager() {
 
     let server = ClusterServer::new(registry, "test-node".to_string())
         .with_cluster_secret("cluster-test-secret".to_string())
-        .with_connection_manager(cm);
+        .with_connection_runtime(cm);
 
     let request = with_cluster_secret(
         Request::new(GetUserOnlineStatusRequest {

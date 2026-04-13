@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use synctv_cluster::sync::ClusterEvent;
-use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
+use synctv_cluster::sync::{
+    ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager, RoomMessageHub,
+};
 use synctv_core::models::{PermissionBits, RoomId, UserId};
 
 // ============================================================================
@@ -26,9 +28,8 @@ use synctv_core::models::{PermissionBits, RoomId, UserId};
 async fn test_cluster_manager_single_node_mode_works() {
     // Create ClusterManager without Redis - should work in single-node mode
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_local_node".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -60,9 +61,8 @@ async fn test_cluster_manager_single_node_mode_works() {
 async fn test_local_subscribe_and_broadcast() {
     // Create ClusterManager without Redis
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_local_broadcast".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -133,9 +133,8 @@ async fn test_local_subscribe_and_broadcast() {
 async fn test_multiple_subscribers_receive_broadcasts() {
     // Create ClusterManager without Redis
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_multi_subscribers".to_string(),
         dedup_window: Duration::from_mins(1),
@@ -401,9 +400,8 @@ async fn test_lazy_cluster_manager_creation() {
     let cm1 = local_cluster_manager
         .get_or_init(|| async {
             let config = ClusterConfig {
-                redis_client: None,
-                redis_conn: None,
-                shared_redis_conn: None,
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(RoomMessageHub::new()),
                 cluster_enabled: false,
                 node_id: format!("local_{}", synctv_common::snanoid!(8)),
                 dedup_window: Duration::from_mins(1),
@@ -453,9 +451,8 @@ async fn test_lazy_cluster_manager_creation() {
 async fn test_local_cluster_manager_supports_room_operations() {
     // Create local ClusterManager
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_local_ops".to_string(),
         dedup_window: Duration::from_mins(1),

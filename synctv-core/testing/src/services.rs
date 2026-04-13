@@ -2,8 +2,11 @@
 
 use crate::constants;
 use synctv_core::service::{
-    auth::jwt::JwtService, BruteForceProtection, InMemoryAttemptTracker,
-    InMemoryTokenBlacklistStore,
+    auth::{
+        brute_force::InMemoryAttemptTracker, jwt::JwtService,
+        token_blacklist::InMemoryTokenBlacklistStore,
+    },
+    BruteForceProtection,
 };
 
 /// Creates a JWT service for testing

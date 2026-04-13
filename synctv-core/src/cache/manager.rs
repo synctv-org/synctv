@@ -5,7 +5,7 @@
 
 use super::{
     room_cache::RoomCache, user_cache::UserCache, username_cache::UsernameCache,
-    CacheInvalidationService, InvalidationMessage,
+    CacheInvalidationRuntime, InvalidationMessage,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -56,7 +56,7 @@ impl CacheManager {
     /// Permission-related messages are ignored here (handled by `PermissionService`).
     pub fn start_invalidation_listener(
         &self,
-        invalidation_service: &CacheInvalidationService,
+        invalidation_service: &Arc<dyn CacheInvalidationRuntime>,
     ) -> JoinHandle<()> {
         let user_cache = self.user_cache.clone();
         let room_cache = self.room_cache.clone();
@@ -180,6 +180,7 @@ impl std::fmt::Debug for CacheManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CacheInvalidationRuntime, CacheInvalidationService};
 
     fn make_caches() -> (Arc<UserCache>, Arc<RoomCache>) {
         let l2: Arc<dyn crate::cache::CacheL2Backend> = Arc::new(crate::cache::NoopCacheL2);
@@ -208,11 +209,9 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
-        );
+        ));
         manager.start_invalidation_listener(&service);
 
         // Insert a user into L1 cache
@@ -248,11 +247,9 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
-        );
+        ));
         manager.start_invalidation_listener(&service);
 
         // Insert a room into L1 cache
@@ -287,11 +284,9 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
-        );
+        ));
         manager.start_invalidation_listener(&service);
 
         // Insert entries

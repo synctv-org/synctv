@@ -226,7 +226,7 @@ impl ClientApiImpl {
         // Batch-fetch distributed online user counts (single Redis-backed lookup) to avoid N+1 queries
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let counts = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
@@ -260,7 +260,7 @@ impl ClientApiImpl {
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|(r, _, _, _)| &r.id).collect();
         let counts = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
@@ -340,12 +340,10 @@ impl ClientApiImpl {
             validate_password_for_set(&req.password)?;
             Some(req.password)
         };
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out RoomCreated to cluster replicas",
-        )
-        .await?;
+        let cluster_event = self
+            .cluster_fanout
+            .reserve("failed to fan out RoomCreated to cluster replicas")
+            .await?;
 
         let (room, _member) = self
             .room_service
@@ -353,8 +351,9 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+        self.cluster_fanout.publish(
+            cluster_event,
+            synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomCreated {
                     event_id: synctv_common::snanoid!(16),
                     room_id: room.id.clone(),
@@ -362,11 +361,11 @@ impl ClientApiImpl {
                     creator_id: uid,
                     timestamp: chrono::Utc::now(),
                 },
-            });
-        }
+            },
+        );
 
         let member_count = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed(&room.id)
             .await
             .map_err(ApiError::Internal)?
@@ -406,7 +405,7 @@ impl ClientApiImpl {
             .map(|s| playback_state_to_proto(&s));
 
         let member_count = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
@@ -497,7 +496,7 @@ impl ClientApiImpl {
         );
 
         let member_count = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
@@ -528,12 +527,10 @@ impl ClientApiImpl {
             .await
             .map(|u| u.username)
             .unwrap_or_default();
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out UserLeft to cluster replicas",
-        )
-        .await?;
+        let cluster_event = self
+            .cluster_fanout
+            .reserve("failed to fan out UserLeft to cluster replicas")
+            .await?;
 
         self.room_service
             .leave_room(rid.clone(), uid.clone())
@@ -541,11 +538,12 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Force disconnect the user's connections from this room (local)
-        self.connection_manager
+        self.connection_service
             .disconnect_user_from_room(&uid, &rid);
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+        self.cluster_fanout.publish(
+            cluster_event,
+            synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::UserLeft {
                     event_id: synctv_common::snanoid!(16),
                     room_id: rid,
@@ -553,8 +551,8 @@ impl ClientApiImpl {
                     username,
                     timestamp: chrono::Utc::now(),
                 },
-            });
-        }
+            },
+        );
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
     }
@@ -566,12 +564,10 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out RoomDeleted to cluster replicas",
-        )
-        .await?;
+        let cluster_event = self
+            .cluster_fanout
+            .reserve("failed to fan out RoomDeleted to cluster replicas")
+            .await?;
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
@@ -580,19 +576,20 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+        self.cluster_fanout.publish(
+            cluster_event,
+            synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
                     event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
                     deleted_by: uid,
                     timestamp: chrono::Utc::now(),
                 },
-            });
-        }
+            },
+        );
 
         // 3. Force disconnect all local connections in the deleted room
-        self.connection_manager.disconnect_room(&rid);
+        self.connection_service.disconnect_room(&rid);
 
         Ok(crate::proto::client::DeleteRoomResponse { success: true })
     }
@@ -615,13 +612,10 @@ impl ClientApiImpl {
         }
 
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out RoomSettingsChanged to cluster replicas",
-        )
-        .await?;
-
+        let room_settings_fanout = self
+            .room_settings_fanout
+            .reserve_settings_changed(self.cluster_fanout.as_ref())
+            .await?;
         self.room_service
             .set_settings(rid.clone(), uid.clone(), settings)
             .await
@@ -634,18 +628,14 @@ impl ClientApiImpl {
             .map(|u| u.username)
             .unwrap_or_default();
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid.clone(),
-                    user_id: uid,
-                    username,
-                    settings_json: req.settings.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-            });
-        }
+        self.room_settings_fanout
+            .publish_settings_changed(
+                room_settings_fanout,
+                &rid,
+                &uid,
+                &username,
+                req.settings.clone(),
+            );
 
         // Get updated room
         let room = self
@@ -655,7 +645,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         let member_count = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
@@ -759,38 +749,30 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out RoomSettingsChanged to cluster replicas",
-        )
-        .await?;
-
+        let room_settings_fanout = self
+            .room_settings_fanout
+            .reserve_settings_changed(self.cluster_fanout.as_ref())
+            .await?;
         let settings_json = self
             .room_service
             .reset_room_settings(&rid, &uid)
             .await
             .map_err(ApiError::from)?;
 
-        if let Some(cluster_event) = cluster_event {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid,
-                    user_id: uid,
-                    username,
-                    settings_json: settings_json.as_bytes().to_vec(),
-                    timestamp: chrono::Utc::now(),
-                },
-            });
-        }
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        self.room_settings_fanout
+            .publish_settings_changed(
+                room_settings_fanout,
+                &rid,
+                &uid,
+                &username,
+                settings_json.as_bytes().to_vec(),
+            );
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
             settings: settings_json.into_bytes(),
@@ -814,7 +796,7 @@ impl ClientApiImpl {
             .map_err(Self::map_room_access_error)?;
 
         let member_count = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed(&rid)
             .await
             .map_err(ApiError::Internal)?
@@ -926,7 +908,7 @@ impl ClientApiImpl {
         // then sort by distributed count to get a globally correct ranking.
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let distributed_counts = self
-            .connection_manager
+            .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;

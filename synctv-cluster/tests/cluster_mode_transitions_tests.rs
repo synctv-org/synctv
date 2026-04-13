@@ -19,7 +19,9 @@ fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     // Use a definitely-non-listening address for fast failure
     Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             node_id.to_string(),
             30,
             "cl3test:",

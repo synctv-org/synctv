@@ -2,22 +2,85 @@ use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
 
-use synctv_core::bootstrap::RedisHandles;
-use synctv_core::Config;
+use synctv_core::{Config, RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
 
 use crate::rtmp_auth;
 use crate::server;
+
+struct LivestreamRuntimeBindings {
+    publisher_registry: Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
+    user_stream_index: Arc<dyn rtmp_auth::UserStreamIndex>,
+    #[cfg(test)]
+    publisher_registry_backend: &'static str,
+    #[cfg(test)]
+    user_stream_index_backend: &'static str,
+}
+
+struct CoreRegistryConnectionRuntime {
+    runtime: Arc<dyn RedisConnectionRuntime>,
+}
+
+#[async_trait::async_trait]
+impl synctv_livestream::relay::RegistryConnectionRuntime for CoreRegistryConnectionRuntime {
+    async fn snapshot(&self) -> redis::aio::ConnectionManager {
+        self.runtime.snapshot().await
+    }
+}
+
+fn publisher_registry_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<(Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, &'static str)> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => Ok((
+            Arc::new(synctv_livestream::relay::StreamRegistry::from_runtime(
+                Arc::new(CoreRegistryConnectionRuntime {
+                    runtime: profile.require_shared_runtime("livestream publisher registry")?,
+                }),
+                profile.key_prefix().to_string(),
+            )),
+            "redis",
+        )),
+        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => Ok((
+            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
+            "memory",
+        )),
+    }
+}
+
+fn build_livestream_runtime_bindings(
+    profile: &SharedStateProfile,
+) -> Result<LivestreamRuntimeBindings> {
+    let (publisher_registry, publisher_registry_backend) =
+        publisher_registry_from_shared_state_profile(profile)?;
+    let user_stream_index = rtmp_auth::user_stream_index_from_shared_state_profile(profile)?;
+    let user_stream_index_backend = user_stream_index.backend_name();
+
+    info!(
+        publisher_registry_backend,
+        user_stream_index_backend,
+        state_mode = ?profile.state_mode(),
+        "Livestream runtime initialized"
+    );
+
+    Ok(LivestreamRuntimeBindings {
+        publisher_registry,
+        user_stream_index,
+        #[cfg(test)]
+        publisher_registry_backend,
+        #[cfg(test)]
+        user_stream_index_backend,
+    })
+}
 
 /// Initialize livestream components (RTMP server and live streaming infrastructure).
 ///
 /// Returns the `LivestreamState` handle (for graceful shutdown) and the shared
 /// `LiveStreamingInfrastructure` (passed to gRPC/HTTP servers).
 ///
-/// When `redis_handles` is `None`, uses an in-memory stream registry.
 pub async fn init_livestream(
     config: &Config,
     synctv_services: &synctv_core::bootstrap::services::Services,
-    redis_handles: Option<&RedisHandles>,
+    shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     node_id: &str,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(
@@ -27,27 +90,14 @@ pub async fn init_livestream(
 )> {
     info!("Initializing livestream infrastructure...");
 
-    // Publisher registry: Redis-backed when available, in-memory otherwise
-    let (publisher_registry, redis_conn_for_auth): (
-        Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
-        _,
-    ) = if let Some(rh) = redis_handles {
-        let redis_conn = rh.conn.clone();
-        let redis_conn_for_auth = redis_conn.clone();
-        let registry = Arc::new(
-            synctv_livestream::relay::StreamRegistry::with_shared_conn_and_key_prefix(
-                redis_conn,
-                config.redis.key_prefix.clone(),
-            ),
-        ) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
-        info!("Livestream publisher registry: Redis-backed");
-        (registry, Some(redis_conn_for_auth))
-    } else {
-        let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new())
-            as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
-        info!("Livestream publisher registry: in-memory");
-        (registry, None)
-    };
+    let shared_state_profile = SharedStateProfile::from_runtime(
+        shared_runtime,
+        &config.redis.key_prefix,
+        config.cluster_runtime_enabled(),
+    );
+    let runtime = build_livestream_runtime_bindings(&shared_state_profile)?;
+    let publisher_registry = runtime.publisher_registry.clone();
+    let user_stream_index = runtime.user_stream_index.clone();
 
     // Shared tracker for user->stream mapping (kick-on-ban)
     let user_stream_tracker = Arc::new(synctv_livestream::api::StreamTracker::new());
@@ -138,7 +188,7 @@ pub async fn init_livestream(
         user_stream_tracker,
     );
 
-    let mut rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
+    let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
         synctv_services.room_service.clone(),
         synctv_services.user_service.clone(),
         synctv_services.publish_key_service.clone(),
@@ -147,13 +197,9 @@ pub async fn init_livestream(
         node_id.to_string(),
         config.advertise_api_address(),
         Some(stream_lifecycle_tx),
-        config.redis.key_prefix.clone(),
     )
+    .with_user_stream_index(user_stream_index)
     .with_restarting_flag(livestream_server.restarting_flag());
-
-    if let Some(conn) = redis_conn_for_auth {
-        rtmp_auth_impl = rtmp_auth_impl.with_redis(conn);
-    }
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
 
     // One-shot facade: start all xiu components
@@ -167,4 +213,90 @@ pub async fn init_livestream(
     let state = Some(server::LivestreamState { handle });
 
     Ok((state, Some(live_infra), background_handles))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_livestream_runtime_bindings_without_runtime_uses_local_backends() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+
+        let runtime = build_livestream_runtime_bindings(&profile)
+            .expect("local-only profile should build local livestream runtime");
+
+        assert_eq!(runtime.publisher_registry_backend, "memory");
+        assert_eq!(runtime.user_stream_index_backend, "local-only");
+    }
+
+    struct MockRedisRuntime;
+
+    #[async_trait::async_trait]
+    impl RedisConnectionRuntime for MockRedisRuntime {
+        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            panic!("mock redis runtime snapshot should not be called in factory tests");
+        }
+    }
+
+    #[test]
+    fn test_build_livestream_runtime_bindings_keeps_standalone_mode_local_even_with_runtime() {
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedBestEffort,
+            Some(Arc::new(MockRedisRuntime)),
+            "test:",
+        );
+
+        let runtime = build_livestream_runtime_bindings(&profile)
+            .expect("standalone profile should keep livestream runtime local");
+
+        assert_eq!(runtime.publisher_registry_backend, "memory");
+        assert_eq!(runtime.user_stream_index_backend, "local-only");
+    }
+
+    #[test]
+    fn test_build_livestream_runtime_bindings_requires_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+
+        let Err(error) = build_livestream_runtime_bindings(&profile) else {
+            panic!("cluster profile without runtime must be rejected");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared livestream publisher registry"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_build_livestream_runtime_bindings_uses_shared_backends_in_cluster_mode() {
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedRequired,
+            Some(Arc::new(MockRedisRuntime)),
+            "test:",
+        );
+
+        let runtime = build_livestream_runtime_bindings(&profile)
+            .expect("cluster profile with runtime should build shared livestream runtime");
+
+        assert_eq!(runtime.publisher_registry_backend, "redis");
+        assert_eq!(runtime.user_stream_index_backend, "redis");
+    }
+
+    #[test]
+    fn test_init_livestream_signature_uses_runtime_abstraction() {
+        fn assert_signature(
+            config: &Config,
+            services: &synctv_core::bootstrap::services::Services,
+            runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+            node_id: &str,
+            cancel: tokio_util::sync::CancellationToken,
+        ) {
+            std::mem::drop(init_livestream(config, services, runtime, node_id, cancel));
+        }
+
+        let _ = assert_signature;
+    }
 }

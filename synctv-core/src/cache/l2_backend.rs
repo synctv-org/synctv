@@ -8,7 +8,10 @@
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
 use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
-use crate::{Error, Result};
+use crate::{
+    DirectRedisConnectionRuntime, Error, RedisConnectionRuntime, Result, SharedStateProfile,
+    SharedRedisConnectionRuntime,
+};
 use async_trait::async_trait;
 use std::future::Future;
 
@@ -105,16 +108,14 @@ pub trait CacheL2Backend: Send + Sync {
 /// the `RwLock` always holds the same handle, and `ConnectionManager` handles
 /// transient reconnections internally.
 pub struct RedisCacheL2 {
-    conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    conn: std::sync::Arc<dyn RedisConnectionRuntime>,
 }
 
 impl RedisCacheL2 {
     /// Create from a shared, hot-swappable connection (recommended for Sentinel mode).
     #[must_use]
-    pub const fn new_shared(
-        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-    ) -> Self {
-        Self { conn }
+    pub fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+        Self::from_runtime(std::sync::Arc::new(SharedRedisConnectionRuntime::new(conn)))
     }
 
     /// Create from a plain `ConnectionManager` snapshot.
@@ -123,15 +124,35 @@ impl RedisCacheL2 {
     /// for standalone mode where the connection is never hot-swapped.
     #[must_use]
     pub fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Self {
-            conn: std::sync::Arc::new(tokio::sync::RwLock::new(conn)),
-        }
+        Self::from_runtime(std::sync::Arc::new(DirectRedisConnectionRuntime::new(conn)))
+    }
+
+    #[must_use]
+    pub fn from_runtime(conn: std::sync::Arc<dyn RedisConnectionRuntime>) -> Self {
+        Self { conn }
     }
 
     /// Get a clone of the current `ConnectionManager` for use in an operation.
     async fn conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+        self.conn.snapshot().await
     }
+}
+
+#[must_use]
+pub fn build_l2_cache_backend(
+    redis_runtime: Option<std::sync::Arc<dyn RedisConnectionRuntime>>,
+) -> std::sync::Arc<dyn CacheL2Backend> {
+    match redis_runtime {
+        Some(runtime) => std::sync::Arc::new(RedisCacheL2::from_runtime(runtime)),
+        None => std::sync::Arc::new(NoopCacheL2),
+    }
+}
+
+#[must_use]
+pub fn build_l2_cache_backend_from_profile(
+    profile: &SharedStateProfile,
+) -> std::sync::Arc<dyn CacheL2Backend> {
+    build_l2_cache_backend(profile.shared_runtime())
 }
 
 #[async_trait]
@@ -398,6 +419,8 @@ impl CacheL2Backend for NoopCacheL2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -419,6 +442,27 @@ mod tests {
                 delete_count: Arc::new(AtomicU64::new(0)),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_redis_cache_l2_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let cache = RedisCacheL2::from_runtime(runtime.clone());
+
+        assert!(
+            Arc::ptr_eq(&cache.conn, &runtime),
+            "L2 cache should retain the injected Redis runtime object"
+        );
     }
 
     #[async_trait]

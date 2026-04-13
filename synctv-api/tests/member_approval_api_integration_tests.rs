@@ -116,7 +116,6 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         None,
         Some(publish_key_service),
         Arc::new(Config::default()),
-        None,
         Arc::new(AuditService::new_unbuffered(pool)),
     )
 }

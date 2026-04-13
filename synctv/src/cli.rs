@@ -2618,29 +2618,11 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
             let redis_init = synctv_core::bootstrap::init_redis(&config, None).await?;
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
 
-            let lock: std::sync::Arc<dyn synctv_core::service::MigrationLock> =
-                if let Some(ref rh) = redis_init.handles {
-                    let is_sentinel = matches!(
-                        config.redis.deployment_mode,
-                        synctv_core::config::RedisDeploymentMode::Sentinel
-                    );
-                    if is_sentinel {
-                        std::sync::Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
-                            pool.clone(),
-                        ))
-                    } else {
-                        std::sync::Arc::new(
-                            synctv_core::service::DistributedLock::new_shared_with_mode(
-                                rh.conn.clone(),
-                                false,
-                            ),
-                        )
-                    }
-                } else {
-                    std::sync::Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
-                        pool.clone(),
-                    ))
-                };
+            let lock = synctv_core::bootstrap::build_migration_lock(
+                pool.clone(),
+                &config,
+                redis_init.connection_runtime(),
+            );
 
             crate::migrations::run_migrations(
                 &pool,

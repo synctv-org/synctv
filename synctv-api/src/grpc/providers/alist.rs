@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use crate::http::AppState;
+use crate::http::SharedApiRuntime;
 use crate::impls::providers::{extract_instance_name, get_provider_binds};
 use crate::impls::AlistApiImpl;
 
@@ -22,18 +22,18 @@ use crate::grpc::map_provider_error as api_err;
 /// Thin wrapper that delegates to `AlistApiImpl`.
 #[derive(Clone)]
 pub struct AlistProviderGrpcService {
-    app_state: Arc<AppState>,
+    shared_api_runtime: Arc<SharedApiRuntime>,
     api: AlistApiImpl,
 }
 
 impl AlistProviderGrpcService {
     #[must_use]
-    pub fn new(app_state: Arc<AppState>) -> Self {
-        let api = AlistApiImpl::new(
-            app_state.providers.alist.clone(),
-            app_state.user_provider_credential_repository.clone(),
-        );
-        Self { app_state, api }
+    pub fn new(shared_api_runtime: Arc<SharedApiRuntime>) -> Self {
+        let api = shared_api_runtime.alist_api.as_ref().clone();
+        Self {
+            shared_api_runtime,
+            api,
+        }
     }
 }
 
@@ -137,7 +137,7 @@ impl AlistProviderService for AlistProviderGrpcService {
         );
 
         let provider_binds = get_provider_binds(
-            &self.app_state.user_provider_credential_repository,
+            &self.shared_api_runtime.user_provider_credential_repository,
             &auth_context.user_id,
             synctv_core::provider::AlistProvider::NAME,
             "username",

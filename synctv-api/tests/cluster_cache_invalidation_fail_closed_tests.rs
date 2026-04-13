@@ -54,6 +54,72 @@ fn make_user_service(pool: sqlx::PgPool) -> UserService {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_create_room_fails_closed_when_cluster_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo.create(&make_user("room_creator")).await.unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .create_room(
+            owner.id.as_str(),
+            synctv_api::proto::client::CreateRoomRequest {
+                name: "Fanout Room".to_string(),
+                description: "Room creation fanout regression".to_string(),
+                password: String::new(),
+                settings: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when room creation fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out RoomCreated to cluster replicas"
+    );
+    assert_eq!(
+        room_service
+            .list_accessible_rooms(&synctv_core::models::RoomListQuery::default())
+            .await
+            .unwrap()
+            .1,
+        0,
+        "room creation must not commit before cluster fanout capacity is reserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fanout_fails() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -94,7 +160,10 @@ async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fan
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .set_room_password(
@@ -163,7 +232,10 @@ async fn test_update_member_permissions_fails_closed_when_cluster_fanout_fails()
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .update_member_permissions(
@@ -246,7 +318,10 @@ async fn test_kick_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .kick_member(
@@ -321,7 +396,10 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .ban_member(
@@ -407,7 +485,10 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .unban_member(
@@ -496,7 +577,10 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .reset_room_settings(owner.id.as_str(), room.id.as_str())
@@ -568,7 +652,10 @@ async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .add_media(
@@ -654,7 +741,10 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
         None,
         None,
     )
-    .with_redis_publish_tx(Some(tx));
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
 
     let err = client_api
         .add_media_batch(

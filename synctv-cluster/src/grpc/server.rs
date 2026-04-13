@@ -12,8 +12,8 @@ use super::synctv::cluster::{
     GetUserOnlineStatusResponse, NodeInfo, NodeStatus, RoomConnection, UserOnlineStatus,
 };
 use super::ClusterAuthInterceptor;
-use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
-use crate::sync::connection_manager::ConnectionManager;
+use crate::discovery::{ClusterNodeDirectory, NodeInfo as DiscoveryNodeInfo};
+use crate::sync::ConnectionRuntime;
 
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -40,8 +40,8 @@ fn u64_to_i64(value: u64) -> i64 {
 /// | `GetRoomConnections` | ACTIVE | Fan-out query for room participants across nodes |
 #[derive(Clone)]
 pub struct ClusterServer {
-    node_registry: Arc<NodeRegistry>,
-    connection_manager: Option<Arc<ConnectionManager>>,
+    node_registry: Arc<dyn ClusterNodeDirectory>,
+    connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
     node_id: String,
     auth: Option<ClusterAuthInterceptor>,
 }
@@ -50,19 +50,30 @@ pub struct ClusterServer {
 impl ClusterServer {
     /// Create a new cluster server
     #[must_use]
-    pub const fn new(node_registry: Arc<NodeRegistry>, node_id: String) -> Self {
+    pub fn new<N>(node_registry: Arc<N>, node_id: String) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::from_runtime(node_registry, node_id)
+    }
+
+    #[must_use]
+    pub fn from_runtime(node_registry: Arc<dyn ClusterNodeDirectory>, node_id: String) -> Self {
         Self {
             node_registry,
-            connection_manager: None,
+            connection_runtime: None,
             node_id,
             auth: None,
         }
     }
 
-    /// Set the connection manager for user/room connection queries
+    /// Set the connection query runtime for user/room presence queries.
     #[must_use]
-    pub fn with_connection_manager(mut self, cm: Arc<ConnectionManager>) -> Self {
-        self.connection_manager = Some(cm);
+    pub fn with_connection_runtime(
+        mut self,
+        connection_runtime: Arc<dyn ConnectionRuntime>,
+    ) -> Self {
+        self.connection_runtime = Some(connection_runtime);
         self
     }
 
@@ -256,7 +267,7 @@ impl ClusterService for ClusterServer {
             )));
         }
 
-        let Some(ref cm) = self.connection_manager else {
+        let Some(ref cm) = self.connection_runtime else {
             return Ok(Response::new(GetUserOnlineStatusResponse {
                 statuses: Vec::new(),
             }));
@@ -307,7 +318,7 @@ impl ClusterService for ClusterServer {
         let start = std::time::Instant::now();
         let req = request.into_inner();
 
-        let Some(ref cm) = self.connection_manager else {
+        let Some(ref cm) = self.connection_runtime else {
             return Ok(Response::new(GetRoomConnectionsResponse {
                 connections: Vec::new(),
             }));

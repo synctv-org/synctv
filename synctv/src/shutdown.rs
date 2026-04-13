@@ -286,7 +286,7 @@ impl ShutdownHook for AuditFlushHook {
 
 /// Stops the `CacheInvalidationService` (signals shutdown, trims Redis stream).
 pub struct CacheInvalidationStopHook {
-    pub service: Arc<synctv_core::cache::CacheInvalidationService>,
+    pub service: Arc<dyn synctv_core::cache::CacheInvalidationRuntime>,
     pub listener_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
@@ -362,7 +362,7 @@ impl ShutdownHook for ProviderInvalidationHook {
 
 /// Stops the health monitor background task.
 pub struct HealthMonitorShutdownHook {
-    pub monitor: Arc<synctv_cluster::discovery::HealthMonitor>,
+    pub monitor: Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>,
 }
 
 impl ShutdownHook for HealthMonitorShutdownHook {
@@ -717,9 +717,7 @@ mod tests {
             }
         }
 
-        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut coord = ShutdownCoordinator::new(Duration::from_millis(50));
@@ -760,9 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_invalidation_stop_hook_does_not_consume_full_timeout_budget() {
-        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut coord = ShutdownCoordinator::new(Duration::from_millis(250));
@@ -792,14 +788,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_manager_shutdown_hook_runs_manager_shutdown() {
-        use synctv_cluster::sync::{cluster_manager::ClusterConfig, ClusterManager};
+        use synctv_cluster::sync::{cluster_manager::ClusterConfig, ClusterManager, RoomMessageHub};
 
         let manager = Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
-                    shared_redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: Arc::new(RoomMessageHub::new()),
                     cluster_enabled: false,
                     node_id: "hook-test-node".to_string(),
                     dedup_window: Duration::from_secs(1),

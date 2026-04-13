@@ -608,10 +608,12 @@ mod websocket_e2e {
     use synctv_core::service::rate_limit::RateLimiter;
     // Security checks (password version, user status) handled by SecurityPipeline
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+        build_connection_manager, ClusterConfig, ClusterManager, ConnectionLimits,
+        ConnectionManager,
     };
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
+    use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
         create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
@@ -734,12 +736,17 @@ mod websocket_e2e {
         );
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
-            chat_rate_limiter,
-            rate_limit_config,
-            content_filter,
-            username_cache,
-            permission_service,
-            room_settings_service,
+            synctv_core::service::chat::ChatRuntime {
+                rate_limiter: chat_rate_limiter,
+                rate_limit_config,
+                content_filter,
+                username_cache,
+            },
+            synctv_core::service::chat::ChatDependencies {
+                permission_service,
+                room_settings_service,
+                notification_service: synctv_core::service::NotificationService::default(),
+            },
         ))
     }
 
@@ -831,14 +838,24 @@ mod websocket_e2e {
         let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
 
         // BruteForceProtection with Redis backend
-        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
-            redis_conn.clone(),
+        let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
+            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                50_000,
+                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+            )),
+            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                100_000,
+                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+            )),
+            synctv_core::service::BruteForceConfig::default(),
         );
 
         // Token blacklist with in-memory backend (sufficient for tests)
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
         );
 
         let user_service = Arc::new(UserService::new(
@@ -852,17 +869,32 @@ mod websocket_e2e {
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-        // Create cluster manager (single-node mode with Redis for Pub/Sub)
+        // These helpers are used by cross-replica websocket tests, so cluster
+        // mode must be explicitly enabled to start distributed fan-out.
         let redis_client_for_cluster =
             redis::Client::open(redis_url.clone()).expect("Failed to open Redis client");
         let redis_conn_for_cluster = redis_client_for_cluster
             .get_connection_manager()
             .await
             .expect("Failed to get ConnectionManager");
+        let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
+            synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
+        );
         let cluster_config = ClusterConfig {
-            redis_client: Some(redis_client_for_cluster),
-            redis_conn: Some(redis_conn_for_cluster),
-            shared_redis_conn: None,
+            distributed_transport_factory: Some(Arc::new(
+                synctv_cluster::RedisClusterMessageTransportFactory::new(
+                    synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
+                ),
+            )),
+            message_runtime: synctv_cluster::build_room_message_runtime(
+                &SharedStateProfile::from_runtime(
+                    Some(shared_runtime),
+                    &redis_key_prefix,
+                    true,
+                ),
+            )
+            .expect("shared message runtime should initialize"),
+            cluster_enabled: true,
             node_id: node_id.to_string(),
             key_prefix: redis_key_prefix.clone(),
             ..Default::default()
@@ -878,8 +910,15 @@ mod websocket_e2e {
         .await
         .expect("Redis ConnectionManager for connection manager");
         let connection_manager = Arc::new(
-            ConnectionManager::new(ConnectionLimits::default())
-                .with_redis(redis_conn_for_connections, &redis_key_prefix),
+            build_connection_manager(
+                ConnectionLimits::default(),
+                &SharedStateProfile::from_runtime(
+                    Some(synctv_core::direct_runtime(redis_conn_for_connections)),
+                    &redis_key_prefix,
+                    true,
+                ),
+            )
+            .expect("shared realtime connection runtime should initialize"),
         );
         let connection_manager_ret = connection_manager.clone();
 
@@ -947,7 +986,10 @@ mod websocket_e2e {
             user_provider_credential_repo.clone(),
         ));
 
-        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::with_memory(None));
+        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::from_store(
+            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+            None,
+        ));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
@@ -968,10 +1010,12 @@ mod websocket_e2e {
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            cluster_manager: Some(cluster_manager.clone()),
+            event_service: Some(cluster_manager.clone()),
             connection_manager,
             jwt_service: jwt_service.clone(),
-            redis_publish_tx: None,
+            cluster_fanout_service: synctv_api::cluster_fanout::default_cluster_fanout_service(
+                None, false,
+            ),
             oauth2_service: None,
             settings_service: None,
             settings_registry: None,
@@ -992,7 +1036,7 @@ mod websocket_e2e {
             live_streaming_infrastructure: None,
             rate_limiter,
             ws_ticket_service: ws_ticket_service.clone(),
-            redis_conn: None,
+            redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
@@ -1017,17 +1061,16 @@ mod websocket_e2e {
                     user_service.key_builder().clone(),
                 ),
         );
-
-        let state = synctv_api::AppState {
-            router_config: Arc::new(router_config),
-            rate_limit_config,
+        let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
+            redis_runtime: None,
+            rate_limit_config: rate_limit_config.clone(),
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_millis(400),
                 std::time::Duration::from_millis(100),
             ),
-            jwt_validator,
+            jwt_validator: jwt_validator.clone(),
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())
                     .with_token_blacklist(
@@ -1035,15 +1078,16 @@ mod websocket_e2e {
                         user_service.key_builder().clone(),
                     ),
             ),
-            guest_token_validator,
-            client_api,
+            guest_token_validator: guest_token_validator.clone(),
+            client_api: client_api.clone(),
             admin_api: None,
             email_api: None,
             notification_api: None,
             oauth2_api: None,
-            bilibili_api,
-            alist_api,
-            emby_api,
+            bilibili_api: bilibili_api.clone(),
+            alist_api: alist_api.clone(),
+            emby_api: emby_api.clone(),
+            user_provider_credential_repository: user_provider_credential_repo.clone(),
             provider_stores: std::sync::Arc::new(
                 synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
             ),
@@ -1065,6 +1109,34 @@ mod websocket_e2e {
                     b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
                 ),
             ),
+        });
+
+        let state = synctv_api::AppState {
+            router_config: Arc::new(router_config),
+            shared_api_runtime: shared_api_runtime.clone(),
+            redis_runtime: None,
+            rate_limit_config,
+            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
+            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
+            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(100),
+            ),
+            jwt_validator,
+            security_pipeline: shared_api_runtime.security_pipeline.clone(),
+            guest_token_validator,
+            client_api,
+            admin_api: None,
+            email_api: None,
+            notification_api: None,
+            oauth2_api: None,
+            bilibili_api,
+            alist_api,
+            emby_api,
+            provider_stores: shared_api_runtime.provider_stores.clone(),
+            proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
+            proxy_services: shared_api_runtime.proxy_services.clone(),
+            proxy_signing_key: shared_api_runtime.proxy_signing_key.clone(),
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
             )),
@@ -3875,7 +3947,8 @@ mod websocket_connection_limit_timing {
 
     use synctv_api::http::websocket::websocket_handler;
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+        build_connection_manager, ClusterConfig, ClusterManager, ConnectionLimits,
+        ConnectionManager,
     };
     use synctv_core::cache::UsernameCache;
     use synctv_core::config::PasswordComplexityConfig;
@@ -3883,6 +3956,7 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::{RoomService, UserService};
+    use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
         create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
@@ -3918,12 +3992,17 @@ mod websocket_connection_limit_timing {
         );
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
-            chat_rate_limiter,
-            synctv_core::service::RateLimitConfig::default(),
-            content_filter,
-            username_cache,
-            permission_service,
-            room_settings_service,
+            synctv_core::service::chat::ChatRuntime {
+                rate_limiter: chat_rate_limiter,
+                rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+                content_filter,
+                username_cache,
+            },
+            synctv_core::service::chat::ChatDependencies {
+                permission_service,
+                room_settings_service,
+                notification_service: synctv_core::service::NotificationService::default(),
+            },
         ))
     }
 
@@ -4023,12 +4102,22 @@ mod websocket_connection_limit_timing {
             UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
         let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
-        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
-            redis_conn.clone(),
+        let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
+            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                50_000,
+                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+            )),
+            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                100_000,
+                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+            )),
+            synctv_core::service::BruteForceConfig::default(),
         );
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
         );
 
         let user_service = Arc::new(UserService::new(
@@ -4048,10 +4137,23 @@ mod websocket_connection_limit_timing {
             .get_connection_manager()
             .await
             .expect("ConnectionManager");
+        let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
+            synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
+        );
         let cluster_config = ClusterConfig {
-            redis_client: Some(redis_client_for_cluster),
-            redis_conn: Some(redis_conn_for_cluster),
-            shared_redis_conn: None,
+            distributed_transport_factory: Some(Arc::new(
+                synctv_cluster::RedisClusterMessageTransportFactory::new(
+                    synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
+                ),
+            )),
+            message_runtime: synctv_cluster::build_room_message_runtime(
+                &SharedStateProfile::from_runtime(
+                    Some(shared_runtime),
+                    &redis_key_prefix,
+                    true,
+                ),
+            )
+            .expect("shared message runtime should initialize"),
             node_id: "limit_test_node".to_string(),
             key_prefix: redis_key_prefix.clone(),
             ..Default::default()
@@ -4077,8 +4179,15 @@ mod websocket_connection_limit_timing {
         .await
         .expect("Redis ConnectionManager for connection manager");
         let connection_manager = Arc::new(
-            ConnectionManager::new(connection_limits)
-                .with_redis(redis_conn_for_connections, &redis_key_prefix),
+            build_connection_manager(
+                connection_limits,
+                &SharedStateProfile::from_runtime(
+                    Some(synctv_core::direct_runtime(redis_conn_for_connections)),
+                    &redis_key_prefix,
+                    true,
+                ),
+            )
+            .expect("shared realtime connection runtime should initialize"),
         );
         let connection_manager_ret = connection_manager.clone();
 
@@ -4157,10 +4266,12 @@ mod websocket_connection_limit_timing {
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            cluster_manager: Some(cluster_manager),
+            event_service: Some(cluster_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
-            redis_publish_tx: None,
+            cluster_fanout_service: synctv_api::cluster_fanout::default_cluster_fanout_service(
+                None, false,
+            ),
             oauth2_service: None,
             settings_service: None,
             settings_registry: None,
@@ -4176,8 +4287,11 @@ mod websocket_connection_limit_timing {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
-            redis_conn: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
+                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+                None,
+            )),
+            redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
@@ -4202,9 +4316,60 @@ mod websocket_connection_limit_timing {
                     user_service.key_builder().clone(),
                 ),
         );
+        let shared_security_pipeline = Arc::new(
+            synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            ),
+        );
+        let shared_provider_stores = std::sync::Arc::new(
+            synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
+        );
+        let shared_proxy_provider_registry =
+            std::sync::Arc::new(providers.build_proxy_registry());
+        let shared_proxy_signing_key = std::sync::Arc::new(
+            synctv_core::service::ProxySigningKey::derive_from(
+                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+            ),
+        );
+        let shared_proxy_services = std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
+            room_service: room_service.clone(),
+            credential_encryption: None,
+            credential_repo: user_provider_credential_repo.clone(),
+            signing_key: shared_proxy_signing_key.clone(),
+        });
 
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
+            shared_api_runtime: std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
+                redis_runtime: None,
+                rate_limit_config: rate_limit_config.clone(),
+                messaging_rate_limit_config: Arc::new(
+                    synctv_core::service::RateLimitConfig::default(),
+                ),
+                content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
+                heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
+                    std::time::Duration::from_millis(400),
+                    std::time::Duration::from_millis(100),
+                ),
+                jwt_validator: jwt_validator.clone(),
+                security_pipeline: shared_security_pipeline.clone(),
+                guest_token_validator: guest_token_validator.clone(),
+                client_api: client_api.clone(),
+                admin_api: None,
+                email_api: None,
+                notification_api: None,
+                oauth2_api: None,
+                bilibili_api: bilibili_api.clone(),
+                alist_api: alist_api.clone(),
+                emby_api: emby_api.clone(),
+                user_provider_credential_repository: user_provider_credential_repo.clone(),
+                provider_stores: shared_provider_stores.clone(),
+                proxy_provider_registry: shared_proxy_provider_registry.clone(),
+                proxy_services: shared_proxy_services.clone(),
+                proxy_signing_key: shared_proxy_signing_key.clone(),
+            }),
+            redis_runtime: None,
             rate_limit_config,
             messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
@@ -4213,13 +4378,7 @@ mod websocket_connection_limit_timing {
                 std::time::Duration::from_millis(100),
             ),
             jwt_validator,
-            security_pipeline: Arc::new(
-                synctv_core::service::SecurityPipeline::new(user_service.clone())
-                    .with_token_blacklist(
-                        user_service.token_blacklist_store(),
-                        user_service.key_builder().clone(),
-                    ),
-            ),
+            security_pipeline: shared_security_pipeline,
             guest_token_validator,
             client_api,
             admin_api: None,
@@ -4229,27 +4388,10 @@ mod websocket_connection_limit_timing {
             bilibili_api,
             alist_api,
             emby_api,
-            provider_stores: std::sync::Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
-            ),
-            proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
-            proxy_services: {
-                let signing_key =
-                    std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
-                        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                    ));
-                std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
-                    room_service: room_service.clone(),
-                    credential_encryption: None,
-                    credential_repo: user_provider_credential_repo.clone(),
-                    signing_key,
-                })
-            },
-            proxy_signing_key: std::sync::Arc::new(
-                synctv_core::service::ProxySigningKey::derive_from(
-                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                ),
-            ),
+            provider_stores: shared_provider_stores,
+            proxy_provider_registry: shared_proxy_provider_registry,
+            proxy_services: shared_proxy_services,
+            proxy_signing_key: shared_proxy_signing_key,
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
             )),

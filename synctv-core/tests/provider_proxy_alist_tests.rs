@@ -75,7 +75,7 @@ fn fake_proxy_services() -> ProxyServices {
     let l2 = Arc::new(synctv_core::cache::NoopCacheL2);
     let username_cache =
         synctv_core::cache::UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
-    let token_blacklist = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+    let token_blacklist = Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
         1000, 3600, 86400,
     ));
     let key_builder = synctv_core::cache::KeyBuilder::new("test");

@@ -6,7 +6,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::{models::id::{RoomId, UserId}, RedisConnectionRuntime};
+#[cfg(test)]
+use synctv_core::{DirectRedisConnectionRuntime, SharedRedisConnectionRuntime};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
@@ -234,21 +236,6 @@ impl Drop for ConnectionIdClaim<'_> {
     }
 }
 
-#[derive(Clone)]
-enum RedisConnHandle {
-    Direct(redis::aio::ConnectionManager),
-    Shared(std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>),
-}
-
-impl RedisConnHandle {
-    async fn snapshot(&self) -> redis::aio::ConnectionManager {
-        match self {
-            Self::Direct(conn) => conn.clone(),
-            Self::Shared(conn) => conn.read().await.clone(),
-        }
-    }
-}
-
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]
 pub struct ConnectionManager {
@@ -309,7 +296,7 @@ pub struct ConnectionManager {
     ///
     /// In Sentinel deployments, prefer the shared handle so new method calls
     /// observe failover hot-swaps instead of holding a stale connection snapshot.
-    redis_conn: Option<RedisConnHandle>,
+    redis_conn: Option<Arc<dyn RedisConnectionRuntime>>,
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
@@ -438,6 +425,25 @@ impl ConnectionManager {
         }
     }
 
+    /// Build a connection manager from an optional shared runtime.
+    ///
+    /// When no shared runtime is provided, the manager starts in local-only
+    /// mode and still launches its local background tasks.
+    #[must_use]
+    pub(crate) fn from_redis_runtime(
+        limits: ConnectionLimits,
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: &str,
+    ) -> Self {
+        if let Some(redis_runtime) = redis_runtime {
+            Self::new(limits).with_redis_runtime(redis_runtime, key_prefix)
+        } else {
+            let manager = Self::new(limits);
+            manager.start();
+            manager
+        }
+    }
+
     /// Start background tasks that require a Tokio runtime.
     ///
     /// Launches the disconnect-signal retry task. This must be called from
@@ -515,6 +521,46 @@ impl ConnectionManager {
         }
     }
 
+    #[must_use]
+    pub(crate) fn with_redis_runtime(
+        mut self,
+        conn: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: &str,
+    ) -> Self {
+        self.redis_conn = Some(Arc::clone(&conn));
+        self.redis_key_prefix = key_prefix.to_string();
+
+        self.start();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.ttl_refresh_cancel = Arc::new(cancel.clone());
+        let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
+        *self
+            .ttl_refresh_handle
+            .lock()
+            .expect("ttl refresh handle mutex poisoned") = Some(handle);
+
+        let rx = self
+            .pending_retries_rx
+            .try_lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let rx = if let Some(rx) = rx {
+            rx
+        } else {
+            let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+            self.pending_retries_tx = tx;
+            rx
+        };
+        let handle = Self::spawn_pending_retries_task(conn, rx, cancel);
+        *self
+            .pending_retries_handle
+            .lock()
+            .expect("pending retries handle mutex poisoned") = Some(handle);
+
+        self
+    }
+
     /// Enable distributed connection counting via Redis.
     ///
     /// When Redis is configured, per-user and per-room connection limits are
@@ -527,47 +573,11 @@ impl ConnectionManager {
     ///
     /// All tasks are cancelled when `shutdown()` is called.
     #[must_use]
-    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
-        self.redis_conn = Some(RedisConnHandle::Direct(conn.clone()));
-        self.redis_key_prefix = key_prefix.to_string();
-
-        // Start the disconnect-signal retry task (idempotent if already running)
-        self.start();
-
-        // Auto-spawn the TTL refresh task so callers don't need to remember
-        // to call spawn_ttl_refresh_task() manually.
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
-        *self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned") = Some(handle);
-
-        // Spawn the pending-retries background task.
-        // Take the receiver that was stored in new() so it is not dropped.
-        // If for any reason it was already taken (e.g. with_redis called twice),
-        // fall back to creating a fresh channel.
-        let rx = self
-            .pending_retries_rx
-            .try_lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
-        let rx = if let Some(rx) = rx {
-            rx
-        } else {
-            // Fallback: create a fresh channel and update the sender.
-            let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-            self.pending_retries_tx = tx;
-            rx
-        };
-        let handle = Self::spawn_pending_retries_task(RedisConnHandle::Direct(conn), rx, cancel);
-        *self
-            .pending_retries_handle
-            .lock()
-            .expect("pending retries handle mutex poisoned") = Some(handle);
-
-        self
+    #[cfg(test)]
+    fn with_redis(self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
+        let runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(DirectRedisConnectionRuntime::new(conn));
+        self.with_redis_runtime(runtime, key_prefix)
     }
 
     /// Enable distributed connection counting via a shared Redis handle.
@@ -575,43 +585,15 @@ impl ConnectionManager {
     /// This variant follows Sentinel failover hot-swaps because each operation
     /// resolves a fresh connection snapshot from the shared `RwLock`.
     #[must_use]
-    pub fn with_shared_redis(
-        mut self,
+    #[cfg(test)]
+    fn with_shared_redis(
+        self,
         conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: &str,
     ) -> Self {
-        self.redis_conn = Some(RedisConnHandle::Shared(conn.clone()));
-        self.redis_key_prefix = key_prefix.to_string();
-
-        self.start();
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
-        *self
-            .ttl_refresh_handle
-            .lock()
-            .expect("ttl refresh handle mutex poisoned") = Some(handle);
-
-        let rx = self
-            .pending_retries_rx
-            .try_lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
-        let rx = if let Some(rx) = rx {
-            rx
-        } else {
-            let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-            self.pending_retries_tx = tx;
-            rx
-        };
-        let handle = Self::spawn_pending_retries_task(RedisConnHandle::Shared(conn), rx, cancel);
-        *self
-            .pending_retries_handle
-            .lock()
-            .expect("pending retries handle mutex poisoned") = Some(handle);
-
-        self
+        let runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(SharedRedisConnectionRuntime::new(conn));
+        self.with_redis_runtime(runtime, key_prefix)
     }
 
     /// Spawn a background task that retries failed Redis counter operations.
@@ -620,7 +602,7 @@ impl ConnectionManager {
     /// operation. Operations that still fail are re-queued (up to 3 attempts each,
     /// tracked internally) before being dropped with a warning.
     fn spawn_pending_retries_task(
-        redis_conn: RedisConnHandle,
+        redis_conn: Arc<dyn RedisConnectionRuntime>,
         mut rx: mpsc::Receiver<PendingRedisOp>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
@@ -4798,6 +4780,34 @@ mod tests {
         );
 
         manager.unregister("conn-shared").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_with_redis_runtime_accepts_trait_object_shared_runtime() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("shared-runtime:").await;
+        let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
+        let runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_redis_runtime(runtime, &prefix);
+
+        manager
+            .register(
+                "conn-runtime".to_string(),
+                UserId::from_string("user-runtime".to_string()),
+            )
+            .await
+            .expect("register should use injected redis runtime");
+
+        let key = format!("{prefix}connections:user:user-runtime");
+        let mut verify_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+        let user_count: i64 = verify_conn.get(&key).await.unwrap_or(0);
+        assert_eq!(user_count, 1);
+
+        manager.unregister("conn-runtime").await;
     }
 
     #[tokio::test]

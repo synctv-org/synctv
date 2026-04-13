@@ -7,7 +7,6 @@
 
 use chrono::Utc;
 use serde_json::json;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
@@ -20,45 +19,13 @@ use synctv_core::{
     },
     service::{
         media::{AddMediaRequest, EditMediaRequest, MediaService},
-        notification::NotificationService,
+        notification::RoomEvent,
+        NotificationService,
         permission::PermissionService,
         ProvidersManager,
     },
 };
 use synctv_core_testing::create_test_pool;
-
-struct MockBroadcaster {
-    notified: Arc<AtomicBool>,
-}
-
-#[async_trait::async_trait]
-impl synctv_core::service::notification::EventBroadcaster for MockBroadcaster {
-    async fn broadcast_to_room(
-        &self,
-        _room_id: &RoomId,
-        _event: &synctv_core::service::notification::RoomEvent,
-    ) -> Result<usize, synctv_core::Error> {
-        self.notified.store(true, Ordering::Release);
-        Ok(1)
-    }
-
-    async fn send_to_user(
-        &self,
-        _room_id: &RoomId,
-        _user_id: &UserId,
-        _event: &synctv_core::service::notification::RoomEvent,
-    ) -> Result<bool, synctv_core::Error> {
-        Ok(true)
-    }
-
-    async fn broadcast_to_cluster(
-        &self,
-        _room_id: &RoomId,
-        _event: &synctv_core::service::notification::RoomEvent,
-    ) -> Result<bool, synctv_core::Error> {
-        Ok(true)
-    }
-}
 
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
@@ -158,14 +125,7 @@ async fn test_edit_media_sends_notification() {
         .await
         .unwrap();
 
-    let notification_sent = Arc::new(AtomicBool::new(false));
-    let notification_sent_clone = notification_sent.clone();
-
-    let broadcaster = Arc::new(MockBroadcaster {
-        notified: notification_sent_clone,
-    });
-
-    let notification_service = NotificationService::new(broadcaster);
+    let notification_service = NotificationService::default();
     let mut rx = notification_service.subscribe();
 
     // Create media service with notification
@@ -210,14 +170,13 @@ async fn test_edit_media_sends_notification() {
         .await
         .expect("Failed to create direct_url provider instance");
 
-    let mut media_service = MediaService::new(
+    let media_service = MediaService::new(
         media_repo,
         playlist_repo,
         permission_service,
         providers_manager,
+        notification_service.clone(),
     );
-
-    media_service.set_notification_service(notification_service);
 
     // Add media
     let add_req = AddMediaRequest {
@@ -255,29 +214,26 @@ async fn test_edit_media_sends_notification() {
         match result {
             Ok(Ok((notif_room_id, event))) => {
                 assert_eq!(notif_room_id, room.id);
-                if let synctv_core::service::notification::RoomEvent::MediaUpdated {
-                    media_id,
-                    title,
-                    ..
-                } = event
-                {
-                    assert_eq!(media_id, media.id.as_str());
-                    assert_eq!(title, "Updated Media");
-                    found_update = true;
-                    break;
+                match event {
+                    RoomEvent::MediaUpdated {
+                        media_id,
+                        title,
+                        ..
+                    } => {
+                        assert_eq!(media_id, media.id.as_str());
+                        assert_eq!(title, "Updated Media");
+                        found_update = true;
+                        break;
+                    }
+                    RoomEvent::MediaAdded { .. } => {}
+                    other => panic!("unexpected notification event while waiting for MediaUpdated: {other:?}"),
                 }
-                // Otherwise it's a MediaAdded event from add_media — skip it
             }
             Ok(Err(e)) => panic!("Channel error: {e}"),
             Err(_) => break, // timeout
         }
     }
     assert!(found_update, "Expected to receive MediaUpdated event");
-
-    assert!(
-        notification_sent.load(Ordering::Acquire),
-        "Mock broadcaster should have been called"
-    );
 }
 
 // ========== Test: Media edit without notification service doesn't panic ==========
@@ -402,6 +358,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
         playlist_repo,
         permission_service,
         providers_manager,
+        NotificationService::default(),
     );
 
     // Add media

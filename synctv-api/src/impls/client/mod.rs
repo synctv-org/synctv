@@ -36,9 +36,9 @@ pub(crate) mod convert;
 mod tests;
 
 use std::sync::Arc;
-use synctv_cluster::sync::ConnectionManager;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::{RoomService, UserService};
+use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
 pub(crate) use convert::user_to_proto;
@@ -49,7 +49,10 @@ pub use convert::{
 // Room password limits imported from the single source of truth in synctv-core
 use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
+use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::impls::ApiError;
+use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
+use crate::runtime::RealtimeConnectionService;
 
 fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
     crate::room_id_validation::parse_room_id(room_id)
@@ -95,7 +98,7 @@ fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
 pub struct ClientApiConfig {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
-    pub connection_manager: Arc<ConnectionManager>,
+    pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
@@ -104,7 +107,7 @@ pub struct ClientApiConfig {
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
-    pub provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
+    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
 }
 
 /// Client API implementation
@@ -112,7 +115,7 @@ pub struct ClientApiConfig {
 pub struct ClientApiImpl {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
-    pub connection_manager: Arc<ConnectionManager>,
+    pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
@@ -120,9 +123,10 @@ pub struct ClientApiImpl {
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
-    /// Shared Redis connection for playback caching (Sentinel-failover safe)
-    pub redis_conn: Option<crate::SharedRedisConn>,
+    pub cluster_fanout: Arc<dyn ClusterFanoutService>,
+    pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
+    /// Redis runtime abstraction derived from the shared connection when available.
+    pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
     pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
@@ -138,7 +142,7 @@ pub struct ClientApiImpl {
     /// Proxy signing key for generating HMAC-signed proxy URLs
     pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
     /// Per-provider stores for signed playback version mappings
-    pub provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
+    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
 }
@@ -185,7 +189,7 @@ impl ClientApiImpl {
     pub fn new(
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
-        connection_manager: Arc<ConnectionManager>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         config: Arc<synctv_core::Config>,
         publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
         jwt_service: synctv_core::service::JwtService,
@@ -198,18 +202,22 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
+        let cluster_fanout =
+            default_cluster_fanout_service(None, config.cluster_runtime_enabled());
+        let room_settings_fanout = default_room_settings_fanout_service();
         Self {
             user_service,
             room_service,
-            connection_manager,
+            connection_service,
             config,
             publish_key_service,
             jwt_service,
             live_streaming_infrastructure,
             providers_manager,
             settings_registry,
-            redis_publish_tx: None,
-            redis_conn: None,
+            cluster_fanout,
+            room_settings_fanout,
+            redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: None,
@@ -227,18 +235,22 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
+        let cluster_fanout =
+            default_cluster_fanout_service(None, config.config.cluster_runtime_enabled());
+        let room_settings_fanout = default_room_settings_fanout_service();
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
-            connection_manager: config.connection_manager,
+            connection_service: config.connection_service,
             config: config.config,
             publish_key_service: config.publish_key_service,
             jwt_service: config.jwt_service,
             live_streaming_infrastructure: config.live_streaming_infrastructure,
             providers_manager: config.providers_manager,
             settings_registry: config.settings_registry,
-            redis_publish_tx: None,
-            redis_conn: None,
+            cluster_fanout,
+            room_settings_fanout,
+            redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: config.credential_encryption,
@@ -250,20 +262,20 @@ impl ClientApiImpl {
         }
     }
 
-    /// Set the Redis publish channel for cross-replica cache invalidation
+    /// Set the cluster fanout service for cross-replica invalidation and events.
     #[must_use]
-    pub fn with_redis_publish_tx(
+    pub fn with_cluster_fanout_service(
         mut self,
-        tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+        cluster_fanout: Arc<dyn ClusterFanoutService>,
     ) -> Self {
-        self.redis_publish_tx = tx;
+        self.cluster_fanout = cluster_fanout;
         self
     }
 
-    /// Set the shared Redis connection for playback caching (Sentinel-failover safe)
+    /// Set the shared runtime abstraction for playback caching.
     #[must_use]
-    pub fn with_redis_conn(mut self, conn: Option<crate::SharedRedisConn>) -> Self {
-        self.redis_conn = conn;
+    pub fn with_shared_runtime(mut self, runtime: Option<Arc<dyn RedisConnectionRuntime>>) -> Self {
+        self.redis_runtime = runtime;
         self
     }
 
@@ -298,7 +310,7 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_provider_stores(
         mut self,
-        stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+        stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     ) -> Self {
         self.provider_stores = Some(stores);
         self
@@ -310,8 +322,8 @@ impl ClientApiImpl {
     /// (internally Arc-backed) and always points to the current Redis master,
     /// even after a Sentinel failover.
     pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_conn {
-            Some(shared) => Some(shared.read().await.clone()),
+        match &self.redis_runtime {
+            Some(runtime) => Some(runtime.snapshot().await),
             None => None,
         }
     }
@@ -372,12 +384,9 @@ impl ClientApiImpl {
         room_id: &synctv_core::models::RoomId,
     ) -> Result<Option<crate::impls::ClusterEventPublishReservation>, ApiError> {
         let _ = room_id;
-        crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out room cache invalidation to cluster replicas",
-        )
-        .await
+        self.cluster_fanout
+            .reserve("failed to fan out room cache invalidation to cluster replicas")
+            .await
     }
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
@@ -386,7 +395,7 @@ impl ClientApiImpl {
     async fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
         super::kick_stream_cluster(
             self.live_streaming_infrastructure.as_ref(),
-            self.redis_publish_tx.as_ref(),
+            self.cluster_fanout.as_ref(),
             room_id,
             media_id,
             reason,
@@ -497,13 +506,14 @@ impl ClientApiImpl {
             return Ok(());
         }
 
-        crate::impls::require_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            request,
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out permission changes to cluster replicas",
-        )
-        .await
+        self.cluster_fanout
+            .reserve("failed to fan out permission changes to cluster replicas")
+            .await
+            .map(|reservation| {
+                if let Some(reservation) = reservation {
+                    reservation.publish(request);
+                }
+            })
         .inspect_err(|error| {
             tracing::warn!(
                 room_id = %room_id.as_str(),

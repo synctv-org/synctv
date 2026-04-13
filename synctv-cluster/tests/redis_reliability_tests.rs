@@ -194,7 +194,7 @@ async fn test_redis_stream_catchup() {
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
         RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub.clone(),
             "subscriber_node".to_string(),
             &key_prefix,

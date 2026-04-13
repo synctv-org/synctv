@@ -51,7 +51,7 @@ async fn setup_redis() -> (RedisContainer, redis::Client) {
 async fn test_unregister_remote_rejects_missing_epoch() {
     let (_redis_container, redis_client) = setup_redis().await;
     let registry = NodeRegistry::new(
-        redis_client,
+        synctv_core::coordination_runtime_from_client(redis_client),
         "self-node".to_string(),
         30,
         "unregister-missing-epoch:",
@@ -74,7 +74,7 @@ async fn test_unregister_remote_rejects_missing_epoch() {
 async fn test_unregister_remote_stale_epoch_does_not_delete_reregistered_node() {
     let (_redis_container, redis_client) = setup_redis().await;
     let registry = NodeRegistry::new(
-        redis_client.clone(),
+        synctv_core::coordination_runtime_from_client(redis_client.clone()),
         "self-node".to_string(),
         30,
         "unregister-stale-epoch:",
@@ -134,7 +134,7 @@ async fn test_unregister_remote_stale_epoch_does_not_delete_reregistered_node() 
 async fn test_remote_writes_invalidate_cached_node_view_immediately() {
     let (_redis_container, redis_client) = setup_redis().await;
     let registry = NodeRegistry::new(
-        redis_client,
+        synctv_core::coordination_runtime_from_client(redis_client),
         "self-node".to_string(),
         30,
         "remote-cache-invalidate:",

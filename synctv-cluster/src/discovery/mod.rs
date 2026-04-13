@@ -5,13 +5,18 @@ pub mod health_monitor;
 pub mod k8s_dns;
 pub mod load_balancer;
 pub mod node_registry;
+pub mod runtime;
 pub mod static_discovery;
 
 pub use health_monitor::{HealthMonitor, NodeHealth};
 #[cfg(feature = "k8s")]
 pub use k8s_dns::K8sDnsDiscovery;
 pub use load_balancer::{LoadBalancer, LoadBalancingStrategy};
-pub use node_registry::{ClusterMode, HeartbeatResult, NodeInfo, NodeRegistry};
+pub use node_registry::{
+    ClusterMode, HeartbeatResult, LocalClusterNodeDirectoryFactory, NodeInfo, NodeRegistry,
+    NodeViewMode, RedisClusterNodeDirectoryFactory,
+};
+pub use runtime::{ClusterHealthRuntime, ClusterNodeDirectory, ClusterNodeDirectoryFactory};
 pub use static_discovery::{StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 
 use std::time::Duration;

@@ -12,27 +12,37 @@ use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use sqlx::PgPool;
-use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use synctv_cluster::leader::{LeaderRuntime, LeaderRuntimeBuilder, LeadershipEvent};
-use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
+use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, LeadershipEvent};
+use synctv_cluster::sync::{
+    build_connection_runtime as build_cluster_connection_runtime,
+    build_room_message_runtime as build_cluster_room_message_runtime, ClusterConfig,
+    ClusterManager, ConnectionLimits, RoomMessageRuntime,
+};
 use synctv_core::{
     bootstrap::{
         bootstrap_root_user,
         database::init_database_with_cancel,
         has_any_admin_users, init_redis,
         services::{init_services_with_options, InitServicesOptions},
-        RedisHandles,
     },
-    cache::{CacheInvalidationService, KeyBuilder},
+    cache::{CacheInvalidationRuntime, CacheInvalidationService, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     service::auth::PasswordHasherService,
-    Config,
+    Config, RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
 
-use crate::bootstrap::cluster::init_cluster_discovery;
+use synctv_api::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
+use synctv_api::runtime::{
+    ClusterRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
+};
+
+use crate::bootstrap::cluster::{
+    build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
+    ClusterNodeActivator, DefaultClusterNodeActivator,
+};
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
@@ -49,14 +59,15 @@ use crate::shutdown::{
 struct Infrastructure {
     config: Config,
     pool: PgPool,
-    redis_handles: Option<RedisHandles>,
+    shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    cluster_coordination_provider: Option<Arc<dyn ClusterCoordinationProvider>>,
     node_id: String,
 }
 
 /// Core services from `synctv-core`.
 struct CoreState {
     services: synctv_core::bootstrap::services::Services,
-    cache_invalidation: Arc<CacheInvalidationService>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
 }
 
 /// Leader election and singleton background tasks.
@@ -66,21 +77,12 @@ struct LeaderState {
 
 /// Cluster infrastructure.
 struct ClusterState {
-    cluster_manager: Option<Arc<ClusterManager>>,
-    connection_manager: ConnectionManager,
-    redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
-    node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
-    health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
-    cluster_activation: Option<ClusterActivation>,
-}
-
-#[derive(Clone)]
-pub(crate) struct ClusterActivation {
-    pub(crate) config: Config,
-    pub(crate) cluster_manager: Arc<ClusterManager>,
-    pub(crate) connection_manager: ConnectionManager,
-    pub(crate) node_registry: Arc<synctv_cluster::discovery::NodeRegistry>,
-    pub(crate) health_monitor: Arc<synctv_cluster::discovery::HealthMonitor>,
+    cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    realtime_connection_service: Arc<dyn RealtimeConnectionService>,
+    realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
+    node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
+    health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
+    cluster_activation: Option<Arc<dyn ClusterNodeActivator>>,
 }
 
 /// Server components (livestream, WebRTC, providers).
@@ -164,7 +166,7 @@ async fn abort_running_leadership_task(running_task: &mut Option<tokio::task::Jo
 
 fn register_cache_invalidation_shutdown_hook(
     shutdown: &mut ShutdownCoordinator,
-    service: Arc<CacheInvalidationService>,
+    service: Arc<dyn CacheInvalidationRuntime>,
 ) -> Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> {
     let listener_task = Arc::new(tokio::sync::Mutex::new(None));
     shutdown.register_hook(CacheInvalidationStopHook {
@@ -279,23 +281,31 @@ fn spawn_on_leadership_gain(
     })
 }
 
-fn build_connection_manager(
-    limits: ConnectionLimits,
-    redis_conn: Option<Arc<RwLock<redis::aio::ConnectionManager>>>,
+fn build_realtime_state_profile(
+    shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     redis_key_prefix: &str,
     cluster_mode: bool,
-) -> Result<ConnectionManager> {
-    let manager = if cluster_mode {
-        let conn = redis_conn.ok_or_else(|| {
-            anyhow::anyhow!("cluster.enabled=true requires Redis-backed ConnectionManager wiring")
-        })?;
-        ConnectionManager::new(limits).with_shared_redis(conn, redis_key_prefix)
-    } else {
-        let manager = ConnectionManager::new(limits);
-        manager.start();
-        manager
-    };
-    Ok(manager)
+) -> synctv_core::SharedStateProfile {
+    synctv_core::SharedStateProfile::from_runtime(
+        shared_runtime,
+        redis_key_prefix,
+        cluster_mode,
+    )
+}
+
+fn build_connection_manager(
+    limits: ConnectionLimits,
+    profile: &synctv_core::SharedStateProfile,
+) -> Result<Arc<dyn RealtimeConnectionService>> {
+    build_cluster_connection_runtime(limits, profile)
+        .map_err(|error| anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}"))
+}
+
+fn build_room_message_runtime(
+    profile: &synctv_core::SharedStateProfile,
+) -> Result<Arc<dyn RoomMessageRuntime>> {
+    build_cluster_room_message_runtime(profile)
+        .map_err(|error| anyhow::anyhow!("Failed to initialize realtime message runtime: {error}"))
 }
 
 fn wire_room_service_cluster_broadcasters(
@@ -312,13 +322,14 @@ fn wire_room_service_cluster_broadcasters(
 async fn build_local_cluster_manager(
     config: &Config,
     node_id: &str,
-    connection_manager: &ConnectionManager,
-    cache_invalidation: Arc<CacheInvalidationService>,
+    connection_manager: Arc<dyn RealtimeConnectionService>,
+    message_runtime: Arc<dyn RoomMessageRuntime>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     permission_service: Option<synctv_core::service::PermissionService>,
 ) -> Result<Arc<ClusterManager>> {
     let cluster_config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime,
         cluster_enabled: false,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(
@@ -333,36 +344,27 @@ async fn build_local_cluster_manager(
         key_prefix: config.redis.key_prefix.clone(),
         catchup_window_secs: config.cluster.catchup_window_secs,
         stream_max_length: config.cluster.stream_max_length,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
 
     let mut cluster_manager = ClusterManager::new(
         cluster_config,
         permission_service,
-        Some((*cache_invalidation).clone()),
+        Some(cache_invalidation.clone()),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create local ClusterManager: {e}"))?;
-    cluster_manager.set_connection_manager(connection_manager.clone());
+    cluster_manager.set_connection_manager(connection_manager);
 
     Ok(Arc::new(cluster_manager))
 }
 
-fn require_cluster_redis_conn(
-    redis_conn: Option<&Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-) -> Result<&Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>> {
-    redis_conn.ok_or_else(|| {
+fn require_cluster_coordination_provider(
+    provider: Option<&Arc<dyn ClusterCoordinationProvider>>,
+) -> Result<Arc<dyn ClusterCoordinationProvider>> {
+    provider.cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "startup invariant violated: cluster runtime reached without Redis connection wiring"
-        )
-    })
-}
-
-fn require_cluster_redis_handles(redis_handles: Option<&RedisHandles>) -> Result<&RedisHandles> {
-    redis_handles.ok_or_else(|| {
-        anyhow::anyhow!(
-            "startup invariant violated: cluster runtime reached without Redis handle wiring"
+            "startup invariant violated: cluster runtime reached without distributed backend wiring"
         )
     })
 }
@@ -505,15 +507,24 @@ impl Application {
         // Redis (optional in standalone mode, mandatory in cluster mode)
         let sentinel_cancel = shutdown.register_token("sentinel_health_check");
         let redis_init = init_redis(&config, Some(sentinel_cancel)).await?;
-        let redis_handles = redis_init.handles;
+        let shared_runtime = redis_init.connection_runtime();
+        let cluster_coordination_provider = redis_init
+            .coordination_runtime()
+            .map(build_cluster_coordination_provider);
         if let Some(task) = redis_init.sentinel_health_check_task {
             shutdown.register_task("sentinel_master_health_check", task);
         }
 
-        if redis_handles.is_some() {
+        if shared_runtime.is_some() {
             info!("Redis connected");
         } else {
             info!("Running without Redis (standalone mode)");
+        }
+        if let Some(provider) = &cluster_coordination_provider {
+            info!(
+                coordination_backend = provider.backend_name(),
+                "Cluster coordination backend initialized"
+            );
         }
 
         // Database (with cancellable pool metrics task)
@@ -527,7 +538,8 @@ impl Application {
         Ok(Infrastructure {
             config,
             pool,
-            redis_handles,
+            shared_runtime,
+            cluster_coordination_provider,
             node_id,
         })
     }
@@ -541,33 +553,26 @@ impl Application {
         //
         // Sentinel failover can drop single-instance Redis locks, so correctness-
         // critical startup migrations must not rely on that path.
-        let migration_lock: Arc<dyn synctv_core::service::MigrationLock> =
-            if let Some(ref rh) = infra.redis_handles {
-                let is_sentinel = matches!(
+        let migration_lock = synctv_core::bootstrap::build_migration_lock(
+            infra.pool.clone(),
+            &infra.config,
+            infra.shared_runtime.clone(),
+        );
+        match migration_lock.backend_name() {
+            "pg-advisory"
+                if matches!(
                     infra.config.redis.deployment_mode,
                     synctv_core::config::RedisDeploymentMode::Sentinel
+                ) =>
+            {
+                warn!(
+                    "Redis Sentinel deployment detected; using PostgreSQL advisory lock for \
+                     migrations because single-instance Redis locks are unsafe during failover"
                 );
-                if is_sentinel {
-                    warn!(
-                        "Redis Sentinel deployment detected; using PostgreSQL advisory lock for \
-                         migrations because single-instance Redis locks are unsafe during failover"
-                    );
-                    Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
-                        infra.pool.clone(),
-                    ))
-                } else {
-                    info!("Using Redis distributed lock for migrations");
-                    Arc::new(synctv_core::service::DistributedLock::new_shared_with_mode(
-                        rh.conn.clone(),
-                        false,
-                    ))
-                }
-            } else {
-                info!("Using PostgreSQL advisory lock for migrations");
-                Arc::new(synctv_core::service::PgAdvisoryMigrationLock::new(
-                    infra.pool.clone(),
-                ))
-            };
+            }
+            "redis" => info!("Using Redis distributed lock for migrations"),
+            _ => info!("Using PostgreSQL advisory lock for migrations"),
+        }
         crate::migrations::run_migrations(
             &infra.pool,
             migration_lock,
@@ -617,19 +622,16 @@ impl Application {
         // Uses the cluster node_id so invalidation messages are correctly attributed.
         // When Redis is not configured, cache invalidation operates in no-op mode.
         let key_builder = KeyBuilder::from_config(&infra.config);
-        let redis_client_for_cache = infra.redis_handles.as_ref().map(|h| h.client.clone());
-        let cache_invalidation_svc = CacheInvalidationService::new(
-            redis_client_for_cache,
+        let cache_shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
+            infra.shared_runtime.clone(),
+            &infra.config.redis.key_prefix,
+            cluster_runtime_enabled(&infra.config),
+        );
+        let cache_invalidation_svc = CacheInvalidationService::from_shared_state_profile(
+            &cache_shared_state_profile,
             infra.node_id.clone(),
             key_builder.cache_invalidation_stream(),
         );
-        // H9 fix: wire the shared Redis handle so the cache invalidation service
-        // follows Sentinel failover instead of creating an independent connection.
-        let cache_invalidation_svc = if let Some(ref rh) = infra.redis_handles {
-            cache_invalidation_svc.with_shared_conn(rh.conn.clone())
-        } else {
-            cache_invalidation_svc
-        };
         let cache_invalidation = Arc::new(cache_invalidation_svc);
         let cache_invalidation_listener_task =
             register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
@@ -637,7 +639,7 @@ impl Application {
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
         // invalidation event to avoid dropped messages during initialization.
-        if should_start_cache_invalidation_listener(&infra.config, infra.redis_handles.is_some()) {
+        if should_start_cache_invalidation_listener(&infra.config, infra.shared_runtime.is_some()) {
             if let Err(e) = cache_invalidation.start().await {
                 // When cluster mode is explicitly enabled, cache invalidation failure
                 // is a fatal error - the cluster cannot maintain cache consistency without it.
@@ -656,7 +658,7 @@ impl Application {
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
             &infra.config,
-            infra.redis_handles.clone(),
+            infra.shared_runtime.clone(),
             cache_invalidation.clone(),
             cache_invalidation_listener_task,
             InitServicesOptions {
@@ -763,7 +765,7 @@ impl Application {
 
     async fn init_leader_election(
         infra: &Infrastructure,
-        core: &CoreState,
+        _core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
         if !cluster_runtime_enabled(&infra.config) {
@@ -777,8 +779,6 @@ impl Application {
             });
         }
 
-        let redis_conn = require_cluster_redis_conn(core.services.redis_conn.as_ref())?;
-
         // With Redis configured, cluster mode may be active.
         // Leader election failure in this scenario would be catastrophic:
         // multiple nodes could all believe they are the leader and run
@@ -791,45 +791,41 @@ impl Application {
 
         let leader_cancel = shutdown.register_token("leader_election");
 
-        let leader_mode = infra.config.cluster.leader_election_mode.as_str();
-        let plain_conn = redis_conn.read().await.clone();
-        let is_sentinel = matches!(
-            infra.config.redis.deployment_mode,
-            synctv_core::config::RedisDeploymentMode::Sentinel
+        let shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
+            infra.shared_runtime.clone(),
+            &infra.config.redis.key_prefix,
+            true,
         );
 
         #[cfg(feature = "k8s")]
-        let leader_elector = LeaderRuntimeBuilder::new(
-            true,
-            leader_mode,
+        let leader_runtime = build_managed_leader_runtime(
+            &infra.config,
             &infra.node_id,
-            Some(plain_conn),
-            &infra.config.redis.key_prefix,
-            is_sentinel,
+            &shared_state_profile,
         )
-        .build()
         .await
         .map_err(|e| {
-            error!(error = %e, mode = leader_mode, "CRITICAL: leader election initialization failed");
+            error!(
+                error = %e,
+                mode = %infra.config.cluster.leader_election_mode,
+                "CRITICAL: leader election initialization failed"
+            );
             e
         })?;
 
         #[cfg(not(feature = "k8s"))]
-        let leader_elector = LeaderRuntimeBuilder::new(
-            true,
-            leader_mode,
-            &infra.node_id,
-            Some(plain_conn),
-            &infra.config.redis.key_prefix,
-            is_sentinel,
-        )
-        .build()
+        let leader_runtime =
+            build_managed_leader_runtime(&infra.config, &infra.node_id, &shared_state_profile)
         .map_err(|e| {
-            error!(error = %e, mode = leader_mode, "CRITICAL: leader election initialization failed");
+            error!(
+                error = %e,
+                mode = %infra.config.cluster.leader_election_mode,
+                "CRITICAL: leader election initialization failed"
+            );
             e
         })?;
 
-        match leader_mode {
+        match leader_runtime.mode_label() {
             "redis" => {
                 synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(1);
                 info!(
@@ -842,20 +838,19 @@ impl Application {
                 info!("K8s Lease-based leader election started");
             }
             _ => unreachable!(
-                "cluster.leader_election_mode is validated before startup: {leader_mode}"
+                "leader runtime mode is validated before startup: {}",
+                leader_runtime.mode_label()
             ),
         }
 
-        let leader_election_handle = Some(leader_elector.start(leader_cancel.clone()));
+        let leader_election_handle = Some(leader_runtime.start(leader_cancel.clone()));
 
         // Track leader election background task
         if let Some(handle) = leader_election_handle {
             shutdown.register_task("leader_election", handle);
         }
 
-        // leader_elector is guaranteed to be Some here because we return early on error.
-        // This eliminates the unsafe AlwaysLeader fallback that could cause split-brain.
-        let leader_runtime: Arc<dyn LeaderRuntime> = Arc::new(leader_elector);
+        let leader_runtime: Arc<dyn LeaderRuntime> = leader_runtime;
 
         Ok(LeaderState { leader_runtime })
     }
@@ -1001,12 +996,14 @@ impl Application {
             max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
-        let connection_manager = build_connection_manager(
-            connection_limits,
-            infra.redis_handles.as_ref().map(|rh| rh.conn.clone()),
+        let cluster_runtime = cluster_runtime_enabled(&infra.config);
+        let realtime_profile = build_realtime_state_profile(
+            infra.shared_runtime.clone(),
             &infra.config.redis.key_prefix,
-            cluster_runtime_enabled(&infra.config),
-        )?;
+            cluster_runtime,
+        );
+        let realtime_connection_service =
+            build_connection_manager(connection_limits, &realtime_profile)?;
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
             max_per_room = infra.config.connection_limits.max_per_room,
@@ -1014,11 +1011,14 @@ impl Application {
             "Connection manager initialized with configurable limits"
         );
 
-        if !cluster_runtime_enabled(&infra.config) {
+        if !cluster_runtime {
+            let local_realtime_profile =
+                build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
             let cluster_manager = build_local_cluster_manager(
                 &infra.config,
                 &infra.node_id,
-                &connection_manager,
+                realtime_connection_service.clone(),
+                build_room_message_runtime(&local_realtime_profile)?,
                 core.cache_invalidation.clone(),
                 Some(core.services.room_service.permission_service().clone()),
             )
@@ -1029,9 +1029,11 @@ impl Application {
             );
             info!("Cluster mode disabled — initialized local-only ClusterManager");
             return Ok(ClusterState {
-                cluster_manager: Some(cluster_manager),
-                connection_manager,
-                redis_publish_tx: None,
+                cluster_fanout_service: default_cluster_fanout_service(None, false),
+                realtime_connection_service: realtime_connection_service.clone(),
+                realtime_event_service: Some(Arc::new(ClusterRealtimeEventService::new(
+                    cluster_manager,
+                ))),
                 node_registry: None,
                 health_monitor: None,
                 cluster_activation: None,
@@ -1040,7 +1042,8 @@ impl Application {
 
         // ClusterManager (requires Redis)
         let permission_service = Some(core.services.room_service.permission_service().clone());
-        let redis_handles = require_cluster_redis_handles(infra.redis_handles.as_ref())?;
+        let cluster_backend =
+            require_cluster_coordination_provider(infra.cluster_coordination_provider.as_ref())?;
 
         // Create a cancellation token for the cluster manager that is a child
         // of the ShutdownCoordinator's token, so coordinator shutdown also
@@ -1048,9 +1051,8 @@ impl Application {
         let cluster_cancel = shutdown.register_token("cluster_manager");
 
         let cluster_config = ClusterConfig {
-            redis_client: Some(redis_handles.client.clone()),
-            redis_conn: Some(redis_handles.conn_snapshot().await),
-            shared_redis_conn: Some(redis_handles.conn.clone()),
+            distributed_transport_factory: Some(cluster_backend.distributed_transport_factory()),
+            message_runtime: build_room_message_runtime(&realtime_profile)?,
             cluster_enabled: infra.config.cluster.enabled,
             node_id: infra.node_id.clone(),
             dedup_window: Duration::from_secs(
@@ -1071,7 +1073,7 @@ impl Application {
         let mut cluster_manager = match ClusterManager::new(
             cluster_config,
             permission_service,
-            Some((*core.cache_invalidation).clone()),
+            Some(core.cache_invalidation.clone()),
         )
         .await
         {
@@ -1086,7 +1088,7 @@ impl Application {
                 ));
             }
         };
-        cluster_manager.set_connection_manager(connection_manager.clone());
+        cluster_manager.set_connection_manager(realtime_connection_service.clone());
         cluster_manager.set_leader_elector(leader.leader_runtime.clone());
         let cluster_manager = Arc::new(cluster_manager);
         shutdown.register_hook(ClusterManagerShutdownHook {
@@ -1102,46 +1104,40 @@ impl Application {
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
         // D1 fix: When cluster is explicitly enabled, discovery failures are fatal.
-        let (node_registry, health_monitor, _load_balancer, dns_refresh_handle, dns_bridge_handle) =
-            init_cluster_discovery(
-                &infra.config,
-                redis_handles,
-                &cluster_manager,
-                &connection_manager,
-                cluster_cancel.clone(),
-            )
-            .await?;
+        let discovery = init_cluster_discovery(
+            &infra.config,
+            &cluster_backend.node_directory_factory(),
+            &cluster_manager,
+            realtime_connection_service.clone(),
+            cluster_cancel.clone(),
+        )
+        .await?;
 
-        // Track DNS refresh task
-        if let Some(handle) = dns_refresh_handle {
-            shutdown.register_task("dns_refresh", handle);
+        for task in discovery.background_tasks {
+            shutdown.register_task(task.name, task.handle);
         }
-        if let Some(handle) = dns_bridge_handle {
-            shutdown.register_task("dns_bridge", handle);
-        }
-        if let Some(ref health_monitor) = health_monitor {
-            shutdown.register_hook(HealthMonitorShutdownHook {
-                monitor: health_monitor.clone(),
-            });
-        }
-
-        let redis_publish_tx = cluster_manager.redis_publish_tx().cloned();
+        shutdown.register_hook(HealthMonitorShutdownHook {
+            monitor: discovery.health_monitor.clone(),
+        });
 
         Ok(ClusterState {
-            cluster_manager: Some(cluster_manager.clone()),
-            connection_manager: connection_manager.clone(),
-            redis_publish_tx,
-            node_registry: node_registry.clone(),
-            health_monitor: health_monitor.clone(),
-            cluster_activation: node_registry.zip(health_monitor).map(
-                |(node_registry, health_monitor)| ClusterActivation {
-                    config: infra.config.clone(),
-                    cluster_manager: cluster_manager.clone(),
-                    connection_manager: connection_manager.clone(),
-                    node_registry,
-                    health_monitor,
-                },
+            cluster_fanout_service: default_cluster_fanout_service(
+                cluster_manager.redis_publish_tx().cloned(),
+                true,
             ),
+            realtime_connection_service: realtime_connection_service.clone(),
+            realtime_event_service: Some(Arc::new(ClusterRealtimeEventService::new(
+                cluster_manager.clone(),
+            ))),
+            node_registry: Some(discovery.registry.clone()),
+            health_monitor: Some(discovery.health_monitor.clone()),
+            cluster_activation: Some(Arc::new(DefaultClusterNodeActivator::new(
+                infra.config.clone(),
+                cluster_manager.clone(),
+                realtime_connection_service.clone(),
+                discovery.registry,
+                discovery.health_monitor,
+            )) as Arc<dyn ClusterNodeActivator>),
         })
     }
 
@@ -1157,7 +1153,7 @@ impl Application {
         let (livestream_state, live_infra, background_handles) = init_livestream(
             &infra.config,
             &core.services,
-            infra.redis_handles.as_ref(),
+            infra.shared_runtime.clone(),
             &infra.node_id,
             livestream_cancel,
         )
@@ -1211,12 +1207,12 @@ impl Application {
             user_service: core.services.user_service.clone(),
             room_service: core.services.room_service.clone(),
             jwt_service: core.services.jwt_service.clone(),
-            cluster_manager: cluster.cluster_manager,
-            redis_publish_tx: cluster.redis_publish_tx,
+            cluster_fanout_service: cluster.cluster_fanout_service,
             rate_limiter: core.services.rate_limiter.clone(),
             rate_limit_config: core.services.rate_limit_config.clone(),
             content_filter: core.services.content_filter.clone(),
-            connection_manager: cluster.connection_manager,
+            realtime_connection_service: cluster.realtime_connection_service,
+            realtime_event_service: cluster.realtime_event_service,
             providers_manager: core.services.providers_manager.clone(),
             provider_instance_manager: core.services.provider_instance_manager.clone(),
             user_provider_credential_repository: core
@@ -1229,6 +1225,7 @@ impl Application {
             settings_registry: core.services.settings_registry.clone(),
             email_service: core.services.email_service.clone(),
             email_token_service: core.services.email_token_service.clone(),
+            ws_ticket_service: core.services.ws_ticket_service.clone(),
             publish_key_service: core.services.publish_key_service.clone(),
             notification_service: Some(core.services.notification_service.clone()),
             chat_service: core.services.chat_service.clone(),
@@ -1240,8 +1237,7 @@ impl Application {
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
             cluster_activation: cluster.cluster_activation,
-            redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
-            redis_conn: core.services.redis_conn.clone(), // already Option
+            redis_runtime: core.services.redis_runtime(),
             credential_encryption: core.services.credential_encryption,
         };
 
@@ -1258,7 +1254,7 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap::cluster::activate_cluster_node;
+    use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
@@ -1269,21 +1265,28 @@ mod tests {
         cache::{KeyBuilder, NoopCacheL2, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
+        RedisConnectionRuntime, SharedRedisConnectionRuntime,
         service::{
             auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService,
         },
     };
     use synctv_core_testing::test_redis_key_prefix;
-    use tokio::sync::broadcast;
+    use tokio::sync::{broadcast, RwLock};
 
     #[tokio::test]
     async fn test_activate_cluster_node_registers_only_when_called() {
         let cluster_manager = Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
-                    shared_redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: build_room_message_runtime(
+                        &synctv_core::SharedStateProfile::from_runtime(
+                            None,
+                            "activation-test:",
+                            false,
+                        ),
+                    )
+                    .expect("local message runtime should initialize"),
                     cluster_enabled: false,
                     node_id: "activation-test-node".to_string(),
                     dedup_window: Duration::from_secs(1),
@@ -1300,7 +1303,9 @@ mod tests {
             .await
             .expect("cluster manager should initialize"),
         );
-        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        let connection_manager: Arc<dyn RealtimeConnectionService> = Arc::new(
+            synctv_cluster::sync::ConnectionManager::new(ConnectionLimits::default()),
+        );
         let registry = Arc::new(
             synctv_cluster::discovery::NodeRegistry::new_local_only(
                 "activation-test-node".to_string(),
@@ -1326,13 +1331,18 @@ mod tests {
             .expect("registry query should succeed");
         assert!(before.is_empty(), "registry should start empty");
 
-        activate_cluster_node(
-            &config,
-            &cluster_manager,
-            &connection_manager,
-            &registry,
-            &health_monitor,
+        let registry_runtime: Arc<dyn synctv_cluster::ClusterNodeDirectory> = registry.clone();
+        let health_runtime: Arc<dyn synctv_cluster::ClusterHealthRuntime> =
+            health_monitor.clone();
+
+        DefaultClusterNodeActivator::new(
+            config,
+            cluster_manager.clone(),
+            connection_manager,
+            registry_runtime,
+            health_runtime,
         )
+        .activate()
         .await
         .expect("activation should succeed");
 
@@ -1642,19 +1652,20 @@ mod tests {
     #[tokio::test]
     async fn test_build_local_cluster_manager_supports_single_node_realtime_paths() {
         let config = minimal_valid_startup_config();
-        let connection_manager =
-            build_connection_manager(ConnectionLimits::default(), None, "test-local:", false)
-                .expect("local connection manager should initialize");
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let realtime_profile =
+            synctv_core::SharedStateProfile::from_runtime(None, "test-local:", false);
+        let connection_manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+            .expect("local connection manager should initialize");
+        let cache_invalidation = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test-local:cache:invalidate".to_string(),
         ));
 
         let cluster_manager = build_local_cluster_manager(
             &config,
             "test-node",
-            &connection_manager,
+            connection_manager,
+            build_room_message_runtime(&realtime_profile)
+                .expect("local message runtime should initialize"),
             cache_invalidation,
             None,
         )
@@ -1684,9 +1695,11 @@ mod tests {
         let cluster_manager = Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
-                    shared_redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: build_room_message_runtime(
+                        &synctv_core::SharedStateProfile::from_runtime(None, "test:", false),
+                    )
+                    .expect("local message runtime should initialize"),
                     cluster_enabled: false,
                     node_id: "test-node".to_string(),
                     dedup_window: Duration::from_secs(30),
@@ -1720,19 +1733,25 @@ mod tests {
             .await
             .expect("Redis connection manager should be created");
         let shared_conn = Arc::new(RwLock::new(conn.clone()));
+        let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
+        let realtime_profile =
+            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), "test-cluster:", true);
 
         let connection_manager = build_connection_manager(
             ConnectionLimits::default(),
-            Some(shared_conn),
-            "test-cluster:",
-            true,
+            &realtime_profile,
         )
-        .expect("cluster mode should require and accept Redis-backed connection manager");
+        .expect("cluster mode should require and accept shared realtime connection state");
 
         let cluster_config = ClusterConfig {
-            redis_client: Some(client),
-            redis_conn: Some(conn),
-            shared_redis_conn: None,
+            distributed_transport_factory: Some(Arc::new(
+                synctv_cluster::RedisClusterMessageTransportFactory::new(
+                    synctv_core::coordination_runtime_from_client(client),
+                ),
+            )),
+            message_runtime: build_room_message_runtime(&realtime_profile)
+                .expect("shared message runtime should initialize"),
             cluster_enabled: true,
             node_id: "test-node".to_string(),
             dedup_window: Duration::from_secs(30),
@@ -1772,14 +1791,13 @@ mod tests {
             .await
             .expect("App connection manager should be created");
         let shared_conn = Arc::new(RwLock::new(app_conn));
+        let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(SharedRedisConnectionRuntime::new(shared_conn));
+        let realtime_profile =
+            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
 
-        let manager = build_connection_manager(
-            ConnectionLimits::default(),
-            Some(shared_conn),
-            &prefix,
-            true,
-        )
-        .expect("cluster mode should build Redis-backed connection manager");
+        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+            .expect("cluster mode should build shared realtime connection manager");
 
         manager
             .register(
@@ -1821,14 +1839,13 @@ mod tests {
             .await
             .expect("initial app connection manager should be created");
         let shared_conn = Arc::new(RwLock::new(first_conn));
+        let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
+        let realtime_profile =
+            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
 
-        let manager = build_connection_manager(
-            ConnectionLimits::default(),
-            Some(shared_conn.clone()),
-            &prefix,
-            true,
-        )
-        .expect("cluster mode should preserve shared Redis handle wiring");
+        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+            .expect("cluster mode should preserve shared runtime wiring");
 
         manager
             .register(
@@ -1873,14 +1890,16 @@ mod tests {
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");
-
-        let manager = build_connection_manager(
-            ConnectionLimits::default(),
-            Some(Arc::new(RwLock::new(app_conn))),
+        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(
+            Some(Arc::new(SharedRedisConnectionRuntime::new(Arc::new(RwLock::new(
+                app_conn,
+            ))))),
             "test-standalone:",
             false,
-        )
-        .expect("standalone mode should build local connection manager");
+        );
+
+        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+            .expect("standalone mode should build local connection manager");
 
         manager
             .register(
@@ -1912,7 +1931,8 @@ mod tests {
 
     #[test]
     fn test_build_connection_manager_returns_error_without_redis_in_cluster_mode() {
-        let Err(error) = build_connection_manager(ConnectionLimits::default(), None, "test:", true)
+        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(None, "test:", true);
+        let Err(error) = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
         else {
             panic!("cluster mode without Redis wiring must return an error");
         };
@@ -1920,33 +1940,21 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster.enabled=true requires Redis-backed ConnectionManager wiring"),
+                .contains("cluster runtime requires shared realtime connection state"),
             "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn test_require_cluster_redis_handles_returns_error_instead_of_panicking() {
-        let error = require_cluster_redis_handles(None)
-            .expect_err("missing Redis handles in cluster runtime must return an error");
+    fn test_require_cluster_coordination_provider_returns_error_instead_of_panicking() {
+        let Err(error) = require_cluster_coordination_provider(None) else {
+            panic!("missing distributed backends in cluster runtime must return an error");
+        };
 
         assert!(
             error.to_string().contains(
-                "startup invariant violated: cluster runtime reached without Redis handle wiring"
+                "startup invariant violated: cluster runtime reached without distributed backend wiring"
             ),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn test_require_cluster_redis_conn_returns_error_instead_of_panicking() {
-        let error = require_cluster_redis_conn(None)
-            .expect_err("missing Redis connection in cluster runtime must return an error");
-
-        assert!(
-            error
-                .to_string()
-                .contains("startup invariant violated: cluster runtime reached without Redis connection wiring"),
             "unexpected error: {error}"
         );
     }
@@ -2190,28 +2198,25 @@ mod tests {
             }
         }
 
-        let service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut shutdown = ShutdownCoordinator::new(Duration::from_millis(50));
         let listener_task =
             register_cache_invalidation_shutdown_hook(&mut shutdown, service.clone());
         let dropped = Arc::new(AtomicBool::new(false));
-        let dropped_for_task = dropped.clone();
-        let started = Arc::new(tokio::sync::Notify::new());
-        let started_for_task = started.clone();
+        let dropped_for_task = Arc::clone(&dropped);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let _drop_flag = DropFlag(dropped_for_task);
-            started_for_task.notify_one();
-            loop {
-                tokio::task::yield_now().await;
-            }
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
         });
         *listener_task.lock().await = Some(task);
 
-        started.notified().await;
+        started_rx
+            .await
+            .expect("cache invalidation listener task should signal startup before shutdown");
         shutdown.shutdown().await;
 
         tokio::time::timeout(Duration::from_secs(1), async {

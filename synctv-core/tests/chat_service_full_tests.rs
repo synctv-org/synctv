@@ -7,10 +7,8 @@
 //! Run with: cargo test -p synctv-core --test `chat_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
@@ -27,12 +25,13 @@ use synctv_core::{
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        notification::{EventBroadcaster, RoomEvent},
+        chat::{ChatDependencies, ChatRuntime},
+        notification::RoomEvent,
         ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
     },
-    Error, Result,
+    Error,
 };
 use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
@@ -88,18 +87,28 @@ fn make_chat_service_with_config(
     );
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
-    let notification_service = Arc::new(NotificationService::default());
-    let room_settings_service =
-        RoomSettingsService::new(room_settings_repo, None, notification_service, None, None);
+    let notification_service = NotificationService::default();
+    let room_settings_service = RoomSettingsService::new(
+        room_settings_repo,
+        None,
+        Arc::new(notification_service.clone()),
+        None,
+        None,
+    );
 
     let service = ChatService::new(
         chat_repo,
-        rate_limiter,
-        rate_limit_config,
-        content_filter,
-        username_cache.clone(),
-        permission_service,
-        room_settings_service,
+        ChatRuntime {
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            username_cache: username_cache.clone(),
+        },
+        ChatDependencies {
+            permission_service,
+            room_settings_service,
+            notification_service,
+        },
     );
     (service, username_cache)
 }
@@ -313,12 +322,17 @@ async fn test_send_message_rate_limit_triggers() {
 
     let chat_service = ChatService::new(
         chat_repo,
-        rate_limiter,
-        rate_limit_config,
-        content_filter,
-        username_cache,
-        permission_service,
-        room_settings_service,
+        ChatRuntime {
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            username_cache,
+        },
+        ChatDependencies {
+            permission_service,
+            room_settings_service,
+            notification_service: NotificationService::default(),
+        },
     );
 
     // Send messages rapidly -- at least one should hit the rate limit
@@ -576,23 +590,29 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
 // ========== send_message: notification broadcast ==========
 
 /// Mock broadcaster that tracks broadcast calls
-struct CountingMockBroadcaster {
-    broadcast_count: AtomicUsize,
+struct NotificationObserver {
+    event_count: std::sync::Mutex<usize>,
     last_room_id: std::sync::Mutex<Option<String>>,
     last_event_type: std::sync::Mutex<Option<String>>,
 }
 
-impl CountingMockBroadcaster {
+impl NotificationObserver {
     const fn new() -> Self {
         Self {
-            broadcast_count: AtomicUsize::new(0),
+            event_count: std::sync::Mutex::new(0),
             last_room_id: std::sync::Mutex::new(None),
             last_event_type: std::sync::Mutex::new(None),
         }
     }
 
-    fn get_broadcast_count(&self) -> usize {
-        self.broadcast_count.load(Ordering::SeqCst)
+    fn observe(&self, room_id: &RoomId, event: &RoomEvent) {
+        *self.event_count.lock().unwrap() += 1;
+        *self.last_room_id.lock().unwrap() = Some(room_id.as_str().to_string());
+        *self.last_event_type.lock().unwrap() = Some(event.event_type().to_string());
+    }
+
+    fn get_event_count(&self) -> usize {
+        *self.event_count.lock().unwrap()
     }
 
     fn get_last_room_id(&self) -> Option<String> {
@@ -604,35 +624,12 @@ impl CountingMockBroadcaster {
     }
 }
 
-#[async_trait]
-impl EventBroadcaster for CountingMockBroadcaster {
-    async fn broadcast_to_room(&self, room_id: &RoomId, event: &RoomEvent) -> Result<usize> {
-        self.broadcast_count.fetch_add(1, Ordering::SeqCst);
-        *self.last_room_id.lock().unwrap() = Some(room_id.as_str().to_string());
-        *self.last_event_type.lock().unwrap() = Some(event.event_type().to_string());
-        Ok(1)
-    }
-
-    async fn send_to_user(
-        &self,
-        _room_id: &RoomId,
-        _user_id: &UserId,
-        _event: &RoomEvent,
-    ) -> Result<bool> {
-        Ok(true)
-    }
-
-    async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<bool> {
-        Ok(true)
-    }
-}
-
-/// Helper function to create `ChatService` with a counting mock broadcaster
+/// Helper function to create `ChatService` with a notification observer
 #[allow(dead_code)]
-fn make_chat_service_with_broadcaster(
+fn make_chat_service_with_observer(
     pool: PgPool,
-    broadcaster: Arc<CountingMockBroadcaster>,
-) -> (ChatService, UsernameCache) {
+    _observer: Arc<NotificationObserver>,
+) -> (ChatService, UsernameCache, NotificationService) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
     let rate_limit_config = RateLimitConfig::default();
@@ -653,8 +650,7 @@ fn make_chat_service_with_broadcaster(
     );
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
-    // Create NotificationService with the counting broadcaster
-    let notification_service = NotificationService::new(broadcaster as Arc<dyn EventBroadcaster>);
+    let notification_service = NotificationService::default();
     let room_settings_service = RoomSettingsService::new(
         room_settings_repo,
         None,
@@ -663,20 +659,22 @@ fn make_chat_service_with_broadcaster(
         None,
     );
 
-    let mut chat_service = ChatService::new(
+    let chat_service = ChatService::new(
         chat_repo,
-        rate_limiter,
-        rate_limit_config,
-        content_filter,
-        username_cache.clone(),
-        permission_service,
-        room_settings_service,
+        ChatRuntime {
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            username_cache: username_cache.clone(),
+        },
+        ChatDependencies {
+            permission_service,
+            room_settings_service,
+            notification_service: notification_service.clone(),
+        },
     );
 
-    // Set the notification service for broadcasting chat messages
-    chat_service.set_notification_service(notification_service);
-
-    (chat_service, username_cache)
+    (chat_service, username_cache, notification_service)
 }
 
 #[tokio::test]
@@ -692,7 +690,7 @@ async fn test_send_message_broadcasts_to_room_members() {
         .unwrap();
 
     // Create a counting mock broadcaster
-    let broadcaster = Arc::new(CountingMockBroadcaster::new());
+    let observer = Arc::new(NotificationObserver::new());
 
     // Build chat service with the counting broadcaster
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
@@ -720,8 +718,8 @@ async fn test_send_message_broadcasts_to_room_members() {
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
     // Create NotificationService with the counting broadcaster
-    let notification_service =
-        NotificationService::new(broadcaster.clone() as Arc<dyn EventBroadcaster>);
+    let notification_service = NotificationService::default();
+    let mut notification_rx = notification_service.subscribe();
     let room_settings_service = RoomSettingsService::new(
         room_settings_repo,
         None,
@@ -730,18 +728,20 @@ async fn test_send_message_broadcasts_to_room_members() {
         None,
     );
 
-    let mut chat_service = ChatService::new(
+    let chat_service = ChatService::new(
         chat_repo,
-        rate_limiter,
-        rate_limit_config,
-        content_filter,
-        username_cache,
-        permission_service,
-        room_settings_service,
+        ChatRuntime {
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            username_cache,
+        },
+        ChatDependencies {
+            permission_service,
+            room_settings_service,
+            notification_service,
+        },
     );
-
-    // Set the notification service for broadcasting chat messages
-    chat_service.set_notification_service(notification_service);
 
     // Create a room
     let (room, _) = room_service
@@ -757,7 +757,7 @@ async fn test_send_message_broadcasts_to_room_members() {
 
     // Verify no broadcasts before sending
     assert_eq!(
-        broadcaster.get_broadcast_count(),
+        observer.get_event_count(),
         0,
         "No broadcasts should have occurred yet"
     );
@@ -773,28 +773,22 @@ async fn test_send_message_broadcasts_to_room_members() {
         .expect("send_message should succeed");
 
     // Verify broadcast was triggered
-    assert_eq!(
-        broadcaster.get_broadcast_count(),
-        1,
-        "One broadcast should have been triggered"
-    );
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), notification_rx.recv())
+            .await
+            .expect("chat notification should arrive")
+            .expect("notification channel should remain open");
+    observer.observe(&event_room_id, &event);
 
-    // Verify broadcast was sent to the correct room
-    let last_room_id = broadcaster
-        .get_last_room_id()
-        .expect("Should have a room ID");
+    assert_eq!(observer.get_event_count(), 1, "One event should have been published");
     assert_eq!(
-        last_room_id,
-        room.id.as_str(),
-        "Broadcast should be sent to the correct room"
+        observer.get_last_room_id().as_deref(),
+        Some(room.id.as_str()),
+        "Event should be published for the correct room"
     );
-
-    // Verify broadcast was a chat message event
-    let last_event_type = broadcaster
-        .get_last_event_type()
-        .expect("Should have an event type");
     assert_eq!(
-        last_event_type, "chat_message",
+        observer.get_last_event_type().as_deref(),
+        Some("chat_message"),
         "Event type should be chat_message"
     );
 
@@ -803,74 +797,6 @@ async fn test_send_message_broadcasts_to_room_members() {
     assert_eq!(msg.content, "Hello, world!", "Message content should match");
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_send_message_without_notification_service_still_persists() {
-    // This test verifies that when notification_service is not set,
-    // the message is still persisted (the broadcast just silently does nothing)
-
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("chat_no_notify"))
-        .await
-        .unwrap();
-    username_cache
-        .set(&creator.id, &creator.username)
-        .await
-        .unwrap();
-
-    // Create a room
-    let (room, _) = room_service
-        .create_room(
-            "No Notify Room".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Note: The default ChatService from make_chat_service does NOT have
-    // notification_service set (it's None), so broadcast will be skipped
-
-    // Send a message - should still succeed even without notification service
-    let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Message without broadcast".to_string(),
-        )
-        .await
-        .expect("send_message should succeed even without notification service");
-
-    // Verify the message was persisted
-    assert!(!msg.id.is_empty(), "Message should have an ID");
-    assert_eq!(
-        msg.content, "Message without broadcast",
-        "Message content should match"
-    );
-
-    // Verify we can retrieve the message from history
-    let (history, next_cursor) = chat_service
-        .get_history(&room.id, None, 10)
-        .await
-        .expect("get_history should succeed");
-
-    assert_eq!(history.len(), 1, "Should have one message in history");
-    assert_eq!(
-        history[0].content, "Message without broadcast",
-        "History message content should match"
-    );
-    assert!(
-        next_cursor.is_none(),
-        "No next cursor when all messages fit in one page"
-    );
-}
 
 // ========== get_history: cursor pagination behavior ==========
 
@@ -1202,11 +1128,11 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         .unwrap();
 
     // Create a counting mock broadcaster
-    let broadcaster = Arc::new(CountingMockBroadcaster::new());
+    let observer = Arc::new(NotificationObserver::new());
 
     // Build chat service with the counting broadcaster
-    let (chat_service, username_cache) =
-        make_chat_service_with_broadcaster(pool.clone(), broadcaster.clone());
+    let (chat_service, username_cache, notification_service) =
+        make_chat_service_with_observer(pool.clone(), observer.clone());
 
     username_cache
         .set(&creator.id, &creator.username)
@@ -1227,10 +1153,12 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
 
     // Verify no broadcasts before sending
     assert_eq!(
-        broadcaster.get_broadcast_count(),
+        observer.get_event_count(),
         0,
         "No broadcasts should have occurred yet"
     );
+
+    let mut notification_rx = notification_service.subscribe();
 
     // Send a danmaku
     let request = SendDanmakuRequest {
@@ -1246,26 +1174,27 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         .expect("send_danmaku should succeed");
 
     // Verify broadcast was triggered
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), notification_rx.recv())
+            .await
+            .expect("danmaku notification should arrive")
+            .expect("notification channel should remain open");
+    observer.observe(&event_room_id, &event);
+
     assert!(
-        broadcaster.get_broadcast_count() > 0,
-        "At least one broadcast should have been triggered for danmaku"
+        observer.get_event_count() > 0,
+        "At least one event should have been published for danmaku"
     );
-
-    // Verify broadcast was sent to the correct room
-    let last_room_id = broadcaster
-        .get_last_room_id()
-        .expect("Should have a room ID");
     assert_eq!(
-        last_room_id,
-        room.id.as_str(),
-        "Broadcast should be sent to the correct room"
+        observer.get_last_room_id().as_deref(),
+        Some(room.id.as_str()),
+        "Event should be published for the correct room"
     );
-
-    // Verify broadcast was a danmaku event
-    let last_event_type = broadcaster
-        .get_last_event_type()
-        .expect("Should have an event type");
-    assert_eq!(last_event_type, "danmaku", "Event type should be danmaku");
+    assert_eq!(
+        observer.get_last_event_type().as_deref(),
+        Some("danmaku"),
+        "Event type should be danmaku"
+    );
 
     // Verify the danmaku message content
     assert_eq!(
@@ -1498,55 +1427,6 @@ async fn test_send_message_html_xss_stripped() {
     );
 }
 
-// ========== Danmaku without notification service still works ==========
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_send_danmaku_without_notification_service_still_returns() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("danmaku_no_notify"))
-        .await
-        .unwrap();
-    username_cache
-        .set(&creator.id, &creator.username)
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Danmaku No Notify Room".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Note: make_chat_service does NOT set notification_service (it's None)
-
-    let request = SendDanmakuRequest {
-        room_id: room.id.clone(),
-        content: "Danmaku without notify".to_string(),
-        color: "#00FF00".to_string(),
-        position: DanmakuPosition::Scroll,
-    };
-
-    // Should succeed even without notification service
-    let danmaku = chat_service
-        .send_danmaku(room.id.clone(), creator.id.clone(), request)
-        .await
-        .expect("send_danmaku should succeed without notification service");
-
-    assert_eq!(danmaku.content, "Danmaku without notify");
-    assert_eq!(danmaku.color, "#00FF00");
-    assert_eq!(danmaku.position, DanmakuPosition::Scroll);
-}
 
 // ========== Delete message with None user_id (deleted user) ==========
 

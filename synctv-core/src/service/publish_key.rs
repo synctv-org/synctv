@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{
     models::{MediaId, RoomId, UserId},
     service::auth::JwtService,
-    Error, Result,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 /// Generated publish key for RTMP streaming
@@ -108,7 +108,7 @@ pub trait JtiStore: Send + Sync {
 /// background health check can hot-swap the inner connection on failover and
 /// this store automatically picks up the new master.
 pub struct RedisJtiStore {
-    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
     /// Local moka cache for fast-path checks on the same node.
     local_cache: moka::future::Cache<String, ()>,
@@ -126,8 +126,21 @@ impl RedisJtiStore {
         key_prefix: String,
         cache_ttl_secs: u64,
     ) -> Self {
+        Self::from_runtime(
+            crate::shared_runtime(shared_conn),
+            key_prefix,
+            cache_ttl_secs,
+        )
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: String,
+        cache_ttl_secs: u64,
+    ) -> Self {
         Self {
-            shared_conn,
+            redis_runtime,
             key_prefix,
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
@@ -149,8 +162,21 @@ impl RedisJtiStore {
         key_prefix: String,
         cache_ttl_secs: u64,
     ) -> Self {
+        Self::from_runtime_fail_closed(
+            crate::shared_runtime(shared_conn),
+            key_prefix,
+            cache_ttl_secs,
+        )
+    }
+
+    #[must_use]
+    pub fn from_runtime_fail_closed(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: String,
+        cache_ttl_secs: u64,
+    ) -> Self {
         Self {
-            shared_conn,
+            redis_runtime,
             key_prefix,
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
@@ -187,7 +213,7 @@ impl JtiStore for RedisJtiStore {
 
         // Obtain a fresh connection snapshot (follows Sentinel failover).
         let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
-        let mut conn = self.shared_conn.read().await.clone();
+        let mut conn = self.redis_runtime.snapshot().await;
         let ttl_ms = ttl_secs.saturating_mul(1000);
         // Cross-replica check: atomic SET key value PX <ms> NX
         // Using a single SET command with NX and PX flags is atomic in Redis,
@@ -432,66 +458,58 @@ impl PublishKeyService {
         Self::new(jwt_service, 24)
     }
 
-    /// Enable Redis-backed JTI deduplication for multi-replica deployments.
-    ///
-    /// Wraps the plain `ConnectionManager` in an `Arc<RwLock<>>`. For
-    /// Sentinel mode, prefer [`with_redis_shared`] so the store
-    /// automatically follows failover.
-    #[must_use]
-    pub fn with_redis(
+    fn with_redis_runtime(
         jwt_service: JwtService,
         token_ttl_hours: i64,
-        conn: redis::aio::ConnectionManager,
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Self {
         let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
-        let store = Arc::new(RedisJtiStore::new(conn, key_prefix, cache_ttl_secs));
-        Self::from_store(jwt_service, token_ttl_hours, store)
-    }
-
-    /// Enable Redis-backed JTI deduplication using a shared connection handle.
-    ///
-    /// In Sentinel mode the background health check hot-swaps the inner
-    /// `ConnectionManager` on failover; this store reads from the shared
-    /// handle on each operation so it automatically picks up the new master.
-    ///
-    /// When `cluster_mode` is true, the store uses fail_closed semantics:
-    /// if Redis is unavailable, claims are rejected instead of falling back
-    /// to local-only enforcement.
-    #[must_use]
-    pub fn with_redis_shared(
-        jwt_service: JwtService,
-        token_ttl_hours: i64,
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-    ) -> Self {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
-        let store = Arc::new(RedisJtiStore::new_shared(
-            shared_conn,
+        let store = Arc::new(RedisJtiStore::from_runtime(
+            redis_runtime,
             key_prefix,
             cache_ttl_secs,
         ));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
 
-    /// Enable Redis-backed JTI deduplication with fail_closed mode for cluster deployments.
-    ///
-    /// When Redis is unavailable, claims are rejected instead of falling back to
-    /// local-only enforcement. This preserves single-use correctness across replicas.
-    #[must_use]
-    pub fn with_redis_shared_fail_closed(
+    fn with_redis_runtime_fail_closed(
         jwt_service: JwtService,
         token_ttl_hours: i64,
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Self {
         let cache_ttl_secs = cache_ttl_secs(token_ttl_hours);
-        let store = Arc::new(RedisJtiStore::new_shared_fail_closed(
-            shared_conn,
+        let store = Arc::new(RedisJtiStore::from_runtime_fail_closed(
+            redis_runtime,
             key_prefix,
             cache_ttl_secs,
         ));
         Self::from_store(jwt_service, token_ttl_hours, store)
+    }
+
+    pub fn from_shared_state_profile(
+        jwt_service: JwtService,
+        token_ttl_hours: i64,
+        profile: &SharedStateProfile,
+    ) -> Result<Self> {
+        match profile.state_mode() {
+            SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime_fail_closed(
+                jwt_service,
+                token_ttl_hours,
+                profile.require_shared_runtime("publish-key deduplication state")?,
+                profile.key_prefix().to_string(),
+            )),
+            SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
+                jwt_service,
+                token_ttl_hours,
+                profile
+                    .shared_runtime()
+                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.key_prefix().to_string(),
+            )),
+            SharedStateMode::LocalOnly => Ok(Self::new(jwt_service, token_ttl_hours)),
+        }
     }
 
     /// Generate a publish key for RTMP streaming
@@ -605,10 +623,33 @@ impl PublishKeyService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
     use crate::service::auth::JwtService;
+    use async_trait::async_trait;
 
     fn create_jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_redis_jti_store_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let store = RedisJtiStore::from_runtime(runtime.clone(), "synctv:".to_string(), 3600);
+
+        assert!(
+            Arc::ptr_eq(&store.redis_runtime, &runtime),
+            "Redis JTI store should retain the injected runtime object"
+        );
     }
 
     fn create_publish_key_service() -> PublishKeyService {

@@ -19,8 +19,9 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::node_registry::{NodeInfo, NodeRegistry};
+use super::node_registry::NodeInfo;
 use super::probe_node_identity;
+use super::runtime::ClusterNodeDirectory;
 use crate::error::{Error, Result};
 
 /// Discovered peer from DNS resolution
@@ -55,7 +56,7 @@ pub struct K8sDnsDiscovery {
     /// Optional reference to NodeRegistry for syncing discovered peers into the
     /// local transient node view. This supplements Redis-backed membership with
     /// readiness-verified DNS peers before they self-register.
-    node_registry: Option<Arc<NodeRegistry>>,
+    node_registry: Option<Arc<dyn ClusterNodeDirectory>>,
     /// Tracks the probed node_id for each peer IP so DNS disappearance can
     /// remove only the corresponding transient local entry.
     peer_node_ids: Arc<RwLock<HashMap<String, String>>>,
@@ -137,7 +138,15 @@ impl K8sDnsDiscovery {
     /// Attach a `NodeRegistry` so that readiness-verified DNS peers are merged
     /// into the local transient node view used by health monitoring and routing.
     #[must_use]
-    pub fn with_node_registry(mut self, registry: Arc<NodeRegistry>) -> Self {
+    pub fn with_node_registry<N>(self, registry: Arc<N>) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        self.with_node_directory(registry)
+    }
+
+    #[must_use]
+    pub fn with_node_directory(mut self, registry: Arc<dyn ClusterNodeDirectory>) -> Self {
         self.node_registry = Some(registry);
         self
     }
@@ -164,24 +173,10 @@ impl K8sDnsDiscovery {
             .map(|(_, info)| info.node_id.clone())
             .collect();
 
-        {
-            let mut nodes = registry.local_nodes.write().await;
-            for (_, info) in verified_peers {
-                match nodes.get_mut(&info.node_id) {
-                    Some(existing)
-                        if existing
-                            .metadata
-                            .get("discovery")
-                            .is_some_and(|value| value == "k8s_dns") =>
-                    {
-                        *existing = info;
-                    }
-                    Some(_) => {}
-                    None => {
-                        nodes.insert(info.node_id.clone(), info);
-                    }
-                }
-            }
+        for (_, info) in verified_peers {
+            registry
+                .upsert_discovered_local_node(info, "k8s_dns")
+                .await;
         }
 
         for node_id in old_mapping

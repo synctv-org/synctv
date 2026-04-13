@@ -15,7 +15,7 @@ use prost::Message;
 use rand::RngExt;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
+use synctv_cluster::sync::ClusterEvent;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{MemberStatus, PermissionBits, RoomId, RoomStatus, UserId, UserStatus},
@@ -51,6 +51,7 @@ static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
 
 use crate::proto::client::{ClientMessage, ServerMessage};
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeJoinError {
@@ -396,12 +397,12 @@ pub struct StreamMessageHandler {
     /// Chat messages are processed through `ChatService::send_message()`
     /// which handles permission checks, content filtering, rate limiting, and persistence.
     chat_service: Arc<ChatService>,
-    cluster_manager: Arc<ClusterManager>,
+    event_service: Arc<dyn RealtimeEventService>,
     /// Optional notification service for direct real-time push to connected clients.
     /// When set, the handler subscribes to notification events and pushes them
     /// without depending on the gRPC notification-to-cluster bridge.
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
-    connection_manager: ConnectionManager,
+    connection_service: Arc<dyn RealtimeConnectionService>,
     rate_limiter: Arc<RateLimiter>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
@@ -448,9 +449,9 @@ impl Clone for StreamMessageHandler {
             connection_id: self.connection_id.clone(),
             room_service: Arc::clone(&self.room_service),
             chat_service: Arc::clone(&self.chat_service),
-            cluster_manager: Arc::clone(&self.cluster_manager),
+            event_service: Arc::clone(&self.event_service),
             notification_service: self.notification_service.clone(),
-            connection_manager: self.connection_manager.clone(),
+            connection_service: Arc::clone(&self.connection_service),
             rate_limiter: Arc::clone(&self.rate_limiter),
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
@@ -488,7 +489,7 @@ impl StreamMessageHandler {
         };
 
         let target = self
-            .connection_manager
+            .connection_service
             .get_connection(target_conn_id)
             .ok_or_else(|| "Target connection is no longer active".to_string())?;
 
@@ -522,7 +523,7 @@ impl StreamMessageHandler {
             return false;
         }
 
-        let Some(current) = self.connection_manager.get_connection(&self.connection_id) else {
+        let Some(current) = self.connection_service.get_connection(&self.connection_id) else {
             return false;
         };
 
@@ -539,8 +540,8 @@ impl StreamMessageHandler {
         username: String,
         room_service: Arc<RoomService>,
         chat_service: Arc<ChatService>,
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<dyn RealtimeEventService>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         rate_limiter: Arc<RateLimiter>,
         rate_limit_config: Arc<RateLimitConfig>,
         content_filter: Arc<ContentFilter>,
@@ -552,8 +553,8 @@ impl StreamMessageHandler {
             username,
             room_service,
             chat_service,
-            cluster_manager,
-            connection_manager,
+            event_service,
+            connection_service,
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -573,8 +574,8 @@ impl StreamMessageHandler {
         username: String,
         room_service: Arc<RoomService>,
         chat_service: Arc<ChatService>,
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<dyn RealtimeEventService>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         rate_limiter: Arc<RateLimiter>,
         rate_limit_config: Arc<RateLimitConfig>,
         content_filter: Arc<ContentFilter>,
@@ -589,8 +590,8 @@ impl StreamMessageHandler {
             connection_id,
             room_service,
             chat_service,
-            cluster_manager,
-            connection_manager,
+            event_service,
+            connection_service,
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -607,8 +608,8 @@ impl StreamMessageHandler {
         connection_id: String,
         room_service: Arc<RoomService>,
         chat_service: Arc<ChatService>,
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<dyn RealtimeEventService>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
         rate_limiter: Arc<RateLimiter>,
         rate_limit_config: Arc<RateLimitConfig>,
         content_filter: Arc<ContentFilter>,
@@ -629,9 +630,9 @@ impl StreamMessageHandler {
             connection_id,
             room_service,
             chat_service,
-            cluster_manager,
+            event_service,
             notification_service: None,
-            connection_manager,
+            connection_service,
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -789,7 +790,7 @@ impl StreamMessageHandler {
     /// [`run_after_join`] to enter the message loop.
     pub async fn pre_join(&self) -> Result<(), RealtimeJoinError> {
         if let Err(e) = self
-            .connection_manager
+            .connection_service
             .register(self.connection_id.clone(), self.user_id.clone())
             .await
         {
@@ -806,11 +807,11 @@ impl StreamMessageHandler {
     /// step before they can finish reading the room-scoped handshake.
     pub async fn pre_join_after_registration(&self) -> Result<(), RealtimeJoinError> {
         if let Err(e) = self
-            .connection_manager
+            .connection_service
             .join_room(&self.connection_id, self.room_id.clone())
             .await
         {
-            self.connection_manager
+            self.connection_service
                 .unregister(&self.connection_id)
                 .await;
             return Err(classify_realtime_join_error_message(e));
@@ -821,7 +822,7 @@ impl StreamMessageHandler {
             Err(error) => {
                 self.skip_cleanup_user_left
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.connection_manager
+                self.connection_service
                     .unregister(&self.connection_id)
                     .await;
                 return Err(error);
@@ -830,7 +831,7 @@ impl StreamMessageHandler {
         if let Some(reason) = denial_reason {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.connection_manager
+            self.connection_service
                 .unregister(&self.connection_id)
                 .await;
             return Err(RealtimeJoinError::PermissionDenied(reason.clone()));
@@ -839,7 +840,7 @@ impl StreamMessageHandler {
         if let Err(error) = self.cache_room_event_subscription().await {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.connection_manager
+            self.connection_service
                 .unregister(&self.connection_id)
                 .await;
             return Err(error);
@@ -855,7 +856,7 @@ impl StreamMessageHandler {
         }
 
         let (event_rx, _connection_id) = self
-            .cluster_manager
+            .event_service
             .subscribe_with_id(
                 self.room_id.clone(),
                 self.user_id.clone(),
@@ -881,7 +882,7 @@ impl StreamMessageHandler {
             return Ok(event_rx);
         }
 
-        self.cluster_manager
+        self.event_service
             .subscribe_with_id(
                 self.room_id.clone(),
                 self.user_id.clone(),
@@ -927,13 +928,13 @@ impl StreamMessageHandler {
         let mut event_rx = self.take_room_event_subscription().await?;
 
         // Subscribe to disconnect signals
-        let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
+        let mut disconnect_rx = self.connection_service.subscribe_disconnect();
 
         // Subscribe to admin events (KickUser, etc.) for cross-replica disconnect propagation.
         // KickUser events arrive via Redis PubSub on the admin channel and are not
         // delivered through the room-level event subscription, so each connection
         // must independently monitor admin events and disconnect when targeted.
-        let mut admin_rx = self.cluster_manager.subscribe_admin_events();
+        let mut admin_rx = self.event_service.subscribe_admin_events();
 
         // H11: Subscribe to notification events for direct real-time push.
         // This ensures notifications are delivered to WebSocket clients even when
@@ -1171,7 +1172,7 @@ impl StreamMessageHandler {
                                 room_id = %self.room_id.as_str(),
                                 "Disconnect signal channel lagged, re-subscribing and verifying membership"
                             );
-                            disconnect_rx = self.connection_manager.subscribe_disconnect();
+                            disconnect_rx = self.connection_service.subscribe_disconnect();
 
                             // Fallback: check database to see if we were kicked/banned while lagged
                             match probe_realtime_membership_access(
@@ -1305,7 +1306,7 @@ impl StreamMessageHandler {
                                 user_id = %self.user_id.as_str(),
                                 "Admin event channel lagged, re-subscribing and verifying membership"
                             );
-                            admin_rx = self.cluster_manager.subscribe_admin_events();
+                            admin_rx = self.event_service.subscribe_admin_events();
 
                             // Fallback: query database to confirm member status since we may
                             // have missed a KickUser or KickUserFromRoom event during the lag.
@@ -1564,7 +1565,7 @@ impl StreamMessageHandler {
     /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query.
     async fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
         match self
-            .connection_manager
+            .connection_service
             .has_existing_presence_for_user_in_room_distributed(
                 &self.user_id,
                 &self.room_id,
@@ -1624,7 +1625,7 @@ impl StreamMessageHandler {
             joined_at: chrono::Utc::now(),
             timestamp: chrono::Utc::now(),
         };
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if !result.redis_sent {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -1660,7 +1661,7 @@ impl StreamMessageHandler {
             // Check if the connection is still marked as RTC-joined in the connection manager
             // This prevents double-decrement if the cleanup task already timed out the session
             let is_still_rtc_joined = self
-                .connection_manager
+                .connection_service
                 .get_connection(&self.connection_id)
                 .is_some_and(|conn| conn.rtc_joined);
 
@@ -1669,7 +1670,7 @@ impl StreamMessageHandler {
                 synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
                 // Mark the connection as no longer RTC-joined in the connection manager
-                self.connection_manager.mark_rtc_joined(
+                self.connection_service.mark_rtc_joined(
                     &self.room_id,
                     &self.user_id,
                     &self.connection_id,
@@ -1684,7 +1685,7 @@ impl StreamMessageHandler {
                     conn_id: self.connection_id.clone(),
                     timestamp: chrono::Utc::now(),
                 };
-                self.cluster_manager.broadcast(leave_event);
+                self.event_service.broadcast(leave_event);
 
                 tracing::info!(
                     user = %self.username,
@@ -1717,15 +1718,15 @@ impl StreamMessageHandler {
                 "Skipping UserLeft broadcast in cleanup (already published by API call)"
             );
             // Still unregister from connection manager
-            self.connection_manager
+            self.connection_service
                 .unregister(&self.connection_id)
                 .await;
-            self.cluster_manager.unsubscribe(&self.connection_id);
+            self.event_service.unsubscribe(&self.connection_id);
             return;
         }
 
         let has_other_local_connection = self
-            .connection_manager
+            .connection_service
             .get_user_connections(&self.user_id)
             .into_iter()
             .any(|conn| {
@@ -1737,7 +1738,7 @@ impl StreamMessageHandler {
             });
 
         let user_left_delivery_plan = match self
-            .connection_manager
+            .connection_service
             .has_other_connection_for_user_in_room_distributed(
                 &self.user_id,
                 &self.room_id,
@@ -1782,14 +1783,14 @@ impl StreamMessageHandler {
                 );
                 None
             }
-            UserLeftDeliveryPlan::LocalAndRedis => Some(self.cluster_manager.broadcast(event)),
+            UserLeftDeliveryPlan::LocalAndRedis => Some(self.event_service.broadcast(event)),
         };
 
         if let Some(result) = result {
             if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
                 && should_retry_user_left_broadcast(
                     &result,
-                    self.cluster_manager.metrics().redis_enabled,
+                    self.event_service.metrics().redis_enabled,
                 )
             {
                 // Critical UserLeft event failed to reach any destination.
@@ -1800,7 +1801,7 @@ impl StreamMessageHandler {
                 // disconnects with Redis down, thousands of connections may all try to
                 // spawn retry tasks simultaneously. Without this bound, we'd exhaust
                 // memory and CPU on unbounded task spawning.
-                let cluster_manager = self.cluster_manager.clone();
+                let event_service = self.event_service.clone();
                 let room_id = self.room_id.clone();
                 let user_id = self.user_id.clone();
                 let username = self.username.clone();
@@ -1837,7 +1838,7 @@ impl StreamMessageHandler {
 
                                 let retry_result = synctv_cluster::sync::BroadcastResult {
                                     local_sent: 0,
-                                    redis_sent: cluster_manager.publish_only(retry_event),
+                                    redis_sent: event_service.publish_only(retry_event),
                                 };
 
                                 if retry_result.redis_sent {
@@ -1888,10 +1889,10 @@ impl StreamMessageHandler {
         }
 
         // Now unregister from connection manager after broadcast has been sent
-        self.connection_manager
+        self.connection_service
             .unregister(&self.connection_id)
             .await;
-        self.cluster_manager.unsubscribe(&self.connection_id);
+        self.event_service.unsubscribe(&self.connection_id);
 
         tracing::info!(
             "Cleanup complete for user {} in room {} (connection: {})",
@@ -1922,7 +1923,7 @@ impl StreamMessageHandler {
         String,
     > {
         // Register connection with connection manager
-        self.connection_manager
+        self.connection_service
             .register(self.connection_id.clone(), self.user_id.clone())
             .await?;
 
@@ -2101,15 +2102,15 @@ impl StreamMessageHandler {
         // Spawn task to monitor disconnect signals and admin events.
         // When a relevant signal is received, cancel the token to stop all other tasks.
         {
-            let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
-            let mut admin_rx = self.cluster_manager.subscribe_admin_events();
+            let mut disconnect_rx = self.connection_service.subscribe_disconnect();
+            let mut admin_rx = self.event_service.subscribe_admin_events();
             let disconnect_token = cancel_token.clone();
             let connection_id = self.connection_id.clone();
             let user_id = self.user_id.clone();
             let room_id = self.room_id.clone();
             let room_service = Arc::clone(&self.room_service);
-            let cluster_manager = Arc::clone(&self.cluster_manager);
-            let connection_manager = self.connection_manager.clone();
+            let event_service = Arc::clone(&self.event_service);
+            let connection_service = self.connection_service.clone();
             let admin_sender = self.sender.clone();
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
 
@@ -2142,7 +2143,7 @@ impl StreamMessageHandler {
                                     user_id = %user_id.as_str(),
                                     "Disconnect signal channel lagged in start(), re-subscribing and verifying"
                                 );
-                                disconnect_rx = connection_manager.subscribe_disconnect();
+                                disconnect_rx = connection_service.subscribe_disconnect();
                                 // Verify membership after lag
                                 let is_removed = match probe_realtime_membership_access(
                                     &room_service,
@@ -2226,7 +2227,7 @@ impl StreamMessageHandler {
                                     user_id = %user_id.as_str(),
                                     "Admin event channel lagged in start(), re-subscribing and verifying"
                                 );
-                                admin_rx = cluster_manager.subscribe_admin_events();
+                                admin_rx = event_service.subscribe_admin_events();
                                 // Verify membership after lag
                                 let is_removed = match probe_realtime_membership_access(
                                     &room_service,
@@ -2495,7 +2496,7 @@ impl StreamMessageHandler {
 
         // Broadcast to cluster (handles both local and Redis).
         // Chat is non-critical: log if Redis was not reached but do not fail the operation.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if !result.redis_sent {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2531,7 +2532,7 @@ impl StreamMessageHandler {
 
         // Broadcast to cluster (handles both local and Redis).
         // Danmaku is ephemeral and non-critical.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if !result.redis_sent {
             tracing::debug!(
                 room_id = %self.room_id.as_str(),
@@ -2562,7 +2563,7 @@ impl StreamMessageHandler {
 
         let conn_id = self.connection_id.clone();
 
-        if self.connection_manager.get_connection(&conn_id).is_none() {
+        if self.connection_service.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
         self.validate_webrtc_recipient(&offer.to)?;
@@ -2579,10 +2580,10 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if should_fail_webrtc_signal_broadcast(
             &result,
-            self.cluster_manager.metrics().redis_enabled,
+            self.event_service.metrics().redis_enabled,
         ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2619,7 +2620,7 @@ impl StreamMessageHandler {
 
         let conn_id = self.connection_id.clone();
 
-        if self.connection_manager.get_connection(&conn_id).is_none() {
+        if self.connection_service.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
         self.validate_webrtc_recipient(&answer.to)?;
@@ -2636,10 +2637,10 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if should_fail_webrtc_signal_broadcast(
             &result,
-            self.cluster_manager.metrics().redis_enabled,
+            self.event_service.metrics().redis_enabled,
         ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2676,7 +2677,7 @@ impl StreamMessageHandler {
 
         let conn_id = self.connection_id.clone();
 
-        if self.connection_manager.get_connection(&conn_id).is_none() {
+        if self.connection_service.get_connection(&conn_id).is_none() {
             return Err("Connection not found".to_string());
         }
         self.validate_webrtc_recipient(&candidate.to)?;
@@ -2693,10 +2694,10 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica ICE signaling must reach Redis when cluster mode is enabled.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if should_fail_webrtc_signal_broadcast(
             &result,
-            self.cluster_manager.metrics().redis_enabled,
+            self.event_service.metrics().redis_enabled,
         ) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2727,7 +2728,7 @@ impl StreamMessageHandler {
         let conn_id = self.connection_id.clone();
 
         let should_join = should_transition_webrtc_membership(
-            self.connection_manager
+            self.connection_service
                 .get_connection(&conn_id)
                 .map(|conn| conn.rtc_joined),
             true,
@@ -2745,7 +2746,7 @@ impl StreamMessageHandler {
         }
 
         // Mark this connection as joined WebRTC session
-        self.connection_manager
+        self.connection_service
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, true);
 
         // Track WebRTC peer metrics and session state for cleanup()
@@ -2767,7 +2768,7 @@ impl StreamMessageHandler {
         };
 
         // WebRTC join is semi-critical: log at warn if not propagated to Redis.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if !result.redis_sent {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2786,7 +2787,7 @@ impl StreamMessageHandler {
         let conn_id = self.connection_id.clone();
 
         let should_leave = should_transition_webrtc_membership(
-            self.connection_manager
+            self.connection_service
                 .get_connection(&conn_id)
                 .map(|conn| conn.rtc_joined),
             false,
@@ -2806,7 +2807,7 @@ impl StreamMessageHandler {
         }
 
         // Mark this connection as left WebRTC session
-        self.connection_manager
+        self.connection_service
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, false);
 
         // Track WebRTC peer metrics and session state for cleanup()
@@ -2827,7 +2828,7 @@ impl StreamMessageHandler {
         };
 
         // WebRTC leave is semi-critical: log at warn if not propagated to Redis.
-        let result = self.cluster_manager.broadcast(event);
+        let result = self.event_service.broadcast(event);
         if !result.redis_sent {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
@@ -2953,9 +2954,7 @@ impl StreamMessageHandler {
                             state: updated_state,
                             timestamp: chrono::Utc::now(),
                         };
-                        self.cluster_manager
-                            .message_hub()
-                            .broadcast(&self.room_id, &event);
+                        self.event_service.broadcast_local(&self.room_id, &event);
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -3682,11 +3681,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+        build_room_message_runtime, ClusterConfig, ClusterManager, ConnectionLimits,
+        ConnectionManager,
     };
-    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
+    use synctv_cluster::sync::{ClusterEvent, NotificationLevel, RoomMessageHub};
     use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
     use synctv_core::models::notification::{Notification, NotificationType};
     use synctv_core::models::{MediaId, PermissionBits, RoomId, RoomPlaybackState, UserId};
     use synctv_core::repository::NotificationRepository;
@@ -3696,6 +3697,7 @@ mod tests {
     use synctv_core::service::auth::{BruteForceProtection, JwtService};
     use synctv_core::service::user_notification::NotificationCreatedEvent;
     use synctv_core::service::{
+        chat::{ChatDependencies, ChatRuntime},
         ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
         PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
         UserService,
@@ -3984,12 +3986,17 @@ mod tests {
 
         Arc::new(ChatService::new(
             chat_repo,
-            rate_limiter,
-            RateLimitConfig::default(),
-            content_filter,
-            username_cache,
-            permission_service,
-            room_settings_service,
+            ChatRuntime {
+                rate_limiter,
+                rate_limit_config: RateLimitConfig::default(),
+                content_filter,
+                username_cache,
+            },
+            ChatDependencies {
+                permission_service,
+                room_settings_service,
+                notification_service: NotificationService::default(),
+            },
         ))
     }
 
@@ -3997,9 +4004,8 @@ mod tests {
         Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
-                    shared_redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: Arc::new(RoomMessageHub::new()),
                     cluster_enabled: false,
                     node_id: node_id.to_string(),
                     dedup_window: Duration::from_mins(1),
@@ -4027,13 +4033,21 @@ mod tests {
             .get_connection_manager()
             .await
             .expect("Redis connection manager");
+        let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+            Arc::new(DirectRedisConnectionRuntime::new(redis_conn.clone()));
+        let realtime_profile =
+            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), "synctv:", true);
 
         Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    redis_client: Some(redis_client),
-                    redis_conn: Some(redis_conn),
-                    shared_redis_conn: None,
+                    distributed_transport_factory: Some(Arc::new(
+                        synctv_cluster::RedisClusterMessageTransportFactory::new(
+                            synctv_core::coordination_runtime_from_client(redis_client),
+                        ),
+                    )),
+                    message_runtime: build_room_message_runtime(&realtime_profile)
+                        .expect("shared message runtime should initialize"),
                     cluster_enabled: false,
                     node_id: node_id.to_string(),
                     dedup_window: Duration::from_mins(1),
@@ -4052,14 +4066,14 @@ mod tests {
         )
     }
 
-    fn test_connection_manager() -> ConnectionManager {
-        ConnectionManager::new(ConnectionLimits::default())
+    fn test_connection_manager() -> Arc<ConnectionManager> {
+        Arc::new(ConnectionManager::new(ConnectionLimits::default()))
     }
 
     fn test_message_handler(
         sender: Arc<dyn MessageSender>,
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<ClusterManager>,
+        connection_service: Arc<ConnectionManager>,
     ) -> StreamMessageHandler {
         let pool = test_pool();
         StreamMessageHandler::new(
@@ -4068,8 +4082,8 @@ mod tests {
             "tester".to_string(),
             test_room_service(pool.clone()),
             test_chat_service(pool),
-            cluster_manager,
-            connection_manager,
+            event_service,
+            connection_service,
             Arc::new(RateLimiter::in_memory_only("test:handler:".to_string())),
             Arc::new(RateLimitConfig::default()),
             Arc::new(ContentFilter::new()),
@@ -4090,8 +4104,8 @@ mod tests {
         sender: Arc<dyn MessageSender>,
     ) -> StartTestFixture {
         let (container, pool) = synctv_core_testing::create_test_pool().await;
-        let cluster_manager = test_cluster_manager(node_id).await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager(node_id).await;
+        let connection_service = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();
 
@@ -4123,8 +4137,8 @@ mod tests {
             user.username.clone(),
             Arc::clone(&room_service),
             test_chat_service(pool.clone()),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
             Arc::new(RateLimiter::in_memory_only(format!(
                 "test:fixture:{node_id}:"
             ))),
@@ -4140,8 +4154,8 @@ mod tests {
         StartTestFixture {
             _container: container,
             pool,
-            cluster_manager,
-            connection_manager,
+            event_service,
+            connection_service,
             handler,
         }
     }
@@ -4149,27 +4163,27 @@ mod tests {
     struct StartTestFixture {
         _container: synctv_core_testing::TestContainer,
         pool: sqlx::PgPool,
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<ClusterManager>,
+        connection_service: Arc<ConnectionManager>,
         handler: StreamMessageHandler,
     }
 
     impl StartTestFixture {
         async fn shutdown(self) {
-            shutdown_test_runtime_resources(self.cluster_manager, self.connection_manager).await;
+            shutdown_test_runtime_resources(self.event_service, self.connection_service).await;
             self.pool.close().await;
         }
     }
 
     async fn prepare_handler_for_run_after_join(
         handler: &StreamMessageHandler,
-        connection_manager: &ConnectionManager,
+        connection_service: &Arc<ConnectionManager>,
     ) {
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed");
-        connection_manager
+        connection_service
             .join_room(&handler.connection_id, handler.room_id.clone())
             .await
             .expect("join_room should succeed");
@@ -4181,7 +4195,8 @@ mod tests {
 
     async fn wait_for_start_cleanup(
         handler: &StreamMessageHandler,
-        connection_manager: &ConnectionManager,
+        connection_service: &Arc<ConnectionManager>,
+        event_service: &ClusterManager,
         cancel_token: &tokio_util::sync::CancellationToken,
         expect_room_subscription_cleanup: bool,
     ) {
@@ -4195,15 +4210,15 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if connection_manager.connection_count() == 0
-                    && connection_manager.room_connection_count(&room) == 0
-                    && connection_manager.user_connection_count(&user) == 0
+                if connection_service.connection_count() == 0
+                    && connection_service.room_connection_count(&room) == 0
+                    && connection_service.user_connection_count(&user) == 0
                     && handler
-                        .connection_manager
+                        .connection_service
                         .get_connection(&connection_id)
                         .is_none()
                     && (!expect_room_subscription_cleanup
-                        || cluster_manager_subscriber_count(&handler.cluster_manager, &room) == 0)
+                        || cluster_manager_subscriber_count(event_service, &room) == 0)
                 {
                     break;
                 }
@@ -4215,19 +4230,19 @@ mod tests {
     }
 
     async fn shutdown_test_runtime_resources(
-        cluster_manager: Arc<ClusterManager>,
-        connection_manager: ConnectionManager,
+        event_service: Arc<ClusterManager>,
+        connection_service: Arc<ConnectionManager>,
     ) {
-        cluster_manager.shutdown().await;
-        connection_manager.shutdown().await;
+        event_service.shutdown().await;
+        connection_service.shutdown().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
     fn cluster_manager_subscriber_count(
-        cluster_manager: &ClusterManager,
+        event_service: &ClusterManager,
         room_id: &RoomId,
     ) -> usize {
-        cluster_manager.get_room_subscribers(room_id).len()
+        event_service.get_room_subscribers(room_id).len()
     }
 
     async fn wait_for_run_after_join_ready(stream_state: &FailingStreamState) {
@@ -4258,7 +4273,8 @@ mod tests {
 
     async fn wait_for_run_after_join_cleanup(
         handler: &StreamMessageHandler,
-        connection_manager: &ConnectionManager,
+        connection_service: &Arc<ConnectionManager>,
+        event_service: &ClusterManager,
         task: tokio::task::JoinHandle<Result<(), String>>,
     ) {
         let result = tokio::time::timeout(Duration::from_secs(1), task)
@@ -4272,11 +4288,10 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if connection_manager.connection_count() == 0
-                    && connection_manager.room_connection_count(&handler.room_id) == 0
-                    && connection_manager.user_connection_count(&handler.user_id) == 0
-                    && cluster_manager_subscriber_count(&handler.cluster_manager, &handler.room_id)
-                        == 0
+                if connection_service.connection_count() == 0
+                    && connection_service.room_connection_count(&handler.room_id) == 0
+                    && connection_service.user_connection_count(&handler.user_id) == 0
+                    && cluster_manager_subscriber_count(event_service, &handler.room_id) == 0
                 {
                     break;
                 }
@@ -4293,13 +4308,21 @@ mod tests {
         let fixture = create_start_handler_fixture("start_initial_send_fail", sender).await;
         let StartTestFixture {
             handler,
-            connection_manager,
+            connection_service,
+            event_service,
             ..
         } = &fixture;
 
         let (_tx, cancel_token) = handler.start().await.expect("start should return");
 
-        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        wait_for_start_cleanup(
+            handler,
+            connection_service,
+            event_service,
+            &cancel_token,
+            true,
+        )
+        .await;
         fixture.shutdown().await;
     }
 
@@ -4310,14 +4333,14 @@ mod tests {
             create_start_handler_fixture("start_no_broadcast_on_initial_failure", sender).await;
         let StartTestFixture {
             handler,
-            connection_manager,
-            cluster_manager,
+            connection_service,
+            event_service,
             ..
         } = &fixture;
 
         let room = handler.room_id.clone();
         let user = handler.user_id.clone();
-        let (mut rx, conn_id) = cluster_manager
+        let (mut rx, conn_id) = event_service
             .subscribe(room, user)
             .await
             .expect("subscribe should succeed");
@@ -4331,8 +4354,15 @@ mod tests {
             "initial send failure must not broadcast UserJoined/UserLeft presence events"
         );
 
-        cluster_manager.unsubscribe(&conn_id);
-        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        event_service.unsubscribe(&conn_id);
+        wait_for_start_cleanup(
+            handler,
+            connection_service,
+            event_service,
+            &cancel_token,
+            true,
+        )
+        .await;
         fixture.shutdown().await;
     }
 
@@ -4343,8 +4373,8 @@ mod tests {
         let fixture = create_start_handler_fixture("start_event_send_failure", sender).await;
         let StartTestFixture {
             handler,
-            connection_manager,
-            cluster_manager,
+            connection_service,
+            event_service,
             ..
         } = &fixture;
 
@@ -4352,7 +4382,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager_subscriber_count(cluster_manager, &handler.room_id) == 1 {
+                if cluster_manager_subscriber_count(event_service, &handler.room_id) == 1 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4361,7 +4391,7 @@ mod tests {
         .await
         .expect("subscription should be established");
 
-        cluster_manager.broadcast(ClusterEvent::ChatMessage {
+        event_service.broadcast(ClusterEvent::ChatMessage {
             event_id: "evt-start-fail".to_string(),
             room_id: handler.room_id.clone(),
             user_id: handler.user_id.clone(),
@@ -4372,7 +4402,14 @@ mod tests {
             color: None,
         });
 
-        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        wait_for_start_cleanup(
+            handler,
+            connection_service,
+            event_service,
+            &cancel_token,
+            true,
+        )
+        .await;
         assert!(
             sender_for_assert.send_calls() >= 2,
             "initial join send + failing event send should both be attempted"
@@ -4388,8 +4425,8 @@ mod tests {
             create_start_handler_fixture("start_admin_notification_failure", sender).await;
         let StartTestFixture {
             handler,
-            connection_manager,
-            cluster_manager,
+            connection_service,
+            event_service,
             ..
         } = &fixture;
 
@@ -4397,7 +4434,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager_subscriber_count(cluster_manager, &handler.room_id) == 1 {
+                if cluster_manager_subscriber_count(event_service, &handler.room_id) == 1 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4406,7 +4443,7 @@ mod tests {
         .await
         .expect("subscription should be established");
 
-        cluster_manager.broadcast(ClusterEvent::UserNotification {
+        event_service.broadcast(ClusterEvent::UserNotification {
             event_id: "evt-admin-notify".to_string(),
             user_id: handler.user_id.clone(),
             title: "title".to_string(),
@@ -4416,7 +4453,14 @@ mod tests {
             timestamp: now(),
         });
 
-        wait_for_start_cleanup(handler, connection_manager, &cancel_token, true).await;
+        wait_for_start_cleanup(
+            handler,
+            connection_service,
+            event_service,
+            &cancel_token,
+            true,
+        )
+        .await;
         assert!(
             sender_for_assert.send_calls() >= 2,
             "initial join send + failing admin notification send should both be attempted"
@@ -4426,14 +4470,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_cluster_event_send_fails() {
-        let cluster_manager = test_cluster_manager("test_run_after_join_event_failure").await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager("test_run_after_join_event_failure").await;
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         );
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -4441,7 +4485,7 @@ mod tests {
 
         wait_for_run_after_join_ready(&stream_state).await;
 
-        cluster_manager.broadcast(ClusterEvent::ChatMessage {
+        event_service.broadcast(ClusterEvent::ChatMessage {
             event_id: "evt-run-after-join".to_string(),
             room_id: handler.room_id.clone(),
             user_id: handler.user_id.clone(),
@@ -4452,22 +4496,23 @@ mod tests {
             color: None,
         });
 
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
-        let cluster_manager = test_cluster_manager("test_pre_join_caches_room_subscription").await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager("test_pre_join_caches_room_subscription").await;
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         );
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
-        cluster_manager.broadcast(ClusterEvent::ChatMessage {
+        event_service.broadcast(ClusterEvent::ChatMessage {
             event_id: "evt-prejoin-window".to_string(),
             room_id: handler.room_id.clone(),
             user_id: UserId::from_string("other-user".to_string()),
@@ -4502,23 +4547,24 @@ mod tests {
             "room event broadcast after caching the subscription but before run_after_join must not be lost"
         );
 
-        connection_manager.disconnect_connection(handler.connection_id());
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        connection_service.disconnect_connection(handler.connection_id());
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_initial_send_fails() {
-        let cluster_manager = test_cluster_manager("test_run_after_join_initial_failure").await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager("test_run_after_join_initial_failure").await;
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         );
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
-        let (mut rx, conn_id) = cluster_manager
+        let (mut rx, conn_id) = event_service
             .subscribe(handler.room_id.clone(), handler.user_id.clone())
             .await
             .expect("subscribe should succeed");
@@ -4533,21 +4579,22 @@ mod tests {
             "initial run_after_join send failure must not broadcast UserJoined/UserLeft presence events"
         );
 
-        cluster_manager.unsubscribe(&conn_id);
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        event_service.unsubscribe(&conn_id);
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
-        let cluster_manager = test_cluster_manager("test_run_after_join_admin_failure").await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager("test_run_after_join_admin_failure").await;
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         );
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -4555,7 +4602,7 @@ mod tests {
 
         wait_for_run_after_join_ready(&stream_state).await;
 
-        cluster_manager.broadcast(ClusterEvent::UserNotification {
+        event_service.broadcast(ClusterEvent::UserNotification {
             event_id: "evt-run-after-join-admin".to_string(),
             user_id: handler.user_id.clone(),
             title: "title".to_string(),
@@ -4565,22 +4612,23 @@ mod tests {
             timestamp: now(),
         });
 
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
-        let cluster_manager =
+        let event_service =
             test_cluster_manager("test_run_after_join_backpressure_failure").await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         )
         .with_concurrency(Arc::new(MessageConcurrencyConfig::new(0)));
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
         let input = ClientMessage { message: None };
         let (mut stream, stream_state) = FailingStream::fail_after_with_incoming(1, vec![input]);
@@ -4589,25 +4637,26 @@ mod tests {
 
         wait_for_run_after_join_ready(&stream_state).await;
 
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
-        let cluster_manager = test_cluster_manager("test_run_after_join_direct_failure").await;
-        let connection_manager = test_connection_manager();
+        let event_service = test_cluster_manager("test_run_after_join_direct_failure").await;
+        let connection_service = test_connection_manager();
         let notification_pool = test_pool();
         let notification_service = Arc::new(synctv_core::service::UserNotificationService::new(
             NotificationRepository::new(notification_pool.clone()),
         ));
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         )
         .with_notification_service(Arc::clone(&notification_service));
-        prepare_handler_for_run_after_join(&handler, &connection_manager).await;
+        prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
         let (mut stream, stream_state) = FailingStream::fail_after(1);
         let task_handler = handler.clone();
@@ -4630,9 +4679,10 @@ mod tests {
             },
         });
 
-        wait_for_run_after_join_cleanup(&handler, &connection_manager, run_task).await;
+        wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task)
+            .await;
         notification_pool.close().await;
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     // ========== cluster_event_to_server_messages Tests ==========
@@ -5735,7 +5785,7 @@ mod tests {
         let user_id = user_id();
         let manager = test_connection_manager();
         let pool = test_pool();
-        let cluster_manager = test_cluster_manager("node-test").await;
+        let event_service = test_cluster_manager("node-test").await;
 
         let handler = super::StreamMessageHandler::new(
             room_id.clone(),
@@ -5743,7 +5793,7 @@ mod tests {
             "user".to_string(),
             test_room_service(pool.clone()),
             test_chat_service(pool),
-            cluster_manager,
+            event_service,
             manager.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:conn-id-only-match:".to_string(),
@@ -5776,7 +5826,7 @@ mod tests {
         let user_id = user_id();
         let manager = test_connection_manager();
         let pool = test_pool();
-        let cluster_manager = test_cluster_manager("node-test").await;
+        let event_service = test_cluster_manager("node-test").await;
 
         let handler = super::StreamMessageHandler::new(
             room_id.clone(),
@@ -5784,7 +5834,7 @@ mod tests {
             "user".to_string(),
             test_room_service(pool.clone()),
             test_chat_service(pool),
-            cluster_manager,
+            event_service,
             manager.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:conn-id-only-reject:".to_string(),
@@ -5877,16 +5927,16 @@ mod tests {
     #[tokio::test]
     async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable(
     ) {
-        let cluster_manager =
+        let event_service =
             test_cluster_manager("test_pre_join_membership_revalidation_unavailable").await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
         );
 
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed before final admission");
@@ -5901,30 +5951,30 @@ mod tests {
             "expected retryable membership revalidation error, got: {error}"
         );
         assert_eq!(
-            connection_manager.connection_count(),
+            connection_service.connection_count(),
             0,
             "failed final admission must roll back the registered connection"
         );
         assert_eq!(
-            connection_manager.room_connection_count(&handler.room_id),
+            connection_service.room_connection_count(&handler.room_id),
             0,
             "failed final admission must not leave room membership behind"
         );
         assert_eq!(
-            connection_manager.user_connection_count(&handler.user_id),
+            connection_service.user_connection_count(&handler.user_id),
             0,
             "failed final admission must not consume per-user capacity"
         );
 
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
     #[tokio::test]
     async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidation() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let cluster_manager =
+        let event_service =
             test_cluster_manager("test_pre_join_room_closed_final_revalidation").await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();
         let owner = user_service
@@ -5968,8 +6018,8 @@ mod tests {
             member.username.clone(),
             Arc::clone(&room_service),
             test_chat_service(pool.clone()),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:pre-join-room-closed:".to_string(),
             )),
@@ -5978,7 +6028,7 @@ mod tests {
             FailingMessageSender::fail_after(usize::MAX),
         );
 
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed before final admission");
@@ -5997,20 +6047,20 @@ mod tests {
             error.to_string().contains("closed"),
             "expected closed-room error, got: {error}"
         );
-        assert_eq!(connection_manager.connection_count(), 0);
-        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
-        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+        assert_eq!(connection_service.connection_count(), 0);
+        assert_eq!(connection_service.room_connection_count(&room.id), 0);
+        assert_eq!(connection_service.user_connection_count(&member.id), 0);
 
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
         pool.close().await;
     }
 
     #[tokio::test]
     async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let cluster_manager =
+        let event_service =
             test_cluster_manager("test_pre_join_room_creator_inactive_final_revalidation").await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();
         let owner = user_service
@@ -6054,8 +6104,8 @@ mod tests {
             member.username.clone(),
             Arc::clone(&room_service),
             test_chat_service(pool.clone()),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:pre-join-room-owner-inactive:".to_string(),
             )),
@@ -6064,7 +6114,7 @@ mod tests {
             FailingMessageSender::fail_after(usize::MAX),
         );
 
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed before final admission");
@@ -6089,20 +6139,20 @@ mod tests {
             error.to_string().contains("creator is not active"),
             "expected room-owner-inactive error, got: {error}"
         );
-        assert_eq!(connection_manager.connection_count(), 0);
-        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
-        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+        assert_eq!(connection_service.connection_count(), 0);
+        assert_eq!(connection_service.room_connection_count(&room.id), 0);
+        assert_eq!(connection_service.user_connection_count(&member.id), 0);
 
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
         pool.close().await;
     }
 
     #[tokio::test]
     async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidation() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let cluster_manager =
+        let event_service =
             test_cluster_manager("test_pre_join_user_banned_final_revalidation").await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();
         let owner = user_service
@@ -6146,8 +6196,8 @@ mod tests {
             member.username.clone(),
             Arc::clone(&room_service),
             test_chat_service(pool.clone()),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:pre-join-user-banned:".to_string(),
             )),
@@ -6156,7 +6206,7 @@ mod tests {
             FailingMessageSender::fail_after(usize::MAX),
         );
 
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed before final admission");
@@ -6175,11 +6225,11 @@ mod tests {
             error.to_string().contains("no longer allowed"),
             "expected banned-user error, got: {error}"
         );
-        assert_eq!(connection_manager.connection_count(), 0);
-        assert_eq!(connection_manager.room_connection_count(&room.id), 0);
-        assert_eq!(connection_manager.user_connection_count(&member.id), 0);
+        assert_eq!(connection_service.connection_count(), 0);
+        assert_eq!(connection_service.room_connection_count(&room.id), 0);
+        assert_eq!(connection_service.user_connection_count(&member.id), 0);
 
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
         pool.close().await;
     }
 
@@ -6191,10 +6241,10 @@ mod tests {
         // Use dedicated Redis since this test terminates the container
         let (redis, redis_url): (RedisContainer, String) =
             start_dedicated_redis_url_with_label("msg-pre-join-subscription-fail").await;
-        let cluster_manager =
+        let event_service =
             test_cluster_manager_with_redis("test_pre_join_subscription_cache_failure", &redis_url)
                 .await;
-        let connection_manager = test_connection_manager();
+        let connection_service = test_connection_manager();
         let room_service = test_room_service(pool.clone());
         let user_service = room_service.user_service().clone();
         let owner = user_service
@@ -6238,8 +6288,8 @@ mod tests {
             member.username.clone(),
             Arc::clone(&room_service),
             test_chat_service(pool.clone()),
-            Arc::clone(&cluster_manager),
-            connection_manager.clone(),
+            event_service.clone(),
+            connection_service.clone(),
             Arc::new(RateLimiter::in_memory_only(
                 "test:pre-join-subscription-fail:".to_string(),
             )),
@@ -6248,7 +6298,7 @@ mod tests {
             FailingMessageSender::fail_after(usize::MAX),
         );
 
-        connection_manager
+        connection_service
             .register(handler.connection_id.clone(), handler.user_id.clone())
             .await
             .expect("register should succeed before subscription caching");
@@ -6271,27 +6321,27 @@ mod tests {
             "expected room subscription caching error, got: {error}"
         );
         assert_eq!(
-            connection_manager.connection_count(),
+            connection_service.connection_count(),
             0,
             "failed subscription caching must roll back the registered connection"
         );
         assert_eq!(
-            connection_manager.room_connection_count(&room.id),
+            connection_service.room_connection_count(&room.id),
             0,
             "failed subscription caching must not leave room membership behind"
         );
         assert_eq!(
-            connection_manager.user_connection_count(&member.id),
+            connection_service.user_connection_count(&member.id),
             0,
             "failed subscription caching must not consume per-user capacity"
         );
         assert_eq!(
-            cluster_manager_subscriber_count(&cluster_manager, &room.id),
+            cluster_manager_subscriber_count(&event_service, &room.id),
             0,
             "failed subscription caching must not leave local room subscribers behind"
         );
 
-        shutdown_test_runtime_resources(cluster_manager, connection_manager).await;
+        shutdown_test_runtime_resources(event_service, connection_service).await;
         pool.close().await;
     }
 

@@ -5,43 +5,12 @@
 //! Run with: cargo test --test `notification_service_tests`
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::notification::{EventBroadcaster, NotificationService, RoomEvent};
-
-/// Mock broadcaster that counts broadcast calls
-struct MockBroadcaster;
-
-#[async_trait::async_trait]
-impl EventBroadcaster for MockBroadcaster {
-    async fn broadcast_to_room(
-        &self,
-        _room_id: &RoomId,
-        _event: &RoomEvent,
-    ) -> synctv_core::Result<usize> {
-        Ok(1)
-    }
-
-    async fn send_to_user(
-        &self,
-        _room_id: &RoomId,
-        _user_id: &UserId,
-        _event: &RoomEvent,
-    ) -> synctv_core::Result<bool> {
-        Ok(true)
-    }
-
-    async fn broadcast_to_cluster(
-        &self,
-        _room_id: &RoomId,
-        _event: &RoomEvent,
-    ) -> synctv_core::Result<bool> {
-        Ok(true)
-    }
-}
+use synctv_core::service::notification::RoomEvent;
+use synctv_core::service::NotificationService;
 
 fn create_service() -> NotificationService {
-    NotificationService::new(Arc::new(MockBroadcaster))
+    NotificationService::default()
 }
 
 // ============================================================================
@@ -58,7 +27,6 @@ async fn test_notify_user_joined_event_construction() {
 
     service
         .notify_user_joined(&room_id, &user_id, "alice")
-        .await
         .unwrap();
 
     let (received_room_id, received_event) =
@@ -95,11 +63,9 @@ async fn test_subscribe_receives_events_in_order() {
     // Send multiple events
     service
         .notify_user_joined(&room_id, &user_id, "alice")
-        .await
         .unwrap();
     service
         .notify_user_left(&room_id, &user_id, "alice")
-        .await
         .unwrap();
 
     // Receive in order

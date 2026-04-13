@@ -1327,6 +1327,10 @@ impl MockDistributedLock {
 
 #[async_trait::async_trait]
 impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLock {
+    fn backend_name(&self) -> &'static str {
+        "mock-distributed-lock"
+    }
+
     async fn acquire(&self, key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
         if self
             .should_fail_acquire

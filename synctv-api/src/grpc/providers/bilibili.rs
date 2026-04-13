@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use crate::http::AppState;
+use crate::http::SharedApiRuntime;
 use crate::impls::providers::extract_instance_name;
 use crate::impls::BilibiliApiImpl;
 
@@ -27,11 +27,8 @@ pub struct BilibiliProviderGrpcService {
 
 impl BilibiliProviderGrpcService {
     #[must_use]
-    pub fn new(app_state: &Arc<AppState>) -> Self {
-        let api = BilibiliApiImpl::new(
-            app_state.providers.bilibili.clone(),
-            app_state.user_provider_credential_repository.clone(),
-        );
+    pub fn new(shared_api_runtime: &Arc<SharedApiRuntime>) -> Self {
+        let api = shared_api_runtime.bilibili_api.as_ref().clone();
         Self { api }
     }
 }

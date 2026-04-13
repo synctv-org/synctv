@@ -30,7 +30,7 @@
 //!   use in-memory limiting regardless of Redis availability, since gRPC
 //!   interceptors are synchronous.
 
-use crate::Result;
+use crate::{RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 use async_trait::async_trait;
 use governor::clock::Clock;
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
@@ -244,7 +244,7 @@ pub trait RateLimitBackend: Send + Sync {
 /// Falls back to in-memory governor on Redis errors (graceful degradation).
 /// Accepts the shared `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
 pub struct RedisRateLimitBackend {
-    conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    conn: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
     /// In-memory fallback for when Redis is temporarily unavailable.
     fallback: InMemoryGovernorLimiter,
@@ -256,6 +256,11 @@ impl RedisRateLimitBackend {
         conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: String,
     ) -> Self {
+        Self::from_runtime(crate::shared_runtime(conn), key_prefix)
+    }
+
+    #[must_use]
+    pub fn from_runtime(conn: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
         Self {
             conn,
             key_prefix,
@@ -265,7 +270,7 @@ impl RedisRateLimitBackend {
 
     /// Acquire a fresh ConnectionManager clone from the shared handle.
     async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+        self.conn.snapshot().await
     }
 }
 
@@ -588,8 +593,16 @@ impl RateLimiter {
         redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         key_prefix: String,
     ) -> Self {
-        if let Some(conn) = redis_conn {
-            let backend = Arc::new(RedisRateLimitBackend::new(conn, key_prefix.clone()));
+        Self::from_redis_runtime(crate::shared_runtime_from_conn(redis_conn), key_prefix)
+    }
+
+    #[must_use]
+    pub fn from_redis_runtime(
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: String,
+    ) -> Self {
+        if let Some(conn) = redis_runtime {
+            let backend = Arc::new(RedisRateLimitBackend::from_runtime(conn, key_prefix.clone()));
             Self::from_backend(backend, key_prefix)
         } else {
             tracing::warn!(
@@ -598,6 +611,21 @@ impl RateLimiter {
             );
             let backend = Arc::new(InMemoryRateLimitBackend::new(key_prefix.clone()));
             Self::from_backend(backend, key_prefix)
+        }
+    }
+
+    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+        match profile.state_mode() {
+            SharedStateMode::SharedRequired => Ok(Self::from_redis_runtime(
+                Some(profile.require_shared_runtime("rate-limit state")?),
+                profile.key_prefix().to_string(),
+            )
+            .with_strict_distributed()),
+            SharedStateMode::SharedBestEffort => Ok(Self::from_redis_runtime(
+                profile.shared_runtime(),
+                profile.key_prefix().to_string(),
+            )),
+            SharedStateMode::LocalOnly => Ok(Self::in_memory_only(profile.key_prefix().to_string())),
         }
     }
 
@@ -711,12 +739,35 @@ impl Default for RateLimitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use crate::RedisConnectionRuntime;
     use synctv_core_testing::start_redis;
 
     #[test]
     fn test_rate_limiter_without_redis() {
         let limiter = RateLimiter::new(None, "test:".to_string());
         assert_eq!(limiter.backend_name(), "memory");
+    }
+
+    #[tokio::test]
+    async fn test_redis_rate_limit_backend_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let backend = RedisRateLimitBackend::from_runtime(runtime.clone(), "synctv:".to_string());
+
+        assert!(
+            Arc::ptr_eq(&backend.conn, &runtime),
+            "rate-limit backend should retain the injected runtime object"
+        );
     }
 
     #[tokio::test]

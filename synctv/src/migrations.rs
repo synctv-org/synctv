@@ -590,6 +590,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl synctv_core::service::MigrationLock for FailingMigrationLock {
+        fn backend_name(&self) -> &'static str {
+            "mock-failing"
+        }
+
         async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
             self.acquire_called.store(true, Ordering::SeqCst);
             Err(anyhow!("redis unavailable"))
@@ -602,6 +606,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl synctv_core::service::MigrationLock for WaitThenFailMigrationLock {
+        fn backend_name(&self) -> &'static str {
+            "mock-wait-then-fail"
+        }
+
         async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
             let call = self.acquire_calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
@@ -618,6 +626,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl synctv_core::service::MigrationLock for ExtendTrackingMigrationLock {
+        fn backend_name(&self) -> &'static str {
+            "mock-extend-tracking"
+        }
+
         async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
             self.acquire_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Some("lock-value".to_string()))

@@ -5,19 +5,18 @@
 //! in the stream and can be caught up on reconnection, preventing stale caches
 //! after transient disconnections.
 
+use async_trait::async_trait;
 use redis::aio::ConnectionManager;
-use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::{broadcast, OnceCell};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::models::RoomId;
-use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
-use crate::{Error, Result};
+use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
 
 /// Maximum approximate stream length (number of entries).
 /// Cache TTLs are 5 minutes, so 1000 entries is more than sufficient.
@@ -79,6 +78,71 @@ pub enum InvalidationMessage {
     All,
 }
 
+#[async_trait]
+pub trait CacheInvalidationRuntime: Send + Sync {
+    fn subscribe(&self) -> broadcast::Receiver<InvalidationMessage>;
+
+    async fn start(&self) -> Result<()>;
+
+    async fn stop(&self);
+
+    async fn broadcast_remote(&self, message: InvalidationMessage) -> Result<()>;
+
+    fn broadcast_local(&self, message: InvalidationMessage) -> Result<()>;
+
+    async fn broadcast_all(&self, message: InvalidationMessage) -> Result<()>;
+
+    async fn invalidate_user_permission(
+        &self,
+        room_id: &RoomId,
+        user_id: &crate::models::UserId,
+    ) -> Result<()>;
+
+    async fn invalidate_room_permission(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn invalidate_user(&self, user_id: &crate::models::UserId) -> Result<()>;
+
+    async fn invalidate_username(&self, user_id: &crate::models::UserId) -> Result<()>;
+
+    async fn invalidate_room(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn invalidate_provider_instance(&self, instance_name: &str) -> Result<()>;
+
+    async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn update_playback_state(
+        &self,
+        room_id: &RoomId,
+        state: &crate::models::RoomPlaybackState,
+    ) -> Result<()>;
+
+    async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn invalidate_all(&self) -> Result<()>;
+
+    async fn invalidate_and_broadcast_user(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()>;
+
+    async fn invalidate_and_broadcast_room(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn invalidate_and_broadcast_room_settings(&self, room_id: &RoomId) -> Result<()>;
+
+    async fn invalidate_and_broadcast_username(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()>;
+
+    async fn invalidate_and_broadcast_user_permission(
+        &self,
+        room_id: &RoomId,
+        user_id: &crate::models::UserId,
+    ) -> Result<()>;
+
+    async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()>;
+}
+
 /// Service for broadcasting and receiving cache invalidation messages
 ///
 /// Uses Redis Streams instead of Pub/Sub for reliable message delivery:
@@ -87,13 +151,8 @@ pub enum InvalidationMessage {
 /// - Automatic message acknowledgment and retry on failure
 /// - Periodic state sync to handle missed invalidations during Redis outages
 pub struct CacheInvalidationService {
-    /// Redis client for streams (used by the subscriber background task)
-    redis_client: Option<Client>,
-    /// Shared Redis connection handle that follows Sentinel failover.
-    /// When set, this is preferred over lazily creating via redis_client.
-    redis_conn_shared: Option<Arc<tokio::sync::RwLock<ConnectionManager>>>,
-    /// Reusable Redis connection for publishing (lazily initialized fallback)
-    redis_conn: Arc<OnceCell<ConnectionManager>>,
+    /// Redis runtime used for publishing and subscription when shared state exists.
+    redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Local broadcast sender for invalidation events
     local_sender: broadcast::Sender<InvalidationMessage>,
     /// Node identifier for logging and consumer group
@@ -116,9 +175,7 @@ pub struct CacheInvalidationService {
 impl Clone for CacheInvalidationService {
     fn clone(&self) -> Self {
         Self {
-            redis_client: self.redis_client.clone(),
-            redis_conn_shared: self.redis_conn_shared.clone(),
-            redis_conn: self.redis_conn.clone(),
+            redis_runtime: self.redis_runtime.clone(),
             local_sender: self.local_sender.clone(),
             node_id: self.node_id.clone(),
             stream_key: self.stream_key.clone(),
@@ -135,7 +192,6 @@ impl CacheInvalidationService {
     /// Create a new cache invalidation service.
     ///
     /// # Arguments
-    /// * `redis_client` - Optional Redis client. If None, only local invalidation is used.
     /// * `node_id` - Unique identifier for this node (for consumer group and logging).
     ///   **Important**: The consumer group name is derived as `cache-invalidation-{node_id}`.
     ///   If `node_id` contains a random component (e.g., the shared base62 suffix from
@@ -148,14 +204,12 @@ impl CacheInvalidationService {
     ///     to remove groups with zero pending messages and zero active consumers.
     /// * `stream_key` - Redis stream key for cache invalidation (e.g., "synctv:cache:invalidate:stream")
     #[must_use]
-    pub fn new(redis_client: Option<Client>, node_id: String, stream_key: String) -> Self {
+    pub fn new(node_id: String, stream_key: String) -> Self {
         let (local_sender, _) = broadcast::channel(1024);
         let consumer_group = format!("cache-invalidation-{node_id}");
 
         Self {
-            redis_client,
-            redis_conn_shared: None,
-            redis_conn: Arc::new(OnceCell::new()),
+            redis_runtime: None,
             local_sender,
             node_id,
             stream_key,
@@ -167,51 +221,52 @@ impl CacheInvalidationService {
         }
     }
 
-    /// Set the shared Redis connection handle from the bootstrap layer.
-    ///
-    /// When set, `get_conn()` will acquire a read lock and clone from this
-    /// shared handle instead of lazily creating an independent ConnectionManager.
-    /// This ensures the service follows Sentinel failover.
     #[must_use]
-    pub fn with_shared_conn(mut self, conn: Arc<tokio::sync::RwLock<ConnectionManager>>) -> Self {
-        self.redis_conn_shared = Some(conn);
-        self
+    pub fn from_runtime(
+        redis_runtime: Arc<dyn RedisConnectionRuntime>,
+        node_id: String,
+        stream_key: String,
+    ) -> Self {
+        let mut service = Self::new(node_id, stream_key);
+        service.redis_runtime = Some(redis_runtime);
+        service
+    }
+
+    #[must_use]
+    pub fn from_optional_runtime(
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        node_id: String,
+        stream_key: String,
+    ) -> Self {
+        match redis_runtime {
+            Some(runtime) => Self::from_runtime(runtime, node_id, stream_key),
+            None => Self::new(node_id, stream_key),
+        }
+    }
+
+    #[must_use]
+    pub fn from_shared_state_profile(
+        profile: &SharedStateProfile,
+        node_id: String,
+        stream_key: String,
+    ) -> Self {
+        Self::from_optional_runtime(profile.shared_runtime(), node_id, stream_key)
     }
 
     const fn redis_enabled(&self) -> bool {
-        self.redis_client.is_some() || self.redis_conn_shared.is_some()
+        self.redis_runtime.is_some()
     }
 
     /// Get a Redis connection for publishing.
     ///
-    /// Prefers the shared handle (follows Sentinel failover) when available,
-    /// falling back to lazily creating from redis_client.
+    /// Uses the injected runtime abstraction so the service remains backend-agnostic.
     async fn get_conn(&self) -> Result<ConnectionManager> {
-        // Prefer the shared handle from bootstrap (follows Sentinel failover)
-        if let Some(ref shared) = self.redis_conn_shared {
-            return Ok(shared.read().await.clone());
+        if let Some(runtime) = &self.redis_runtime {
+            return Ok(runtime.snapshot().await);
         }
-
-        // Fallback: lazily create from redis_client
-        let client = self
-            .redis_client
-            .as_ref()
-            .ok_or_else(|| Error::Internal("Redis not configured".to_string()))?;
-        let conn = self
-            .redis_conn
-            .get_or_try_init(|| async {
-                let config = redis::aio::ConnectionManagerConfig::new()
-                    .set_connection_timeout(Some(REDIS_OPERATION_TIMEOUT))
-                    .set_number_of_retries(0);
-                client
-                    .get_connection_manager_with_config(config)
-                    .await
-                    .map_err(|e| {
-                        Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
-                    })
-            })
-            .await?;
-        Ok(conn.clone())
+        Err(Error::Internal(
+            "Shared runtime not configured for cache invalidation".to_string(),
+        ))
     }
 
     /// Start listening for cache invalidation messages from Redis
@@ -1351,10 +1406,119 @@ impl CacheInvalidationService {
     }
 }
 
+#[async_trait]
+impl CacheInvalidationRuntime for CacheInvalidationService {
+    fn subscribe(&self) -> broadcast::Receiver<InvalidationMessage> {
+        Self::subscribe(self)
+    }
+
+    async fn start(&self) -> Result<()> {
+        Self::start(self).await
+    }
+
+    async fn stop(&self) {
+        Self::stop(self).await;
+    }
+
+    async fn broadcast_remote(&self, message: InvalidationMessage) -> Result<()> {
+        Self::broadcast_remote(self, message).await
+    }
+
+    fn broadcast_local(&self, message: InvalidationMessage) -> Result<()> {
+        Self::broadcast_local(self, message)
+    }
+
+    async fn broadcast_all(&self, message: InvalidationMessage) -> Result<()> {
+        Self::broadcast_all(self, message).await
+    }
+
+    async fn invalidate_user_permission(
+        &self,
+        room_id: &RoomId,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        Self::invalidate_user_permission(self, room_id, user_id).await
+    }
+
+    async fn invalidate_room_permission(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_room_permission(self, room_id).await
+    }
+
+    async fn invalidate_user(&self, user_id: &crate::models::UserId) -> Result<()> {
+        Self::invalidate_user(self, user_id).await
+    }
+
+    async fn invalidate_username(&self, user_id: &crate::models::UserId) -> Result<()> {
+        Self::invalidate_username(self, user_id).await
+    }
+
+    async fn invalidate_room(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_room(self, room_id).await
+    }
+
+    async fn invalidate_provider_instance(&self, instance_name: &str) -> Result<()> {
+        Self::invalidate_provider_instance(self, instance_name).await
+    }
+
+    async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_playback_state(self, room_id).await
+    }
+
+    async fn update_playback_state(
+        &self,
+        room_id: &RoomId,
+        state: &crate::models::RoomPlaybackState,
+    ) -> Result<()> {
+        Self::update_playback_state(self, room_id, state).await
+    }
+
+    async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_room_settings(self, room_id).await
+    }
+
+    async fn invalidate_all(&self) -> Result<()> {
+        Self::invalidate_all(self).await
+    }
+
+    async fn invalidate_and_broadcast_user(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        Self::invalidate_and_broadcast_user(self, user_id).await
+    }
+
+    async fn invalidate_and_broadcast_room(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_and_broadcast_room(self, room_id).await
+    }
+
+    async fn invalidate_and_broadcast_room_settings(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_and_broadcast_room_settings(self, room_id).await
+    }
+
+    async fn invalidate_and_broadcast_username(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        Self::invalidate_and_broadcast_username(self, user_id).await
+    }
+
+    async fn invalidate_and_broadcast_user_permission(
+        &self,
+        room_id: &RoomId,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        Self::invalidate_and_broadcast_user_permission(self, room_id, user_id).await
+    }
+
+    async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()> {
+        Self::invalidate_and_broadcast_room_permission(self, room_id).await
+    }
+}
+
 impl std::fmt::Debug for CacheInvalidationService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CacheInvalidationService")
-            .field("redis_enabled", &self.redis_client.is_some())
+            .field("redis_enabled", &self.redis_runtime.is_some())
             .field("node_id", &self.node_id)
             .field(
                 "needs_state_sync",
@@ -1369,6 +1533,7 @@ impl std::fmt::Debug for CacheInvalidationService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     #[test]
     fn test_invalidation_message_serialization() {
@@ -1396,9 +1561,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cache_invalidation_service_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let service = CacheInvalidationService::from_runtime(
+            runtime.clone(),
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+
+        assert!(
+            service
+                .redis_runtime
+                .as_ref()
+                .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            "cache invalidation service should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
     async fn test_local_broadcast() {
         let service = CacheInvalidationService::new(
-            None,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
@@ -1415,11 +1607,42 @@ mod tests {
         assert_eq!(msg, received);
     }
 
+    #[test]
+    fn test_from_shared_state_profile_uses_shared_runtime() {
+        struct FakeRedisRuntime;
+
+        #[async_trait::async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let profile = SharedStateProfile::from_runtime(
+            Some(runtime.clone()),
+            "synctv:test:",
+            false,
+        );
+        let service = CacheInvalidationService::from_shared_state_profile(
+            &profile,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+
+        assert!(
+            service
+                .redis_runtime
+                .as_ref()
+                .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            "shared-state profile constructor should reuse the injected runtime object"
+        );
+    }
+
     #[tokio::test]
     async fn test_needs_state_sync_flag_on_broadcast_failure() {
         // Create service without Redis (simulating Redis unavailability)
         let service = CacheInvalidationService::new(
-            None,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
@@ -1445,7 +1668,6 @@ mod tests {
         assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
 
         let service = CacheInvalidationService::new(
-            None,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
@@ -1461,7 +1683,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_state_sync_does_not_fire_without_pending_recovery_sync() {
         let service = CacheInvalidationService::new(
-            None,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
@@ -1515,9 +1736,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_state_sync_only_executes_when_recovery_is_pending() {
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let shutdown = service.shutdown.clone();
@@ -1602,9 +1821,7 @@ mod tests {
     async fn test_state_sync_uses_shutdown_flag_not_ctrl_c() {
         // L17: Verify that spawn_state_sync_task respects the shutdown AtomicBool
         // rather than relying on tokio::signal::ctrl_c().
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
 
@@ -1626,9 +1843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_and_broadcast_room_settings() {
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let mut receiver = service.subscribe();
@@ -1650,9 +1865,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_without_redis_still_succeeds() {
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
 
@@ -1660,34 +1873,23 @@ mod tests {
         assert!(result.is_ok(), "local-only mode should remain a no-op");
     }
 
-    #[tokio::test]
-    async fn test_start_returns_error_when_redis_consumer_group_setup_fails() {
-        let redis_client =
-            redis::Client::open("redis://127.0.0.1:1").expect("invalid test client should parse");
-        let service = CacheInvalidationService::new(
-            Some(redis_client),
+    #[test]
+    fn test_from_optional_runtime_without_runtime_keeps_local_mode() {
+        let service = CacheInvalidationService::from_optional_runtime(
+            None,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
 
-        let err = service.start().await.expect_err(
-            "startup must fail when Redis-backed listener cannot create consumer group",
-        );
         assert!(
-            err.to_string().contains("Failed to create consumer group")
-                || err
-                    .to_string()
-                    .contains("Failed to create Redis ConnectionManager")
-                || err.to_string().contains("Connection refused"),
-            "unexpected startup error: {err}"
+            service.redis_runtime.is_none(),
+            "local-only constructor must not synthesize a backend runtime"
         );
     }
 
     #[tokio::test]
     async fn test_stop_awaits_registered_background_tasks() {
-        let service = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let service = CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let observed_shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));

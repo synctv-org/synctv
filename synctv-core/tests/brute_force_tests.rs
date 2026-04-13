@@ -19,11 +19,30 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use synctv_core::service::{
-    AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
+    auth::brute_force::{InMemoryAttemptTracker, RedisAttemptTracker},
+    AttemptTracker, BruteForceProtection,
 };
 use synctv_core_testing::constants::{brute_force, network};
 use synctv_core_testing::start_redis;
 use tokio::sync::RwLock;
+
+fn redis_brute_force_protection(
+    conn: Arc<RwLock<redis::aio::ConnectionManager>>,
+    key_prefix: String,
+) -> BruteForceProtection {
+    let config = synctv_core::service::BruteForceConfig::default();
+    let username_tracker = Arc::new(RedisAttemptTracker::new(
+        conn.clone(),
+        50_000,
+        config.attempts_ttl_secs,
+    ));
+    let ip_tracker = Arc::new(RedisAttemptTracker::new(
+        conn,
+        100_000,
+        config.ip_attempts_ttl_secs,
+    ));
+    BruteForceProtection::new_with_config(key_prefix, username_tracker, ip_tracker, config)
+}
 
 // ============================================================================
 // InMemoryAttemptTracker tests
@@ -237,7 +256,7 @@ async fn test_redis_tracker_reset() {
 async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
     let protection =
-        BruteForceProtection::with_redis(Arc::new(RwLock::new(conn)), "test_e2e:".to_string());
+        redis_brute_force_protection(Arc::new(RwLock::new(conn)), "test_e2e:".to_string());
     let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)));
 
     // Record 5 failures to trigger tier1 lockout
@@ -269,7 +288,7 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
 async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
     let protection =
-        BruteForceProtection::with_redis(Arc::new(RwLock::new(conn)), "test_ip_e2e:".to_string());
+        redis_brute_force_protection(Arc::new(RwLock::new(conn)), "test_ip_e2e:".to_string());
     let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 50, 1));
 
     // Record 20 failures from the same IP across different usernames

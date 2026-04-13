@@ -25,7 +25,7 @@ use synctv_core::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         member::{AddMemberOptions, MemberService},
         permission::PermissionService,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, NotificationService, RoomService, UserService,
     },
     Error,
 };
@@ -630,6 +630,7 @@ async fn test_concurrent_room_ban_with_members_joining() {
         member_repo.clone(),
         room_repo_for_service.clone(),
         permission_service.clone(),
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 

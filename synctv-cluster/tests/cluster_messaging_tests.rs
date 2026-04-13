@@ -4,10 +4,15 @@
 //! Uses testcontainers for Redis integration tests.
 
 #![allow(clippy::unwrap_used)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent, NotificationLevel};
-use synctv_cluster::{ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator};
+use synctv_cluster::{
+    build_room_message_runtime, ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator,
+    RoomMessageHub,
+};
+use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core_testing::{start_redis_with_client, RedisContainer};
 mod integration_test_helpers;
@@ -45,7 +50,7 @@ async fn setup_redis() -> (RedisContainer, redis::Client, redis::aio::Connection
 /// Create a test cluster config with Redis connection.
 fn make_cluster_config(
     redis_client: redis::Client,
-    redis_conn: redis::aio::ConnectionManager,
+    redis_conn: &redis::aio::ConnectionManager,
     node_id: &str,
 ) -> ClusterConfig {
     make_cluster_config_with_prefix(
@@ -58,14 +63,22 @@ fn make_cluster_config(
 
 fn make_cluster_config_with_prefix(
     redis_client: redis::Client,
-    redis_conn: redis::aio::ConnectionManager,
+    redis_conn: &redis::aio::ConnectionManager,
     node_id: &str,
     key_prefix: String,
 ) -> ClusterConfig {
+    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+        Arc::new(DirectRedisConnectionRuntime::new(redis_conn.clone()));
+    let realtime_profile =
+        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
     ClusterConfig {
-        redis_client: Some(redis_client),
-        redis_conn: Some(redis_conn),
-        shared_redis_conn: None,
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(redis_client),
+            ),
+        )),
+        message_runtime: build_room_message_runtime(&realtime_profile)
+            .expect("shared message runtime should initialize"),
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_mins(1),
@@ -113,13 +126,13 @@ async fn test_cross_node_broadcast() {
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
         redis_client1.clone(),
-        conn1.clone(),
+        &conn1,
         "node1",
         shared_prefix.clone(),
     );
     let config2 = make_cluster_config_with_prefix(
         redis_client2.clone(),
-        conn2.clone(),
+        &conn2,
         "node2",
         shared_prefix,
     );
@@ -309,9 +322,8 @@ async fn test_dedup_with_different_events() {
 #[tokio::test]
 async fn test_single_node_mode_without_redis() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -358,7 +370,7 @@ async fn test_single_node_mode_without_redis() {
 async fn test_pubsub_subscription_tracking() {
     let (_container, redis_client, conn) = setup_redis().await;
 
-    let config = make_cluster_config(redis_client.clone(), conn.clone(), "node1");
+    let config = make_cluster_config(redis_client.clone(), &conn, "node1");
     let manager = ClusterManager::new(config, None, None)
         .await
         .expect("Failed to create ClusterManager");
@@ -391,7 +403,7 @@ async fn test_pubsub_subscription_tracking() {
 async fn test_multiple_subscriptions_same_room() {
     let (_container, redis_client, conn) = setup_redis().await;
 
-    let config = make_cluster_config(redis_client.clone(), conn.clone(), "node1");
+    let config = make_cluster_config(redis_client.clone(), &conn, "node1");
     let manager = ClusterManager::new(config, None, None)
         .await
         .expect("Failed to create ClusterManager");
@@ -452,13 +464,13 @@ async fn test_critical_event_delivery() {
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
         redis_client1.clone(),
-        conn1.clone(),
+        &conn1,
         "node1",
         shared_prefix.clone(),
     );
     let config2 = make_cluster_config_with_prefix(
         redis_client2.clone(),
-        conn2.clone(),
+        &conn2,
         "node2",
         shared_prefix,
     );
@@ -673,9 +685,8 @@ async fn test_critical_event_classification() {
 #[tokio::test]
 async fn test_broadcast_recipient_count() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -856,9 +867,8 @@ async fn test_dedup_key_from_event() {
 #[tokio::test]
 async fn test_get_room_subscribers() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         node_id: "standalone".to_string(),
         ..Default::default()
     };
@@ -892,9 +902,8 @@ async fn test_get_room_subscribers() {
 #[tokio::test]
 async fn test_cluster_metrics() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         node_id: "test_node".to_string(),
         ..Default::default()
     };

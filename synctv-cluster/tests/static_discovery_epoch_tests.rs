@@ -51,7 +51,7 @@ async fn setup_redis() -> (RedisContainer, redis::Client) {
 async fn test_static_discovery_epoch_fencing_preserves_newer_registration_on_unreachable_peer() {
     let (_redis_container, redis_client) = setup_redis().await;
     let registry = NodeRegistry::new(
-        redis_client.clone(),
+        synctv_core::coordination_runtime_from_client(redis_client.clone()),
         "self-node".to_string(),
         30,
         "static-discovery-epoch:",

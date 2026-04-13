@@ -127,7 +127,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
             warn!("Cluster health check failed: {}", e);
             Some("unhealthy".to_string())
         }
-        None => None, // No cluster manager, single-node mode
+        None => None, // No cluster realtime service, single-node mode
     };
 
     // Check WebSocket ticket service.
@@ -139,12 +139,19 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         if ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
             Some(health)
         } else {
+            let backend = svc.backend_name();
             error_messages.push(
-                "WsTicketService: memory mode is not safe in cluster mode (tickets created on one node cannot be validated on another)".to_string()
+                format!(
+                    "WsTicketService: backend '{backend}' is not safe in cluster mode \
+                     (tickets created on one node cannot be validated on another)"
+                )
             );
             is_healthy = false;
-            warn!("WsTicketService is using memory storage in cluster mode — cross-replica ticket validation will fail");
-            Some("unhealthy (memory, cluster mode)".to_string())
+            warn!(
+                backend = %backend,
+                "WsTicketService backend is not safe in cluster mode; cross-replica ticket validation will fail"
+            );
+            Some(format!("unhealthy ({backend}, cluster mode)"))
         }
     };
 
@@ -225,29 +232,29 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
     }
 }
 
-/// Check cluster health by verifying the `ClusterManager` is operational.
+/// Check cluster health by verifying the realtime cluster service is operational.
 ///
-/// Returns `None` if no cluster manager is configured (single-node mode).
-/// Returns `Some(Ok(()))` if the cluster manager is healthy.
-/// Returns `Some(Err(...))` if the cluster manager reports issues.
+/// Returns `None` if no cluster realtime service is configured (single-node mode).
+/// Returns `Some(Ok(()))` if the cluster runtime is healthy.
+/// Returns `Some(Err(...))` if the cluster runtime reports issues.
 fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     if !state.config.cluster_runtime_enabled() {
         return None;
     }
-    let Some(cm) = state.cluster_manager.as_ref() else {
+    let Some(event_service) = state.event_service.as_ref() else {
         return Some(Err(
-            "Cluster runtime is enabled but ClusterManager is not available".to_string(),
+            "Cluster runtime is enabled but realtime event service is not available".to_string(),
         ));
     };
-    let metrics = cm.metrics();
+    let metrics = event_service.metrics();
 
     // Verify node has a valid ID (non-empty)
-    if metrics.node_id.is_empty() {
+    if event_service.node_id().is_empty() {
         return Some(Err("Cluster node ID is empty".to_string()));
     }
 
     // If Redis pub/sub should be enabled but isn't, the node can't sync with the cluster
-    if !metrics.redis_enabled && state.redis_publish_tx.is_some() {
+    if !metrics.redis_enabled {
         return Some(Err("Cluster Redis pub/sub is not connected".to_string()));
     }
 
@@ -324,7 +331,7 @@ fn ws_ticket_backend_is_safe_for_mode(
     svc: &synctv_core::service::WsTicketService,
     cluster_mode: bool,
 ) -> bool {
-    !cluster_mode || svc.backend_name() == "redis"
+    !cluster_mode || svc.supports_cluster_runtime()
 }
 
 /// Check email service health
@@ -631,6 +638,7 @@ pub async fn prometheus_metrics(
 mod tests {
     use super::*;
     use crate::http::tests::test_app_state;
+    use async_trait::async_trait;
     use axum::extract::State;
     use axum::http::header::AUTHORIZATION;
     use axum::http::HeaderValue;
@@ -638,6 +646,53 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    struct SharedMockTicketStore;
+
+    #[async_trait]
+    impl synctv_core::service::TicketStore for SharedMockTicketStore {
+        async fn store(
+            &self,
+            _ticket: &str,
+            _data: &synctv_core::service::WsTicketData,
+            _ttl_secs: u64,
+        ) -> synctv_core::Result<()> {
+            Ok(())
+        }
+
+        async fn load(
+            &self,
+            _ticket: &str,
+            _expected_room_id: &synctv_core::models::RoomId,
+        ) -> synctv_core::Result<Option<synctv_core::service::WsTicketData>> {
+            Ok(None)
+        }
+
+        async fn claim(
+            &self,
+            _ticket: &str,
+            _expected_room_id: &synctv_core::models::RoomId,
+            _expected_ticket: &synctv_core::service::WsTicketData,
+        ) -> synctv_core::Result<bool> {
+            Ok(false)
+        }
+
+        async fn consume(
+            &self,
+            _ticket: &str,
+            _expected_room_id: &synctv_core::models::RoomId,
+        ) -> synctv_core::Result<Option<synctv_core::service::WsTicketData>> {
+            Ok(None)
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "shared-mock"
+        }
+
+        fn supports_cluster_runtime(&self) -> bool {
+            true
+        }
+    }
 
     #[tokio::test]
     async fn test_liveness_check_returns_ok() {
@@ -977,7 +1032,10 @@ mod tests {
 
     #[test]
     fn test_ws_ticket_memory_backend_is_only_unhealthy_when_cluster_enabled() {
-        let memory_tickets = synctv_core::service::WsTicketService::with_memory(None);
+        let memory_tickets = synctv_core::service::WsTicketService::from_store(
+            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+            None,
+        );
         assert!(
             ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
             "standalone mode should allow memory-backed ws tickets"
@@ -987,7 +1045,10 @@ mod tests {
             "cluster mode must reject memory-backed ws tickets"
         );
 
-        let redis = synctv_core::service::WsTicketService::with_memory(None);
+        let shared_tickets = synctv_core::service::WsTicketService::from_store(
+            Arc::new(SharedMockTicketStore),
+            None,
+        );
         let mut standalone = synctv_core::Config::default();
         standalone.cluster.enabled = false;
         assert!(
@@ -1003,14 +1064,25 @@ mod tests {
             "cluster-enabled config should be treated as cluster mode"
         );
         assert!(
-            check_ws_ticket_health(&redis).contains("memory"),
+            ws_ticket_backend_is_safe_for_mode(&shared_tickets, true),
+            "cluster mode should accept any store that advertises cluster capability"
+        );
+        assert!(
+            check_ws_ticket_health(&shared_tickets).contains("shared-mock"),
+            "health helper should expose backend mode"
+        );
+        assert!(
+            check_ws_ticket_health(&memory_tickets).contains("memory"),
             "health helper should expose backend mode"
         );
     }
 
     #[test]
     fn test_cluster_health_is_skipped_when_distributed_cluster_disabled() {
-        let memory_tickets = synctv_core::service::WsTicketService::with_memory(None);
+        let memory_tickets = synctv_core::service::WsTicketService::from_store(
+            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+            None,
+        );
         assert!(
             ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
             "helper should treat standalone mode as safe"

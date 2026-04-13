@@ -6,10 +6,10 @@
 //! ## State Storage
 //! `OAuth2` states are persisted via the [`OAuthStateStore`] trait. Two
 //! implementations are provided:
-//! - [`RedisOAuthStateStore`]: Redis-backed, required for cluster mode
-//!   (multi-replica) where the callback may hit a different node.
-//! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
-//!   Redis. Uses `moka::sync::Cache` with TTL-based expiry and bounded capacity.
+//! - [`RedisOAuthStateStore`]: shared cross-node storage for multi-replica
+//!   deployments where the callback may hit a different node.
+//! - [`InMemoryOAuthStateStore`]: local-only storage for standalone mode.
+//!   Uses `moka::sync::Cache` with TTL-based expiry and bounded capacity.
 
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use crate::{
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
     service::UserService,
-    Error, InternalExt, Result,
+    Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 // ============================================================================
@@ -59,6 +59,44 @@ pub trait OAuthStateStore: Send + Sync {
 
     /// Return the backend name (e.g. "redis", "memory").
     fn backend_name(&self) -> &'static str;
+
+    /// Whether this store can safely enforce single-use semantics across nodes.
+    ///
+    /// Clustered OAuth2 callback handling requires a shared state store because
+    /// the node that receives the callback may differ from the node that issued
+    /// the original authorization redirect.
+    fn supports_cross_node_single_use(&self) -> bool;
+}
+
+/// Build an [`OAuthStateStore`] from the shared-state profile.
+///
+/// This is the backend-agnostic wiring entry point for production/bootstrap
+/// code. Callers should depend on the returned trait object instead of
+/// branching on Redis or local storage directly.
+///
+/// # Errors
+///
+/// Returns an error when cluster mode requires shared state but no shared
+/// runtime is available.
+pub fn state_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn OAuthStateStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let shared_runtime = profile.require_shared_runtime("single-use OAuth2 state storage")?;
+            Ok(Arc::new(RedisOAuthStateStore::from_runtime(
+                shared_runtime,
+                profile.key_prefix().to_string(),
+            )))
+        }
+        SharedStateMode::SharedBestEffort => Ok(Arc::new(RedisOAuthStateStore::from_runtime(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        ))),
+        SharedStateMode::LocalOnly => Ok(Arc::new(InMemoryOAuthStateStore::new())),
+    }
 }
 
 // ============================================================================
@@ -70,8 +108,8 @@ pub trait OAuthStateStore: Send + Sync {
 /// States are stored as JSON with `SET EX` and consumed atomically with a
 /// Lua `GET + DEL` script (same pattern as `WsTicketService`).
 pub struct RedisOAuthStateStore {
-    /// Shared Redis connection handle that follows Sentinel failover.
-    conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    /// Redis runtime that yields a fresh connection snapshot per operation.
+    conn: std::sync::Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
 }
 
@@ -98,6 +136,14 @@ impl RedisOAuthStateStore {
         conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: impl Into<String>,
     ) -> Self {
+        Self::from_runtime(crate::shared_runtime(conn), key_prefix)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        conn: std::sync::Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             conn,
             key_prefix: Self::normalize_key_prefix(key_prefix),
@@ -106,7 +152,7 @@ impl RedisOAuthStateStore {
 
     /// Acquire a fresh ConnectionManager clone from the shared handle.
     async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+        self.conn.snapshot().await
     }
 
     fn redis_key(&self, token_id: &str) -> String {
@@ -132,6 +178,10 @@ where
 impl OAuthStateStore for RedisOAuthStateStore {
     fn backend_name(&self) -> &'static str {
         "redis"
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
     }
 
     async fn store(
@@ -268,6 +318,10 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         "memory"
     }
 
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
+
     async fn store(
         &self,
         token_id: &str,
@@ -351,7 +405,8 @@ struct OAuth2ProviderEntry {
 /// 3. Create/update user-provider mapping (NO TOKENS STORED)
 ///
 /// State storage is delegated to the [`OAuthStateStore`] trait. Inject a
-/// [`RedisOAuthStateStore`] for production; an in-memory implementation for tests.
+/// shared single-use store for clustered deployments and a local-only
+/// implementation for standalone/test environments.
 #[derive(Clone)]
 pub struct OAuth2Service {
     repository: UserOAuthProviderRepository,
@@ -382,31 +437,29 @@ impl OAuth2Service {
     ///
     /// # Arguments
     /// * `repository` — User OAuth provider repository
-    /// * `state_store` — use [`RedisOAuthStateStore`] in cluster mode
+    /// * `state_store` — use a shared single-use store in cluster mode
     /// * `cluster_mode` — whether cluster mode is enabled (multi-replica deployment)
     ///
     /// # Errors
-    /// Returns `Error::Internal` if `cluster_mode` is true but `state_store` is not
-    /// [`RedisOAuthStateStore`]. In-memory state storage is not safe in cluster mode
-    /// because `OAuth2` callbacks may hit different replicas.
+    /// Returns `Error::Internal` if `cluster_mode` is true but `state_store`
+    /// does not support cross-node single-use consumption. Local-only state
+    /// storage is not safe in cluster mode because `OAuth2` callbacks may hit
+    /// different replicas.
     pub fn new(
         repository: UserOAuthProviderRepository,
         state_store: Arc<dyn OAuthStateStore>,
         provider_registry: crate::oauth2::ProviderRegistry,
         cluster_mode: bool,
     ) -> Result<Self> {
-        // Validate that Redis-backed state store is used in cluster mode
-        if cluster_mode {
-            let backend = state_store.backend_name();
-            if backend != "redis" {
-                return Err(Error::Internal(
-                    "Redis is required for OAuth2 state storage in cluster mode. \
-                     OAuth2 states stored in memory are only visible on the replica that created them, \
-                     causing authentication failures when the callback hits a different replica. \
-                     Configure Redis to fix this."
-                        .to_string(),
-                ));
-            }
+        // Clustered callback handling requires shared single-use state storage.
+        if cluster_mode && !state_store.supports_cross_node_single_use() {
+            return Err(Error::Internal(
+                "cluster runtime requires shared single-use OAuth2 state storage. \
+                 Local-only state is only visible on the replica that created it, \
+                 causing authentication failures when the callback hits a different replica. \
+                 Configure a shared state backend to fix this."
+                    .to_string(),
+            ));
         }
 
         info!(
@@ -1116,6 +1169,7 @@ impl OAuth2Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RedisConnectionRuntime;
     use crate::oauth2::Provider as OAuth2ProviderTrait;
     use async_trait::async_trait;
     use sqlx::PgPool;
@@ -1123,6 +1177,86 @@ mod tests {
     // ========================================================================
     // Mock OAuth2 Provider
     // ========================================================================
+
+    #[tokio::test]
+    async fn test_redis_oauth_state_store_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let store = RedisOAuthStateStore::from_runtime(runtime.clone(), "synctv:");
+
+        assert!(
+            Arc::ptr_eq(&store.conn, &runtime),
+            "OAuth2 Redis store should retain the injected runtime object"
+        );
+    }
+
+    #[test]
+    fn test_state_store_from_shared_state_profile_uses_memory_without_shared_runtime() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+
+        let store = state_store_from_shared_state_profile(&profile)
+            .expect("standalone mode should allow local OAuth2 state storage");
+
+        assert_eq!(store.backend_name(), "memory");
+        assert!(
+            !store.supports_cross_node_single_use(),
+            "local store must not claim cross-node single-use guarantees"
+        );
+    }
+
+    #[test]
+    fn test_state_store_from_shared_state_profile_requires_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+
+        let Err(error) = state_store_from_shared_state_profile(&profile) else {
+            panic!("cluster mode must reject local OAuth2 state storage");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared single-use OAuth2 state storage"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_state_store_from_shared_state_profile_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedBestEffort,
+            Some(runtime),
+            "test:",
+        );
+
+        let store = state_store_from_shared_state_profile(&profile)
+            .expect("shared runtime profile should yield a distributed OAuth2 state store");
+
+        assert_eq!(store.backend_name(), "redis");
+        assert!(
+            store.supports_cross_node_single_use(),
+            "shared store must claim cross-node single-use guarantees"
+        );
+    }
 
     /// Mock `OAuth2` provider for testing authorization URL generation and code exchange.
     /// Returns configurable values without making real HTTP calls.
@@ -2421,9 +2555,9 @@ mod tests {
     // Cluster mode Redis dependency tests (TDD)
     // ========================================================================
 
-    /// Test: cluster mode with in-memory state store returns a descriptive error.
+    /// Test: cluster mode with a local-only state store returns a descriptive error.
     /// This is the core issue - in cluster mode, `OAuth2` states created on replica A
-    /// cannot be validated on replica B without shared Redis storage.
+    /// cannot be validated on replica B without shared single-use state storage.
     #[tokio::test]
     async fn test_cluster_mode_without_redis_returns_error() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
@@ -2439,7 +2573,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Cluster mode without Redis should return an error"
+            "Cluster mode without shared single-use state must return an error"
         );
 
         let err = result.unwrap_err();
@@ -2447,8 +2581,8 @@ mod tests {
 
         // Error message should be descriptive and mention the core issue
         assert!(
-            err_msg.contains("Redis is required"),
-            "Error should mention Redis is required; got: {err_msg}"
+            err_msg.contains("shared single-use OAuth2 state"),
+            "Error should mention shared single-use OAuth2 state; got: {err_msg}"
         );
         assert!(
             err_msg.contains("cluster mode") || err_msg.contains("cluster"),
@@ -2476,10 +2610,10 @@ mod tests {
         );
         let err_msg = result.unwrap_err().to_string();
 
-        // Should suggest configuring Redis
+        // Should suggest using a shared state backend
         assert!(
-            err_msg.contains("Configure Redis"),
-            "Error should suggest configuring Redis; got: {err_msg}"
+            err_msg.contains("Configure a shared state backend"),
+            "Error should suggest configuring a shared state backend; got: {err_msg}"
         );
     }
 

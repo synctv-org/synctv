@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::discovery::node_registry::NodeInfo;
-use crate::discovery::{NodeRegistry, ProbedNodeIdentity};
+use crate::discovery::{ClusterNodeDirectory, ProbedNodeIdentity};
 
 /// Number of consecutive probe failures before unregistering a peer.
 const FAILURE_THRESHOLD: u32 = 3;
@@ -59,15 +59,26 @@ impl Default for StaticDiscoveryConfig {
 /// the next probe cycle.
 pub struct StaticDiscovery {
     config: StaticDiscoveryConfig,
-    node_registry: Arc<NodeRegistry>,
+    node_registry: Arc<dyn ClusterNodeDirectory>,
     cancel_token: CancellationToken,
 }
 
 impl StaticDiscovery {
     /// Create a new StaticDiscovery
-    pub const fn new(
+    pub fn new<N>(
         config: StaticDiscoveryConfig,
-        node_registry: Arc<NodeRegistry>,
+        node_registry: Arc<N>,
+        cancel_token: CancellationToken,
+    ) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::from_runtime(config, node_registry, cancel_token)
+    }
+
+    pub fn from_runtime(
+        config: StaticDiscoveryConfig,
+        node_registry: Arc<dyn ClusterNodeDirectory>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {

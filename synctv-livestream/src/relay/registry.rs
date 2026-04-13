@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,45 @@ const REDIS_OPERATION_TIMEOUT_SECS: u64 = 5;
 const EPOCH_KEY_PREFIX: &str = "stream:epoch";
 const PUBLISHER_KEY_PREFIX: &str = "stream:publisher";
 const USER_PUBLISHERS_KEY_PREFIX: &str = "stream:user_publishers";
+
+#[async_trait]
+pub trait RegistryConnectionRuntime: Send + Sync {
+    async fn snapshot(&self) -> RedisConnectionManager;
+}
+
+struct DirectRegistryConnectionRuntime {
+    redis: RedisConnectionManager,
+}
+
+impl DirectRegistryConnectionRuntime {
+    const fn new(redis: RedisConnectionManager) -> Self {
+        Self { redis }
+    }
+}
+
+#[async_trait]
+impl RegistryConnectionRuntime for DirectRegistryConnectionRuntime {
+    async fn snapshot(&self) -> RedisConnectionManager {
+        self.redis.clone()
+    }
+}
+
+struct SharedRegistryConnectionRuntime {
+    redis: Arc<RwLock<RedisConnectionManager>>,
+}
+
+impl SharedRegistryConnectionRuntime {
+    const fn new(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
+        Self { redis }
+    }
+}
+
+#[async_trait]
+impl RegistryConnectionRuntime for SharedRegistryConnectionRuntime {
+    async fn snapshot(&self) -> RedisConnectionManager {
+        self.redis.read().await.clone()
+    }
+}
 
 /// Helper function to wrap async Redis operations with a timeout.
 /// Returns an error if the operation exceeds the specified duration.
@@ -119,7 +159,7 @@ impl PublisherInfo {
 ///   ownership must always be authoritative from Redis.
 #[derive(Clone)]
 pub struct StreamRegistry {
-    redis: Arc<RwLock<RedisConnectionManager>>,
+    redis: Arc<dyn RegistryConnectionRuntime>,
     key_prefix: String,
 }
 
@@ -127,28 +167,37 @@ impl StreamRegistry {
     /// Create a new stream registry
     #[must_use]
     pub fn new(redis: RedisConnectionManager) -> Self {
-        Self::new_with_shared_conn(Arc::new(RwLock::new(redis)))
+        Self::from_runtime(Arc::new(DirectRegistryConnectionRuntime::new(redis)), "")
     }
 
     /// Create a new stream registry backed by a shared Redis connection handle.
     #[must_use]
-    pub const fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
-        Self {
-            redis,
-            key_prefix: String::new(),
-        }
+    pub fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
+        Self::from_runtime(Arc::new(SharedRegistryConnectionRuntime::new(redis)), "")
     }
 
     /// Create a new stream registry with a Redis namespace prefix.
     #[must_use]
     pub fn with_key_prefix(redis: RedisConnectionManager, key_prefix: impl Into<String>) -> Self {
-        Self::with_shared_conn_and_key_prefix(Arc::new(RwLock::new(redis)), key_prefix)
+        Self::from_runtime(
+            Arc::new(DirectRegistryConnectionRuntime::new(redis)),
+            key_prefix,
+        )
     }
 
     /// Create a new stream registry with a shared Redis handle and key prefix.
     #[must_use]
     pub fn with_shared_conn_and_key_prefix(
         redis: Arc<RwLock<RedisConnectionManager>>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        Self::from_runtime(Arc::new(SharedRegistryConnectionRuntime::new(redis)), key_prefix)
+    }
+
+    /// Create a new stream registry from an abstract Redis runtime provider.
+    #[must_use]
+    pub fn from_runtime(
+        redis: Arc<dyn RegistryConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
         Self {
@@ -158,7 +207,7 @@ impl StreamRegistry {
     }
 
     async fn conn(&self) -> RedisConnectionManager {
-        self.redis.read().await.clone()
+        self.redis.snapshot().await
     }
 
     fn prefixed(&self, key: &str) -> String {

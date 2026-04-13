@@ -362,14 +362,13 @@ mod p1_cluster_cleanup_tests {
     #[tokio::test]
     async fn test_cancel_token_stops_heartbeat_loop() {
         use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-        use synctv_cluster::sync::cluster_manager::ClusterConfig;
+        use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
         use synctv_cluster::sync::ClusterManager;
 
         // Create ClusterManager in single-node mode
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
-            shared_redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "cancel-test-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -447,7 +446,13 @@ mod p1_cluster_cleanup_tests {
         // Create registry with local mode
         let client = redis::Client::open("redis://localhost:6379").unwrap();
         let registry = Arc::new(
-            NodeRegistry::new(client, "unregister-test-node".to_string(), 30, "test:").unwrap(),
+            NodeRegistry::new(
+                synctv_core::coordination_runtime_from_client(client),
+                "unregister-test-node".to_string(),
+                30,
+                "test:",
+            )
+            .unwrap(),
         );
 
         // Insert node info locally (simulating register)
@@ -521,7 +526,7 @@ mod p1_cluster_cleanup_tests {
         let redis_client =
             redis::Client::open(redis_url).expect("test Redis client should be created");
         let registry = NodeRegistry::new(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             "observer-node".to_string(),
             30,
             &config.redis.key_prefix,
@@ -575,7 +580,7 @@ mod p1_cluster_cleanup_tests {
         let redis_client =
             redis::Client::open(redis_url).expect("test Redis client should be created");
         let registry = NodeRegistry::new(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             "observer-node".to_string(),
             30,
             &config.redis.key_prefix,

@@ -674,16 +674,24 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     } else {
         format!("redis://{redis_host}:{redis_port}")
     };
-    let subscriber = Arc::new(synctv_core::cache::CacheInvalidationService::new(
-        Some(redis::Client::open(redis_url.clone()).unwrap()),
+    let subscriber = Arc::new(synctv_core::cache::CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(
+            redis::aio::ConnectionManager::new(redis::Client::open(redis_url.clone()).unwrap())
+                .await
+                .unwrap(),
+        ),
         "node-subscriber".to_string(),
         cache_stream.clone(),
     ));
     subscriber.start().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let publisher = Arc::new(synctv_core::cache::CacheInvalidationService::new(
-        Some(redis::Client::open(redis_url).unwrap()),
+    let publisher = Arc::new(synctv_core::cache::CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(
+            redis::aio::ConnectionManager::new(redis::Client::open(redis_url).unwrap())
+                .await
+                .unwrap(),
+        ),
         "node-publisher".to_string(),
         cache_stream,
     ));

@@ -93,8 +93,8 @@ pub struct MediaService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
     providers_manager: Arc<ProvidersManager>,
-    /// Optional notification service for broadcasting media changes to local WebSocket clients
-    notification_service: Option<NotificationService>,
+    /// Local room event bus for media/domain notifications
+    notification_service: NotificationService,
     /// Optional credential encryption for protecting sensitive data in `source_config`
     credential_encryption: Option<crate::service::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
@@ -174,13 +174,14 @@ impl MediaService {
         playlist_repo: PlaylistRepository,
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
+        notification_service: NotificationService,
     ) -> Self {
         Self {
             media_repo,
             playlist_repo,
             permission_service,
             providers_manager,
-            notification_service: None,
+            notification_service,
             credential_encryption: None,
             credential_repo: None,
         }
@@ -202,11 +203,6 @@ impl MediaService {
     #[must_use]
     pub const fn credential_repo(&self) -> Option<&Arc<UserProviderCredentialRepository>> {
         self.credential_repo.as_ref()
-    }
-
-    /// Set the notification service for broadcasting media changes to local WebSocket clients
-    pub fn set_notification_service(&mut self, service: NotificationService) {
-        self.notification_service = Some(service);
     }
 
     /// Set credential encryption for protecting sensitive data in `source_config`
@@ -362,24 +358,21 @@ impl MediaService {
             "Media added to playlist"
         );
 
-        // Broadcast media added event to local WebSocket clients
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns
-                .notify_media_added(
-                    &room_id,
-                    created_media.id.as_str(),
-                    &created_media.name,
-                    "", // URL is generated dynamically at playback time
-                    created_media.position,
-                )
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    "Failed to broadcast media added event"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_media_added(
+                &room_id,
+                created_media.id.as_str(),
+                &created_media.name,
+                "", // URL is generated dynamically at playback time
+                created_media.position,
+            )
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                "Failed to broadcast media added event"
+            );
         }
 
         Ok(created_media)
@@ -474,23 +467,21 @@ impl MediaService {
             "Media added to playlist by admin"
         );
 
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns
-                .notify_media_added(
-                    &room_id,
-                    created_media.id.as_str(),
-                    &created_media.name,
-                    "",
-                    created_media.position,
-                )
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    "Failed to broadcast media added event"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_media_added(
+                &room_id,
+                created_media.id.as_str(),
+                &created_media.name,
+                "",
+                created_media.position,
+            )
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                "Failed to broadcast media added event"
+            );
         }
 
         Ok(created_media)
@@ -620,20 +611,17 @@ impl MediaService {
             "Batch added media to playlist"
         );
 
-        // Broadcast media added events to local WebSocket clients
-        if let Some(ref ns) = self.notification_service {
-            for item in &created_items {
-                if let Err(e) = ns
-                    .notify_media_added(&room_id, item.id.as_str(), &item.name, "", item.position)
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        room_id = %room_id.as_str(),
-                        media_id = %item.id.as_str(),
-                        "Failed to broadcast media added event"
-                    );
-                }
+        for item in &created_items {
+            if let Err(e) = self
+                .notification_service
+                .notify_media_added(&room_id, item.id.as_str(), &item.name, "", item.position)
+            {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    media_id = %item.id.as_str(),
+                    "Failed to broadcast media added event"
+                );
             }
         }
 
@@ -708,23 +696,20 @@ impl MediaService {
                         "Media edited"
                     );
 
-                    // Broadcast media updated event to local WebSocket clients and cluster
-                    if let Some(ref ns) = self.notification_service {
-                        if let Err(e) = ns
-                            .notify_media_updated(
-                                &room_id,
-                                updated_media.id.as_str(),
-                                &updated_media.name,
-                                updated_media.position,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id.as_str(),
-                                "Failed to broadcast media updated event"
-                            );
-                        }
+                    if let Err(e) = self
+                        .notification_service
+                        .notify_media_updated(
+                            &room_id,
+                            updated_media.id.as_str(),
+                            &updated_media.name,
+                            updated_media.position,
+                        )
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            "Failed to broadcast media updated event"
+                        );
                     }
 
                     return Ok(updated_media);
@@ -795,22 +780,20 @@ impl MediaService {
                         "Media edited by admin"
                     );
 
-                    if let Some(ref ns) = self.notification_service {
-                        if let Err(e) = ns
-                            .notify_media_updated(
-                                &room_id,
-                                updated_media.id.as_str(),
-                                &updated_media.name,
-                                updated_media.position,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id.as_str(),
-                                "Failed to broadcast media updated event"
-                            );
-                        }
+                    if let Err(e) = self
+                        .notification_service
+                        .notify_media_updated(
+                            &room_id,
+                            updated_media.id.as_str(),
+                            &updated_media.name,
+                            updated_media.position,
+                        )
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            "Failed to broadcast media updated event"
+                        );
                     }
 
                     return Ok(updated_media);
@@ -903,15 +886,15 @@ impl MediaService {
             "Media removed from playlist"
         );
 
-        // Broadcast media removed event to local WebSocket clients
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_media_removed(&room_id, media_id.as_str()).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    "Failed to broadcast media removed event"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_media_removed(&room_id, media_id.as_str())
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                "Failed to broadcast media removed event"
+            );
         }
 
         Ok(())
@@ -1090,17 +1073,17 @@ impl MediaService {
             "Bulk removed media from playlist"
         );
 
-        // Broadcast media removed events to local WebSocket clients
-        if let Some(ref ns) = self.notification_service {
-            for mid in &media_ids {
-                if let Err(e) = ns.notify_media_removed(&room_id, mid.as_str()).await {
-                    tracing::warn!(
-                        error = %e,
-                        room_id = %room_id.as_str(),
-                        media_id = %mid.as_str(),
-                        "Failed to broadcast media removed event"
-                    );
-                }
+        for mid in &media_ids {
+            if let Err(e) = self
+                .notification_service
+                .notify_media_removed(&room_id, mid.as_str())
+            {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    media_id = %mid.as_str(),
+                    "Failed to broadcast media removed event"
+                );
             }
         }
 
@@ -1283,24 +1266,87 @@ impl MediaService {
             "Media moved"
         );
 
-        if let Some(ref ns) = self.notification_service {
-            let moved_within_same_scope = moved.iter().all(|media| {
-                original_scope_by_id
-                    .get(&media.id)
-                    .is_some_and(|original_scope| *original_scope == media.playlist_id)
-            });
+        let moved_within_same_scope = moved.iter().all(|media| {
+            original_scope_by_id
+                .get(&media.id)
+                .is_some_and(|original_scope| *original_scope == media.playlist_id)
+        });
 
-            if moved_within_same_scope {
-                if moved.len() == 1 {
-                    let media = &moved[0];
-                    if let Err(e) = ns
+        if moved_within_same_scope {
+            if moved.len() == 1 {
+                let media = &moved[0];
+                if let Err(e) = self
+                    .notification_service
+                    .notify_media_updated(
+                        &room_id,
+                        media.id.as_str(),
+                        &media.name,
+                        media.position,
+                    )
+                {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        media_id = %media.id.as_str(),
+                        "Failed to broadcast media moved event"
+                    );
+                }
+            } else {
+                let moved_ids: Vec<String> = moved
+                    .iter()
+                    .map(|media| media.id.as_str().to_string())
+                    .collect();
+                if let Err(e) = self
+                    .notification_service
+                    .notify_playlist_reordered(&room_id, &moved_ids)
+                {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        "Failed to broadcast playlist reordered event"
+                    );
+                }
+            }
+        } else {
+            for media in &moved {
+                if let Some(original_scope) = original_scope_by_id.get(&media.id) {
+                    if *original_scope != media.playlist_id {
+                        if let Err(e) = self
+                            .notification_service
+                            .notify_media_removed(&room_id, media.id.as_str())
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                media_id = %media.id.as_str(),
+                                "Failed to broadcast moved media removal event"
+                            );
+                        }
+                        if let Err(e) = self
+                            .notification_service
+                            .notify_media_added(
+                                &room_id,
+                                media.id.as_str(),
+                                &media.name,
+                                "",
+                                media.position,
+                            )
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                media_id = %media.id.as_str(),
+                                "Failed to broadcast moved media add event"
+                            );
+                        }
+                    } else if let Err(e) = self
+                        .notification_service
                         .notify_media_updated(
                             &room_id,
                             media.id.as_str(),
                             &media.name,
                             media.position,
                         )
-                        .await
                     {
                         tracing::warn!(
                             error = %e,
@@ -1308,67 +1354,6 @@ impl MediaService {
                             media_id = %media.id.as_str(),
                             "Failed to broadcast media moved event"
                         );
-                    }
-                } else {
-                    let moved_ids: Vec<String> = moved
-                        .iter()
-                        .map(|media| media.id.as_str().to_string())
-                        .collect();
-                    if let Err(e) = ns.notify_playlist_reordered(&room_id, &moved_ids).await {
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id.as_str(),
-                            "Failed to broadcast playlist reordered event"
-                        );
-                    }
-                }
-            } else {
-                for media in &moved {
-                    if let Some(original_scope) = original_scope_by_id.get(&media.id) {
-                        if *original_scope != media.playlist_id {
-                            if let Err(e) =
-                                ns.notify_media_removed(&room_id, media.id.as_str()).await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    room_id = %room_id.as_str(),
-                                    media_id = %media.id.as_str(),
-                                    "Failed to broadcast moved media removal event"
-                                );
-                            }
-                            if let Err(e) = ns
-                                .notify_media_added(
-                                    &room_id,
-                                    media.id.as_str(),
-                                    &media.name,
-                                    "",
-                                    media.position,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    room_id = %room_id.as_str(),
-                                    media_id = %media.id.as_str(),
-                                    "Failed to broadcast moved media add event"
-                                );
-                            }
-                        } else if let Err(e) = ns
-                            .notify_media_updated(
-                                &room_id,
-                                media.id.as_str(),
-                                &media.name,
-                                media.position,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id.as_str(),
-                                media_id = %media.id.as_str(),
-                                "Failed to broadcast media moved event"
-                            );
-                        }
                     }
                 }
             }

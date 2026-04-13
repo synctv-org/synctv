@@ -1,10 +1,11 @@
+use async_trait::async_trait;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::{models::id::{RoomId, UserId}, RedisConnectionRuntime};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -16,6 +17,7 @@ use tracing::{debug, info, warn};
 const CRITICAL_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 use super::events::ClusterEvent;
+use super::runtime::RoomMessageRuntime;
 
 /// Notification about room lifecycle changes (first subscriber / last unsubscribe).
 ///
@@ -182,7 +184,7 @@ enum TargetedDelivery {
 ///
 /// With Redis configured, subscription state is persisted for cross-replica visibility
 /// and recovery after restarts. Local DashMaps serve as a fast cache.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RoomMessageHub {
     /// Map of `room_id` -> subscribers indexed by connection_id (local cache)
     rooms: Arc<DashMap<RoomId, HashMap<ConnectionId, Subscriber>>>,
@@ -198,7 +200,7 @@ pub struct RoomMessageHub {
     /// Optional Redis connection for distributed subscription state.
     /// When present, subscription relationships are persisted to Redis for
     /// cross-replica visibility and recovery. When absent, operates local-only.
-    redis_conn: Option<RedisConnHandle>,
+    redis_conn: Option<Arc<dyn RedisConnectionRuntime>>,
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
@@ -232,10 +234,16 @@ pub struct RoomMessageHub {
     stale_cleanup_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
-#[derive(Clone, Debug)]
-enum RedisConnHandle {
-    Direct(redis::aio::ConnectionManager),
-    Shared(std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>),
+impl std::fmt::Debug for RoomMessageHub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoomMessageHub")
+            .field("rooms", &self.rooms.len())
+            .field("connections", &self.connections.len())
+            .field("redis_enabled", &self.redis_conn.is_some())
+            .field("redis_key_prefix", &self.redis_key_prefix)
+            .field("redis_key_ttl_secs", &self.redis_key_ttl_secs)
+            .finish()
+    }
 }
 
 impl RoomMessageHub {
@@ -310,6 +318,21 @@ impl RoomMessageHub {
         }
     }
 
+    /// Build a room message hub from an optional shared runtime.
+    ///
+    /// When no shared runtime is provided, the hub stays local-only.
+    #[must_use]
+    pub(crate) fn from_redis_runtime(
+        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        key_prefix: &str,
+    ) -> Self {
+        if let Some(redis_runtime) = redis_runtime {
+            Self::new().with_redis_runtime(redis_runtime, key_prefix)
+        } else {
+            Self::new()
+        }
+    }
+
     /// Enable distributed subscription state via Redis.
     ///
     /// When Redis is configured, subscription relationships are persisted to Redis
@@ -324,20 +347,12 @@ impl RoomMessageHub {
     ///
     /// Both tasks are cancelled when `shutdown()` is called.
     #[must_use]
-    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
-        self.redis_conn = Some(RedisConnHandle::Direct(conn));
-        self.redis_key_prefix = key_prefix.to_string();
-        self.start();
-        self
-    }
-
-    #[must_use]
-    pub fn with_shared_redis(
+    pub(crate) fn with_redis_runtime(
         mut self,
-        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        conn: Arc<dyn RedisConnectionRuntime>,
         key_prefix: &str,
     ) -> Self {
-        self.redis_conn = Some(RedisConnHandle::Shared(conn));
+        self.redis_conn = Some(conn);
         self.redis_key_prefix = key_prefix.to_string();
         self.start();
         self
@@ -345,8 +360,7 @@ impl RoomMessageHub {
 
     async fn redis_conn_clone(&self) -> Option<redis::aio::ConnectionManager> {
         match &self.redis_conn {
-            Some(RedisConnHandle::Direct(conn)) => Some(conn.clone()),
-            Some(RedisConnHandle::Shared(conn)) => Some(conn.read().await.clone()),
+            Some(conn) => Some(conn.snapshot().await),
             None => None,
         }
     }
@@ -618,10 +632,7 @@ impl RoomMessageHub {
                 let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
                 let cleanup_fut = async move {
-                    let mut conn_clone = match redis_conn {
-                        RedisConnHandle::Direct(conn) => conn,
-                        RedisConnHandle::Shared(conn) => conn.read().await.clone(),
-                    };
+                    let mut conn_clone = redis_conn.snapshot().await;
                     let mut cleanup_failed = false;
 
                     // Remove connection from room's subscriber hash
@@ -1122,10 +1133,7 @@ impl RoomMessageHub {
         let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
         let cleanup_fut = async move {
-            let mut conn_clone = match redis_conn {
-                RedisConnHandle::Direct(conn) => conn,
-                RedisConnHandle::Shared(conn) => conn.read().await.clone(),
-            };
+            let mut conn_clone = redis_conn.snapshot().await;
             let mut cleanup_failed = false;
 
             if let Err(e) = conn_clone
@@ -1186,10 +1194,7 @@ impl RoomMessageHub {
                 self.redis_key_prefix,
                 room_id.as_str()
             );
-            let mut conn_clone = match conn {
-                RedisConnHandle::Direct(conn) => conn.clone(),
-                RedisConnHandle::Shared(conn) => conn.read().await.clone(),
-            };
+            let mut conn_clone = conn.snapshot().await;
 
             match conn_clone
                 .hgetall::<_, Vec<(String, String)>>(&room_key)
@@ -1488,6 +1493,91 @@ impl RoomMessageHub {
 impl Default for RoomMessageHub {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl RoomMessageRuntime for RoomMessageHub {
+    fn subscribe_lifecycle(&self) -> broadcast::Receiver<RoomLifecycleEvent> {
+        RoomMessageHub::subscribe_lifecycle(self)
+    }
+
+    async fn subscribe(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        connection_id: ConnectionId,
+    ) -> crate::error::Result<mpsc::Receiver<ClusterEvent>> {
+        RoomMessageHub::subscribe(self, room_id, user_id, connection_id).await
+    }
+
+    fn unsubscribe(&self, connection_id: &str) {
+        RoomMessageHub::unsubscribe(self, connection_id);
+    }
+
+    fn broadcast(&self, room_id: &RoomId, event: &ClusterEvent) -> usize {
+        RoomMessageHub::broadcast(self, room_id, event)
+    }
+
+    async fn broadcast_reliably(&self, room_id: &RoomId, event: ClusterEvent) -> usize {
+        RoomMessageHub::broadcast_reliably(self, room_id, event).await
+    }
+
+    async fn broadcast_to_connection(
+        &self,
+        room_id: &RoomId,
+        connection_id: &str,
+        event: ClusterEvent,
+    ) -> usize {
+        RoomMessageHub::broadcast_to_connection(self, room_id, connection_id, event).await
+    }
+
+    fn room_count(&self) -> usize {
+        RoomMessageHub::room_count(self)
+    }
+
+    fn active_room_ids(&self) -> Vec<RoomId> {
+        RoomMessageHub::active_room_ids(self)
+    }
+
+    fn connection_count(&self) -> usize {
+        RoomMessageHub::connection_count(self)
+    }
+
+    fn remove_room(&self, room_id: &RoomId) {
+        RoomMessageHub::remove_room(self, room_id);
+    }
+
+    fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+        RoomMessageHub::get_room_subscribers(self, room_id)
+    }
+
+    async fn get_room_subscribers_cluster_wide(
+        &self,
+        room_id: &RoomId,
+    ) -> Vec<(UserId, ConnectionId)> {
+        RoomMessageHub::get_room_subscribers_distributed(self, room_id).await
+    }
+
+    async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String> {
+        RoomMessageHub::audit_redis_subscriptions(self).await
+    }
+
+    fn spawn_shared_subscription_cleanup_task(
+        &self,
+        cleanup_interval: Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        RoomMessageHub::spawn_stale_subscription_cleanup_task(self, cleanup_interval, cancel_token)
+    }
+
+    async fn shutdown(&self) {
+        RoomMessageHub::shutdown(self).await;
+    }
+
+    #[cfg(test)]
+    fn background_shutdown_requested(&self) -> bool {
+        RoomMessageHub::background_shutdown_requested(self)
     }
 }
 

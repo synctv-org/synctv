@@ -24,6 +24,11 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
+use synctv_core::{
+    models::{MediaId, Room, RoomStatus, UserId, UserStatus},
+    service::{PublishKeyService, RoomService, UserService},
+    RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
+};
 use synctv_livestream::api::StreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::AuthCallback;
@@ -31,10 +36,137 @@ use tokio::sync::RwLock;
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
-use synctv_core::{
-    models::{MediaId, Room, RoomStatus, UserId, UserStatus},
-    service::{PublishKeyService, RoomService, UserService},
-};
+#[allow(dead_code)]
+#[async_trait]
+pub trait UserStreamIndex: Send + Sync {
+    async fn put(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        media_id: &str,
+        ttl_secs: i64,
+    ) -> anyhow::Result<()>;
+
+    async fn delete(&self, user_id: &str) -> anyhow::Result<()>;
+
+    async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>>;
+
+    fn backend_name(&self) -> &'static str;
+}
+
+#[derive(Default)]
+pub struct LocalOnlyUserStreamIndex;
+
+#[async_trait]
+impl UserStreamIndex for LocalOnlyUserStreamIndex {
+    async fn put(
+        &self,
+        _user_id: &str,
+        _room_id: &str,
+        _media_id: &str,
+        _ttl_secs: i64,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete(&self, _user_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn get(&self, _user_id: &str) -> anyhow::Result<Option<(String, String)>> {
+        Ok(None)
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "local-only"
+    }
+}
+
+pub struct SharedUserStreamIndex {
+    redis_runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: String,
+}
+
+impl SharedUserStreamIndex {
+    #[must_use]
+    pub fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
+        Self {
+            redis_runtime,
+            key_prefix,
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn new(shared_conn: Arc<RwLock<redis::aio::ConnectionManager>>, key_prefix: String) -> Self {
+        Self::from_runtime(synctv_core::shared_runtime(shared_conn), key_prefix)
+    }
+
+    fn user_stream_key(&self, user_id: &str) -> String {
+        format!("{}rtmp:user_stream:{}", self.key_prefix, user_id)
+    }
+
+    async fn redis_conn_snapshot(&self) -> redis::aio::ConnectionManager {
+        self.redis_runtime.snapshot().await
+    }
+}
+
+#[async_trait]
+impl UserStreamIndex for SharedUserStreamIndex {
+    async fn put(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        media_id: &str,
+        ttl_secs: i64,
+    ) -> anyhow::Result<()> {
+        let stream_value = format!("{room_id}|{media_id}");
+        let redis_key = self.user_stream_key(user_id);
+        let mut conn = self.redis_conn_snapshot().await;
+        let _: ((), i64) = redis::pipe()
+            .set(&redis_key, &stream_value)
+            .expire(&redis_key, ttl_secs)
+            .query_async(&mut conn)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete(&self, user_id: &str) -> anyhow::Result<()> {
+        let mut conn = self.redis_conn_snapshot().await;
+        let key = self.user_stream_key(user_id);
+        let _: () = redis::cmd("DEL").arg(&key).query_async(&mut conn).await?;
+        Ok(())
+    }
+
+    async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>> {
+        let mut conn = self.redis_conn_snapshot().await;
+        let key = self.user_stream_key(user_id);
+        let result: Option<String> = redis::cmd("GET").arg(&key).query_async(&mut conn).await?;
+        Ok(result.and_then(|stream_value| {
+            stream_value
+                .split_once('|')
+                .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
+        }))
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
+pub fn user_stream_index_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> synctv_core::Result<Arc<dyn UserStreamIndex>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => Ok(Arc::new(SharedUserStreamIndex::from_runtime(
+            profile.require_shared_runtime("RTMP user stream index")?,
+            profile.key_prefix().to_string(),
+        ))),
+        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => {
+            Ok(Arc::new(LocalOnlyUserStreamIndex))
+        }
+    }
+}
 
 /// Stream lifecycle event emitted on publish/unpublish
 #[derive(Debug, Clone)]
@@ -89,23 +221,11 @@ pub struct SyncTvRtmpAuth {
     api_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
-    /// Redis key prefix from config (e.g., "synctv:") for multi-instance isolation
-    key_prefix: String,
     /// Optional shared restart flag from LivestreamServer. When set, new
     /// publications are rejected during the StreamHub cleanup/re-register window.
     is_restarting: Option<Arc<AtomicBool>>,
-    /// Optional Redis connection for cross-replica `user_id → stream_key` mapping.
-    ///
-    /// When set, each successful publish auth additionally writes:
-    ///   `SET {key_prefix}rtmp:user_stream:{user_id} {room_id}|{media_id}`
-    /// with a per-key TTL matching the publisher TTL.  This allows any replica to
-    /// resolve which stream a user is publishing without querying the local
-    /// in-memory tracker (which is only populated on the replica that authenticated
-    /// the publisher). Each user gets an individual TTL instead of sharing a hash
-    /// where EXPIRE would reset the TTL for all users on every write.
-    ///
-    /// On unpublish, the key is removed: `DEL {key_prefix}rtmp:user_stream:{user_id}`.
-    redis_conn: Option<Arc<RwLock<redis::aio::ConnectionManager>>>,
+    /// Shared user→stream index used for cross-node lookup when available.
+    user_stream_index: Arc<dyn UserStreamIndex>,
     /// Epochs captured after successful auth-phase registration and used to fence
     /// later unpublish/rollback cleanup for the same logical stream.
     pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
@@ -122,7 +242,6 @@ impl SyncTvRtmpAuth {
         node_id: String,
         api_address: String,
         stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
-        key_prefix: String,
     ) -> Self {
         Self {
             room_service,
@@ -133,38 +252,16 @@ impl SyncTvRtmpAuth {
             node_id,
             api_address,
             stream_event_tx,
-            key_prefix,
             is_restarting: None,
-            redis_conn: None,
+            user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
             pending_publish_cleanups: Arc::new(DashMap::new()),
         }
     }
 
-    /// Build a per-user Redis key for user stream mapping, including the configured prefix.
-    ///
-    /// Each user gets their own key (`{prefix}rtmp:user_stream:{user_id}`) with an
-    /// individual TTL, instead of sharing a single hash where EXPIRE resets TTL for
-    /// all users on every write.
-    fn user_stream_key(&self, user_id: &str) -> String {
-        format!("{}rtmp:user_stream:{}", self.key_prefix, user_id)
-    }
-
-    /// Attach a Redis connection for cross-replica user→stream mapping.
-    ///
-    /// Call this after construction when a Redis connection is available.
-    /// If not called, cross-replica user→stream lookup falls back to the
-    /// publisher registry's reverse index (`stream:user_publishers:{user_id}`).
     #[must_use]
-    pub fn with_redis(mut self, conn: Arc<RwLock<redis::aio::ConnectionManager>>) -> Self {
-        self.redis_conn = Some(conn);
+    pub fn with_user_stream_index(mut self, index: Arc<dyn UserStreamIndex>) -> Self {
+        self.user_stream_index = index;
         self
-    }
-
-    async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_conn {
-            Some(conn) => Some(conn.read().await.clone()),
-            None => None,
-        }
     }
 
     /// Reject new RTMP publications while StreamHub is restarting.
@@ -294,18 +391,14 @@ impl SyncTvRtmpAuth {
         if user_id.is_empty() {
             return;
         }
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let key = self.user_stream_key(user_id);
-            let result: Result<(), redis::RedisError> =
-                redis::cmd("DEL").arg(&key).query_async(&mut conn).await;
-            if let Err(e) = result {
-                tracing::warn!(
-                    user_id = %user_id,
-                    "Failed to remove rtmp:user_stream entry on {} (non-fatal): {}",
-                    context,
-                    e
-                );
-            }
+        if let Err(error) = self.user_stream_index.delete(user_id).await {
+            tracing::warn!(
+                user_id = %user_id,
+                backend = %self.user_stream_index.backend_name(),
+                "Failed to remove user-stream index entry on {} (non-fatal): {}",
+                context,
+                error
+            );
         }
     }
 }
@@ -819,58 +912,47 @@ impl SyncTvRtmpAuth {
             registered_epoch,
         );
 
-        // Write an additional cross-replica user→stream mapping to Redis.
-        // Key: `{prefix}rtmp:user_stream:{user_id}` (per-user key with individual TTL)
-        // Value: `{room_id}|{media_id}` (using `|` separator since shared base62 IDs only
-        //        contain ASCII alphanumeric characters, so `|` is unambiguous)
-        //
+        // Write an additional cross-node user→stream index entry.
         // This complements the Set-based `stream:user_publishers:{user_id}` index
-        // already written by try_register_publisher_with_user.  The per-user key
-        // provides O(1) lookup on any replica when only one active stream per user
-        // is expected, with individual TTL per user instead of resetting a shared
-        // hash TTL on every write.
+        // already written by try_register_publisher_with_user.
         //
-        // Issue #45: if SET fails after registration succeeded, we roll back the
-        // publisher registration to keep Redis consistent.
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let stream_value = format!("{}|{}", validated.room_id, validated.media_id);
-            let redis_key = self.user_stream_key(&validated.user_id);
-            // SET + EXPIRE in a single pipeline for atomicity
-            let set_result: Result<((), i64), redis::RedisError> = redis::pipe()
-                .set(&redis_key, &stream_value)
-                .expire(&redis_key, PUBLISHER_TTL_SECS)
-                .query_async(&mut conn)
-                .await;
-            if let Err(e) = set_result {
-                // Issue #45: SET failed after registration — roll back the publisher
-                // registration so we don't leave an inconsistent state where the
-                // publisher slot is occupied but the user→stream mapping is absent.
+        // Issue #45: if the shared index write fails after registration succeeded,
+        // roll back the publisher registration to keep the shared state consistent.
+        if let Err(error) = self
+            .user_stream_index
+            .put(
+                &validated.user_id,
+                &validated.room_id,
+                &validated.media_id,
+                PUBLISHER_TTL_SECS,
+            )
+            .await
+        {
+            tracing::error!(
+                user_id = %validated.user_id,
+                backend = %self.user_stream_index.backend_name(),
+                "Failed to write shared user-stream index after publisher registration: {}. \
+                 Rolling back publisher registration to maintain consistency.",
+                error
+            );
+            if let Err(unreg_err) = self
+                .registry
+                .unregister_publisher_if_epoch_matches(
+                    &validated.room_id,
+                    &validated.media_id,
+                    registered_epoch,
+                )
+                .await
+            {
                 tracing::error!(
-                    user_id = %validated.user_id,
-                    stream_value = %stream_value,
-                    "Failed to write rtmp:user_stream to Redis after publisher registration: {}. \
-                     Rolling back publisher registration to maintain consistency.",
-                    e
+                    room_id = %validated.room_id,
+                    media_id = %validated.media_id,
+                    "Rollback of publisher registration also failed: {}. \
+                     Registry TTL will eventually expire the stale entry.",
+                    unreg_err
                 );
-                if let Err(unreg_err) = self
-                    .registry
-                    .unregister_publisher_if_epoch_matches(
-                        &validated.room_id,
-                        &validated.media_id,
-                        registered_epoch,
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        room_id = %validated.room_id,
-                        media_id = %validated.media_id,
-                        "Rollback of publisher registration also failed: {}. \
-                         Redis TTL will eventually expire the stale entry.",
-                        unreg_err
-                    );
-                }
-                return Err(format!("Failed to write user stream mapping to Redis: {e}").into());
             }
+            return Err(format!("Failed to write shared user-stream index: {error}").into());
         }
 
         // Track user->stream mapping locally for kick-on-ban (O(1) local lookup)
@@ -907,7 +989,7 @@ impl SyncTvRtmpAuth {
     /// falling back to Redis if not found locally (cross-replica lookup).
     ///
     /// Returns `Some((room_id, media_id))` if the user is actively publishing.
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub async fn get_user_stream(&self, user_id: &str) -> Option<(String, String)> {
         // Fast path: check local in-memory tracker
         let local = self.user_stream_tracker.get_user_streams(user_id);
@@ -915,27 +997,17 @@ impl SyncTvRtmpAuth {
             return local.into_iter().next();
         }
 
-        // Slow path: check Redis cross-replica mapping ({key_prefix}rtmp:user_stream:{user_id})
-        if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let key = self.user_stream_key(user_id);
-            let result: Result<Option<String>, redis::RedisError> =
-                redis::cmd("GET").arg(&key).query_async(&mut conn).await;
-            match result {
-                Ok(Some(stream_value)) => {
-                    // Value format: "{room_id}|{media_id}" — `|` is safe because
-                    // Shared base62 IDs only use ASCII alphanumeric characters.
-                    if let Some((room_id, media_id)) = stream_value.split_once('|') {
-                        return Some((room_id.to_string(), media_id.to_string()));
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        "Failed to query rtmp:user_stream from Redis: {}",
-                        e
-                    );
-                }
+        // Slow path: check the shared cross-node user-stream index.
+        match self.user_stream_index.get(user_id).await {
+            Ok(Some(stream)) => return Some(stream),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    backend = %self.user_stream_index.backend_name(),
+                    "Failed to query shared user-stream index: {}",
+                    error
+                );
             }
         }
 
@@ -1235,7 +1307,7 @@ mod tests {
                         60,
                     ),
                     synctv_core::config::PasswordComplexityConfig::default(),
-                    Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                    Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                         128, 3600, 86400,
                     )),
                     synctv_core::cache::KeyBuilder::new("test"),
@@ -1257,7 +1329,7 @@ mod tests {
                     60,
                 ),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
                 )),
                 synctv_core::cache::KeyBuilder::new("test"),
@@ -1274,7 +1346,6 @@ mod tests {
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
             None,
-            "test:".to_string(),
         )
         .with_restarting_flag(restarting);
 
@@ -1672,7 +1743,7 @@ mod tests {
                     60,
                 ),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
                 )),
                 synctv_core::cache::KeyBuilder::new("test"),
@@ -1694,7 +1765,6 @@ mod tests {
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
             None,
-            "test:".to_string(),
         )
     }
 
@@ -1779,7 +1849,7 @@ mod tests {
                         60,
                     ),
                     synctv_core::config::PasswordComplexityConfig::default(),
-                    Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                    Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                         128, 3600, 86400,
                     )),
                     synctv_core::cache::KeyBuilder::new("test"),
@@ -1801,7 +1871,7 @@ mod tests {
                     60,
                 ),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                     128, 3600, 86400,
                 )),
                 synctv_core::cache::KeyBuilder::new("test"),
@@ -1818,9 +1888,11 @@ mod tests {
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
             None,
-            "test-rtmp:".to_string(),
         )
-        .with_redis(shared.clone());
+        .with_user_stream_index(Arc::new(SharedUserStreamIndex::new(
+            shared.clone(),
+            "test-rtmp:".to_string(),
+        )));
 
         let replacement = redis::aio::ConnectionManager::new(client.clone())
             .await
@@ -1841,6 +1913,157 @@ mod tests {
             Some(("room-1".to_string(), "media-1".to_string())),
             "RTMP auth must re-read the shared Redis handle after a hot swap"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn test_get_user_stream_accepts_trait_object_redis_runtime() {
+        use redis::AsyncCommands;
+
+        let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
+        let shared = Arc::new(RwLock::new(
+            redis::aio::ConnectionManager::new(client.clone())
+                .await
+                .expect("initial connection manager should build"),
+        ));
+        let runtime: Arc<dyn RedisConnectionRuntime> = synctv_core::shared_runtime(shared);
+        let auth = make_test_auth_with_registry_dyn(Arc::new(
+            synctv_livestream::relay::InMemoryStreamRegistry::new(),
+        ))
+        .with_user_stream_index(Arc::new(SharedUserStreamIndex::from_runtime(
+            runtime,
+            "test:".to_string(),
+        )));
+
+        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+            .await
+            .expect("verification connection should build");
+        let _: () = verify_conn
+            .set(
+                "test:rtmp:user_stream:user-runtime",
+                "room-runtime|media-runtime",
+            )
+            .await
+            .expect("seed user stream mapping");
+
+        let user_stream = auth.get_user_stream("user-runtime").await;
+        assert_eq!(
+            user_stream,
+            Some(("room-runtime".to_string(), "media-runtime".to_string())),
+            "RTMP auth should accept injected redis runtime trait objects"
+        );
+    }
+
+    struct MockSharedUserStreamIndex;
+
+    #[async_trait::async_trait]
+    impl UserStreamIndex for MockSharedUserStreamIndex {
+        async fn put(
+            &self,
+            _user_id: &str,
+            _room_id: &str,
+            _media_id: &str,
+            _ttl_secs: i64,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _user_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>> {
+            if user_id == "shared-user" {
+                Ok(Some((
+                    "shared-room".to_string(),
+                    "shared-media".to_string(),
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "shared-mock"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_user_stream_uses_injected_shared_user_stream_index() {
+        let auth = make_test_auth_with_registry_dyn(Arc::new(
+            synctv_livestream::relay::InMemoryStreamRegistry::new(),
+        ))
+        .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
+
+        let user_stream = auth.get_user_stream("shared-user").await;
+        assert_eq!(
+            user_stream,
+            Some(("shared-room".to_string(), "shared-media".to_string())),
+            "RTMP auth should accept any injected shared user-stream index implementation"
+        );
+    }
+
+    struct MockRedisRuntime;
+
+    #[async_trait::async_trait]
+    impl RedisConnectionRuntime for MockRedisRuntime {
+        async fn snapshot(&self) -> redis::aio::ConnectionManager {
+            panic!("mock redis runtime snapshot should not be called in factory tests");
+        }
+    }
+
+    #[test]
+    fn test_user_stream_index_factory_uses_local_backend_without_shared_runtime() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+
+        let index = user_stream_index_from_shared_state_profile(&profile)
+            .expect("local-only profile should build local RTMP index");
+
+        assert_eq!(index.backend_name(), "local-only");
+    }
+
+    #[test]
+    fn test_user_stream_index_factory_keeps_standalone_mode_local_even_with_runtime() {
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedBestEffort,
+            Some(Arc::new(MockRedisRuntime)),
+            "test:",
+        );
+
+        let index = user_stream_index_from_shared_state_profile(&profile)
+            .expect("standalone profile should keep RTMP index local");
+
+        assert_eq!(index.backend_name(), "local-only");
+    }
+
+    #[test]
+    fn test_user_stream_index_factory_requires_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+
+        let Err(error) = user_stream_index_from_shared_state_profile(&profile) else {
+            panic!("cluster profile without runtime must be rejected");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared RTMP user stream index"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_user_stream_index_factory_uses_shared_backend_in_cluster_mode() {
+        let profile = SharedStateProfile::new(
+            SharedStateMode::SharedRequired,
+            Some(Arc::new(MockRedisRuntime)),
+            "test:",
+        );
+
+        let index = user_stream_index_from_shared_state_profile(&profile)
+            .expect("cluster profile with runtime should build shared RTMP index");
+
+        assert_eq!(index.backend_name(), "redis");
     }
 
     // ========== StreamLifecycleEvent ==========

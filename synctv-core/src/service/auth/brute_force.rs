@@ -56,7 +56,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, Result};
+use crate::{
+    cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error,
+    RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+};
 
 /// Stored state for brute-force tracking in Redis.
 /// Serialized as JSON to store both the count and last failure timestamp.
@@ -349,9 +352,8 @@ impl AttemptTracker for InMemoryAttemptTracker {
 /// attackers to bypass lockouts by distributing requests across replicas.
 #[derive(Clone)]
 pub struct RedisAttemptTracker {
-    /// Shared Redis connection handle that follows Sentinel failover.
-    /// Acquire a read lock and clone to get a current ConnectionManager.
-    conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    /// Redis runtime that yields a fresh connection snapshot per operation.
+    conn: Arc<dyn RedisConnectionRuntime>,
     /// In-memory fallback cache for fail-closed behavior on Redis errors.
     fallback: Arc<moka::future::Cache<String, (u64, i64)>>,
     /// Tracks whether we are currently in degraded mode (using fallback).
@@ -383,6 +385,15 @@ impl RedisAttemptTracker {
         max_capacity: u64,
         ttl_secs: u64,
     ) -> Self {
+        Self::from_runtime(crate::shared_runtime(conn), max_capacity, ttl_secs)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        conn: Arc<dyn RedisConnectionRuntime>,
+        max_capacity: u64,
+        ttl_secs: u64,
+    ) -> Self {
         Self {
             conn,
             fallback: Arc::new(
@@ -411,6 +422,15 @@ impl RedisAttemptTracker {
         max_capacity: u64,
         ttl_secs: u64,
     ) -> Self {
+        Self::from_runtime_fail_closed(crate::shared_runtime(conn), max_capacity, ttl_secs)
+    }
+
+    #[must_use]
+    pub fn from_runtime_fail_closed(
+        conn: Arc<dyn RedisConnectionRuntime>,
+        max_capacity: u64,
+        ttl_secs: u64,
+    ) -> Self {
         Self {
             conn,
             fallback: Arc::new(
@@ -427,7 +447,7 @@ impl RedisAttemptTracker {
 
     /// Acquire a fresh ConnectionManager clone from the shared handle.
     async fn get_conn(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+        self.conn.snapshot().await
     }
 
     /// Check if the tracker is currently in degraded mode (using in-memory fallback).
@@ -720,18 +740,17 @@ impl BruteForceProtection {
     /// **WARNING**: In multi-replica deployments, fallback mode means each
     /// replica maintains independent brute-force counters, allowing attackers
     /// to bypass lockouts. Use [`Self::with_redis_fail_closed`] for cluster mode.
-    #[must_use]
-    pub fn with_redis(
-        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    fn with_redis_runtime(
+        conn: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Self {
         let config = BruteForceConfig::default();
-        let username_tracker = Arc::new(RedisAttemptTracker::new(
+        let username_tracker = Arc::new(RedisAttemptTracker::from_runtime(
             conn.clone(),
             50_000,
             config.attempts_ttl_secs,
         ));
-        let ip_tracker = Arc::new(RedisAttemptTracker::new(
+        let ip_tracker = Arc::new(RedisAttemptTracker::from_runtime(
             conn,
             100_000,
             config.ip_attempts_ttl_secs,
@@ -758,9 +777,8 @@ impl BruteForceProtection {
     /// Configure alerts on ERROR-level logs with pattern "Redis unavailable
     /// in fail-closed mode" to detect when brute-force protection is blocking
     /// all login attempts.
-    #[must_use]
-    pub fn with_redis_fail_closed(
-        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    fn with_redis_runtime_fail_closed(
+        conn: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Self {
         tracing::info!(
@@ -768,17 +786,33 @@ impl BruteForceProtection {
              Login attempts will be rejected if Redis is unavailable."
         );
         let config = BruteForceConfig::default();
-        let username_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
+        let username_tracker = Arc::new(RedisAttemptTracker::from_runtime_fail_closed(
             conn.clone(),
             50_000,
             config.attempts_ttl_secs,
         ));
-        let ip_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
+        let ip_tracker = Arc::new(RedisAttemptTracker::from_runtime_fail_closed(
             conn,
             100_000,
             config.ip_attempts_ttl_secs,
         ));
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
+    }
+
+    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+        match profile.state_mode() {
+            SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime_fail_closed(
+                profile.require_shared_runtime("brute-force protection state")?,
+                profile.key_prefix().to_string(),
+            )),
+            SharedStateMode::SharedBestEffort => Ok(Self::with_redis_runtime(
+                profile
+                    .shared_runtime()
+                    .expect("shared state profile guarantees runtime in best-effort mode"),
+                profile.key_prefix().to_string(),
+            )),
+            SharedStateMode::LocalOnly => Ok(Self::in_memory(profile.key_prefix().to_string())),
+        }
     }
 
     /// Create an in-memory-only brute-force protection service.
@@ -1027,9 +1061,67 @@ impl BruteForceProtection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use crate::RedisConnectionRuntime;
 
     // Note: Integration tests that require Redis (record_failure, check_allowed, etc.)
     // are in the integration test suite. Unit tests here cover pure logic only.
+
+    #[tokio::test]
+    async fn test_redis_attempt_tracker_accepts_trait_object_runtime() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let tracker = RedisAttemptTracker::from_runtime(runtime.clone(), 128, 60);
+
+        assert!(
+            Arc::ptr_eq(&tracker.conn, &runtime),
+            "attempt tracker should retain the injected Redis runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_brute_force_protection_accepts_custom_redis_trackers() {
+        #[derive(Clone)]
+        struct FakeRedisRuntime;
+
+        #[async_trait]
+        impl RedisConnectionRuntime for FakeRedisRuntime {
+            async fn snapshot(&self) -> redis::aio::ConnectionManager {
+                panic!("snapshot should not be called in constructor-only test");
+            }
+        }
+
+        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let config = BruteForceConfig::default();
+        let username_tracker: Arc<dyn AttemptTracker> = Arc::new(RedisAttemptTracker::from_runtime(
+            runtime.clone(),
+            50_000,
+            config.attempts_ttl_secs,
+        ));
+        let ip_tracker: Arc<dyn AttemptTracker> = Arc::new(RedisAttemptTracker::from_runtime(
+            runtime,
+            100_000,
+            config.ip_attempts_ttl_secs,
+        ));
+
+        let protection = BruteForceProtection::new_with_config(
+            "test".to_string(),
+            username_tracker,
+            ip_tracker,
+            config,
+        );
+
+        assert_eq!(protection.key_builder.prefix(), "test");
+    }
 
     /// Test that lockout duration thresholds are correct with default config
     #[test]

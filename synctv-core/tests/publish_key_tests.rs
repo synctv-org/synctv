@@ -9,7 +9,7 @@
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::{
     auth::JwtService,
-    publish_key::{InMemoryJtiStore, PublishKeyService},
+    publish_key::{InMemoryJtiStore, PublishKeyService, RedisJtiStore},
     JtiStore,
 };
 use synctv_core_testing::{start_redis_with_client, test_redis_key_prefix};
@@ -250,7 +250,15 @@ async fn test_publish_key_service_with_redis_full_lifecycle() {
     let jwt =
         JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap();
     let prefix = test_redis_key_prefix("publish-key");
-    let service = PublishKeyService::with_redis(jwt, 24, conn, prefix);
+    let service = PublishKeyService::from_store(
+        jwt,
+        24,
+        std::sync::Arc::new(RedisJtiStore::from_runtime(
+            synctv_core::direct_runtime(conn),
+            prefix,
+            24 * 3600,
+        )),
+    );
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();

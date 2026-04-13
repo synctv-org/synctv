@@ -108,7 +108,6 @@ fn make_rtmp_auth(
         "test-node".to_string(),
         "127.0.0.1:50051".to_string(),
         None,
-        "test:".to_string(),
     )
 }
 

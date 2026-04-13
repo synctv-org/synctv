@@ -10,19 +10,24 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_cluster::sync::room_hub::{RoomLifecycleEvent, RoomMessageHub};
+use synctv_cluster::sync::{build_room_message_runtime, room_hub::RoomLifecycleEvent, RoomMessageRuntime};
+use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
 
 /// Helper: create a `RoomMessageHub` with Redis backing using the given prefix.
-async fn create_hub(redis_url: &str, key_prefix: &str) -> RoomMessageHub {
+async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn RoomMessageRuntime> {
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("Failed to create Redis connection");
-
-    RoomMessageHub::new().with_redis(conn, key_prefix)
+    build_room_message_runtime(&SharedStateProfile::from_runtime(
+        Some(synctv_core::direct_runtime(conn)),
+        key_prefix,
+        true,
+    ))
+    .expect("shared room runtime should initialize")
 }
 
 // ============================================================================
@@ -54,7 +59,7 @@ async fn test_cross_replica_subscription_visibility() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Hub B should see the subscription via Redis (distributed query)
-    let distributed_subs = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let distributed_subs = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert!(
         !distributed_subs.is_empty(),
         "Hub B should see hub A's subscription via Redis, got empty list"
@@ -100,7 +105,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify subscription is visible from hub B
-    let subs_before = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_before = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         subs_before.len(),
         1,
@@ -114,7 +119,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Hub B should no longer see the subscription
-    let subs_after = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_after = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert!(
         subs_after.is_empty(),
         "Hub B should see 0 subscribers after unsubscribe, got {}",
@@ -149,7 +154,7 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let subs_before = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_before = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         subs_before.len(),
         2,
@@ -160,7 +165,7 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    let subs_after = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_after = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert!(
         subs_after.is_empty(),
         "remove_room must remove Redis subscription state, got {} lingering entries",
@@ -213,8 +218,8 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Both hubs should see 3 subscribers via distributed query
-    let subs_from_a = hub_a.get_room_subscribers_distributed(&room_id).await;
-    let subs_from_b = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_from_a = hub_a.get_room_subscribers_cluster_wide(&room_id).await;
+    let subs_from_b = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
 
     assert_eq!(
         subs_from_a.len(),
@@ -245,7 +250,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     hub_a.unsubscribe("conn_a1");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let subs_after = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let subs_after = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         subs_after.len(),
         2,
@@ -381,9 +386,9 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
 
     // Hub B recovers from Redis -- should report the count but not populate local state
     let recovered = hub_b
-        .audit_redis_subscriptions()
+        .audit_shared_subscriptions()
         .await
-        .expect("audit_redis_subscriptions failed");
+        .expect("audit_shared_subscriptions failed");
 
     assert_eq!(
         recovered, 3,
@@ -457,7 +462,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Distributed view should show 10 subscribers
-    let distributed = hub_a.get_room_subscribers_distributed(&room_id).await;
+    let distributed = hub_a.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         distributed.len(),
         10,
@@ -472,7 +477,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Should now see only 5 (hub B's subscribers)
-    let remaining = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let remaining = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         remaining.len(),
         5,
@@ -522,7 +527,7 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     hub_a.unsubscribe("conn_a");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let before_cleanup = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let before_cleanup = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         before_cleanup.len(),
         1,
@@ -532,12 +537,12 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let cleanup_task =
-        hub_a.spawn_stale_subscription_cleanup_task(Duration::from_millis(10), cancel.clone());
+        hub_a.spawn_shared_subscription_cleanup_task(Duration::from_millis(10), cancel.clone());
     tokio::time::sleep(Duration::from_millis(50)).await;
     cancel.cancel();
     let _ = cleanup_task.await;
 
-    let after_cleanup = hub_b.get_room_subscribers_distributed(&room_id).await;
+    let after_cleanup = hub_b.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         after_cleanup.len(),
         1,

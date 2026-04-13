@@ -10,10 +10,12 @@ pub mod metrics;
 pub mod models;
 pub mod oauth2;
 pub mod provider;
+pub mod redis_runtime;
 pub mod repository;
 pub mod resilience;
 pub mod secrets;
 pub mod service;
+pub mod shared_state;
 pub mod spawn;
 pub mod time {
     pub use synctv_common::time::*;
@@ -27,4 +29,11 @@ pub mod test_helpers;
 pub use cache::KeyBuilder;
 pub use config::{Config, GrpcRateLimitConfig, HttpRateLimitConfig};
 pub use error::{Error, InternalExt, Result};
+pub use redis_runtime::{
+    coordination_runtime_from_client, direct_runtime, direct_runtime_from_conn, shared_runtime,
+    shared_runtime_from_conn, DirectRedisConnectionRuntime, ManagedRedisRuntime,
+    OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime,
+    SharedRedisConnectionRuntime,
+};
+pub use shared_state::{SharedStateMode, SharedStateProfile};
 pub use transaction::{with_transaction, UnitOfWork};

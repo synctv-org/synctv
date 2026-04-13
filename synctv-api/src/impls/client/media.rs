@@ -321,12 +321,10 @@ impl ClientApiImpl {
     ) -> Result<Vec<crate::impls::ClusterEventPublishReservation>, ApiError> {
         let mut reservations = Vec::with_capacity(count);
         for _ in 0..count {
-            if let Some(reservation) = crate::impls::reserve_cluster_event_publish(
-                self.redis_publish_tx.as_ref(),
-                self.config.cluster_runtime_enabled(),
-                failure_message,
-            )
-            .await?
+            if let Some(reservation) = self
+                .cluster_fanout
+                .reserve(failure_message)
+                .await?
             {
                 reservations.push(reservation);
             }

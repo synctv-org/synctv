@@ -6,17 +6,30 @@
 //! to the same Redis, simulating a multi-replica deployment.
 
 #![allow(clippy::unwrap_used)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent};
-use synctv_cluster::{ClusterConfig, ClusterManager};
+use synctv_cluster::{build_room_message_runtime, ClusterConfig, ClusterManager};
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
+use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
 };
+
+fn shared_message_runtime(
+    redis_conn: redis::aio::ConnectionManager,
+    key_prefix: &str,
+) -> Arc<dyn synctv_cluster::RoomMessageRuntime> {
+    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+        Arc::new(DirectRedisConnectionRuntime::new(redis_conn));
+    let realtime_profile =
+        SharedStateProfile::from_runtime(Some(shared_runtime), key_prefix, true);
+    build_room_message_runtime(&realtime_profile).expect("shared message runtime should initialize")
+}
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -25,8 +38,9 @@ async fn test_cross_replica_cache_invalidation() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A (local-only, no Redis stream)
-    let cache_svc_a =
-        CacheInvalidationService::new(None, "node_a".to_string(), "test:cache:inv".to_string());
+    let cache_svc_a = Arc::new(CacheInvalidationService::new("node_a".to_string(),
+        "test:cache:inv".to_string(),
+    ));
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
@@ -37,8 +51,12 @@ async fn test_cross_replica_cache_invalidation() {
         .await
         .expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
-        redis_client: Some(client_a),
-        redis_conn: Some(conn_a),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_a),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_a.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -47,7 +65,6 @@ async fn test_cross_replica_cache_invalidation() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -175,8 +192,9 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A
-    let cache_svc_a =
-        CacheInvalidationService::new(None, "node_a".to_string(), "test:perm:inv".to_string());
+    let cache_svc_a = Arc::new(CacheInvalidationService::new("node_a".to_string(),
+        "test:perm:inv".to_string(),
+    ));
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
@@ -187,8 +205,12 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         .await
         .expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
-        redis_client: Some(client_a),
-        redis_conn: Some(conn_a),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_a),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_a.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -197,7 +219,6 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -250,16 +271,12 @@ async fn test_cluster_permission_cache_consistency() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create cache invalidation services for both nodes
-    let cache_svc_a = CacheInvalidationService::new(
-        None,
-        "perm_node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new("perm_node_a".to_string(),
         format!("{key_prefix}perm:cache"),
-    );
-    let cache_svc_b = CacheInvalidationService::new(
-        None,
-        "perm_node_b".to_string(),
+    ));
+    let cache_svc_b = Arc::new(CacheInvalidationService::new("perm_node_b".to_string(),
         format!("{key_prefix}perm:cache"),
-    );
+    ));
 
     let mut rx_a = cache_svc_a.subscribe();
     let mut rx_b = cache_svc_b.subscribe();
@@ -272,8 +289,12 @@ async fn test_cluster_permission_cache_consistency() {
         .await
         .expect("Failed to get ConnectionManager A");
     let config_a = ClusterConfig {
-        redis_client: Some(client_a),
-        redis_conn: Some(conn_a),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_a),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_a.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "perm_node_a".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -282,7 +303,6 @@ async fn test_cluster_permission_cache_consistency() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
@@ -296,8 +316,12 @@ async fn test_cluster_permission_cache_consistency() {
         .await
         .expect("Failed to get ConnectionManager B");
     let config_b = ClusterConfig {
-        redis_client: Some(client_b),
-        redis_conn: Some(conn_b),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_b),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_b.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "perm_node_b".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -306,7 +330,6 @@ async fn test_cluster_permission_cache_consistency() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_b = ClusterManager::new(config_b, None, Some(cache_svc_b))
@@ -405,27 +428,19 @@ async fn test_cluster_permission_cache_consistency() {
 #[ignore = "requires Docker"]
 async fn test_concurrent_permission_cache_updates() {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Arc;
-
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
     // Create three nodes with cache invalidation
-    let cache_svc_a = CacheInvalidationService::new(
-        None,
-        "concurrent_node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new("concurrent_node_a".to_string(),
         format!("{key_prefix}concurrent:cache"),
-    );
-    let cache_svc_b = CacheInvalidationService::new(
-        None,
-        "concurrent_node_b".to_string(),
+    ));
+    let cache_svc_b = Arc::new(CacheInvalidationService::new("concurrent_node_b".to_string(),
         format!("{key_prefix}concurrent:cache"),
-    );
-    let cache_svc_c = CacheInvalidationService::new(
-        None,
-        "concurrent_node_c".to_string(),
+    ));
+    let cache_svc_c = Arc::new(CacheInvalidationService::new("concurrent_node_c".to_string(),
         format!("{key_prefix}concurrent:cache"),
-    );
+    ));
 
     let mut rx_a = cache_svc_a.subscribe();
     let mut rx_b = cache_svc_b.subscribe();
@@ -438,8 +453,12 @@ async fn test_concurrent_permission_cache_updates() {
         .await
         .expect("Connection A");
     let config_a = ClusterConfig {
-        redis_client: Some(client_a),
-        redis_conn: Some(conn_a),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_a),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_a.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "concurrent_node_a".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -448,7 +467,6 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_a = Arc::new(
@@ -463,8 +481,12 @@ async fn test_concurrent_permission_cache_updates() {
         .await
         .expect("Connection B");
     let config_b = ClusterConfig {
-        redis_client: Some(client_b),
-        redis_conn: Some(conn_b),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_b),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_b.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "concurrent_node_b".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -473,7 +495,6 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_b = Arc::new(
@@ -488,8 +509,12 @@ async fn test_concurrent_permission_cache_updates() {
         .await
         .expect("Connection C");
     let config_c = ClusterConfig {
-        redis_client: Some(client_c),
-        redis_conn: Some(conn_c),
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client_c),
+            ),
+        )),
+        message_runtime: shared_message_runtime(conn_c.clone(), &key_prefix),
         cluster_enabled: true,
         node_id: "concurrent_node_c".to_string(),
         dedup_window: Duration::from_secs(10),
@@ -498,7 +523,6 @@ async fn test_concurrent_permission_cache_updates() {
         key_prefix: key_prefix.clone(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
     let node_c = Arc::new(

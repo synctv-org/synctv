@@ -187,7 +187,7 @@ impl ClientApiImpl {
             .await
             .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
         let is_online = self
-            .connection_manager
+            .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
@@ -247,7 +247,7 @@ impl ClientApiImpl {
             .await
             .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
         let is_online = self
-            .connection_manager
+            .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
@@ -323,12 +323,10 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
-        let permission_fanout = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out permission changes to cluster replicas",
-        )
-        .await?;
+        let permission_fanout = self
+            .cluster_fanout
+            .reserve("failed to fan out permission changes to cluster replicas")
+            .await?;
 
         // Fetch current target member state BEFORE any mutations.
         // This prevents partial mutation when role change + permission update
@@ -445,7 +443,7 @@ impl ClientApiImpl {
 
         // Query ConnectionManager for actual online status instead of hardcoding false
         let is_online = self
-            .connection_manager
+            .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
 
@@ -495,18 +493,14 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out KickUserFromRoom to cluster replicas",
-        )
-        .await?;
-        let permission_fanout = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out permission changes to cluster replicas",
-        )
-        .await?;
+        let cluster_event = self
+            .cluster_fanout
+            .reserve("failed to fan out KickUserFromRoom to cluster replicas")
+            .await?;
+        let permission_fanout = self
+            .cluster_fanout
+            .reserve("failed to fan out permission changes to cluster replicas")
+            .await?;
 
         self.room_service
             .kick_member(rid.clone(), uid.clone(), target_uid.clone())
@@ -514,11 +508,12 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Force disconnect the kicked user's connections in this specific room
-        self.connection_manager
+        self.connection_service
             .disconnect_user_from_room(&target_uid, &rid);
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+        self.cluster_fanout.publish(
+            cluster_event,
+            synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
                     event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
@@ -526,8 +521,8 @@ impl ClientApiImpl {
                     reason: "kicked".to_string(),
                     timestamp: chrono::Utc::now(),
                 },
-            });
-        }
+            },
+        );
 
         // Notify other replicas to invalidate permission cache
         self.publish_permission_changed_with_reservation(
@@ -561,18 +556,14 @@ impl ClientApiImpl {
         } else {
             Some(reason)
         };
-        let cluster_event = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out room ban to cluster replicas",
-        )
-        .await?;
-        let permission_fanout = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out permission changes to cluster replicas",
-        )
-        .await?;
+        let cluster_event = self
+            .cluster_fanout
+            .reserve("failed to fan out room ban to cluster replicas")
+            .await?;
+        let permission_fanout = self
+            .cluster_fanout
+            .reserve("failed to fan out permission changes to cluster replicas")
+            .await?;
 
         self.room_service
             .member_service()
@@ -581,11 +572,12 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Force disconnect the banned user's connections in this specific room
-        self.connection_manager
+        self.connection_service
             .disconnect_user_from_room(&target_uid, &rid);
 
-        if let Some(cluster_event) = cluster_event {
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
+        self.cluster_fanout.publish(
+            cluster_event,
+            synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
                     event_id: synctv_common::snanoid!(16),
                     room_id: rid.clone(),
@@ -593,8 +585,8 @@ impl ClientApiImpl {
                     reason: "banned".to_string(),
                     timestamp: chrono::Utc::now(),
                 },
-            });
-        }
+            },
+        );
 
         // Notify other replicas to invalidate permission cache
         self.publish_permission_changed_with_reservation(
@@ -621,12 +613,10 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
-        let permission_fanout = crate::impls::reserve_cluster_event_publish(
-            self.redis_publish_tx.as_ref(),
-            self.config.cluster_runtime_enabled(),
-            "failed to fan out permission changes to cluster replicas",
-        )
-        .await?;
+        let permission_fanout = self
+            .cluster_fanout
+            .reserve("failed to fan out permission changes to cluster replicas")
+            .await?;
 
         self.room_service
             .member_service()

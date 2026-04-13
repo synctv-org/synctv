@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
-use crate::{cache::CacheInvalidationService, Result};
+use crate::{
+    cache::CacheInvalidationRuntime,
+    Result,
+};
 
 /// L1 (in-memory) cache TTL in seconds.
 /// Matches UserCache/RoomCache defaults so stale entries are bounded even
@@ -62,7 +65,7 @@ impl CachedUsername {
 pub struct UsernameCache {
     inner: TieredCache<UserId, CachedUsername>,
     /// Optional invalidation service for cross-replica cache sync
-    invalidation_service: Option<Arc<CacheInvalidationService>>,
+    invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
 }
 
 impl UsernameCache {
@@ -100,7 +103,10 @@ impl UsernameCache {
 
     /// Set the cache invalidation service for cross-replica sync
     #[must_use]
-    pub fn with_invalidation_service(mut self, service: Arc<CacheInvalidationService>) -> Self {
+    pub fn with_invalidation_service(
+        mut self,
+        service: Arc<dyn CacheInvalidationRuntime>,
+    ) -> Self {
         self.invalidation_service = Some(service);
         self
     }
@@ -228,6 +234,7 @@ impl std::fmt::Debug for UsernameCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheInvalidationService;
 
     fn create_test_user_id(id: &str) -> UserId {
         UserId::from_string(id.to_string())
@@ -326,9 +333,7 @@ mod tests {
     /// to be immediately deleted.
     #[tokio::test]
     async fn test_set_with_invalidation_service_no_self_invalidation() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 
@@ -358,9 +363,7 @@ mod tests {
     /// retrievable.
     #[tokio::test]
     async fn test_preload_all_entries_retrievable() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 
@@ -406,9 +409,7 @@ mod tests {
     /// should broadcast to other replicas.
     #[tokio::test]
     async fn test_set_does_not_broadcast_invalidation() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 

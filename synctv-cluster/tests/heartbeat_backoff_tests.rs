@@ -89,7 +89,7 @@ async fn test_heartbeat_reregistration_has_backoff() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "backoff-node".to_string(),
             30,
             "backoff:",
@@ -174,7 +174,7 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "clear-backoff-node".to_string(),
             30,
             "clearbackoff:",
@@ -258,7 +258,7 @@ async fn test_backoff_increases_exponentially() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "exp-backoff-node".to_string(),
             30,
             "expbackoff:",
@@ -316,7 +316,7 @@ async fn test_backoff_resets_after_recovery() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "recovery-node".to_string(),
             30,
             "recovery:",

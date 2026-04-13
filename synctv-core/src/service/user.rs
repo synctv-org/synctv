@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::{
-    cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
+    cache::{CacheInvalidationRuntime, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{MediaId, PlaylistId, RoomId, SignupMethod, User, UserId, UserStatus},
@@ -81,7 +81,7 @@ pub struct UserService {
     jwt_service: JwtService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
-    cache_invalidation: Option<Arc<CacheInvalidationService>>,
+    cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     /// Password complexity configuration from config file
     password_complexity: PasswordComplexityConfig,
     /// Brute-force protection for login attempts
@@ -649,8 +649,8 @@ impl UserService {
         key_builder: KeyBuilder,
         brute_force: BruteForceProtection,
     ) -> Self {
-        // Create in-memory rate limiter for refresh token endpoint.
-        // Can be upgraded to Redis-backed via set_refresh_rate_limiter_redis().
+        // Default to a local limiter; composition roots can inject any
+        // distributed or local implementation via set_refresh_rate_limiter().
         let refresh_rate_limiter = RateLimiter::in_memory_only("synctv:".to_string());
 
         Self {
@@ -676,7 +676,7 @@ impl UserService {
     }
 
     /// Set the cache invalidation service for cross-replica user cache sync
-    pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         self.cache_invalidation = Some(service);
     }
 
@@ -693,35 +693,8 @@ impl UserService {
         self.email_verification_required = required;
     }
 
-    /// Upgrade the refresh token rate limiter to use Redis for cross-replica enforcement.
-    ///
-    /// In cluster mode with N replicas, per-instance rate limiting allows N * limit
-    /// requests per window globally. Using Redis-backed rate limiting ensures the
-    /// limit is enforced globally across all replicas.
-    ///
-    /// When Redis is unavailable at runtime, the Redis-backed limiter gracefully
-    /// degrades to in-memory limiting (same as the default behavior).
-    pub fn set_refresh_rate_limiter_redis(
-        &mut self,
-        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-    ) {
-        self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
-    }
-
-    pub fn set_refresh_rate_limiter_redis_strict(
-        &mut self,
-        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-    ) {
-        self.refresh_rate_limiter =
-            RateLimiter::new(Some(redis_conn), key_prefix).with_strict_distributed();
-    }
-
-    #[cfg(test)]
-    pub fn set_refresh_rate_limiter_redis_fail_closed_for_tests(&mut self) {
-        self.refresh_rate_limiter =
-            RateLimiter::in_memory_only("test-refresh:".to_string()).with_strict_distributed();
+    pub fn set_refresh_rate_limiter(&mut self, limiter: RateLimiter) {
+        self.refresh_rate_limiter = limiter;
     }
 
     pub fn set_refresh_rate_limiter_for_tests(&mut self, limiter: RateLimiter) {
@@ -2286,7 +2259,9 @@ mod tests {
             brute_force,
         );
 
-        user_service.set_refresh_rate_limiter_redis_fail_closed_for_tests();
+        user_service.set_refresh_rate_limiter_for_tests(
+            RateLimiter::in_memory_only("test-refresh:".to_string()).with_strict_distributed(),
+        );
 
         let result = user_service
             .refresh_rate_limiter
@@ -2299,7 +2274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_rate_limiter_redis_non_strict_preserves_best_effort_behavior() {
+    async fn test_refresh_rate_limiter_non_strict_preserves_best_effort_behavior() {
         let pool =
             PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
         let jwt_service = crate::service::auth::JwtService::new(

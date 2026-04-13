@@ -8,6 +8,7 @@
 //! Active TCP probes are also skipped while the registry is unreachable. Once the
 //! registry recovers, the monitor resumes normal-interval checks.
 
+use async_trait::async_trait;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
-use super::node_registry::NodeRegistry;
+use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::Result;
 #[allow(unused_imports)]
 use futures::future::join_all;
@@ -71,7 +72,7 @@ struct ProbeState {
 /// 1. Passive heartbeat monitoring (based on last_heartbeat timestamp)
 /// 2. Active TCP health probes (connect to gRPC port)
 pub struct HealthMonitor {
-    node_registry: Arc<NodeRegistry>,
+    node_registry: Arc<dyn ClusterNodeDirectory>,
     check_interval_secs: u64,
     pub health_status: Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
     cancel_token: CancellationToken,
@@ -93,7 +94,18 @@ impl HealthMonitor {
     /// application-wide shutdown hierarchy, use [`with_cancellation_token`](Self::with_cancellation_token)
     /// instead.
     #[must_use]
-    pub fn new(node_registry: Arc<NodeRegistry>, check_interval_secs: u64) -> Self {
+    pub fn new<N>(node_registry: Arc<N>, check_interval_secs: u64) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::from_runtime(node_registry, check_interval_secs)
+    }
+
+    #[must_use]
+    pub fn from_runtime(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
+        check_interval_secs: u64,
+    ) -> Self {
         Self {
             node_registry,
             check_interval_secs,
@@ -113,8 +125,20 @@ impl HealthMonitor {
     /// calling [`shutdown`](Self::shutdown) only cancels the child and does not
     /// affect the parent or sibling tokens.
     #[must_use]
-    pub fn with_cancellation_token(
-        node_registry: Arc<NodeRegistry>,
+    pub fn with_cancellation_token<N>(
+        node_registry: Arc<N>,
+        check_interval_secs: u64,
+        parent_token: &CancellationToken,
+    ) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::with_runtime_cancellation_token(node_registry, check_interval_secs, parent_token)
+    }
+
+    #[must_use]
+    pub fn with_runtime_cancellation_token(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
         check_interval_secs: u64,
         parent_token: &CancellationToken,
     ) -> Self {
@@ -137,8 +161,20 @@ impl HealthMonitor {
     /// [`with_cancellation_token`](Self::with_cancellation_token) or call
     /// [`set_cancellation_token`](Self::set_cancellation_token) after construction.
     #[must_use]
-    pub fn with_probe_config(
-        node_registry: Arc<NodeRegistry>,
+    pub fn with_probe_config<N>(
+        node_registry: Arc<N>,
+        check_interval_secs: u64,
+        probe_config: HealthProbeConfig,
+    ) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::with_runtime_probe_config(node_registry, check_interval_secs, probe_config)
+    }
+
+    #[must_use]
+    pub fn with_runtime_probe_config(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
         check_interval_secs: u64,
         probe_config: HealthProbeConfig,
     ) -> Self {
@@ -157,8 +193,26 @@ impl HealthMonitor {
     /// Create a new health monitor that participates in an external shutdown hierarchy
     /// and uses a caller-supplied probe configuration.
     #[must_use]
-    pub fn with_cancellation_token_and_probe_config(
-        node_registry: Arc<NodeRegistry>,
+    pub fn with_cancellation_token_and_probe_config<N>(
+        node_registry: Arc<N>,
+        check_interval_secs: u64,
+        parent_token: &CancellationToken,
+        probe_config: HealthProbeConfig,
+    ) -> Self
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        Self::with_runtime_cancellation_token_and_probe_config(
+            node_registry,
+            check_interval_secs,
+            parent_token,
+            probe_config,
+        )
+    }
+
+    #[must_use]
+    pub fn with_runtime_cancellation_token_and_probe_config(
+        node_registry: Arc<dyn ClusterNodeDirectory>,
         check_interval_secs: u64,
         parent_token: &CancellationToken,
         probe_config: HealthProbeConfig,
@@ -198,7 +252,7 @@ impl HealthMonitor {
     pub fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
         let registry = self.node_registry.clone();
         let health_status = self.health_status.clone();
-        let timeout_secs = registry.heartbeat_timeout_secs;
+        let timeout_secs = registry.heartbeat_timeout_secs();
         let cancel_token = self.cancel_token.clone();
         let last_successful_refresh_at = self.last_successful_refresh_at.clone();
         let probe_config = self.probe_config.clone();
@@ -322,7 +376,7 @@ impl HealthMonitor {
 
     /// Perform active TCP probes on all nodes concurrently
     async fn probe_nodes(
-        registry: &Arc<NodeRegistry>,
+        registry: &Arc<dyn ClusterNodeDirectory>,
         health_status: &Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
         probe_config: &HealthProbeConfig,
         probe_states: &Arc<RwLock<std::collections::HashMap<String, ProbeState>>>,
@@ -336,7 +390,7 @@ impl HealthMonitor {
         };
 
         // Filter nodes to probe (skip those unhealthy with stale heartbeats)
-        let heartbeat_timeout = registry.heartbeat_timeout_secs;
+        let heartbeat_timeout = registry.heartbeat_timeout_secs();
         let nodes_to_probe: Vec<_> = {
             let hs = health_status.read().await;
             nodes
@@ -496,6 +550,33 @@ impl HealthMonitor {
     }
 }
 
+#[async_trait]
+impl ClusterHealthRuntime for HealthMonitor {
+    fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
+        Self::start(self)
+    }
+
+    fn set_join_handle(&self, handle: tokio::task::JoinHandle<()>) {
+        Self::set_join_handle(self, handle);
+    }
+
+    async fn shutdown(&self) {
+        Self::shutdown(self).await;
+    }
+
+    async fn get_all_status(&self) -> std::collections::HashMap<String, NodeHealth> {
+        Self::get_all_status(self).await
+    }
+
+    async fn get_node_status(&self, node_id: &str) -> Option<NodeHealth> {
+        Self::get_node_status(self, node_id).await
+    }
+
+    fn is_snapshot_stale(&self) -> bool {
+        Self::is_snapshot_stale(self)
+    }
+}
+
 fn current_unix_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -505,6 +586,7 @@ fn current_unix_timestamp_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::node_registry::NodeRegistry;
     use super::super::node_registry::NodeInfo;
     use super::*;
     use std::collections::HashMap;
@@ -513,7 +595,9 @@ mod tests {
     fn make_registry() -> Arc<NodeRegistry> {
         Arc::new(
             NodeRegistry::new(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                synctv_core::coordination_runtime_from_client(
+                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                ),
                 "self".to_string(),
                 30,
                 "test:",

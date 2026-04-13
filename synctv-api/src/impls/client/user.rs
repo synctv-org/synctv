@@ -16,15 +16,15 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        crate::impls::finalize_user_deletion(
-            &self.room_service,
-            &self.connection_manager,
-            self.live_streaming_infrastructure.as_ref(),
-            self.redis_publish_tx.as_ref(),
-            &summary,
-            &uid,
-            "user_deleted",
-        )
+        crate::impls::finalize_user_deletion(crate::impls::UserDeletionFinalizeArgs {
+            room_service: &self.room_service,
+            connection_service: self.connection_service.as_ref(),
+            live_streaming_infrastructure: self.live_streaming_infrastructure.as_ref(),
+            cluster_fanout: self.cluster_fanout.as_ref(),
+            summary: &summary,
+            deleted_by: &uid,
+            disconnect_reason: "user_deleted",
+        })
         .await;
 
         Ok(())

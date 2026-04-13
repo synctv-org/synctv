@@ -32,8 +32,23 @@ pub struct ChatService {
     username_cache: UsernameCache,
     permission_service: PermissionService,
     room_settings_service: RoomSettingsService,
-    /// Optional notification service for broadcasting chat messages to room members
-    notification_service: Option<NotificationService>,
+    /// Local room event bus for chat/domain notifications
+    notification_service: NotificationService,
+}
+
+#[derive(Clone)]
+pub struct ChatRuntime {
+    pub rate_limiter: RateLimiter,
+    pub rate_limit_config: RateLimitConfig,
+    pub content_filter: ContentFilter,
+    pub username_cache: UsernameCache,
+}
+
+#[derive(Clone)]
+pub struct ChatDependencies {
+    pub permission_service: PermissionService,
+    pub room_settings_service: RoomSettingsService,
+    pub notification_service: NotificationService,
 }
 
 impl std::fmt::Debug for ChatService {
@@ -45,15 +60,23 @@ impl std::fmt::Debug for ChatService {
 impl ChatService {
     /// Create a new chat service
     #[must_use]
-    pub const fn new(
+    pub fn new(
         chat_repository: Arc<ChatRepository>,
-        rate_limiter: RateLimiter,
-        rate_limit_config: RateLimitConfig,
-        content_filter: ContentFilter,
-        username_cache: UsernameCache,
-        permission_service: PermissionService,
-        room_settings_service: RoomSettingsService,
+        runtime: ChatRuntime,
+        dependencies: ChatDependencies,
     ) -> Self {
+        let ChatRuntime {
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            username_cache,
+        } = runtime;
+        let ChatDependencies {
+            permission_service,
+            room_settings_service,
+            notification_service,
+        } = dependencies;
+
         Self {
             chat_repository,
             rate_limiter,
@@ -62,13 +85,8 @@ impl ChatService {
             username_cache,
             permission_service,
             room_settings_service,
-            notification_service: None,
+            notification_service,
         }
-    }
-
-    /// Set the notification service for broadcasting chat messages to room members
-    pub fn set_notification_service(&mut self, service: NotificationService) {
-        self.notification_service = Some(service);
     }
 
     #[must_use]
@@ -158,25 +176,23 @@ impl ChatService {
         );
 
         // Broadcast chat message to room members
-        if let Some(ref notification_service) = self.notification_service {
-            if let Err(e) = notification_service
-                .notify_chat_message(
-                    &room_id,
-                    &created_message.id,
-                    &user_id,
-                    &username,
-                    &filtered_content,
-                )
-                .await
-            {
-                error!(
-                    room_id = room_id.as_str(),
-                    user_id = user_id.as_str(),
-                    message_id = %created_message.id,
-                    error = %e,
-                    "Failed to broadcast chat message to room members"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_chat_message(
+                &room_id,
+                &created_message.id,
+                &user_id,
+                &username,
+                &filtered_content,
+            )
+        {
+            error!(
+                room_id = room_id.as_str(),
+                user_id = user_id.as_str(),
+                message_id = %created_message.id,
+                error = %e,
+                "Failed to publish chat message room event"
+            );
         }
 
         Ok(created_message)
@@ -347,24 +363,22 @@ impl ChatService {
         );
 
         // Broadcast danmaku message to room members
-        if let Some(ref notification_service) = self.notification_service {
-            if let Err(e) = notification_service
-                .notify_danmaku(
-                    &room_id,
-                    &user_id,
-                    &username,
-                    &filtered_content,
-                    position_str,
-                )
-                .await
-            {
-                error!(
-                    room_id = room_id.as_str(),
-                    user_id = user_id.as_str(),
-                    error = %e,
-                    "Failed to broadcast danmaku to room members"
-                );
-            }
+        if let Err(e) = self
+            .notification_service
+            .notify_danmaku(
+                &room_id,
+                &user_id,
+                &username,
+                &filtered_content,
+                position_str,
+            )
+        {
+            error!(
+                room_id = room_id.as_str(),
+                user_id = user_id.as_str(),
+                error = %e,
+                "Failed to publish danmaku room event"
+            );
         }
 
         Ok(danmaku)

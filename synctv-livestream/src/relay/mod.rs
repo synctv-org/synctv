@@ -7,7 +7,10 @@ pub mod registry;
 pub mod registry_trait;
 
 pub use in_memory_registry::InMemoryStreamRegistry;
-pub use registry::{PublisherInfo, StreamRegistry, HEARTBEAT_INTERVAL_SECS, PUBLISHER_TTL_SECS};
+pub use registry::{
+    PublisherInfo, RegistryConnectionRuntime, StreamRegistry, HEARTBEAT_INTERVAL_SECS,
+    PUBLISHER_TTL_SECS,
+};
 pub use registry_trait::StreamRegistryTrait;
 
 #[cfg(test)]

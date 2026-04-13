@@ -15,12 +15,15 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
-use super::connection_manager::ConnectionManager;
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::ClusterEvent;
-use super::redis_pubsub::{PublishRequest, RedisPubSub};
+use super::redis_pubsub::PublishRequest;
 use super::room_hub::{ConnectionId, RoomMessageHub};
-use crate::discovery::{HeartbeatResult, NodeRegistry};
+use super::runtime::{ConnectionRuntime, RoomMessageRuntime};
+use super::transport::{
+    ClusterMessageTransport, ClusterMessageTransportConfig, ClusterMessageTransportFactory,
+};
+use crate::discovery::{ClusterNodeDirectory, HeartbeatResult};
 use crate::error::Result as ClusterResult;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::PermissionService;
@@ -28,17 +31,17 @@ use synctv_core::service::PermissionService;
 /// Cluster configuration
 #[derive(Clone)]
 pub struct ClusterConfig {
-    /// Pre-built Redis client (shared across the process).
-    /// `None` for local-only / single-node mode (used in tests).
-    pub redis_client: Option<redis::Client>,
-    /// Pre-built Redis connection manager (shared across the process).
-    /// `None` for local-only / single-node mode (used in tests).
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
-    /// Shared Redis connection handle used by long-lived background components.
-    /// When present, components should prefer this over `redis_conn` so Sentinel
-    /// failover hot-swaps are observed without rebuilding the cluster manager.
-    pub shared_redis_conn:
-        Option<std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    /// Optional distributed transport factory for cross-node fan-out.
+    ///
+    /// In standalone mode this stays `None`, even if Redis exists for caches or
+    /// other shared-state concerns. The composition root chooses the concrete
+    /// backend; `ClusterManager` only depends on the abstraction.
+    pub distributed_transport_factory: Option<Arc<dyn ClusterMessageTransportFactory>>,
+    /// Runtime used for local fan-out and room subscription tracking.
+    ///
+    /// The composition root decides whether this is local-only or shared across
+    /// replicas; `ClusterManager` only consumes the abstraction.
+    pub message_runtime: Arc<dyn RoomMessageRuntime>,
     /// Whether cluster mode is explicitly enabled.
     /// When `true`, `ClusterManager::new` will return an error if Redis is not configured.
     /// When `false`, missing Redis is allowed (single-node mode).
@@ -75,19 +78,15 @@ impl std::fmt::Debug for ClusterConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClusterConfig")
             .field(
-                "redis_client",
-                &self.redis_client.as_ref().map(|_| "redis::Client { .. }"),
-            )
-            .field(
-                "redis_conn",
-                &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"),
-            )
-            .field(
-                "shared_redis_conn",
+                "distributed_transport_factory",
                 &self
-                    .shared_redis_conn
+                    .distributed_transport_factory
                     .as_ref()
-                    .map(|_| "Arc<RwLock<ConnectionManager>>"),
+                    .map(|factory| factory.backend_name()),
+            )
+            .field(
+                "message_runtime",
+                &"Arc<dyn RoomMessageRuntime>",
             )
             .field("cluster_enabled", &self.cluster_enabled)
             .field("node_id", &self.node_id)
@@ -108,9 +107,8 @@ impl std::fmt::Debug for ClusterConfig {
 impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
-            redis_client: None,
-            redis_conn: None,
-            shared_redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: format!("node_{}", synctv_common::snanoid!(8)),
             dedup_window: Duration::from_mins(15),
@@ -134,7 +132,7 @@ impl Default for ClusterConfig {
 /// - Connection lifecycle
 pub struct ClusterManager {
     /// Message hub for local broadcasting
-    message_hub: Arc<RoomMessageHub>,
+    message_hub: Arc<dyn RoomMessageRuntime>,
     /// Deduplicator for preventing duplicate events
     deduplicator: Arc<MessageDeduplicator>,
     /// Sender for publishing events to Redis (normal priority)
@@ -145,8 +143,8 @@ pub struct ClusterManager {
     node_id: String,
     /// Broadcast channel for admin events (kick, etc.) received from cluster
     admin_event_tx: broadcast::Sender<ClusterEvent>,
-    /// Redis Pub/Sub service (stored for graceful shutdown)
-    redis_pubsub: Option<Arc<RedisPubSub>>,
+    /// Distributed transport service (stored for graceful shutdown)
+    distributed_transport: Option<Arc<dyn ClusterMessageTransport>>,
     /// JoinHandle for the Redis publisher task.
     /// Awaited during shutdown so in-flight events are fully flushed before
     /// the process exits.
@@ -169,7 +167,7 @@ pub struct ClusterManager {
     /// Capacity for the publish channel (for logging)
     publish_channel_capacity: usize,
     /// Optional connection manager for coordinated shutdown
-    connection_manager: Option<ConnectionManager>,
+    connection_manager: Option<Arc<dyn ConnectionRuntime>>,
     /// Independent heartbeat failure counter for business logic (network partition detection).
     /// The Prometheus `CLUSTER_HEARTBEAT_FAILURES` gauge is written but never read for decisions.
     heartbeat_failure_count: Arc<AtomicU64>,
@@ -190,7 +188,7 @@ pub struct ClusterManager {
 
 /// State for the background heartbeat loop, guarded by Mutex for async shutdown
 struct HeartbeatState {
-    node_registry: Option<Arc<NodeRegistry>>,
+    node_registry: Option<Arc<dyn ClusterNodeDirectory>>,
     handle: Option<tokio::task::JoinHandle<()>>,
     /// Stored API address for heartbeat re-registration (avoid empty-address bug)
     api_address: String,
@@ -233,7 +231,7 @@ impl ClusterManager {
     pub async fn new(
         config: ClusterConfig,
         permission_service: Option<PermissionService>,
-        cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
+        cache_invalidation: Option<std::sync::Arc<dyn synctv_core::cache::CacheInvalidationRuntime>>,
     ) -> ClusterResult<Self> {
         let deduplicator = Arc::new(MessageDeduplicator::new(config.dedup_window));
         let manager_cancel_token = config.parent_cancel_token.as_ref().map_or_else(
@@ -243,57 +241,49 @@ impl ClusterManager {
         let critical_retry_tasks = TaskTracker::new();
 
         let (admin_event_tx, _) = broadcast::channel(4096);
-        let redis_transport_ready = config.redis_client.is_some()
-            && (config.redis_conn.is_some() || config.shared_redis_conn.is_some());
+        let distributed_transport_ready =
+            config.cluster_enabled && config.distributed_transport_factory.is_some();
+        let message_hub = config.message_runtime.clone();
 
-        // Start Redis pub/sub using the pre-built client/connection.
-        // When Redis is not provided, run in single-node mode (tests).
+        // Start distributed transport only when cluster mode is explicitly enabled.
+        // In standalone mode, Redis may still exist for caches/shared state, but
+        // realtime fan-out stays local-only.
         let (
-            message_hub,
             redis_publish_tx,
             redis_critical_tx,
-            redis_pubsub,
+            distributed_transport,
             publisher_handle,
             critical_forwarder_handle,
-        ) = if redis_transport_ready {
-            let redis_client = config.redis_client.clone().ok_or_else(|| {
-                crate::error::Error::Configuration(
-                    "cluster.enabled=true requires Redis client".to_string(),
-                )
-            })?;
+        ) = if distributed_transport_ready {
+            let distributed_transport =
+                config
+                    .distributed_transport_factory
+                    .as_ref()
+                    .ok_or_else(|| {
+                        crate::error::Error::Configuration(
+                            "cluster.enabled=true requires shared cluster transport".to_string(),
+                        )
+                    })?
+                    .build(ClusterMessageTransportConfig {
+                        message_runtime: message_hub.clone(),
+                        node_id: config.node_id.clone(),
+                        key_prefix: config.key_prefix.clone(),
+                        admin_event_tx: admin_event_tx.clone(),
+                        permission_service,
+                        cache_invalidation,
+                        deduplicator: deduplicator.clone(),
+                        catchup_window_secs: config.catchup_window_secs,
+                        stream_max_length: config.stream_max_length,
+                    })?;
 
-            // Reuse the shared connection for the message hub's distributed
-            // subscription state and TTL refresh background task.
-            let hub = if let Some(shared_redis_conn) = config.shared_redis_conn.clone() {
-                Arc::new(
-                    RoomMessageHub::new().with_shared_redis(shared_redis_conn, &config.key_prefix),
-                )
-            } else if let Some(redis_conn) = config.redis_conn.clone() {
-                Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix))
-            } else {
-                return Err(crate::error::Error::Configuration(
-                    "cluster.enabled=true requires Redis connection manager".to_string(),
-                ));
-            };
-
-            let redis_pubsub = Arc::new(RedisPubSub::with_key_prefix(
-                redis_client,
-                hub.clone(),
-                config.node_id.clone(),
-                &config.key_prefix,
-                admin_event_tx.clone(),
-                permission_service,
-                cache_invalidation,
-                deduplicator.clone(),
-                config.catchup_window_secs,
-                config.stream_max_length,
-            )?);
-
-            let (tx, _backpressure, publisher_handle) = redis_pubsub
+            let transport_runtime = distributed_transport
                 .clone()
                 .start(config.publish_channel_capacity)
                 .await?;
-            // Critical events share the same Redis publisher but use a separate
+
+            let tx = transport_runtime.publish_tx.clone();
+            let publisher_handle = transport_runtime.publisher_handle;
+            // Critical events share the same distributed publisher but use a separate
             // bounded channel so they are never dropped when the normal channel is full.
             let critical_capacity = config.critical_channel_capacity;
             let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(critical_capacity);
@@ -326,39 +316,33 @@ impl ClusterManager {
             });
 
             (
-                hub,
                 Some(tx),
                 Some(critical_tx),
-                Some(redis_pubsub),
+                Some(distributed_transport),
                 Some(publisher_handle),
                 Some(critical_forwarder_handle),
             )
         } else {
             if config.cluster_enabled {
                 return Err(crate::error::Error::Configuration(
-                    "cluster.enabled=true requires complete Redis client and connection manager wiring"
-                        .to_string(),
+                    "cluster.enabled=true requires shared cluster transport".to_string(),
                 ));
             }
-            if config.redis_client.is_some()
-                || config.redis_conn.is_some()
-                || config.shared_redis_conn.is_some()
-            {
+            if config.distributed_transport_factory.is_some() {
                 warn!(
-                    "Partial Redis wiring detected while cluster mode is disabled; degrading ClusterManager to local-only mode"
+                    "Distributed transport provided while cluster mode is disabled; ClusterManager remains local-only"
                 );
             } else {
-                warn!("Redis not provided, running in single-node mode");
+                warn!("Distributed transport not provided, running in single-node mode");
             }
             if cache_invalidation.is_some() {
                 warn!(
-                    "cache_invalidation service provided but Redis is not available; \
+                    "cache_invalidation service provided but shared cluster transport is not available; \
                      cache invalidation will be local-only (no cross-replica invalidation). \
                      In a multi-replica deployment, this may lead to stale caches on other nodes."
                 );
             }
-            let hub = Arc::new(RoomMessageHub::new());
-            (hub, None, None, None, None, None)
+            (None, None, None, None, None)
         };
 
         Ok(Self {
@@ -368,7 +352,7 @@ impl ClusterManager {
             redis_critical_tx,
             node_id: config.node_id,
             admin_event_tx,
-            redis_pubsub,
+            distributed_transport,
             publisher_task: tokio::sync::Mutex::new(publisher_handle),
             critical_forwarder_task: tokio::sync::Mutex::new(critical_forwarder_handle),
             critical_retry_tasks,
@@ -394,7 +378,7 @@ impl ClusterManager {
 
     /// Get the message hub (for subscriptions)
     #[must_use]
-    pub const fn message_hub(&self) -> &Arc<RoomMessageHub> {
+    pub const fn message_hub(&self) -> &Arc<dyn RoomMessageRuntime> {
         &self.message_hub
     }
 
@@ -420,7 +404,7 @@ impl ClusterManager {
     ///
     /// When set, `shutdown()` will also cancel the ConnectionManager's TTL
     /// refresh task, ensuring background tasks don't outlive the cluster.
-    pub fn set_connection_manager(&mut self, cm: ConnectionManager) {
+    pub fn set_connection_manager(&mut self, cm: Arc<dyn ConnectionRuntime>) {
         self.connection_manager = Some(cm);
     }
 
@@ -639,17 +623,30 @@ impl ClusterManager {
     /// `LeastConnections` load balancing strategy.
     ///
     /// Must be called after `register()` on the `NodeRegistry`.
-    pub async fn start_heartbeat_loop<F>(
+    pub async fn start_heartbeat_loop<N, F>(
         &self,
-        node_registry: Arc<NodeRegistry>,
+        node_registry: Arc<N>,
+        api_address: String,
+        connection_count_fn: Option<F>,
+    ) where
+        N: ClusterNodeDirectory + 'static,
+        F: Fn() -> usize + Send + Sync + 'static,
+    {
+        self.start_heartbeat_loop_with_directory(node_registry, api_address, connection_count_fn)
+            .await;
+    }
+
+    pub async fn start_heartbeat_loop_with_directory<F>(
+        &self,
+        node_registry: Arc<dyn ClusterNodeDirectory>,
         api_address: String,
         connection_count_fn: Option<F>,
     ) where
         F: Fn() -> usize + Send + Sync + 'static,
     {
         let cancel_token = self.cancel_token.clone();
-        let interval_secs =
-            u64::try_from((node_registry.heartbeat_timeout_secs / 3).max(1)).unwrap_or(1);
+        let interval_secs = u64::try_from((node_registry.heartbeat_timeout_secs() / 3).max(1))
+            .unwrap_or(1);
         let failure_count = self.heartbeat_failure_count.clone();
         let epoch_mismatch_count = self.epoch_mismatch_count.clone();
         let is_quarantined = self.is_quarantined.clone();
@@ -871,8 +868,8 @@ impl ClusterManager {
         }
 
         // Cancel Redis Pub/Sub tasks and await subscriber completion
-        if let Some(ref pubsub) = self.redis_pubsub {
-            pubsub.shutdown().await;
+        if let Some(ref transport) = self.distributed_transport {
+            transport.shutdown().await;
         }
 
         // Shut down ConnectionManager's TTL refresh task
@@ -1078,7 +1075,11 @@ impl ClusterManager {
     }
 
     #[cfg(test)]
-    pub async fn test_set_heartbeat_registry(&self, node_registry: Arc<NodeRegistry>) {
+    pub async fn test_set_heartbeat_registry<N>(&self, node_registry: Arc<N>)
+    where
+        N: ClusterNodeDirectory + 'static,
+    {
+        let node_registry: Arc<dyn ClusterNodeDirectory> = node_registry;
         let mut state = self.heartbeat_state.lock().await;
         state.node_registry = Some(node_registry);
     }
@@ -1143,14 +1144,162 @@ pub struct ClusterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::ConnectionLimits;
+    use crate::NodeRegistry;
+    use crate::sync::{ConnectionLimits, ConnectionManager};
+    use async_trait::async_trait;
     use chrono::Utc;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::{broadcast, mpsc};
+
+    #[derive(Clone, Default)]
+    struct StubTransportFactory {
+        start_count: Arc<AtomicUsize>,
+        shutdown_count: Arc<AtomicUsize>,
+    }
+
+    struct StubTransport {
+        start_count: Arc<AtomicUsize>,
+        shutdown_count: Arc<AtomicUsize>,
+    }
+
+    impl ClusterMessageTransportFactory for StubTransportFactory {
+        fn build(
+            &self,
+            _config: ClusterMessageTransportConfig,
+        ) -> ClusterResult<Arc<dyn ClusterMessageTransport>> {
+            Ok(Arc::new(StubTransport {
+                start_count: self.start_count.clone(),
+                shutdown_count: self.shutdown_count.clone(),
+            }))
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    #[async_trait]
+    impl ClusterMessageTransport for StubTransport {
+        async fn start(
+            self: Arc<Self>,
+            _publish_channel_capacity: usize,
+        ) -> ClusterResult<crate::sync::ClusterMessageTransportRuntime> {
+            self.start_count.fetch_add(1, Ordering::Relaxed);
+            let (publish_tx, _publish_rx) = mpsc::channel(8);
+            Ok(crate::sync::ClusterMessageTransportRuntime {
+                publish_tx,
+                publisher_handle: tokio::spawn(async {}),
+            })
+        }
+
+        async fn shutdown(&self) {
+            self.shutdown_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    struct FixedMetricsRoomRuntime {
+        room_count: usize,
+        connection_count: usize,
+    }
+
+    impl FixedMetricsRoomRuntime {
+        const fn new(room_count: usize, connection_count: usize) -> Self {
+            Self {
+                room_count,
+                connection_count,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RoomMessageRuntime for FixedMetricsRoomRuntime {
+        fn subscribe_lifecycle(&self) -> broadcast::Receiver<crate::sync::RoomLifecycleEvent> {
+            let (_tx, rx) = broadcast::channel(1);
+            rx
+        }
+
+        async fn subscribe(
+            &self,
+            _room_id: RoomId,
+            _user_id: UserId,
+            _connection_id: ConnectionId,
+        ) -> ClusterResult<mpsc::Receiver<ClusterEvent>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+
+        fn unsubscribe(&self, _connection_id: &str) {}
+
+        fn broadcast(&self, _room_id: &RoomId, _event: &ClusterEvent) -> usize {
+            0
+        }
+
+        async fn broadcast_reliably(&self, _room_id: &RoomId, _event: ClusterEvent) -> usize {
+            0
+        }
+
+        async fn broadcast_to_connection(
+            &self,
+            _room_id: &RoomId,
+            _connection_id: &str,
+            _event: ClusterEvent,
+        ) -> usize {
+            0
+        }
+
+        fn room_count(&self) -> usize {
+            self.room_count
+        }
+
+        fn active_room_ids(&self) -> Vec<RoomId> {
+            Vec::new()
+        }
+
+        fn connection_count(&self) -> usize {
+            self.connection_count
+        }
+
+        fn remove_room(&self, _room_id: &RoomId) {}
+
+        fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+            Vec::new()
+        }
+
+        async fn get_room_subscribers_cluster_wide(
+            &self,
+            _room_id: &RoomId,
+        ) -> Vec<(UserId, ConnectionId)> {
+            Vec::new()
+        }
+
+        async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String> {
+            Ok(0)
+        }
+
+        fn spawn_shared_subscription_cleanup_task(
+            &self,
+            _cleanup_interval: Duration,
+            _cancel_token: CancellationToken,
+        ) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async {})
+        }
+
+        async fn shutdown(&self) {}
+
+        fn background_shutdown_requested(&self) -> bool {
+            false
+        }
+    }
 
     #[tokio::test]
     async fn test_cluster_manager_single_node() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None, // No Redis
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1159,7 +1308,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1213,10 +1361,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cluster_manager_respects_injected_message_runtime() {
+        let config = ClusterConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(FixedMetricsRoomRuntime::new(7, 11)),
+            cluster_enabled: false,
+            node_id: "test_node_metrics".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("cluster manager should preserve injected message runtime");
+        let metrics = manager.metrics();
+
+        assert_eq!(metrics.total_rooms, 7);
+        assert_eq!(metrics.total_connections, 11);
+    }
+
+    #[tokio::test]
     async fn test_admin_event_channel_subscription() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1225,7 +1398,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1267,8 +1439,8 @@ mod tests {
     #[tokio::test]
     async fn test_admin_event_channel_multiple_subscribers() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1277,7 +1449,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1314,15 +1485,14 @@ mod tests {
     #[tokio::test]
     async fn test_non_cluster_mode_with_cache_invalidation_service() {
         // Create a CacheInvalidationService without Redis (local-only mode)
-        let cache_invalidation = synctv_core::cache::CacheInvalidationService::new(
-            None, // No Redis client
+        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(// No Redis client
             "test_node".to_string(),
             "synctv:test:cache:invalidate".to_string(),
-        );
+        ));
 
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None, // No Redis - triggers non-cluster mode
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node_cache".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1331,7 +1501,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1391,8 +1560,8 @@ mod tests {
     #[tokio::test]
     async fn test_non_cluster_mode_without_cache_invalidation_service() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node_no_cache".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1401,7 +1570,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1442,8 +1610,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "stuck-heartbeat-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1452,7 +1620,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1479,8 +1646,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "shutdown-race-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1489,7 +1656,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1567,8 +1733,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_waits_for_tracked_critical_retry_tasks() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "tracked-critical-retry-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1577,7 +1743,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1621,8 +1786,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "shutdown-drain-critical-window".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1631,7 +1796,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1689,8 +1853,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_also_cancels_room_message_hub_background_tasks() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "shutdown-room-hub-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1699,7 +1863,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1721,8 +1884,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "shutdown-critical-event-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1731,7 +1894,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1764,8 +1926,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "shutdown-noncritical-event-node".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1774,7 +1936,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1834,8 +1995,8 @@ mod tests {
     #[tokio::test]
     async fn test_epoch_mismatch_enforcement() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node_epoch".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1844,7 +2005,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1899,8 +2059,8 @@ mod tests {
     #[tokio::test]
     async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_node_quarantine".to_string(),
             dedup_window: Duration::from_mins(1),
@@ -1909,7 +2069,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1971,8 +2130,8 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_metrics_reports_dependency_injection_state() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_metrics_injection".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -1981,7 +2140,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -1999,7 +2157,7 @@ mod tests {
             "fresh manager should not report an injected leader elector"
         );
 
-        let cm = ConnectionManager::new(ConnectionLimits::default());
+        let cm = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         manager.set_connection_manager(cm);
         manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
 
@@ -2017,8 +2175,8 @@ mod tests {
     #[tokio::test]
     async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_critical_fallback".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2027,7 +2185,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2084,8 +2241,8 @@ mod tests {
     #[tokio::test]
     async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_publish_only".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2094,7 +2251,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2144,8 +2300,8 @@ mod tests {
     #[tokio::test]
     async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_publish_only_user_notification".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2154,7 +2310,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2196,8 +2351,8 @@ mod tests {
     #[tokio::test]
     async fn test_drop_aborts_injected_connection_manager_background_tasks() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_drop_connection_manager_cleanup".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2206,14 +2361,13 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
         let mut manager = ClusterManager::new(config, None, None)
             .await
             .expect("ClusterManager::new should succeed");
-        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         connection_manager.start();
         tokio::time::sleep(Duration::from_millis(10)).await;
         manager.set_connection_manager(connection_manager.clone());
@@ -2231,8 +2385,8 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_metrics_includes_quarantine_state() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_metrics_quarantine".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2241,7 +2395,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2266,8 +2419,8 @@ mod tests {
     #[tokio::test]
     async fn test_local_only_manager_without_redis_still_builds() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None, // No Redis
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false,
             node_id: "test_cluster_requires_redis".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2276,7 +2429,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2299,8 +2451,8 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_enabled_without_redis_returns_configuration_error() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: true,
             node_id: "test_cluster_requires_redis".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2309,7 +2461,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2328,8 +2479,13 @@ mod tests {
         let redis_client = redis::Client::open("redis://127.0.0.1:1").ok();
 
         let config = ClusterConfig {
-            redis_client,
-            redis_conn: None, // Missing connection manager
+            distributed_transport_factory: redis_client.map(|client| {
+                Arc::new(crate::sync::RedisClusterMessageTransportFactory::new(
+                    synctv_core::coordination_runtime_from_client(client),
+                ))
+                    as Arc<dyn ClusterMessageTransportFactory>
+            }),
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: true,
             node_id: "test_cluster_missing_conn".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2338,7 +2494,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2354,8 +2509,8 @@ mod tests {
     #[tokio::test]
     async fn test_non_cluster_mode_works_without_redis() {
         let config = ClusterConfig {
-            redis_client: None,
-            redis_conn: None,
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: false, // Cluster mode disabled
             node_id: "test_non_cluster_no_redis".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -2364,7 +2519,6 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: None,
             parent_cancel_token: None,
         };
 
@@ -2374,6 +2528,88 @@ mod tests {
             result.is_ok(),
             "ClusterManager::new should succeed in non-cluster mode without Redis, got error: {:?}",
             result.err()
+        );
+    }
+
+    /// Test that standalone mode stays local-only even when a Redis client is provided.
+    ///
+    /// This protects the single-node deployment contract: Redis may exist for
+    /// cache/shared-state features, but local fan-out must not start Redis
+    /// Pub/Sub consumers unless cluster mode is explicitly enabled.
+    #[tokio::test]
+    async fn test_non_cluster_mode_with_distributed_transport_remains_local_only() {
+        let config = ClusterConfig {
+            distributed_transport_factory: Some(Arc::new(
+                crate::sync::RedisClusterMessageTransportFactory::new(
+                    synctv_core::coordination_runtime_from_client(
+                        redis::Client::open("redis://127.0.0.1:1")
+                            .expect("invalid-but-constructible Redis client"),
+                    ),
+                ),
+            )),
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            cluster_enabled: false,
+            node_id: "test_non_cluster_with_redis".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("standalone mode must ignore Redis fan-out transport");
+
+        assert!(
+            manager.redis_publish_tx().is_none(),
+            "standalone mode must not start Redis publish channels"
+        );
+        assert!(
+            !manager.metrics().redis_enabled,
+            "standalone mode must report local-only transport even when Redis is configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cluster_manager_uses_injected_transport_factory() {
+        let factory = Arc::new(StubTransportFactory::default());
+        let config = ClusterConfig {
+            distributed_transport_factory: Some(factory.clone()),
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            cluster_enabled: true,
+            node_id: "test_trait_transport".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 8,
+            publish_channel_capacity: 8,
+            key_prefix: "test:".to_string(),
+            catchup_window_secs: 60,
+            stream_max_length: 100,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("cluster manager should accept trait-object transport factory");
+
+        assert_eq!(
+            factory.start_count.load(Ordering::Relaxed),
+            1,
+            "transport factory must be used to start distributed transport"
+        );
+        assert!(
+            manager.metrics().redis_enabled,
+            "distributed transport should mark cross-node fanout as enabled"
+        );
+
+        manager.shutdown().await;
+
+        assert_eq!(
+            factory.shutdown_count.load(Ordering::Relaxed),
+            1,
+            "cluster shutdown must delegate to the injected transport"
         );
     }
 }

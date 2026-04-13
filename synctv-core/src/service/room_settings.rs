@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
+    cache::{CacheInvalidationRuntime, InvalidationMessage, SingleFlight},
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
@@ -57,7 +57,7 @@ impl RoomSettingsInvalidationRuntime {
 pub struct RoomSettingsService {
     repo: RoomSettingsRepository,
     cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
-    invalidation_service: Option<Arc<CacheInvalidationService>>,
+    invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
     invalidation_runtime: Arc<RoomSettingsInvalidationRuntime>,
     notification_service: Arc<NotificationService>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
@@ -104,7 +104,7 @@ impl RoomSettingsService {
     #[must_use]
     pub fn new(
         repo: RoomSettingsRepository,
-        invalidation_service: Option<Arc<CacheInvalidationService>>,
+        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
         notification_service: Arc<NotificationService>,
         cache_ttl_secs: Option<u64>,
         cache_max_capacity: Option<u64>,
@@ -455,7 +455,7 @@ impl RoomSettingsService {
             }
         }
 
-        self.notify_settings_changed(room_id, settings).await;
+        self.notify_settings_changed(room_id, settings);
     }
 
     /// Invalidate local cache for a room
@@ -464,7 +464,7 @@ impl RoomSettingsService {
     }
 
     /// Notify connected clients about settings change
-    async fn notify_settings_changed(&self, room_id: &RoomId, settings: &RoomSettings) {
+    fn notify_settings_changed(&self, room_id: &RoomId, settings: &RoomSettings) {
         let settings_value = match serde_json::to_value(settings) {
             Ok(v) => v,
             Err(e) => {
@@ -476,7 +476,7 @@ impl RoomSettingsService {
         let _ = self
             .notification_service
             .notify_settings_updated(room_id, settings_value)
-            .await;
+            ;
     }
 
     /// Preload settings for multiple rooms (bulk loading)
@@ -537,9 +537,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
         let room_id = RoomId::from_string("room-settings-stop".to_string());
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:test:room-settings".to_string(),
         ));
         let service = RoomSettingsService::new(
@@ -555,9 +553,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_via_streams() {
         // Create a CacheInvalidationService without Redis (local-only mode)
-        let inv_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let inv_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
 
@@ -599,9 +595,7 @@ mod tests {
     #[tokio::test]
     async fn test_lagged_receiver_flushes_cache() {
         // Create invalidation service with local-only mode
-        let inv_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let inv_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
 

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use integration_test_helpers::TestRedis;
 use redis::aio::{ConnectionManager as RedisConnectionManager, ConnectionManagerConfig};
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+use synctv_cluster::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
+use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core_testing::test_redis_key_prefix;
 
@@ -49,13 +50,24 @@ async fn redis_connection(redis_url: &str) -> redis::aio::ConnectionManager {
     }
 }
 
+fn distributed_manager(
+    limits: ConnectionLimits,
+    conn: redis::aio::ConnectionManager,
+    key_prefix: &str,
+) -> ConnectionManager {
+    build_connection_manager(
+        limits,
+        &SharedStateProfile::from_runtime(Some(synctv_core::direct_runtime(conn)), key_prefix, true),
+    )
+    .expect("shared realtime connection runtime should initialize")
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable() {
     let mut redis = TestRedis::start_dedicated().await;
     let conn = redis_connection(&redis.redis_url).await;
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn, "fail_closed_register:");
+    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_register:");
 
     redis.terminate_container();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -82,8 +94,7 @@ async fn test_register_fails_closed_when_distributed_limit_state_is_unavailable(
 async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() {
     let mut redis = TestRedis::start_dedicated().await;
     let conn = redis_connection(&redis.redis_url).await;
-    let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "fail_closed_join:");
+    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_join:");
 
     manager
         .register("conn1".to_string(), uid("user1"))
@@ -126,8 +137,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
 async fn test_distributed_connection_queries_fail_closed_when_redis_is_unavailable() {
     let mut redis = TestRedis::start_dedicated().await;
     let conn = redis_connection(&redis.redis_url).await;
-    let manager =
-        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "fail_closed_get:");
+    let manager = distributed_manager(ConnectionLimits::default(), conn, "fail_closed_get:");
 
     manager
         .register("conn1".to_string(), uid("user1"))
@@ -168,12 +178,15 @@ async fn test_register_rejects_when_distributed_total_limit_is_reached() {
     let redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let prefix = test_redis_key_prefix("fail-closed-total");
-    let manager = ConnectionManager::new(ConnectionLimits {
-        max_total: 1,
-        max_per_user: 10,
-        ..ConnectionLimits::default()
-    })
-    .with_redis(conn, &prefix);
+    let manager = distributed_manager(
+        ConnectionLimits {
+            max_total: 1,
+            max_per_user: 10,
+            ..ConnectionLimits::default()
+        },
+        conn,
+        &prefix,
+    );
 
     manager
         .register("conn1".to_string(), uid("user1"))
@@ -215,7 +228,7 @@ async fn test_join_room_move_removes_old_room_from_distributed_index() {
     let redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let prefix = test_redis_key_prefix("move-room-idx");
-    let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn, &prefix);
 
     let user = uid("user1");
     let room_a = rid("room_a");
@@ -264,11 +277,14 @@ async fn test_join_room_rejection_rolls_back_distributed_room_counter() {
     let redis = TestRedis::start().await;
     let conn = redis_connection(&redis.redis_url).await;
     let prefix = test_redis_key_prefix("join-rollback");
-    let manager = ConnectionManager::new(ConnectionLimits {
-        max_per_room: 1,
-        ..ConnectionLimits::default()
-    })
-    .with_redis(conn, &prefix);
+    let manager = distributed_manager(
+        ConnectionLimits {
+            max_per_room: 1,
+            ..ConnectionLimits::default()
+        },
+        conn,
+        &prefix,
+    );
 
     let room_a = rid("room_a");
     let room_b = rid("room_b");

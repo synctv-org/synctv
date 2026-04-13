@@ -6,10 +6,11 @@
 //! to the same Redis, simulating a multi-replica deployment.
 
 #![allow(clippy::unwrap_used)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_cluster::sync::events::ClusterEvent;
+use synctv_cluster::sync::{events::ClusterEvent, RoomMessageHub};
 use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
@@ -21,8 +22,8 @@ async fn test_room_hub_connection_manager_state_consistency() {
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None, // No Redis -- single-node mode
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),
@@ -31,7 +32,6 @@ async fn test_room_hub_connection_manager_state_consistency() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
-        shared_redis_conn: None,
         parent_cancel_token: None,
     };
 
@@ -137,9 +137,8 @@ async fn test_room_hub_connection_manager_state_consistency() {
 #[ignore = "Requires Docker"]
 async fn test_rapid_subscribe_unsubscribe_no_leak() {
     let config = ClusterConfig {
-        redis_client: None,
-        redis_conn: None,
-        shared_redis_conn: None,
+        distributed_transport_factory: None,
+        message_runtime: Arc::new(RoomMessageHub::new()),
         cluster_enabled: false,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),

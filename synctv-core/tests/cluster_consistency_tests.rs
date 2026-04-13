@@ -58,6 +58,22 @@ pub struct TestInfra {
     redis: Option<RedisContainer>,
 }
 
+async fn distributed_invalidation_service(
+    redis_client: redis::Client,
+    node_id: &str,
+    stream_key: String,
+) -> Arc<CacheInvalidationService> {
+    Arc::new(CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(
+            redis::aio::ConnectionManager::new(redis_client)
+                .await
+                .expect("redis connection manager"),
+        ),
+        node_id.to_string(),
+        stream_key,
+    ))
+}
+
 async fn create_test_infra() -> TestInfra {
     let (postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
@@ -212,16 +228,18 @@ async fn test_permission_change_cross_replica_sync() {
         .expect("Failed to add member");
 
     // Create two PermissionService instances (simulating two replicas)
-    let cache_invalidation_1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
+    let cache_invalidation_1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_a",
         "test:cache:invalidate".to_string(),
-    ));
-    let cache_invalidation_2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_b".to_string(),
+    )
+    .await;
+    let cache_invalidation_2 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_b",
         "test:cache:invalidate".to_string(),
-    ));
+    )
+    .await;
 
     // Start cache invalidation services so the XREADGROUP listener runs
     cache_invalidation_2
@@ -389,16 +407,18 @@ async fn test_playback_state_cross_replica_sync() {
     let (_owner, room) = setup_test_room(pool).await;
 
     // Create cache invalidation services
-    let cache_invalidation_1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
+    let cache_invalidation_1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_a",
         "test:cache:playback".to_string(),
-    ));
-    let cache_invalidation_2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_b".to_string(),
+    )
+    .await;
+    let cache_invalidation_2 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_b",
         "test:cache:playback".to_string(),
-    ));
+    )
+    .await;
 
     // Start cache invalidation service 2 so node B receives cross-replica messages
     cache_invalidation_2
@@ -428,6 +448,7 @@ async fn test_playback_state_cross_replica_sync() {
                     synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
                 )),
             ))),
+            synctv_core::service::NotificationService::default(),
         ),
         user_service.clone(),
     );
@@ -449,6 +470,7 @@ async fn test_playback_state_cross_replica_sync() {
                     synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
                 )),
             ))),
+            synctv_core::service::NotificationService::default(),
         ),
         user_service,
     );
@@ -518,17 +540,19 @@ async fn test_playback_state_invalidation_message_content() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
+    let service1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node1",
         "test:cache:playback_msg".to_string(),
-    ));
+    )
+    .await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
+    let service2 = distributed_invalidation_service(
+        redis_client,
+        "node2",
         "test:cache:playback_msg".to_string(),
-    ));
+    )
+    .await;
 
     // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");
@@ -592,16 +616,18 @@ async fn test_room_settings_cross_replica_sync() {
         .expect("Failed to create settings");
 
     // Create cache invalidation services
-    let cache_invalidation_1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_a".to_string(),
+    let cache_invalidation_1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_a",
         "test:cache:settings".to_string(),
-    ));
-    let _cache_invalidation_2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node_b".to_string(),
+    )
+    .await;
+    let _cache_invalidation_2 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node_b",
         "test:cache:settings".to_string(),
-    ));
+    )
+    .await;
     // Node B: Query settings (simulates caching)
     let settings_b_initial = room_settings_repo
         .get(&room.id)
@@ -651,17 +677,19 @@ async fn test_room_settings_invalidation_message_broadcast() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
+    let service1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node1",
         "test:cache:room_settings".to_string(),
-    ));
+    )
+    .await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
+    let service2 = distributed_invalidation_service(
+        redis_client,
+        "node2",
         "test:cache:room_settings".to_string(),
-    ));
+    )
+    .await;
 
     // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");
@@ -703,17 +731,19 @@ async fn test_concurrent_invalidation_messages() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
+    let service1 = distributed_invalidation_service(
+        redis_client.clone(),
+        "node1",
         "test:cache:concurrent".to_string(),
-    ));
+    )
+    .await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
+    let service2 = distributed_invalidation_service(
+        redis_client,
+        "node2",
         "test:cache:concurrent".to_string(),
-    ));
+    )
+    .await;
 
     // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");

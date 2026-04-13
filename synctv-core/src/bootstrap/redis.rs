@@ -1,7 +1,8 @@
 //! Redis initialization
 //!
-//! Creates a single `RedisHandles` at startup and passes it everywhere,
-//! eliminating duplicate `redis::Client::open` calls across the codebase.
+//! Creates a single shared Redis runtime at startup and passes trait-based
+//! capabilities everywhere, eliminating duplicate `redis::Client::open` calls
+//! and concrete client leakage across the codebase.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -9,46 +10,41 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::config::RedisDeploymentMode;
+use crate::{ManagedRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime};
 use crate::Config;
 
 type RedisConnectionManagerConfig = redis::aio::ConnectionManagerConfig;
 type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;
 type RedisNodeSettings = redis::RedisConnectionInfo;
 
-/// Shared Redis handles created once at startup.
-///
-/// In Sentinel mode the background health check hot-swaps the inner
-/// `ConnectionManager` on failover; all callers that hold a reference to
-/// `conn` automatically see the updated connection on their next read-lock.
-#[derive(Clone)]
-pub struct RedisHandles {
-    pub client: redis::Client,
-    pub conn: Arc<RwLock<redis::aio::ConnectionManager>>,
-}
-
-#[derive(Debug)]
 pub struct RedisInit {
-    pub handles: Option<RedisHandles>,
+    pub runtime: Option<Arc<dyn RedisCoordinationRuntime>>,
     pub sentinel_health_check_task: Option<JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for RedisHandles {
+impl std::fmt::Debug for RedisInit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedisHandles")
-            .field("client", &"redis::Client { .. }")
-            .field("conn", &"Arc<RwLock<ConnectionManager>>")
+        f.debug_struct("RedisInit")
+            .field("runtime_configured", &self.runtime.is_some())
+            .field(
+                "sentinel_health_check_task_running",
+                &self.sentinel_health_check_task.is_some(),
+            )
             .finish()
     }
 }
 
-impl RedisHandles {
-    /// Return a plain `ConnectionManager` snapshot from the shared connection.
-    ///
-    /// `ConnectionManager` is a cheap `Arc`-based clone. In Sentinel mode the
-    /// background health check may swap the inner value; calling this method
-    /// obtains the latest handle.
-    pub async fn conn_snapshot(&self) -> redis::aio::ConnectionManager {
-        self.conn.read().await.clone()
+impl RedisInit {
+    #[must_use]
+    pub fn connection_runtime(&self) -> Option<Arc<dyn RedisConnectionRuntime>> {
+        self.runtime
+            .clone()
+            .map(|runtime| runtime as Arc<dyn RedisConnectionRuntime>)
+    }
+
+    #[must_use]
+    pub fn coordination_runtime(&self) -> Option<Arc<dyn RedisCoordinationRuntime>> {
+        self.runtime.clone()
     }
 }
 
@@ -74,12 +70,12 @@ pub async fn init_redis(
             if redis_url.is_empty() {
                 info!("Redis URL is not configured — running without Redis");
                 return Ok(RedisInit {
-                    handles: None,
+                    runtime: None,
                     sentinel_health_check_task: None,
                 });
             }
             Ok(RedisInit {
-                handles: Some(init_standalone(config, &redis_url).await?),
+                runtime: Some(init_standalone(config, &redis_url).await?),
                 sentinel_health_check_task: None,
             })
         }
@@ -101,7 +97,7 @@ mod init_tests {
             .await
             .expect("standalone without redis.url should be allowed");
 
-        assert!(result.handles.is_none());
+        assert!(result.runtime.is_none());
         assert!(result.sentinel_health_check_task.is_none());
     }
 
@@ -223,7 +219,10 @@ fn build_sentinel_node_info(
     }))
 }
 
-async fn init_standalone(config: &Config, redis_url: &str) -> Result<RedisHandles, anyhow::Error> {
+async fn init_standalone(
+    config: &Config,
+    redis_url: &str,
+) -> Result<Arc<dyn RedisCoordinationRuntime>, anyhow::Error> {
     info!("Initializing Redis in standalone mode");
     let client = redis::Client::open(redis_url.to_string())?;
     let conn = redis::aio::ConnectionManager::new_with_config(
@@ -231,11 +230,8 @@ async fn init_standalone(config: &Config, redis_url: &str) -> Result<RedisHandle
         redis_connection_manager_config(config),
     )
     .await?;
-    let shared = Arc::new(RwLock::new(conn));
-    Ok(RedisHandles {
-        client,
-        conn: shared,
-    })
+    let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
+    Ok(Arc::new(runtime))
 }
 
 async fn init_sentinel(
@@ -416,10 +412,7 @@ async fn init_sentinel(
         );
 
         Ok(RedisInit {
-            handles: Some(RedisHandles {
-                client,
-                conn: shared_conn,
-            }),
+            runtime: Some(Arc::new(ManagedRedisRuntime::new(client, shared_conn))),
             sentinel_health_check_task: Some(health_check_task),
         })
     }
@@ -450,21 +443,18 @@ mod concurrency_tests {
         assert_eq!(second, "original");
     }
 
-    /// Verify that RedisHandles::conn_snapshot returns a clone from the shared handle.
+    /// Verify that ManagedRedisRuntime::snapshot returns a clone from the shared handle.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_conn_snapshot_returns_clone() {
+    async fn test_snapshot_returns_clone() {
         let (_redis, client) = start_redis_with_client().await;
         let conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let handles = RedisHandles {
-            client,
-            conn: Arc::new(RwLock::new(conn)),
-        };
+        let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
 
-        // conn_snapshot should return a working clone
-        let mut snapshot = handles.conn_snapshot().await;
+        // snapshot should return a working clone
+        let mut snapshot = runtime.snapshot().await;
         let pong: String = redis::cmd("PING").query_async(&mut snapshot).await.unwrap();
         assert_eq!(pong, "PONG");
     }

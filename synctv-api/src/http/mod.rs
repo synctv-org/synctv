@@ -33,18 +33,18 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::proxy::ProxyServices;
 use synctv_core::provider::ProviderSet;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::ProxySigningKey;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use crate::cluster_fanout::ClusterFanoutService;
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 pub use error::{AppError, AppResult};
 
@@ -168,10 +168,10 @@ pub struct RouterConfig {
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub providers: ProviderSet,
-    pub cluster_manager: Option<Arc<synctv_cluster::sync::ClusterManager>>,
-    pub connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
+    pub event_service: Option<Arc<dyn RealtimeEventService>>,
+    pub connection_manager: Arc<dyn RealtimeConnectionService>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
+    pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
@@ -185,10 +185,10 @@ pub struct RouterConfig {
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
-    /// Shared Redis connection for playback caching (Sentinel-failover safe)
-    pub redis_conn: Option<crate::SharedRedisConn>,
+    /// Shared runtime for playback caching and other shared-state lookups.
+    pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared provider playback store registry reused across transports when available.
-    pub shared_provider_stores: Option<Arc<synctv_core::provider::store::ProviderStoreRegistry>>,
+    pub shared_provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// Shared proxy signing key reused across transports when available.
     pub shared_proxy_signing_key: Option<Arc<ProxySigningKey>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -219,9 +219,52 @@ pub struct RouterConfig {
 /// directly on `AppState`. Thanks to the `Deref` impl, all `RouterConfig`
 /// fields are accessible transparently (e.g. `state.user_service`).
 #[derive(Clone)]
+pub struct SharedApiRuntime {
+    /// Redis runtime abstraction derived from the shared connection when available.
+    pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
+    /// Shared rate limit config (created once at startup, not per-request)
+    pub rate_limit_config: Arc<middleware::RateLimitConfig>,
+    /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
+    pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
+    /// Shared content filter configured at startup.
+    pub content_filter: Arc<synctv_core::service::ContentFilter>,
+    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
+    /// Shared JWT validator (created once at startup, not per-request)
+    pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
+    /// Shared security pipeline for post-JWT checks (password, user status)
+    pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    /// Shared guest token validator (JWT + blacklist check)
+    pub guest_token_validator: Arc<synctv_core::service::auth::GuestTokenValidator>,
+    // Unified API implementation layer
+    pub client_api: Arc<crate::impls::ClientApiImpl>,
+    pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
+    pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
+    // H-2: Provider ApiImpls stored once in shared runtime (not created per-request)
+    pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
+    pub alist_api: Arc<crate::impls::AlistApiImpl>,
+    pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    /// Repository shared by provider transports for bind lookups.
+    pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
+    /// Per-provider stores for caching and distributed locking (lazy creation)
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
+    pub proxy_provider_registry: Arc<synctv_core::provider::proxy::ProxyProviderRegistry>,
+    /// Services available to providers during proxy resolution (DB access)
+    pub proxy_services: Arc<ProxyServices>,
+    /// HMAC signing key for proxy URL authentication
+    pub proxy_signing_key: Arc<ProxySigningKey>,
+}
+
+#[derive(Clone)]
 pub struct AppState {
     /// Common service configuration (shared cheaply via `Arc`).
     pub router_config: Arc<RouterConfig>,
+    /// Shared transport-agnostic runtime reused across HTTP, gRPC, and management.
+    pub shared_api_runtime: Arc<SharedApiRuntime>,
+    /// Redis runtime abstraction derived from the shared connection when available.
+    pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
@@ -246,7 +289,7 @@ pub struct AppState {
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     /// Per-provider stores for caching and distributed locking (lazy creation)
-    pub provider_stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
     pub proxy_provider_registry: Arc<synctv_core::provider::proxy::ProxyProviderRegistry>,
     /// Services available to providers during proxy resolution (DB access)
@@ -277,8 +320,8 @@ impl AppState {
     ///
     /// Returns `None` when Redis is not configured.
     pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_conn {
-            Some(shared) => Some(shared.read().await.clone()),
+        match &self.redis_runtime {
+            Some(runtime) => Some(runtime.snapshot().await),
             None => None,
         }
     }
@@ -286,34 +329,83 @@ impl AppState {
 
 /// Create the HTTP router from configuration struct
 pub fn create_router_from_config(config: RouterConfig) -> anyhow::Result<axum::Router> {
-    let (router, _) = create_router_with_state_from_config(config)?;
+    let state = create_app_state_from_config(config);
+    let router = create_router_from_shared_state(&state)?;
     Ok(router)
+}
+
+/// Create shared `AppState` once so multiple transports can reuse the same impl instances.
+#[must_use]
+pub fn create_app_state_from_config(config: RouterConfig) -> AppState {
+    build_app_state(config)
+}
+
+/// Create the HTTP router from an already constructed shared `AppState`.
+pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum::Router> {
+    let state = state.clone();
+    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state.clone());
+    apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state)
 }
 
 /// Create the HTTP router and the shared application state from configuration.
 pub fn create_router_with_state_from_config(
     config: RouterConfig,
 ) -> anyhow::Result<(axum::Router, AppState)> {
-    let state = build_app_state(config);
-    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state.clone());
-    Ok((
-        apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state)?,
-        state,
-    ))
+    let state = create_app_state_from_config(config);
+    let router = create_router_from_shared_state(&state)?;
+    Ok((router, state))
 }
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
+    let shared_api_runtime = Arc::new(build_shared_api_runtime(&config));
+    let proxy_slice_cache = config.proxy_slice_cache.clone();
+    let proxy_http_client = config.proxy_http_client.clone();
+
+    AppState {
+        router_config: Arc::new(config),
+        shared_api_runtime: shared_api_runtime.clone(),
+        redis_runtime: shared_api_runtime.redis_runtime.clone(),
+        rate_limit_config: shared_api_runtime.rate_limit_config.clone(),
+        messaging_rate_limit_config: shared_api_runtime.messaging_rate_limit_config.clone(),
+        content_filter: shared_api_runtime.content_filter.clone(),
+        heartbeat_schedule: shared_api_runtime.heartbeat_schedule,
+        jwt_validator: shared_api_runtime.jwt_validator.clone(),
+        security_pipeline: shared_api_runtime.security_pipeline.clone(),
+        guest_token_validator: shared_api_runtime.guest_token_validator.clone(),
+        client_api: shared_api_runtime.client_api.clone(),
+        admin_api: shared_api_runtime.admin_api.clone(),
+        email_api: shared_api_runtime.email_api.clone(),
+        notification_api: shared_api_runtime.notification_api.clone(),
+        oauth2_api: shared_api_runtime.oauth2_api.clone(),
+        bilibili_api: shared_api_runtime.bilibili_api.clone(),
+        alist_api: shared_api_runtime.alist_api.clone(),
+        emby_api: shared_api_runtime.emby_api.clone(),
+        provider_stores: shared_api_runtime.provider_stores.clone(),
+        proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
+        proxy_services: shared_api_runtime.proxy_services.clone(),
+        proxy_signing_key: shared_api_runtime.proxy_signing_key.clone(),
+        proxy_slice_cache,
+        proxy_http_client,
+        metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
+    }
+}
+
+pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntime {
+    let redis_runtime = config.redis_runtime.clone();
     let proxy_signing_key = config.shared_proxy_signing_key.clone().unwrap_or_else(|| {
         Arc::new(ProxySigningKey::derive_from(
             config.config.jwt.secret.as_bytes(),
         ))
     });
     let provider_stores = config.shared_provider_stores.clone().unwrap_or_else(|| {
-        Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-            config.redis_conn.clone(),
-            config.config.redis.key_prefix.clone(),
-        ))
+        synctv_core::provider::store::build_provider_store_resolver_from_profile(
+            &synctv_core::SharedStateProfile::from_runtime(
+                redis_runtime.clone(),
+                config.config.redis.key_prefix.clone(),
+                false,
+            ),
+        )
     });
 
     // Build the shared security pipeline through the builder so startup fails
@@ -341,8 +433,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
             config.providers_manager.clone(),
             config.settings_registry.clone(),
         )
-        .with_redis_publish_tx(config.redis_publish_tx.clone())
-        .with_redis_conn(config.redis_conn.clone())
+        .with_cluster_fanout_service(config.cluster_fanout_service.clone())
+        .with_shared_runtime(redis_runtime.clone())
         .with_rate_limiter(config.rate_limiter.clone())
         .with_credential_encryption(config.credential_encryption.clone())
         .with_credential_repo(config.user_provider_credential_repository.clone())
@@ -385,9 +477,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
                 config.live_streaming_infrastructure.clone(),
                 config.publish_key_service.clone(),
                 config.config.clone(),
-                config.redis_publish_tx.clone(),
                 config.audit_service.clone(),
             )
+            .with_cluster_fanout_service(config.cluster_fanout_service.clone())
             .with_provider_stores(provider_stores.clone()),
         )
     });
@@ -456,22 +548,16 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let proxy_services = Arc::new(ProxyServices {
         room_service: config.room_service.clone(),
         credential_encryption: config.credential_encryption.clone(),
-        credential_repo,
+        credential_repo: credential_repo.clone(),
         signing_key: proxy_signing_key.clone(),
     });
 
-    let heartbeat_schedule = config.heartbeat_schedule;
-    let proxy_slice_cache = config.proxy_slice_cache.clone();
-    let proxy_http_client = config.proxy_http_client.clone();
-
-    let shared_content_filter = Arc::new(config.content_filter.clone());
-
-    AppState {
-        router_config: Arc::new(config),
+    SharedApiRuntime {
+        redis_runtime,
         rate_limit_config,
         messaging_rate_limit_config,
-        content_filter: shared_content_filter,
-        heartbeat_schedule,
+        content_filter: Arc::new(config.content_filter.clone()),
+        heartbeat_schedule: config.heartbeat_schedule,
         jwt_validator,
         security_pipeline,
         guest_token_validator,
@@ -483,13 +569,11 @@ fn build_app_state(config: RouterConfig) -> AppState {
         bilibili_api,
         alist_api,
         emby_api,
+        user_provider_credential_repository: credential_repo,
         provider_stores,
         proxy_provider_registry,
         proxy_services,
         proxy_signing_key,
-        proxy_slice_cache,
-        proxy_http_client,
-        metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
     }
 }
 
@@ -1297,12 +1381,14 @@ mod tests {
                 synctv_core::repository::UserProviderCredentialRepository::new(pool),
             ),
             providers,
-            cluster_manager: None,
+            event_service: None,
             connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
                 synctv_cluster::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            redis_publish_tx: None,
+            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+                None, false,
+            ),
             oauth2_service: None,
             settings_service: None,
             settings_registry: None,
@@ -1314,8 +1400,11 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
-            redis_conn: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
+                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+                None,
+            )),
+            redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
@@ -1350,19 +1439,24 @@ mod tests {
         );
         let chat_service = synctv_core::service::ChatService::new(
             Arc::new(synctv_core::repository::ChatRepository::new(pool)),
-            router_config.rate_limiter.clone(),
-            state.messaging_rate_limit_config.as_ref().clone(),
-            state.content_filter.as_ref().clone(),
-            router_config.user_service.username_cache().clone(),
-            router_config.room_service.permission_service().clone(),
-            room_settings_service,
+            synctv_core::service::chat::ChatRuntime {
+                rate_limiter: router_config.rate_limiter.clone(),
+                rate_limit_config: state.messaging_rate_limit_config.as_ref().clone(),
+                content_filter: state.content_filter.as_ref().clone(),
+                username_cache: router_config.user_service.username_cache().clone(),
+            },
+            synctv_core::service::chat::ChatDependencies {
+                permission_service: router_config.room_service.permission_service().clone(),
+                room_settings_service,
+                notification_service: synctv_core::service::NotificationService::default(),
+            },
         );
         router_config.chat_service = Some(Arc::new(chat_service));
-        router_config.cluster_manager = Some(Arc::new(
+        let cluster_manager = Arc::new(
             synctv_cluster::sync::ClusterManager::new(
                 synctv_cluster::sync::ClusterConfig {
-                    redis_client: None,
-                    redis_conn: None,
+                    distributed_transport_factory: None,
+                    message_runtime: Arc::new(synctv_cluster::sync::RoomMessageHub::new()),
                     cluster_enabled: false,
                     node_id: "test-node".to_string(),
                     dedup_window: Duration::from_secs(30),
@@ -1371,7 +1465,6 @@ mod tests {
                     key_prefix: "test:".to_string(),
                     catchup_window_secs: 60,
                     stream_max_length: 100,
-                    shared_redis_conn: None,
                     parent_cancel_token: None,
                 },
                 None,
@@ -1379,6 +1472,9 @@ mod tests {
             )
             .await
             .expect("cluster manager"),
+        );
+        router_config.event_service = Some(Arc::new(
+            crate::runtime::ClusterRealtimeEventService::new(cluster_manager),
         ));
         build_app_state(router_config)
     }
@@ -1483,9 +1579,12 @@ mod tests {
             enabled: false,
             ..SliceCacheConfig::default()
         }));
-        let injected_provider_stores = Arc::new(
-            synctv_core::provider::store::ProviderStoreRegistry::new(None, "shared:test:"),
-        );
+        let injected_provider_stores: Arc<
+            dyn synctv_core::provider::store::ProviderStoreResolver,
+        > = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+            None,
+            "shared:test:",
+        ));
         let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
             b"test-secret-key-for-http-router-tests-minimum-32-chars",
         ));
@@ -1516,12 +1615,14 @@ mod tests {
                 ),
             ),
             providers,
-            cluster_manager: None,
+            event_service: None,
             connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
                 synctv_cluster::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            redis_publish_tx: None,
+            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+                None, false,
+            ),
             oauth2_service: None,
             settings_service: None,
             settings_registry: None,
@@ -1533,8 +1634,11 @@ mod tests {
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
             rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::with_memory(None)),
-            redis_conn: None,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
+                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
+                None,
+            )),
+            redis_runtime: None,
             shared_provider_stores: Some(injected_provider_stores.clone()),
             shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),
             builtin_stun_url: None,

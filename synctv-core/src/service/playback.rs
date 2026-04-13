@@ -7,16 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage, PlaybackStateCache, SingleFlight},
+    cache::{
+        CacheInvalidationRuntime, InvalidationMessage, PlaybackStateCache, SingleFlight,
+    },
     models::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
         UserId,
     },
     repository::RoomPlaybackStateRepository,
-    service::{
-        media::MediaService, notification::NotificationService, permission::PermissionService,
-        UserService,
-    },
+    service::{media::MediaService, permission::PermissionService, UserService},
     Error, Result,
 };
 use rand::prelude::IteratorRandom;
@@ -207,8 +206,6 @@ pub struct PlaybackService {
     permission_service: PermissionService,
     media_service: MediaService,
     user_service: UserService,
-    /// Optional notification service for broadcasting to local WebSocket clients
-    notification_service: Option<NotificationService>,
     /// Optional cluster broadcaster for cross-replica sync (interior mutability
     /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
@@ -219,7 +216,7 @@ pub struct PlaybackService {
     /// still observe the final cache configuration.
     l2_cache: Arc<parking_lot::RwLock<Option<PlaybackStateCache>>>,
     /// Optional cache invalidation service for cross-replica cache sync
-    invalidation_service: Option<Arc<CacheInvalidationService>>,
+    invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
     /// Shared lifecycle state for the background invalidation listener.
     invalidation_runtime: Arc<PlaybackInvalidationRuntime>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
@@ -254,7 +251,6 @@ impl PlaybackService {
             permission_service,
             media_service,
             user_service,
-            notification_service: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
             playback_cache: Arc::new(
                 moka::future::CacheBuilder::new(Self::DEFAULT_CACHE_SIZE)
@@ -286,11 +282,6 @@ impl PlaybackService {
         }
     }
 
-    /// Set the notification service for broadcasting playback state to local WebSocket clients
-    pub fn set_notification_service(&mut self, service: NotificationService) {
-        self.notification_service = Some(service);
-    }
-
     /// Set the cluster broadcaster for cross-replica playback state sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
     pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
@@ -305,7 +296,7 @@ impl PlaybackService {
     ///
     /// Call [`start`](Self::start) explicitly during app bootstrap to surface
     /// startup errors and after [`shutdown`](Self::shutdown) to restart the listener.
-    pub fn set_invalidation_service(&mut self, service: Arc<CacheInvalidationService>) {
+    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
         self.invalidation_service = Some(service);
     }
 
@@ -1673,8 +1664,8 @@ mod tests {
     use crate::service::permission::PermissionService;
     use crate::service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        InMemoryTokenBlacklistStore, MediaService, ProvidersManager, RemoteProviderManager,
-        UserService,
+        InMemoryTokenBlacklistStore, MediaService, NotificationService, ProvidersManager,
+        RemoteProviderManager, UserService,
     };
     use async_trait::async_trait;
     use sqlx::PgPool;
@@ -1778,6 +1769,7 @@ mod tests {
             PlaylistRepository::new(pool.clone()),
             permission_service.clone(),
             providers_manager,
+            NotificationService::default(),
         );
         let user_service = make_user_service(pool.clone());
         let playback_service = PlaybackService::new(
@@ -1786,9 +1778,7 @@ mod tests {
             media_service,
             user_service,
         );
-        let invalidation_service = Arc::new(CacheInvalidationService::new(
-            None,
-            "node-test".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new("node-test".to_string(),
             "synctv:test:cache:invalidate".to_string(),
         ));
         (playback_service, invalidation_service)

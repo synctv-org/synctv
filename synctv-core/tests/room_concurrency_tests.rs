@@ -28,6 +28,7 @@ use synctv_core::{
     service::{
         member::{AddMemberOptions, MemberService},
         permission::PermissionService,
+        NotificationService,
     },
     Error,
 };
@@ -179,6 +180,7 @@ async fn test_concurrent_join_respects_max_members_limit() {
         member_repo.clone(),
         room_repo.clone(),
         permission_service.clone(),
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 
@@ -287,6 +289,7 @@ async fn test_concurrent_join_boundary_condition() {
         member_repo.clone(),
         room_repo.clone(),
         permission_service.clone(),
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 
@@ -631,6 +634,7 @@ async fn test_concurrent_join_and_leave_operations() {
         member_repo.clone(),
         room_repo.clone(),
         permission_service.clone(),
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 
@@ -747,6 +751,7 @@ async fn test_concurrent_joins_respect_room_capacity() {
         member_repo.clone(),
         room_repo.clone(),
         permission_service.clone(),
+        NotificationService::default(),
     );
     member_service.set_room_settings_repo(room_settings_repo);
 

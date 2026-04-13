@@ -26,6 +26,34 @@ fn unique_stream_key() -> String {
     format!("test:cache:invalidate:{}", synctv_common::snanoid!(8))
 }
 
+async fn distributed_invalidation_service(
+    redis_client: redis::Client,
+    node_id: &str,
+    stream_key: String,
+) -> Arc<CacheInvalidationService> {
+    Arc::new(CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(
+            redis::aio::ConnectionManager::new(redis_client)
+                .await
+                .expect("redis connection manager"),
+        ),
+        node_id.to_string(),
+        stream_key,
+    ))
+}
+
+fn shared_runtime_invalidation_service(
+    shared_conn: Arc<RwLock<redis::aio::ConnectionManager>>,
+    node_id: &str,
+    stream_key: String,
+) -> Arc<CacheInvalidationService> {
+    Arc::new(CacheInvalidationService::from_runtime(
+        synctv_core::shared_runtime(shared_conn),
+        node_id.to_string(),
+        stream_key,
+    ))
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_message_serialization() {
@@ -49,17 +77,11 @@ async fn test_cache_invalidation_broadcast_received() {
     let stream_key = unique_stream_key();
 
     // Create two invalidation services (simulating two replicas)
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    ));
+    let service1 =
+        distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node2".to_string(),
-        stream_key,
-    ));
+    let service2 =
+        distributed_invalidation_service(redis_client.clone(), "node2", stream_key).await;
 
     // Start listeners
     service1.start().await.expect("Failed to start service1");
@@ -105,17 +127,11 @@ async fn test_cache_invalidation_all_message() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    ));
+    let service1 =
+        distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node2".to_string(),
-        stream_key,
-    ));
+    let service2 =
+        distributed_invalidation_service(redis_client.clone(), "node2", stream_key).await;
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -149,14 +165,10 @@ async fn test_cache_invalidation_room_permission() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
-    let service1 = CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    );
+    let service1 =
+        distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
-    let service2 =
-        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key);
+    let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -195,17 +207,10 @@ async fn test_cache_invalidation_multiple_messages() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
-    let service1 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    ));
+    let service1 =
+        distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
-    let service2 = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "node2".to_string(),
-        stream_key,
-    ));
+    let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -261,7 +266,7 @@ async fn test_cache_invalidation_without_redis() {
     // Note: invalidate_* methods only broadcast remotely via Redis.
     // Without Redis, they are no-ops. The local_sender channel is used
     // only when receiving messages FROM Redis (via the consumer task).
-    let service = CacheInvalidationService::new(None, "node1".to_string(), unique_stream_key());
+    let service = CacheInvalidationService::new("node1".to_string(), unique_stream_key());
 
     // Start should succeed even without Redis (no-op for local-only)
     service
@@ -298,11 +303,8 @@ async fn test_cache_invalidation_self_origin_not_received() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
-    let service = Arc::new(CacheInvalidationService::new(
-        Some(redis_client),
-        "self_node".to_string(),
-        unique_stream_key(),
-    ));
+    let service =
+        distributed_invalidation_service(redis_client, "self_node", unique_stream_key()).await;
 
     service.start().await.expect("Failed to start service");
 
@@ -331,9 +333,7 @@ async fn test_cache_invalidation_self_origin_not_received() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_broadcast_local() {
     // broadcast_local should deliver to local subscribers without using Redis
-    let service = CacheInvalidationService::new(
-        None,
-        "local_node".to_string(),
+    let service = CacheInvalidationService::new("local_node".to_string(),
         "test:cache:local_only".to_string(),
     );
 
@@ -364,14 +364,10 @@ async fn test_cache_invalidation_playback_state() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
-    let service1 = CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    );
+    let service1 =
+        distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
-    let service2 =
-        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key);
+    let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -415,14 +411,10 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
     ));
     let stream_key = unique_stream_key();
 
-    let service1 = Arc::new(
-        CacheInvalidationService::new(None, "node1".to_string(), stream_key.clone())
-            .with_shared_conn(shared_conn.clone()),
-    );
-    let service2 = Arc::new(
-        CacheInvalidationService::new(Some(redis_client), "node2".to_string(), stream_key)
-            .with_shared_conn(shared_conn),
-    );
+    drop(redis_client);
+    let service1 =
+        shared_runtime_invalidation_service(shared_conn.clone(), "node1", stream_key.clone());
+    let service2 = shared_runtime_invalidation_service(shared_conn, "node2", stream_key);
 
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
@@ -509,11 +501,8 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
         "expected one pending entry"
     );
 
-    let service = CacheInvalidationService::new(
-        Some(redis_client.clone()),
-        node_id.to_string(),
-        stream_key.clone(),
-    );
+    let service =
+        distributed_invalidation_service(redis_client.clone(), node_id, stream_key.clone()).await;
     service
         .start()
         .await
@@ -604,9 +593,7 @@ async fn test_cache_invalidation_after_commit() {
 
     // Create room service WITH cache invalidation
     let mut room_service = RoomService::new(pool.clone(), user_service);
-    let invalidation_service = Arc::new(CacheInvalidationService::new(
-        None,
-        "room-delete-node".to_string(),
+    let invalidation_service = Arc::new(CacheInvalidationService::new("room-delete-node".to_string(),
         unique_stream_key(),
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());
@@ -770,9 +757,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     );
 
     let mut room_service = RoomService::new(pool.clone(), user_service);
-    let invalidation_service = Arc::new(CacheInvalidationService::new(
-        None,
-        "room-rollback-node".to_string(),
+    let invalidation_service = Arc::new(CacheInvalidationService::new("room-rollback-node".to_string(),
         unique_stream_key(),
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());

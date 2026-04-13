@@ -1,20 +1,69 @@
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
 use synctv_cluster::discovery::{
-    health_monitor::HealthProbeConfig, HealthMonitor, LoadBalancer, LoadBalancingStrategy,
-    NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
+    health_monitor::HealthProbeConfig, ClusterHealthRuntime, ClusterNodeDirectory,
+    ClusterNodeDirectoryFactory, HealthMonitor, StaticDiscovery, StaticDiscoveryConfig,
+    StaticPeerConfig,
 };
-use synctv_cluster::sync::{ClusterManager, ConnectionManager};
-use synctv_core::bootstrap::RedisHandles;
+use synctv_cluster::sync::{ClusterManager, ConnectionRuntime};
 use synctv_core::Config;
 
+#[async_trait]
+pub trait ClusterNodeActivator: Send + Sync {
+    async fn activate(&self) -> Result<(), anyhow::Error>;
+}
+
+#[derive(Clone)]
+pub struct DefaultClusterNodeActivator {
+    config: Config,
+    cluster_manager: Arc<ClusterManager>,
+    connection_manager: Arc<dyn ConnectionRuntime>,
+    registry: Arc<dyn ClusterNodeDirectory>,
+    health_monitor: Arc<dyn ClusterHealthRuntime>,
+}
+
+impl DefaultClusterNodeActivator {
+    #[must_use]
+    pub const fn new(
+        config: Config,
+        cluster_manager: Arc<ClusterManager>,
+        connection_manager: Arc<dyn ConnectionRuntime>,
+        registry: Arc<dyn ClusterNodeDirectory>,
+        health_monitor: Arc<dyn ClusterHealthRuntime>,
+    ) -> Self {
+        Self {
+            config,
+            cluster_manager,
+            connection_manager,
+            registry,
+            health_monitor,
+        }
+    }
+}
+
+#[async_trait]
+impl ClusterNodeActivator for DefaultClusterNodeActivator {
+    async fn activate(&self) -> Result<(), anyhow::Error> {
+        activate_cluster_node(
+            &self.config,
+            &self.cluster_manager,
+            self.connection_manager.clone(),
+            &self.registry,
+            &self.health_monitor,
+        )
+        .await
+    }
+}
+
 /// Initialize the shared cluster components: `NodeRegistry`, heartbeat loop,
-/// `HealthMonitor`, and `LoadBalancer`.
+/// and `HealthMonitor`.
 ///
 /// This is the common code shared between the "`k8s_dns`" and "redis" discovery
 /// branches. Both modes use a Redis-backed `NodeRegistry` for health tracking.
@@ -24,30 +73,237 @@ use synctv_core::Config;
 /// silently returned `(None, None, None)`, leaving the node in a ghost state
 /// where it believes it's in a cluster but has no registry or heartbeat.
 pub struct ClusterDiscoveryComponents {
-    pub registry: Arc<NodeRegistry>,
-    pub health_monitor: Arc<HealthMonitor>,
-    pub load_balancer: Arc<LoadBalancer>,
+    pub registry: Arc<dyn ClusterNodeDirectory>,
+    pub health_monitor: Arc<dyn ClusterHealthRuntime>,
+}
+
+pub struct ClusterDiscoveryTask {
+    pub name: &'static str,
+    pub handle: JoinHandle<()>,
+}
+
+impl ClusterDiscoveryTask {
+    #[must_use]
+    pub const fn new(name: &'static str, handle: JoinHandle<()>) -> Self {
+        Self { name, handle }
+    }
+}
+
+pub struct ClusterDiscoveryBundle {
+    pub registry: Arc<dyn ClusterNodeDirectory>,
+    pub health_monitor: Arc<dyn ClusterHealthRuntime>,
+    pub background_tasks: Vec<ClusterDiscoveryTask>,
+}
+
+pub trait ClusterCoordinationProvider: Send + Sync {
+    fn distributed_transport_factory(
+        &self,
+    ) -> Arc<dyn synctv_cluster::ClusterMessageTransportFactory>;
+
+    fn node_directory_factory(&self) -> Arc<dyn ClusterNodeDirectoryFactory>;
+
+    fn backend_name(&self) -> &'static str;
+}
+
+#[derive(Clone)]
+struct RedisClusterCoordinationProvider {
+    distributed_transport_factory: Arc<dyn synctv_cluster::ClusterMessageTransportFactory>,
+    node_directory_factory: Arc<dyn ClusterNodeDirectoryFactory>,
+}
+
+impl ClusterCoordinationProvider for RedisClusterCoordinationProvider {
+    fn distributed_transport_factory(
+        &self,
+    ) -> Arc<dyn synctv_cluster::ClusterMessageTransportFactory> {
+        self.distributed_transport_factory.clone()
+    }
+
+    fn node_directory_factory(&self) -> Arc<dyn ClusterNodeDirectoryFactory> {
+        self.node_directory_factory.clone()
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
+#[must_use]
+pub fn build_cluster_coordination_provider(
+    runtime: Arc<dyn synctv_core::RedisCoordinationRuntime>,
+) -> Arc<dyn ClusterCoordinationProvider> {
+    Arc::new(RedisClusterCoordinationProvider {
+        distributed_transport_factory: Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(runtime.clone()),
+        ),
+        node_directory_factory: Arc::new(
+            synctv_cluster::RedisClusterNodeDirectoryFactory::new(runtime),
+        ),
+    })
+}
+
+impl ClusterDiscoveryBundle {
+    #[must_use]
+    pub fn new(
+        components: ClusterDiscoveryComponents,
+        background_tasks: Vec<ClusterDiscoveryTask>,
+    ) -> Self {
+        Self {
+            registry: components.registry,
+            health_monitor: components.health_monitor,
+            background_tasks,
+        }
+    }
+}
+
+#[async_trait]
+trait ClusterPeerDiscoveryDriver: Send + Sync {
+    async fn start(
+        self: Box<Self>,
+        registry: Arc<dyn ClusterNodeDirectory>,
+    ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error>;
+}
+
+struct RedisClusterPeerDiscoveryDriver;
+
+#[async_trait]
+impl ClusterPeerDiscoveryDriver for RedisClusterPeerDiscoveryDriver {
+    async fn start(
+        self: Box<Self>,
+        _registry: Arc<dyn ClusterNodeDirectory>,
+    ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error> {
+        Ok(Vec::new())
+    }
+}
+
+struct StaticClusterPeerDiscoveryDriver {
+    config: StaticDiscoveryConfig,
+    cancel_token: CancellationToken,
+}
+
+#[async_trait]
+impl ClusterPeerDiscoveryDriver for StaticClusterPeerDiscoveryDriver {
+    async fn start(
+        self: Box<Self>,
+        registry: Arc<dyn ClusterNodeDirectory>,
+    ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error> {
+        let discovery = StaticDiscovery::from_runtime(self.config, registry, self.cancel_token);
+        let handle = discovery.start();
+        info!("Static peer discovery started");
+        Ok(vec![ClusterDiscoveryTask::new("peer_discovery", handle)])
+    }
+}
+
+#[cfg(feature = "k8s")]
+struct K8sClusterPeerDiscoveryDriver {
+    api_port: u16,
+    cluster_secret: String,
+    shutdown_token: CancellationToken,
+}
+
+#[cfg(feature = "k8s")]
+#[async_trait]
+impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
+    async fn start(
+        self: Box<Self>,
+        registry: Arc<dyn ClusterNodeDirectory>,
+    ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error> {
+        info!("Using K8s DNS discovery mode");
+        let discovery = K8sDnsDiscovery::from_env(self.api_port).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to initialize K8s DNS discovery: {e}. \
+                 Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
+            )
+        })?;
+        let discovery = discovery
+            .with_cluster_secret(self.cluster_secret)
+            .with_node_directory(registry);
+
+        if let Err(error) = discovery.refresh().await {
+            warn!("Initial K8s DNS resolution failed (will retry): {}", error);
+        }
+        let peers = discovery.get_peers().await;
+        info!(
+            dns_name = %discovery.dns_name(),
+            peer_count = peers.len(),
+            "K8s DNS discovery initialized"
+        );
+
+        Ok(vec![ClusterDiscoveryTask::new(
+            "peer_discovery",
+            discovery.start_refresh_loop(10, self.shutdown_token),
+        )])
+    }
+}
+
+fn build_cluster_peer_discovery_driver(
+    config: &Config,
+    shutdown_token: CancellationToken,
+) -> Result<Box<dyn ClusterPeerDiscoveryDriver>, anyhow::Error> {
+    match config.cluster.discovery_mode.as_str() {
+        #[cfg(feature = "k8s")]
+        "k8s_dns" => Ok(Box::new(K8sClusterPeerDiscoveryDriver {
+            api_port: config.server.port,
+            cluster_secret: config.server.cluster_secret.clone(),
+            shutdown_token,
+        })),
+        #[cfg(not(feature = "k8s"))]
+        "k8s_dns" => Err(anyhow::anyhow!(
+            "K8s DNS discovery mode requires the 'k8s' feature. \
+             Rebuild with: cargo build --features k8s"
+        )),
+        "static" => {
+            info!("Using static peer discovery mode");
+            let peers: Vec<StaticPeerConfig> = config
+                .cluster
+                .peers
+                .iter()
+                .map(|addr| StaticPeerConfig {
+                    api_address: addr.clone(),
+                })
+                .collect();
+
+            if peers.is_empty() {
+                warn!(
+                    "Static discovery mode selected but no peers configured (cluster.peers is empty)"
+                );
+            }
+
+            Ok(Box::new(StaticClusterPeerDiscoveryDriver {
+                config: StaticDiscoveryConfig {
+                    peers,
+                    probe_interval_secs: 10,
+                    connect_timeout: Duration::from_secs(3),
+                    cluster_secret: config.server.cluster_secret.clone(),
+                    default_api_port: config.server.port,
+                },
+                cancel_token: shutdown_token,
+            }))
+        }
+        "redis" => Ok(Box::new(RedisClusterPeerDiscoveryDriver)),
+        other => Err(anyhow::anyhow!(
+            "cluster.discovery_mode is validated before startup: {other}"
+        )),
+    }
 }
 
 pub fn init_cluster_components(
-    redis_handles: &RedisHandles,
+    node_directory_factory: &Arc<dyn ClusterNodeDirectoryFactory>,
     cm: &Arc<ClusterManager>,
     config: &Config,
-    _connection_manager: &ConnectionManager,
+    _connection_manager: Arc<dyn ConnectionRuntime>,
 ) -> Result<ClusterDiscoveryComponents, anyhow::Error> {
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = NodeRegistry::new(
-        redis_handles.client.clone(),
+    let registry = node_directory_factory.build(
         node_id,
         heartbeat_timeout_secs,
         &config.redis.key_prefix,
     )
-    .map(Arc::new)
-    .map_err(|e| anyhow::anyhow!("Failed to create NodeRegistry: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("Failed to create cluster node directory: {e}"))?;
 
-    let health_monitor = Arc::new(HealthMonitor::with_cancellation_token_and_probe_config(
+    let health_monitor: Arc<dyn ClusterHealthRuntime> =
+        Arc::new(HealthMonitor::with_runtime_cancellation_token_and_probe_config(
         registry.clone(),
         15,
         &cm.cancel_token(),
@@ -57,25 +313,18 @@ pub fn init_cluster_components(
         },
     ));
 
-    let lb = Arc::new(
-        LoadBalancer::new(registry.clone(), LoadBalancingStrategy::LeastConnections)
-            .with_health_monitor(health_monitor.clone()),
-    );
-    info!("Load balancer initialized with LeastConnections strategy");
-
     Ok(ClusterDiscoveryComponents {
         registry,
         health_monitor,
-        load_balancer: lb,
     })
 }
 
 pub async fn activate_cluster_node(
     config: &Config,
     cm: &Arc<ClusterManager>,
-    connection_manager: &ConnectionManager,
-    registry: &Arc<NodeRegistry>,
-    health_monitor: &Arc<HealthMonitor>,
+    connection_manager: Arc<dyn ConnectionRuntime>,
+    registry: &Arc<dyn ClusterNodeDirectory>,
+    health_monitor: &Arc<dyn ClusterHealthRuntime>,
 ) -> Result<(), anyhow::Error> {
     let advertise_api = config.advertise_api_address();
 
@@ -91,7 +340,7 @@ pub async fn activate_cluster_node(
     );
 
     let conn_mgr_for_hb = connection_manager.clone();
-    cm.start_heartbeat_loop(
+    cm.start_heartbeat_loop_with_directory(
         registry.clone(),
         advertise_api,
         Some(move || conn_mgr_for_hb.connection_count()),
@@ -114,148 +363,43 @@ pub async fn activate_cluster_node(
     }
 }
 
-/// Initialize cluster discovery infrastructure (`NodeRegistry` + `HealthMonitor` + `LoadBalancer`).
+/// Initialize cluster discovery infrastructure (`NodeRegistry` + `HealthMonitor`).
 ///
 /// Supports two discovery modes:
 ///   "redis"   - Redis-based node registry (default)
 ///   "`k8s_dns`" - Kubernetes headless service DNS discovery
-///
-/// Returns (`NodeRegistry`, `HealthMonitor`, `LoadBalancer`, optional DNS refresh handle).
 ///
 /// # D1 fix: Returns `Result` instead of silently degrading to `(None, None, None, None)`.
 /// When cluster mode is explicitly enabled, any failure is propagated to the caller
 /// as a fatal error, preventing the node from running in a ghost state.
 pub async fn init_cluster_discovery(
     config: &Config,
-    redis_handles: &RedisHandles,
+    node_directory_factory: &Arc<dyn ClusterNodeDirectoryFactory>,
     cm: &Arc<ClusterManager>,
-    connection_manager: &ConnectionManager,
+    connection_manager: Arc<dyn ConnectionRuntime>,
     shutdown_token: CancellationToken,
-) -> Result<
-    (
-        Option<Arc<NodeRegistry>>,
-        Option<Arc<HealthMonitor>>,
-        Option<Arc<LoadBalancer>>,
-        Option<tokio::task::JoinHandle<()>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ),
-    anyhow::Error,
-> {
-    let discovery_mode = config.cluster.discovery_mode.as_str();
+) -> Result<ClusterDiscoveryBundle, anyhow::Error> {
+    let components =
+        init_cluster_components(node_directory_factory, cm, config, connection_manager)?;
+    let discovery_driver = build_cluster_peer_discovery_driver(config, shutdown_token)?;
+    let background_tasks = discovery_driver.start(components.registry.clone()).await?;
 
-    match discovery_mode {
-        #[cfg(feature = "k8s")]
-        "k8s_dns" => {
-            info!("Using K8s DNS discovery mode");
-            let k8s_discovery = K8sDnsDiscovery::from_env(config.server.port).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to initialize K8s DNS discovery: {e}. \
-                         Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
-                )
-            })?;
-            let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager)?;
-            let k8s_discovery = k8s_discovery
-                .with_cluster_secret(config.server.cluster_secret.clone())
-                .with_node_registry(components.registry.clone());
-
-            // Perform initial DNS resolution
-            if let Err(e) = k8s_discovery.refresh().await {
-                warn!("Initial K8s DNS resolution failed (will retry): {}", e);
-            }
-            let peers = k8s_discovery.get_peers().await;
-            info!(
-                dns_name = %k8s_discovery.dns_name(),
-                peer_count = peers.len(),
-                "K8s DNS discovery initialized"
-            );
-
-            // Start background refresh loop (re-resolve every 10 seconds)
-            let dns_refresh_handle = k8s_discovery.start_refresh_loop(10, shutdown_token);
-
-            Ok((
-                Some(components.registry),
-                Some(components.health_monitor),
-                Some(components.load_balancer),
-                Some(dns_refresh_handle),
-                None,
-            ))
-        }
-        #[cfg(not(feature = "k8s"))]
-        "k8s_dns" => Err(anyhow::anyhow!(
-            "K8s DNS discovery mode requires the 'k8s' feature. \
-             Rebuild with: cargo build --features k8s"
-        )),
-        "static" => {
-            info!("Using static peer discovery mode");
-            let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager)?;
-
-            // Start static discovery background probe loop
-            let peer_configs: Vec<StaticPeerConfig> = config
-                .cluster
-                .peers
-                .iter()
-                .map(|addr| StaticPeerConfig {
-                    api_address: addr.clone(),
-                })
-                .collect();
-
-            if peer_configs.is_empty() {
-                warn!(
-                    "Static discovery mode selected but no peers configured (cluster.peers is empty)"
-                );
-            }
-
-            let static_config = StaticDiscoveryConfig {
-                peers: peer_configs,
-                probe_interval_secs: 10,
-                connect_timeout: Duration::from_secs(3),
-                cluster_secret: config.server.cluster_secret.clone(),
-                default_api_port: config.server.port,
-            };
-
-            let static_discovery = StaticDiscovery::new(
-                static_config,
-                components.registry.clone(),
-                cm.cancel_token(),
-            );
-
-            let handle = static_discovery.start();
-            info!("Static peer discovery started");
-
-            Ok((
-                Some(components.registry),
-                Some(components.health_monitor),
-                Some(components.load_balancer),
-                Some(handle),
-                None,
-            ))
-        }
-        "redis" => {
-            let components =
-                init_cluster_components(redis_handles, cm, config, connection_manager)?;
-            Ok((
-                Some(components.registry),
-                Some(components.health_monitor),
-                Some(components.load_balancer),
-                None,
-                None,
-            ))
-        }
-        _ => unreachable!("cluster.discovery_mode is validated before startup: {discovery_mode}"),
-    }
+    Ok(ClusterDiscoveryBundle::new(components, background_tasks))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::bootstrap::cluster::init_cluster_discovery;
+    use crate::bootstrap::cluster::{
+        build_cluster_coordination_provider, init_cluster_components, init_cluster_discovery,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use synctv_cluster::discovery::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+        build_room_message_runtime, ClusterConfig, ClusterManager, ConnectionLimits,
+        ConnectionManager,
     };
-    use synctv_core::bootstrap::RedisHandles;
     use synctv_core::Config;
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
@@ -271,14 +415,98 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_discovery_return_shape_uses_single_dns_handle_for_k8s() {
-        let redis_shape = (true, true, true, false, false);
-        let static_shape = (true, true, true, true, false);
-        let k8s_dns_shape = (true, true, true, true, false);
+    fn test_cluster_discovery_task_uses_backend_agnostic_label() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
 
-        assert_eq!(redis_shape, (true, true, true, false, false));
-        assert_eq!(static_shape, (true, true, true, true, false));
-        assert_eq!(k8s_dns_shape, (true, true, true, true, false));
+        runtime.block_on(async {
+            let task = super::ClusterDiscoveryTask::new(
+                "peer_discovery",
+                tokio::spawn(async {}),
+            );
+
+            assert_eq!(task.name, "peer_discovery");
+            task.handle
+                .await
+                .expect("synthetic cluster discovery task should complete cleanly");
+        });
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingDirectoryFactory {
+        build_count: Arc<AtomicUsize>,
+    }
+
+    impl ClusterNodeDirectoryFactory for CountingDirectoryFactory {
+        fn build(
+            &self,
+            node_id: String,
+            heartbeat_timeout_secs: i64,
+            key_prefix: &str,
+        ) -> synctv_cluster::Result<Arc<dyn ClusterNodeDirectory>> {
+            self.build_count.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(
+                synctv_cluster::discovery::NodeRegistry::new_local_only(
+                    node_id,
+                    heartbeat_timeout_secs,
+                    key_prefix,
+                )?,
+            ))
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "counting-local"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_init_cluster_components_uses_injected_directory_factory() {
+        let factory = CountingDirectoryFactory::default();
+        let config = Config::default();
+        let cluster_manager = Arc::new(
+            ClusterManager::new(
+                ClusterConfig {
+                    distributed_transport_factory: None,
+                    message_runtime: Arc::new(synctv_cluster::RoomMessageHub::new()),
+                    cluster_enabled: false,
+                    node_id: "bootstrap-factory-test".to_string(),
+                    dedup_window: Duration::from_secs(1),
+                    critical_channel_capacity: 8,
+                    publish_channel_capacity: 8,
+                    key_prefix: "bootstrap-factory-test:".to_string(),
+                    catchup_window_secs: 60,
+                    stream_max_length: 100,
+                    parent_cancel_token: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("local cluster manager should initialize"),
+        );
+        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+
+        let directory_factory: Arc<dyn ClusterNodeDirectoryFactory> = Arc::new(factory.clone());
+        let components = init_cluster_components(
+            &directory_factory,
+            &cluster_manager,
+            &config,
+            connection_manager,
+        )
+        .expect("cluster components should use injected directory factory");
+
+        assert_eq!(
+            factory.build_count.load(Ordering::Relaxed),
+            1,
+            "init_cluster_components must build the node directory through the injected factory"
+        );
+        assert_eq!(
+            components.registry.cluster_mode(),
+            synctv_cluster::ClusterMode::Standalone,
+            "test factory returns a local-only directory to prove the injected factory was used"
+        );
     }
 
     #[tokio::test]
@@ -290,14 +518,18 @@ mod tests {
                 .await
                 .expect("shared redis connection manager"),
         ));
-        let redis_handles = RedisHandles {
-            client: client.clone(),
-            conn: shared_conn.clone(),
-        };
-
+        let coordination_provider =
+            build_cluster_coordination_provider(synctv_core::coordination_runtime_from_client(
+                client.clone(),
+            ));
         let cluster_config = ClusterConfig {
-            redis_client: Some(client.clone()),
-            redis_conn: None,
+            distributed_transport_factory: Some(coordination_provider.distributed_transport_factory()),
+            message_runtime: build_room_message_runtime(&synctv_core::SharedStateProfile::from_runtime(
+                Some(synctv_core::shared_runtime(shared_conn.clone())),
+                "test-k8s-env-order:",
+                true,
+            ))
+            .expect("shared message runtime should initialize"),
             cluster_enabled: true,
             node_id: "bootstrap-k8s-env-order".to_string(),
             dedup_window: Duration::from_secs(1),
@@ -306,13 +538,12 @@ mod tests {
             key_prefix: "test-k8s-env-order:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
-            shared_redis_conn: Some(shared_conn),
             parent_cancel_token: Some(CancellationToken::new()),
         };
         let mut manager = ClusterManager::new(cluster_config, None, None)
             .await
             .expect("cluster manager");
-        let connection_manager = ConnectionManager::new(ConnectionLimits::default());
+        let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         manager.set_connection_manager(connection_manager.clone());
         let manager = Arc::new(manager);
 
@@ -328,9 +559,9 @@ mod tests {
 
         let result = init_cluster_discovery(
             &config,
-            &redis_handles,
+            &coordination_provider.node_directory_factory(),
             &manager,
-            &connection_manager,
+            connection_manager,
             CancellationToken::new(),
         )
         .await;
@@ -354,7 +585,7 @@ mod tests {
         );
 
         let registry = synctv_cluster::discovery::NodeRegistry::new(
-            client,
+            synctv_core::coordination_runtime_from_client(client),
             "bootstrap-k8s-env-order".to_string(),
             30,
             &config.redis.key_prefix,

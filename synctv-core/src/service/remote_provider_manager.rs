@@ -14,7 +14,7 @@
 // shared durable cache invalidation stream so other replicas can invalidate
 // their local channel cache even across restarts and transient disconnects.
 
-use crate::cache::{CacheInvalidationService, InvalidationMessage};
+use crate::cache::{CacheInvalidationRuntime, InvalidationMessage};
 use crate::models::{ProviderInstance, ProviderInstanceListQuery};
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::ProviderError;
@@ -58,7 +58,7 @@ pub struct RemoteProviderManager {
     repository: Arc<ProviderInstanceRepository>,
 
     /// Shared durable invalidation bus for cross-replica cache invalidation.
-    cache_invalidation: Option<CacheInvalidationService>,
+    cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
 
     /// Cancellation token for the provider invalidation listener.
     invalidation_cancel: tokio_util::sync::CancellationToken,
@@ -184,7 +184,7 @@ impl RemoteProviderManager {
     #[must_use]
     pub fn new_with_invalidation(
         repository: Arc<ProviderInstanceRepository>,
-        cache_invalidation: Option<CacheInvalidationService>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     ) -> Self {
         Self::new_with_options(repository, cache_invalidation, HashMap::new())
     }
@@ -192,7 +192,7 @@ impl RemoteProviderManager {
     #[must_use]
     pub fn new_with_address_overrides(
         repository: Arc<ProviderInstanceRepository>,
-        cache_invalidation: Option<CacheInvalidationService>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         address_overrides: HashMap<String, SocketAddr>,
     ) -> Self {
         Self::new_with_options(repository, cache_invalidation, address_overrides)
@@ -200,7 +200,7 @@ impl RemoteProviderManager {
 
     fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
-        cache_invalidation: Option<CacheInvalidationService>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         address_overrides: HashMap<String, SocketAddr>,
     ) -> Self {
         if cache_invalidation.is_none() {
@@ -1566,11 +1566,9 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test")
             .expect("lazy pool should build without a live database");
         let repository = Arc::new(ProviderInstanceRepository::new(pool));
-        let invalidation = CacheInvalidationService::new(
-            None,
-            "test-node".to_string(),
+        let invalidation = Arc::new(CacheInvalidationService::new("test-node".to_string(),
             "test:provider:invalidate".to_string(),
-        );
+        ));
         let manager = RemoteProviderManager::new_with_invalidation(repository, Some(invalidation));
 
         let start = tokio::time::Instant::now();

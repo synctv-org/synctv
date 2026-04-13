@@ -7,7 +7,9 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core::service::{OAuth2State, OAuthStateStore, RedisOAuthStateStore};
+use synctv_core::service::{
+    oauth2::RedisOAuthStateStore, OAuth2State, OAuthStateStore,
+};
 use synctv_core_testing::start_redis as start_test_redis;
 use tokio::sync::RwLock;
 

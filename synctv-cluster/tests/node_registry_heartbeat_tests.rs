@@ -65,7 +65,7 @@ async fn test_heartbeat_reregisters_after_key_deletion() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "test-node".to_string(),
             30,
             "cl2test:",
@@ -138,7 +138,7 @@ async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
 
     let registry = Arc::new(
         NodeRegistry::new(
-            redis_client.clone(),
+            synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "epoch-node".to_string(),
             30,
             "cl2epoch:",

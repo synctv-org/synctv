@@ -273,7 +273,9 @@ fn test_merge_user_statuses_node_id_merged() {
 async fn test_cluster_client_no_remote_nodes_fan_out() {
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://localhost:6379").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://localhost:6379").unwrap(),
+            ),
             "self-node".to_string(),
             30,
             "cl6test:",
@@ -310,7 +312,9 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
 async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale() {
     let registry = Arc::new(
         NodeRegistry::new(
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            synctv_core::coordination_runtime_from_client(
+                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            ),
             "self-node".to_string(),
             30,
             "fanout-stale:",

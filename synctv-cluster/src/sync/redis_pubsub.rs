@@ -1,14 +1,18 @@
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use redis::streams::StreamReadReply;
-use redis::{AsyncCommands, Client as RedisClient};
+use redis::AsyncCommands;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+#[cfg(test)]
+use redis::Client as RedisClient;
 
 /// Buffer pressure level for backpressure signaling.
 ///
@@ -119,7 +123,12 @@ fn u128_to_u64_saturating(value: u128) -> u64 {
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
-use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
+use super::runtime::RoomMessageRuntime;
+use super::transport::{
+    ClusterMessageTransport, ClusterMessageTransportConfig, ClusterMessageTransportFactory,
+    ClusterMessageTransportRuntime,
+};
+use synctv_core::cache::{CacheInvalidationRuntime, InvalidationMessage};
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
 
@@ -259,7 +268,7 @@ enum SelectResult {
 ///
 /// Channel naming: `room:{room_id`} for room-specific events
 pub struct RedisPubSub {
-    redis_client: RedisClient,
+    redis_runtime: Arc<dyn RedisCoordinationRuntime>,
     /// Shared multiplexed connection for non-Pub/Sub operations (stream reads).
     ///
     /// `MultiplexedConnection` is clone-safe (internally `Arc`-based) and handles
@@ -267,14 +276,14 @@ pub struct RedisPubSub {
     /// instead of a `Mutex<Option<_>>`.  Each caller clones the connection for
     /// concurrent use without lock contention.
     shared_conn: tokio::sync::OnceCell<redis::aio::MultiplexedConnection>,
-    message_hub: Arc<RoomMessageHub>,
+    message_hub: Arc<dyn RoomMessageRuntime>,
     node_id: String,
     /// Key prefix for all Redis keys and channels (e.g., "synctv:")
     key_prefix: String,
     admin_event_tx: broadcast::Sender<ClusterEvent>,
     permission_service: Option<PermissionService>,
     /// Cache invalidation service for cross-replica user/room/username cache invalidation
-    cache_invalidation: Option<CacheInvalidationService>,
+    cache_invalidation: Option<std::sync::Arc<dyn CacheInvalidationRuntime>>,
     deduplicator: Arc<MessageDeduplicator>,
     cancel_token: CancellationToken,
     /// How far back (in milliseconds) to replay Redis Stream events on first connect.
@@ -287,19 +296,78 @@ pub struct RedisPubSub {
     subscriber_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
+#[derive(Clone)]
+pub struct RedisClusterMessageTransportFactory {
+    redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+}
+
+impl RedisClusterMessageTransportFactory {
+    #[must_use]
+    pub fn new(redis_runtime: Arc<dyn RedisCoordinationRuntime>) -> Self {
+        Self { redis_runtime }
+    }
+}
+
+impl ClusterMessageTransportFactory for RedisClusterMessageTransportFactory {
+    fn build(
+        &self,
+        config: ClusterMessageTransportConfig,
+    ) -> crate::error::Result<Arc<dyn ClusterMessageTransport>> {
+        Ok(Arc::new(RedisPubSub::with_key_prefix_runtime(
+            self.redis_runtime.clone(),
+            config.message_runtime,
+            config.node_id,
+            &config.key_prefix,
+            config.admin_event_tx,
+            config.permission_service,
+            config.cache_invalidation,
+            config.deduplicator,
+            config.catchup_window_secs,
+            config.stream_max_length,
+        )?))
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
 impl RedisPubSub {
     /// Create a new `RedisPubSub` service.
     pub fn new(
-        redis_client: RedisClient,
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
         message_hub: Arc<RoomMessageHub>,
         node_id: String,
         admin_event_tx: broadcast::Sender<ClusterEvent>,
         permission_service: Option<PermissionService>,
-        cache_invalidation: Option<CacheInvalidationService>,
+        cache_invalidation: Option<std::sync::Arc<dyn CacheInvalidationRuntime>>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
         Self::with_key_prefix(
-            redis_client,
+            redis_runtime,
+            message_hub,
+            node_id,
+            "synctv:",
+            admin_event_tx,
+            permission_service,
+            cache_invalidation,
+            deduplicator,
+            300,
+            DEFAULT_MAX_STREAM_LENGTH,
+        )
+    }
+
+    pub fn new_with_runtime(
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+        message_hub: Arc<dyn RoomMessageRuntime>,
+        node_id: String,
+        admin_event_tx: broadcast::Sender<ClusterEvent>,
+        permission_service: Option<PermissionService>,
+        cache_invalidation: Option<std::sync::Arc<dyn CacheInvalidationRuntime>>,
+        deduplicator: Arc<MessageDeduplicator>,
+    ) -> Result<Self> {
+        Self::with_key_prefix_runtime(
+            redis_runtime,
             message_hub,
             node_id,
             "synctv:",
@@ -319,19 +387,47 @@ impl RedisPubSub {
     /// `stream_max_length` controls the maximum number of entries per Redis Stream.
     #[allow(clippy::too_many_arguments)]
     pub fn with_key_prefix(
-        redis_client: RedisClient,
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
         message_hub: Arc<RoomMessageHub>,
         node_id: String,
         key_prefix: &str,
         admin_event_tx: broadcast::Sender<ClusterEvent>,
         permission_service: Option<PermissionService>,
-        cache_invalidation: Option<CacheInvalidationService>,
+        cache_invalidation: Option<std::sync::Arc<dyn CacheInvalidationRuntime>>,
+        deduplicator: Arc<MessageDeduplicator>,
+        catchup_window_secs: u64,
+        stream_max_length: usize,
+    ) -> Result<Self> {
+        let message_hub: Arc<dyn RoomMessageRuntime> = message_hub;
+        Self::with_key_prefix_runtime(
+            redis_runtime,
+            message_hub,
+            node_id,
+            key_prefix,
+            admin_event_tx,
+            permission_service,
+            cache_invalidation,
+            deduplicator,
+            catchup_window_secs,
+            stream_max_length,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_key_prefix_runtime(
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+        message_hub: Arc<dyn RoomMessageRuntime>,
+        node_id: String,
+        key_prefix: &str,
+        admin_event_tx: broadcast::Sender<ClusterEvent>,
+        permission_service: Option<PermissionService>,
+        cache_invalidation: Option<std::sync::Arc<dyn CacheInvalidationRuntime>>,
         deduplicator: Arc<MessageDeduplicator>,
         catchup_window_secs: u64,
         stream_max_length: usize,
     ) -> Result<Self> {
         Ok(Self {
-            redis_client,
+            redis_runtime,
             shared_conn: tokio::sync::OnceCell::new(),
             message_hub,
             node_id,
@@ -461,7 +557,7 @@ impl RedisPubSub {
             mpsc::channel::<PublishRequest>(publish_channel_capacity);
 
         // Clone for the publish task
-        let publish_client = self.redis_client.clone();
+        let publish_runtime = self.redis_runtime.clone();
         let node_id = self.node_id.clone();
         let key_prefix = self.key_prefix.clone();
         let cancel_publisher = self.cancel_token.clone();
@@ -500,7 +596,7 @@ impl RedisPubSub {
             loop {
                 let conn = match timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    publish_client.get_multiplexed_async_connection(),
+                    publish_runtime.multiplexed_connection(),
                 )
                 .await
                 {
@@ -1031,7 +1127,7 @@ impl RedisPubSub {
     ) -> SubscriberExit {
         let mut pubsub = match timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            self.redis_client.get_async_pubsub(),
+            self.redis_runtime.async_pubsub(),
         )
         .await
         {
@@ -2101,8 +2197,8 @@ impl RedisPubSub {
         let conn = self
             .shared_conn
             .get_or_try_init(|| async {
-                self.redis_client
-                    .get_multiplexed_async_connection()
+                self.redis_runtime
+                    .multiplexed_connection()
                     .await
                     .context("Failed to get Redis shared connection")
             })
@@ -2224,6 +2320,29 @@ impl RedisPubSub {
     }
 }
 
+#[async_trait::async_trait]
+impl ClusterMessageTransport for RedisPubSub {
+    async fn start(
+        self: Arc<Self>,
+        publish_channel_capacity: usize,
+    ) -> crate::error::Result<ClusterMessageTransportRuntime> {
+        let (publish_tx, _backpressure, publisher_handle) =
+            RedisPubSub::start(self, publish_channel_capacity).await?;
+        Ok(ClusterMessageTransportRuntime {
+            publish_tx,
+            publisher_handle,
+        })
+    }
+
+    async fn shutdown(&self) {
+        RedisPubSub::shutdown(self).await;
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
 /// Parse a Redis Stream ID (`"{timestamp_ms}-{seq}"`) into a `(u64, u64)` tuple.
 ///
 /// Returns `None` if the ID is not in the expected format (e.g., `"$"`, `"0"`).
@@ -2317,6 +2436,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use synctv_core::models::id::UserId;
+    use crate::sync::{RoomMessageHub, RoomMessageRuntime};
 
     async fn publish_until_received<F>(
         publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,
@@ -2344,6 +2464,31 @@ mod tests {
                 Err(error) => panic!("timeout waiting for {timeout_label} message: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn test_with_key_prefix_runtime_accepts_trait_object_message_hub() {
+        let redis_client =
+            redis::Client::open("redis://127.0.0.1/").expect("redis client should parse");
+        let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
+        let (admin_event_tx, _) = tokio::sync::broadcast::channel(1);
+        let deduplicator = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
+
+        let pubsub = RedisPubSub::with_key_prefix_runtime(
+            synctv_core::coordination_runtime_from_client(redis_client),
+            message_hub,
+            "runtime-node".to_string(),
+            "runtime-test:",
+            admin_event_tx,
+            None,
+            None,
+            deduplicator,
+            300,
+            DEFAULT_MAX_STREAM_LENGTH,
+        )
+        .expect("trait-object room message hub should be accepted");
+
+        assert_eq!(pubsub.key_prefix, "runtime-test:");
     }
 
     #[test]
@@ -2405,7 +2550,7 @@ mod tests {
         let redis_client = RedisClient::open("redis://127.0.0.1:6379").expect("valid redis URL");
         let (admin_tx, _) = broadcast::channel(8);
         let pubsub = RedisPubSub::new(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub.clone(),
             "node-1".to_string(),
             admin_tx,
@@ -2526,7 +2671,7 @@ mod tests {
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
             RedisPubSub::new(
-                redis_client.clone(),
+                synctv_core::coordination_runtime_from_client(redis_client.clone()),
                 message_hub.clone(),
                 "node1".to_string(),
                 admin_tx.clone(),
@@ -2538,7 +2683,7 @@ mod tests {
         );
         let pubsub2 = Arc::new(
             RedisPubSub::new(
-                redis_client.clone(),
+                synctv_core::coordination_runtime_from_client(redis_client.clone()),
                 message_hub.clone(),
                 "node2".to_string(),
                 admin_tx.clone(),
@@ -2612,7 +2757,9 @@ mod tests {
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub = Arc::new(
             RedisPubSub::with_key_prefix(
-                RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+                synctv_core::coordination_runtime_from_client(
+                    RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+                ),
                 message_hub,
                 "start-failure-node".to_string(),
                 "synctv:test:",
@@ -2650,7 +2797,9 @@ mod tests {
         let (admin_tx, _) = broadcast::channel(256);
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub = RedisPubSub::with_key_prefix(
-            RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+            synctv_core::coordination_runtime_from_client(
+                RedisClient::open("redis://127.0.0.1:1").expect("redis url should parse"),
+            ),
             message_hub,
             "shutdown-timeout-node".to_string(),
             "synctv:test:",
@@ -2693,7 +2842,7 @@ mod tests {
 
         // Create with 300 second (5 minute) catchup window
         let pubsub = RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub,
             "test-node".to_string(),
             "synctv:",
@@ -2751,7 +2900,7 @@ mod tests {
 
         // Create with 60 second catchup window
         let pubsub = RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub,
             "test-node".to_string(),
             "synctv:",
@@ -2913,7 +3062,7 @@ mod tests {
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
             RedisPubSub::new(
-                redis_client.clone(),
+                synctv_core::coordination_runtime_from_client(redis_client.clone()),
                 message_hub.clone(),
                 "node1".to_string(),
                 admin_tx.clone(),
@@ -2925,7 +3074,7 @@ mod tests {
         );
         let pubsub2 = Arc::new(
             RedisPubSub::new(
-                redis_client.clone(),
+                synctv_core::coordination_runtime_from_client(redis_client.clone()),
                 message_hub.clone(),
                 "node2".to_string(),
                 admin_tx.clone(),
@@ -3073,7 +3222,7 @@ mod tests {
         let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
 
         let pubsub = RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub,
             "test-node".to_string(),
             "synctv:",
@@ -3105,7 +3254,7 @@ mod tests {
         let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
 
         let pubsub = RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub.clone(),
             "test-node".to_string(),
             "synctv:",
@@ -3166,7 +3315,7 @@ mod tests {
         let redis_client = RedisClient::open("redis://127.0.0.1:1").unwrap();
 
         let pubsub = RedisPubSub::with_key_prefix(
-            redis_client,
+            synctv_core::coordination_runtime_from_client(redis_client),
             message_hub.clone(),
             "test-node".to_string(),
             "synctv:",

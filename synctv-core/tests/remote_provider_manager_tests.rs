@@ -15,17 +15,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
-    cache::CacheInvalidationService,
+    cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage},
     models::ProviderInstance,
     repository::ProviderInstanceRepository,
     service::{remote_provider_manager::RemoteProviderManager, CredentialEncryption},
+    Error,
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
 use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
     emby::emby_server::EmbyServer, emby_server::EmbyService as EmbyGrpcService,
 };
-use tokio::sync::{Barrier, RwLock};
+use tokio::sync::{broadcast, Barrier, RwLock};
 use tonic::transport::Server;
 use tonic_health::ServingStatus;
 
@@ -67,14 +68,166 @@ impl TestInfra {
     }
 }
 
-fn unavailable_invalidation_service(stream_key: impl Into<String>) -> CacheInvalidationService {
-    let client =
-        redis::Client::open("redis://127.0.0.1:1").expect("unreachable redis client should build");
-    CacheInvalidationService::new(
-        Some(client),
-        "provider-test-node".to_string(),
-        stream_key.into(),
-    )
+#[derive(Default)]
+struct FailingInvalidationRuntime;
+
+#[async_trait::async_trait]
+impl CacheInvalidationRuntime for FailingInvalidationRuntime {
+    fn subscribe(&self) -> broadcast::Receiver<InvalidationMessage> {
+        let (_sender, receiver) = broadcast::channel(1);
+        receiver
+    }
+
+    async fn start(&self) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn stop(&self) {}
+
+    async fn broadcast_remote(&self, _message: InvalidationMessage) -> synctv_core::Result<()> {
+        Err(Error::ServiceUnavailable(
+            "simulated invalidation publish failure".to_string(),
+        ))
+    }
+
+    fn broadcast_local(&self, _message: InvalidationMessage) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn broadcast_all(&self, _message: InvalidationMessage) -> synctv_core::Result<()> {
+        Err(Error::ServiceUnavailable(
+            "simulated invalidation publish failure".to_string(),
+        ))
+    }
+
+    async fn invalidate_user_permission(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_room_permission(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_user(
+        &self,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_username(
+        &self,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_room(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_provider_instance(&self, _instance_name: &str) -> synctv_core::Result<()> {
+        Err(Error::ServiceUnavailable(
+            "simulated invalidation publish failure".to_string(),
+        ))
+    }
+
+    async fn invalidate_playback_state(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn update_playback_state(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+        _state: &synctv_core::models::RoomPlaybackState,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_room_settings(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_all(&self) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_user(
+        &self,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_room(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_room_settings(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_username(
+        &self,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_user_permission(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+        _user_id: &synctv_core::models::UserId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn invalidate_and_broadcast_room_permission(
+        &self,
+        _room_id: &synctv_core::models::RoomId,
+    ) -> synctv_core::Result<()> {
+        Ok(())
+    }
+}
+
+fn unavailable_invalidation_service(
+    _stream_key: impl Into<String>,
+) -> Arc<dyn synctv_core::cache::CacheInvalidationRuntime> {
+    Arc::new(FailingInvalidationRuntime)
+}
+
+async fn distributed_invalidation_service(
+    infra: &TestInfra,
+    node_id: &str,
+    stream_key: String,
+) -> Arc<dyn synctv_core::cache::CacheInvalidationRuntime> {
+    Arc::new(CacheInvalidationService::from_runtime(
+        synctv_core::direct_runtime(infra.redis_connection_manager().await),
+        node_id.to_string(),
+        stream_key,
+    ))
 }
 
 async fn wait_until<F, Fut>(timeout: Duration, interval: Duration, mut check: F)
@@ -724,22 +877,10 @@ async fn scenario_redis_invalidation_on_delete() {
     let host = "redis-delete.test.localhost";
     let repo = provider_repo(&infra.pool);
     let stream_key = format!("test:provider:invalidate:{}", synctv_common::snanoid!(8));
-    let invalidation1 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "node1".to_string(),
-        stream_key.clone(),
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let invalidation2 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "node2".to_string(),
-        stream_key,
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
+    let invalidation1: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "node1", stream_key.clone()).await;
+    let invalidation2: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "node2", stream_key).await;
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 
@@ -2490,22 +2631,10 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
         "tenant-a:test:provider:invalidate:{}",
         synctv_common::snanoid!(8)
     );
-    let invalidation1 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "tenant-a-node1".to_string(),
-        stream_key.clone(),
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let invalidation2 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "tenant-a-node2".to_string(),
-        stream_key,
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
+    let invalidation1: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "tenant-a-node1", stream_key.clone()).await;
+    let invalidation2: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "tenant-a-node2", stream_key).await;
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 
@@ -2555,14 +2684,8 @@ async fn scenario_invalidation_listener_shutdown_is_idempotent() {
         "tenant-shutdown:test:provider:invalidate:{}",
         synctv_common::snanoid!(8)
     );
-    let invalidation = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "tenant-shutdown-node".to_string(),
-        stream_key,
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
+    let invalidation: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "tenant-shutdown-node", stream_key).await;
     invalidation.start().await.unwrap();
 
     let manager = RemoteProviderManager::new_with_invalidation(
@@ -2589,22 +2712,10 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     let host = "durable-invalidation.test.localhost";
 
     let stream_key = format!("test:provider:durable:{}", synctv_common::snanoid!(8));
-    let invalidation1 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "provider-node1".to_string(),
-        stream_key.clone(),
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let invalidation2 = CacheInvalidationService::new(
-        Some(infra.redis_client.clone()),
-        "provider-node2".to_string(),
-        stream_key,
-    )
-    .with_shared_conn(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
+    let invalidation1: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "provider-node1", stream_key.clone()).await;
+    let invalidation2: Arc<dyn synctv_core::cache::CacheInvalidationRuntime> =
+        distributed_invalidation_service(&infra, "provider-node2", stream_key).await;
     invalidation1.start().await.unwrap();
     invalidation2.start().await.unwrap();
 

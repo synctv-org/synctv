@@ -758,9 +758,7 @@ async fn test_cache_invalidation_service_local_only() {
     use synctv_core::cache::CacheInvalidationService;
 
     // Create a local-only cache invalidation service (no Redis)
-    let service = CacheInvalidationService::new(
-        None,
-        "local_node".to_string(),
+    let service = CacheInvalidationService::new("local_node".to_string(),
         "test:local:cache".to_string(),
     );
 
@@ -794,9 +792,7 @@ async fn test_cache_invalidation_service_local_only() {
 async fn test_cache_invalidation_multiple_subscribers() {
     use synctv_core::cache::CacheInvalidationService;
 
-    let service = CacheInvalidationService::new(
-        None,
-        "multi_sub_node".to_string(),
+    let service = CacheInvalidationService::new("multi_sub_node".to_string(),
         "test:multi:cache".to_string(),
     );
 

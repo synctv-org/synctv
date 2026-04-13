@@ -4,9 +4,11 @@
 //! including Redis container management and `ClusterManager` creation.
 
 #![allow(clippy::unwrap_used)]
+use std::sync::Arc;
 use std::time::Duration;
-use synctv_cluster::{ClusterConfig, ClusterManager};
+use synctv_cluster::{build_room_message_runtime, ClusterConfig, ClusterManager};
 use synctv_core::cache::InvalidationMessage;
+use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis::RedisContainer;
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 
@@ -157,10 +159,18 @@ pub async fn create_node_with_prefix(
         .get_connection_manager()
         .await
         .expect("Failed to get ConnectionManager");
+    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+        Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
+    let realtime_profile =
+        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
     let config = ClusterConfig {
-        redis_client: Some(client),
-        redis_conn: Some(conn),
-        shared_redis_conn: None,
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client),
+            ),
+        )),
+        message_runtime: build_room_message_runtime(&realtime_profile)
+            .expect("shared message runtime should initialize"),
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(10),
@@ -188,16 +198,25 @@ pub async fn create_node_with_config(
         .get_connection_manager()
         .await
         .expect("Failed to get ConnectionManager");
+    let key_prefix = test_redis_key_prefix("cluster-node-config");
+    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
+        Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
+    let realtime_profile =
+        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
     let mut config = ClusterConfig {
-        redis_client: Some(client),
-        redis_conn: Some(conn),
-        shared_redis_conn: None,
+        distributed_transport_factory: Some(Arc::new(
+            synctv_cluster::RedisClusterMessageTransportFactory::new(
+                synctv_core::coordination_runtime_from_client(client),
+            ),
+        )),
+        message_runtime: build_room_message_runtime(&realtime_profile)
+            .expect("shared message runtime should initialize"),
         cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(10),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        key_prefix: test_redis_key_prefix("cluster-node-config"),
+        key_prefix,
         catchup_window_secs: 300,
         stream_max_length: 10_000,
         parent_cancel_token: None,

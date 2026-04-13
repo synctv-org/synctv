@@ -1653,7 +1653,8 @@ impl UserService {
     ///
     /// This ensures global account bans and room lifecycle state stay aligned:
     /// once the user becomes `Banned`, they are also no longer an active member
-    /// of any room.
+    /// of any room, and rooms they own are emptied so existing members are
+    /// forced out of unusable rooms.
     pub async fn ban_user_and_cleanup_memberships(&self, user_id: &UserId) -> Result<User> {
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
@@ -1676,8 +1677,12 @@ impl UserService {
             .await?;
 
         let room_member_repo = RoomMemberRepository::new(pool.clone());
+        let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, &mut tx).await?;
         room_member_repo
             .remove_all_for_user_with_executor(user_id, &mut *tx)
+            .await?;
+        room_member_repo
+            .remove_all_for_rooms_with_executor(&owned_room_ids, &mut *tx)
             .await?;
 
         tx.commit().await?;

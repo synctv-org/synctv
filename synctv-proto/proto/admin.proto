@@ -120,6 +120,7 @@ message AdminRoom {
     int64 updated_at = 9;
     string description = 10; // Room description
     bool is_banned = 11; // Ban flag set by global admin only
+    synctv.common.UserStatus creator_status = 12;
 }
 
 // Connection status for a media provider instance

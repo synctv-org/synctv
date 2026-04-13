@@ -58,6 +58,8 @@ pub struct AdminRoom {
     /// Ban flag set by global admin only
     #[prost(bool, tag = "11")]
     pub is_banned: bool,
+    #[prost(enumeration = "super::common::UserStatus", tag = "12")]
+    pub creator_status: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.ProviderInstance")]

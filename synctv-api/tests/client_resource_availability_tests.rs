@@ -463,3 +463,80 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
 
     fixture.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        user_repo,
+        room,
+        owner,
+        ..
+    } = &fixture;
+
+    user_repo
+        .update_status(&owner.id, UserStatus::Banned)
+        .await
+        .unwrap();
+
+    let list_response = client_api
+        .list_rooms(synctv_api::proto::client::ListRoomsRequest {
+            page: 1,
+            page_size: 20,
+            search: String::new(),
+            sort_by: synctv_api::proto::client::RoomListSortBy::CreatedAt as i32,
+            sort_direction: synctv_api::proto::client::SortDirection::Desc as i32,
+        })
+        .await
+        .unwrap();
+
+    let listed_room = list_response
+        .rooms
+        .iter()
+        .find(|candidate| candidate.id == room.id.as_str())
+        .expect("public list should still surface the room");
+    assert_eq!(
+        listed_room.availability,
+        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+    );
+
+    let check_response = client_api
+        .check_room(synctv_api::proto::client::CheckRoomRequest {
+            room_id: room.id.as_str().to_string(),
+        })
+        .await
+        .unwrap();
+
+    assert!(check_response.exists, "room should still exist");
+    assert_eq!(
+        check_response.availability,
+        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+    );
+    assert!(
+        check_response.name.is_empty(),
+        "public check_room must not leak room name"
+    );
+
+    let hot_response = client_api
+        .get_hot_rooms(synctv_api::proto::client::GetHotRoomsRequest { limit: 10 })
+        .await
+        .unwrap();
+
+    let hot_room = hot_response
+        .rooms
+        .iter()
+        .find_map(|entry| {
+            entry.room
+                .as_ref()
+                .filter(|candidate| candidate.id == room.id.as_str())
+        })
+        .expect("hot rooms should still surface the room");
+    assert_eq!(
+        hot_room.availability,
+        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+    );
+
+    fixture.cleanup().await;
+}

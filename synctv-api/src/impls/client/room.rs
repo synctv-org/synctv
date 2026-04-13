@@ -2,10 +2,12 @@
 
 use crate::impls::ApiError;
 use synctv_core::models::UserId;
+use synctv_core::service::room::ClientResourceAvailability;
 
 use super::convert::{
-    hot_room_to_proto, media_to_proto, member_status_to_proto, members_to_proto,
-    playback_state_to_proto, room_role_to_proto, room_to_proto_basic,
+    media_to_proto, member_status_to_proto, members_to_proto, playback_state_to_proto,
+    resource_availability_enum_to_proto, room_role_to_proto, room_to_proto_basic,
+    room_to_proto_with_availability,
 };
 use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
@@ -219,7 +221,12 @@ impl ClientApiImpl {
         let query = build_public_room_list_query(req)?;
         let (rooms, total) = self
             .room_service
-            .list_accessible_rooms(&query)
+            .list_rooms(&query)
+            .await
+            .map_err(ApiError::from)?;
+        let availability_map = self
+            .room_service
+            .room_availability_batch(&rooms)
             .await
             .map_err(ApiError::from)?;
 
@@ -234,7 +241,15 @@ impl ClientApiImpl {
         let mut room_list = Vec::with_capacity(rooms.len());
         for (r, count) in rooms.iter().zip(counts) {
             let member_count: Option<i32> = count.try_into().ok();
-            room_list.push(room_to_proto_basic(r, None, member_count));
+            let availability = *availability_map
+                .get(&r.id)
+                .unwrap_or(&ClientResourceAvailability::Available);
+            room_list.push(room_to_proto_with_availability(
+                r,
+                None,
+                member_count,
+                availability,
+            ));
         }
 
         Ok(crate::proto::client::ListRoomsResponse {
@@ -850,22 +865,29 @@ impl ClientApiImpl {
         let rid = build_check_room_request(req)?;
 
         match self.room_service.get_room(&rid).await {
-            Ok(_room) => {
+            Ok(room) => {
                 let settings = self
                     .room_service
                     .get_room_settings(&rid)
                     .await
                     .unwrap_or_default();
+                let availability = self
+                    .room_service
+                    .room_availability(&room)
+                    .await
+                    .map_err(ApiError::from)?;
                 Ok(crate::proto::client::CheckRoomResponse {
                     exists: true,
                     requires_password: settings.require_password.0,
                     name: String::new(),
+                    availability: resource_availability_enum_to_proto(availability),
                 })
             }
             Err(_) => Ok(crate::proto::client::CheckRoomResponse {
                 exists: false,
                 requires_password: false,
                 name: String::new(),
+                availability: crate::proto::client::ResourceAvailability::Unspecified as i32,
             }),
         }
     }
@@ -901,6 +923,11 @@ impl ClientApiImpl {
         let (rooms, _total) = self
             .room_service
             .list_rooms(&query)
+            .await
+            .map_err(ApiError::from)?;
+        let availability_map = self
+            .room_service
+            .room_availability_batch(&rooms)
             .await
             .map_err(ApiError::from)?;
 
@@ -946,8 +973,20 @@ impl ClientApiImpl {
             .map(|(room, online_count)| {
                 let total_members = member_counts.get(room.id.as_str()).copied().unwrap_or(0);
                 let settings = settings_map.get(room.id.as_str());
+                let availability = *availability_map
+                    .get(&room.id)
+                    .unwrap_or(&ClientResourceAvailability::Available);
 
-                hot_room_to_proto(&room, settings, online_count, total_members)
+                crate::proto::client::RoomWithStats {
+                    room: Some(room_to_proto_with_availability(
+                        &room,
+                        settings,
+                        Some(online_count),
+                        availability,
+                    )),
+                    online_count,
+                    total_members,
+                }
             })
             .collect();
 

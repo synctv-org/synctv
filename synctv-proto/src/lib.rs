@@ -111,6 +111,7 @@ mod tests {
             description: "Watch movies together".into(),
             updated_at: 1_700_001_000,
             is_banned: false,
+            availability: crate::client::ResourceAvailability::Available.into(),
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();

@@ -733,6 +733,10 @@ fn test_room_to_proto_basic() {
     assert_eq!(proto.description, "A test room");
     assert_eq!(proto.created_by, "creator_id");
     assert_eq!(proto.member_count, 5);
+    assert_eq!(
+        proto.availability,
+        crate::proto::client::ResourceAvailability::Available as i32
+    );
     assert!(!proto.is_banned);
 }
 
@@ -749,6 +753,10 @@ fn test_room_to_proto_banned() {
     room.is_banned = true;
     let proto = room_to_proto_basic(&room, None, None);
     assert!(proto.is_banned);
+    assert_eq!(
+        proto.availability,
+        crate::proto::client::ResourceAvailability::Available as i32
+    );
 }
 
 #[test]

@@ -704,6 +704,64 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_user_cleans_up_owned_room_memberships() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(pool.clone());
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let room_member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("banned_owner")).await.unwrap();
+    let member = user_repo.create(&make_user("banned_owner_member")).await.unwrap();
+
+    let owned_room = room_repo
+        .create(&make_room("owner-room", &owner.id))
+        .await
+        .unwrap();
+
+    room_member_repo
+        .add(&RoomMember::new(
+            owned_room.id.clone(),
+            owner.id.clone(),
+            synctv_core::models::RoomRole::Creator,
+        ))
+        .await
+        .unwrap();
+    room_member_repo
+        .add(&RoomMember::new(
+            owned_room.id.clone(),
+            member.id.clone(),
+            synctv_core::models::RoomRole::Member,
+        ))
+        .await
+        .unwrap();
+
+    user_service
+        .ban_user_and_cleanup_memberships(&owner.id)
+        .await
+        .expect("banning owner should succeed");
+
+    let owner_membership = room_member_repo
+        .get(&owned_room.id, &owner.id)
+        .await
+        .expect("owner membership lookup should succeed");
+    assert!(
+        owner_membership.is_none(),
+        "banned owner must no longer be an active member of their owned room"
+    );
+
+    let member_membership = room_member_repo
+        .get(&owned_room.id, &member.id)
+        .await
+        .expect("member membership lookup should succeed");
+    assert!(
+        member_membership.is_none(),
+        "owned room members must be removed when the owner is banned"
+    );
+}
+
 /// Test that validation errors DO count against IP brute-force lockout.
 ///
 /// Scenario: Attacker sends malformed registration requests (validation errors).

@@ -452,6 +452,36 @@ impl RoomMemberRepository {
         Ok(result.rows_affected())
     }
 
+    /// Remove all active members from the provided rooms.
+    ///
+    /// Returns the number of memberships removed.
+    pub async fn remove_all_for_rooms_with_executor<'e, E>(
+        &self,
+        room_ids: &[RoomId],
+        executor: E,
+    ) -> Result<u64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if room_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let room_id_strs: Vec<&str> = room_ids.iter().map(RoomId::as_str).collect();
+        let result = sqlx::query(
+            "UPDATE room_members
+             SET status = $3, left_at = $2, version = version + 1
+             WHERE room_id = ANY($1) AND left_at IS NULL",
+        )
+        .bind(&room_id_strs)
+        .bind(chrono::Utc::now())
+        .bind(MemberStatus::Left)
+        .execute(executor)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Remove user from room (soft delete - set `status = Left` and `left_at`)
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let result = sqlx::query(

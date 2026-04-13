@@ -13,8 +13,8 @@ use synctv_core::models::{
     RoomId, SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
 };
 use synctv_core::service::{
-    AuditService, EmailService, RemoteProviderManager, RoomService, SettingsRegistry,
-    SettingsService, UserService,
+    AuditService, AuthorizedAdminActor, EmailService, RemoteProviderManager, RoomService,
+    SettingsRegistry, SettingsService, UserService,
 };
 use synctv_core::Error as CoreError;
 use synctv_livestream::api::LiveStreamingInfrastructure;
@@ -24,7 +24,7 @@ use super::client::convert::{
     media_to_proto, media_to_proto_with_availability, member_status_to_proto,
     playback_result_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
     playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
-    room_to_proto_basic, sign_local_bilibili_danmaku_urls,
+    room_to_proto_basic, sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
@@ -85,6 +85,28 @@ fn i64_to_usize_saturating(value: i64) -> usize {
 
 fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+async fn load_creator_status_map(
+    user_service: &UserService,
+    creator_ids: &[UserId],
+) -> Result<std::collections::HashMap<UserId, UserStatus>, ApiError> {
+    let users = user_service
+        .get_users_by_ids(creator_ids)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(users.into_iter().map(|user| (user.id, user.status)).collect())
+}
+
+async fn load_room_creator_status(
+    user_service: &UserService,
+    room: &synctv_core::models::Room,
+) -> Result<UserStatus, ApiError> {
+    match user_service.get_user(&room.created_by).await {
+        Ok(user) => Ok(user.status),
+        Err(synctv_core::Error::NotFound(_)) => Ok(UserStatus::Rejected),
+        Err(error) => Err(ApiError::from(error)),
+    }
 }
 
 fn map_batch_result_error(error: impl Into<ApiError>) -> String {
@@ -506,6 +528,14 @@ impl AdminApiImpl {
             ));
         }
         Ok(actor)
+    }
+
+    async fn require_authorized_admin_actor(
+        &self,
+        admin_user_id: &UserId,
+    ) -> Result<AuthorizedAdminActor, ApiError> {
+        let actor = self.require_admin_actor(admin_user_id).await?;
+        AuthorizedAdminActor::new(admin_user_id.clone(), actor.role).map_err(ApiError::from)
     }
 
     fn effective_settings_by_key(
@@ -1024,6 +1054,7 @@ impl AdminApiImpl {
             .get_usernames(&creator_ids)
             .await
             .unwrap_or_default();
+        let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
         // Batch-fetch distributed online user counts so same-user multi-connection
         // sessions are not overcounted as multiple online members.
@@ -1040,7 +1071,11 @@ impl AdminApiImpl {
             .map(|(r, count)| {
                 let member_count: Option<i32> = count.try_into().ok();
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
-                admin_room_to_proto(&r, None, member_count, creator_username)
+                let creator_status = creator_status_map
+                    .get(&r.created_by)
+                    .copied()
+                    .unwrap_or(UserStatus::Rejected);
+                admin_room_to_proto(&r, None, member_count, creator_username, creator_status)
             })
             .collect();
 
@@ -1067,6 +1102,7 @@ impl AdminApiImpl {
             .await
             .ok()
             .and_then(|m| m.into_values().next());
+        let creator_status = load_room_creator_status(&self.user_service, &room).await?;
 
         Ok(crate::proto::admin::GetRoomResponse {
             room: Some(admin_room_to_proto(
@@ -1079,6 +1115,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 creator_username.as_deref(),
+                creator_status,
             )),
         })
     }
@@ -1155,9 +1192,10 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         self.room_service
-            .admin_delete_room(&rid, admin_user_id)
+            .admin_delete_room_as(&rid, &actor)
             .await
             .map_err(ApiError::from)?;
 
@@ -2939,6 +2977,7 @@ impl AdminApiImpl {
             .get_usernames(&creator_ids)
             .await
             .unwrap_or_default();
+        let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
         // Batch-fetch distributed online user counts for all rooms
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
@@ -2953,7 +2992,17 @@ impl AdminApiImpl {
             .zip(counts)
             .map(|(room, count)| {
                 let creator_username = username_map.get(&room.created_by).map(String::as_str);
-                admin_room_to_proto(room, None, count.try_into().ok(), creator_username)
+                let creator_status = creator_status_map
+                    .get(&room.created_by)
+                    .copied()
+                    .unwrap_or(UserStatus::Rejected);
+                admin_room_to_proto(
+                    room,
+                    None,
+                    count.try_into().ok(),
+                    creator_username,
+                    creator_status,
+                )
             })
             .collect();
 
@@ -3043,6 +3092,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 None,
+                load_room_creator_status(&self.user_service, &updated).await?,
             )),
         })
     }
@@ -3096,6 +3146,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 None,
+                load_room_creator_status(&self.user_service, &updated).await?,
             )),
         })
     }
@@ -3139,6 +3190,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 None,
+                load_room_creator_status(&self.user_service, &room).await?,
             )),
         })
     }
@@ -3211,6 +3263,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 None,
+                load_room_creator_status(&self.user_service, &room).await?,
             )),
         })
     }
@@ -3270,6 +3323,7 @@ impl AdminApiImpl {
                     .try_into()
                     .ok(),
                 None,
+                load_room_creator_status(&self.user_service, &room).await?,
             )),
         })
     }
@@ -3772,11 +3826,12 @@ impl AdminApiImpl {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let target = crate::impls::client::build_start_playback_request(req)?;
+        let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         self.room_service
-            .admin_start_playback(
+            .admin_start_playback_as(
                 rid.clone(),
-                admin_user_id.clone(),
+                &actor,
                 target.media_id.clone(),
                 target.playlist_id.clone(),
                 target.target,
@@ -3807,9 +3862,10 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         self.room_service
-            .admin_stop_playback(rid.clone(), admin_user_id.clone())
+            .admin_stop_playback_as(rid.clone(), &actor)
             .await
             .map_err(ApiError::from)?;
 
@@ -4593,13 +4649,14 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
 
         self.room_service
-            .admin_delete_entries(
+            .admin_delete_entries_as(
                 rid.clone(),
-                admin_user_id.clone(),
+                &actor,
                 crate::impls::client::media::build_delete_entries_request(
                     crate::impls::client::media::build_delete_media_request(req)?,
                 )?
@@ -5126,6 +5183,7 @@ fn admin_room_to_proto(
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     creator_username: Option<&str>,
+    creator_status: UserStatus,
 ) -> crate::proto::admin::AdminRoom {
     let room_settings = settings.cloned().unwrap_or_default();
     crate::proto::admin::AdminRoom {
@@ -5140,6 +5198,7 @@ fn admin_room_to_proto(
         created_at: room.created_at.timestamp(),
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
+        creator_status: user_status_to_proto(creator_status),
     }
 }
 
@@ -5762,13 +5821,23 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_basic() {
         let room = make_test_room(RoomStatus::Active);
-        let proto = admin_room_to_proto(&room, None, Some(10), Some("creator_user"));
+        let proto = admin_room_to_proto(
+            &room,
+            None,
+            Some(10),
+            Some("creator_user"),
+            UserStatus::Active,
+        );
 
         assert_eq!(proto.id, "admin_room_1");
         assert_eq!(proto.name, "Admin Test Room");
         assert_eq!(proto.description, "Room for admin tests");
         assert_eq!(proto.creator_id, "creator_1");
         assert_eq!(proto.creator_username, "creator_user");
+        assert_eq!(
+            proto.creator_status,
+            synctv_proto::common::UserStatus::Active as i32
+        );
         assert_eq!(proto.member_count, 10);
         assert!(!proto.is_banned);
     }
@@ -5777,21 +5846,59 @@ mod tests {
     fn test_admin_room_to_proto_banned() {
         let mut room = make_test_room(RoomStatus::Active);
         room.is_banned = true;
-        let proto = admin_room_to_proto(&room, None, None, None);
+        let proto = admin_room_to_proto(&room, None, None, None, UserStatus::Banned);
         assert!(proto.is_banned);
         assert_eq!(proto.member_count, 0);
+        assert_eq!(
+            proto.creator_status,
+            synctv_proto::common::UserStatus::Banned as i32
+        );
     }
 
     #[test]
     fn test_admin_room_to_proto_different_statuses() {
         for status in [RoomStatus::Active, RoomStatus::Pending, RoomStatus::Closed] {
             let room = make_test_room(status);
-            let proto = admin_room_to_proto(&room, None, None, None);
+            let proto = admin_room_to_proto(&room, None, None, None, UserStatus::Active);
             assert_eq!(
                 proto.status,
                 synctv_proto::common::RoomStatus::from(status) as i32
             );
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_load_room_creator_status_maps_true_missing_creator_to_rejected() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_service = make_user_service(pool.clone());
+        let room = make_test_room(RoomStatus::Active);
+
+        let status = load_room_creator_status(&user_service, &room)
+            .await
+            .expect("missing creator should map to rejected");
+
+        assert_eq!(status, UserStatus::Rejected);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_load_room_creator_status_propagates_backend_failures() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_service = make_user_service(pool.clone());
+        let room = make_test_room(RoomStatus::Active);
+
+        pool.close().await;
+
+        let error = load_room_creator_status(&user_service, &room)
+            .await
+            .expect_err("creator lookup backend failures must propagate");
+
+        assert!(
+            matches!(error, ApiError::Internal(_) | ApiError::ServiceUnavailable(_)),
+            "unexpected error kind: {error:?}"
+        );
     }
 
     #[tokio::test]
@@ -9980,6 +10087,69 @@ mod tests {
             .expect("room settings should be readable");
         assert!(settings.chat_enabled.0);
         assert!(!settings.allow_guest_join.0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_room_bypasses_room_membership_for_local_management_actor() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_delete_room".to_string(),
+            email: Some("room_owner_delete_room@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room delete test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let response = admin_api
+            .delete_room(
+                crate::proto::admin::DeleteRoomRequest {
+                    room_id: room.id.as_str().to_string(),
+                },
+                &management_actor,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("local management actor should delete room without membership");
+
+        assert!(response.success);
+        assert!(
+            room_repo
+                .get_by_id(&room.id)
+                .await
+                .expect("room lookup should succeed")
+                .is_none(),
+            "room should be deleted by local management actor"
+        );
     }
 
     #[tokio::test]

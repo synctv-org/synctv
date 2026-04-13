@@ -1,5 +1,7 @@
 //! Proto conversion helper functions
 
+use synctv_core::service::room::ClientResourceAvailability;
+
 fn usize_to_i32_saturating(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
@@ -12,7 +14,7 @@ pub(super) const fn user_role_to_proto(role: synctv_core::models::UserRole) -> i
     }
 }
 
-pub(super) const fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
+pub(crate) const fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
     match status {
         synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
         synctv_core::models::UserStatus::Pending => {
@@ -48,6 +50,19 @@ pub(crate) const fn resource_availability_to_proto(is_available: bool) -> i32 {
         crate::proto::client::ResourceAvailability::Available as i32
     } else {
         crate::proto::client::ResourceAvailability::CreatorInactive as i32
+    }
+}
+
+pub(crate) const fn resource_availability_enum_to_proto(
+    availability: ClientResourceAvailability,
+) -> i32 {
+    match availability {
+        ClientResourceAvailability::Available => {
+            crate::proto::client::ResourceAvailability::Available as i32
+        }
+        ClientResourceAvailability::CreatorInactive => {
+            crate::proto::client::ResourceAvailability::CreatorInactive as i32
+        }
     }
 }
 
@@ -113,6 +128,20 @@ pub(crate) fn room_to_proto_basic(
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
 ) -> crate::proto::client::Room {
+    room_to_proto_with_availability(
+        room,
+        settings,
+        member_count,
+        ClientResourceAvailability::Available,
+    )
+}
+
+pub(crate) fn room_to_proto_with_availability(
+    room: &synctv_core::models::Room,
+    settings: Option<&synctv_core::models::RoomSettings>,
+    member_count: Option<i32>,
+    availability: ClientResourceAvailability,
+) -> crate::proto::client::Room {
     let room_settings = settings.cloned().unwrap_or_default();
     crate::proto::client::Room {
         id: room.id.as_str().to_string(),
@@ -125,9 +154,11 @@ pub(crate) fn room_to_proto_basic(
         member_count: member_count.unwrap_or(0),
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
+        availability: resource_availability_enum_to_proto(availability),
     }
 }
 
+#[cfg(test)]
 #[must_use]
 pub(super) fn hot_room_to_proto(
     room: &synctv_core::models::Room,

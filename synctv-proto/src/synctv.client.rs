@@ -82,6 +82,9 @@ pub struct Room {
     /// Ban flag set by global admin only
     #[prost(bool, tag = "10")]
     pub is_banned: bool,
+    /// Availability derived from creator state
+    #[prost(enumeration = "ResourceAvailability", tag = "11")]
+    pub availability: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.Media")]
@@ -2500,6 +2503,8 @@ pub struct CheckRoomResponse {
     pub requires_password: bool,
     #[prost(string, tag = "3")]
     pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ResourceAvailability", tag = "4")]
+    pub availability: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetHotRoomsRequest")]

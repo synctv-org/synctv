@@ -90,7 +90,7 @@ pub use proxy_signature::{
 pub use publish_key::{JtiStore, PublishKey, PublishKeyService};
 pub use rate_limit::{RateLimitBackend, RateLimitConfig, RateLimitError, RateLimiter};
 pub use remote_provider_manager::RemoteProviderManager;
-pub use room::RoomService;
+pub use room::{AuthorizedAdminActor, RoomService};
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};
 pub use settings_vars::{Setting, SettingsStorage};

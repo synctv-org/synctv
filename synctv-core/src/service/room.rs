@@ -104,6 +104,28 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
 
 const MAX_DELETE_TARGETS: usize = 100;
 
+#[derive(Debug, Clone)]
+pub struct AuthorizedAdminActor {
+    user_id: UserId,
+}
+
+impl AuthorizedAdminActor {
+    pub fn new(user_id: UserId, role: UserRole) -> Result<Self> {
+        if !role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
+        Ok(Self { user_id })
+    }
+
+    #[must_use]
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
+    }
+}
+
 /// Room service for business logic
 ///
 /// This is the main service that coordinates between domain services.
@@ -213,6 +235,14 @@ impl std::fmt::Debug for RoomService {
 }
 
 impl RoomService {
+    async fn load_authorized_admin_actor(
+        &self,
+        admin_user_id: &UserId,
+    ) -> Result<AuthorizedAdminActor> {
+        let admin_user = self.user_service.get_user(admin_user_id).await?;
+        AuthorizedAdminActor::new(admin_user_id.clone(), admin_user.role)
+    }
+
     async fn enforce_room_ownership_limit(
         &self,
         owner_id: &UserId,
@@ -277,6 +307,17 @@ impl RoomService {
                 ClientResourceAvailability::CreatorInactive
             }
             _ => ClientResourceAvailability::Available,
+        }
+    }
+
+    fn room_client_availability(
+        room: &Room,
+        active_creators: &HashSet<UserId>,
+    ) -> ClientResourceAvailability {
+        if active_creators.contains(&room.created_by) {
+            ClientResourceAvailability::Available
+        } else {
+            ClientResourceAvailability::CreatorInactive
         }
     }
 
@@ -386,6 +427,31 @@ impl RoomService {
             playlist,
             &active_creators,
         ))
+    }
+
+    pub async fn room_availability(&self, room: &Room) -> Result<ClientResourceAvailability> {
+        let active_creators = self
+            .load_active_creators(std::iter::once(&room.created_by))
+            .await?;
+        Ok(Self::room_client_availability(room, &active_creators))
+    }
+
+    pub async fn room_availability_batch(
+        &self,
+        rooms: &[Room],
+    ) -> Result<HashMap<RoomId, ClientResourceAvailability>> {
+        let active_creators = self
+            .load_active_creators(rooms.iter().map(|room| &room.created_by))
+            .await?;
+        Ok(rooms
+            .iter()
+            .map(|room| {
+                (
+                    room.id.clone(),
+                    Self::room_client_availability(room, &active_creators),
+                )
+            })
+            .collect())
     }
 
     pub async fn playlist_availability_map(
@@ -3317,12 +3383,17 @@ impl RoomService {
         admin_user_id: UserId,
         request: DeleteEntriesRequest,
     ) -> Result<DeleteEntriesResult> {
-        let admin_user = self.user_service.get_user(&admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+        let actor = self.load_authorized_admin_actor(&admin_user_id).await?;
+        self.admin_delete_entries_as(room_id, &actor, request).await
+    }
+
+    pub async fn admin_delete_entries_as(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        request: DeleteEntriesRequest,
+    ) -> Result<DeleteEntriesResult> {
+        let admin_user_id = actor.user_id().clone();
 
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
@@ -3771,14 +3842,15 @@ impl RoomService {
     /// # Security
     /// Verifies that the caller has admin or root role before proceeding.
     pub async fn admin_update_room(&self, room: &Room, admin_user_id: &UserId) -> Result<Room> {
-        // Verify caller has admin/root role (defense-in-depth)
-        let admin_user = self.user_service.get_user(admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+        let actor = self.load_authorized_admin_actor(admin_user_id).await?;
+        self.admin_update_room_as(room, &actor).await
+    }
 
+    pub async fn admin_update_room_as(
+        &self,
+        room: &Room,
+        _actor: &AuthorizedAdminActor,
+    ) -> Result<Room> {
         let old_version = room.version;
         let updated = self.room_repo.update(room, old_version).await?;
         self.notify_room_invalidation(&room.id).await;
@@ -3793,14 +3865,15 @@ impl RoomService {
     /// # Security
     /// Verifies that the caller has admin or root role before proceeding.
     pub async fn admin_delete_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<()> {
-        // Verify caller has admin/root role (defense-in-depth)
-        let admin_user = self.user_service.get_user(admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+        let actor = self.load_authorized_admin_actor(admin_user_id).await?;
+        self.admin_delete_room_as(room_id, &actor).await
+    }
 
+    pub async fn admin_delete_room_as(
+        &self,
+        room_id: &RoomId,
+        actor: &AuthorizedAdminActor,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
 
@@ -3817,8 +3890,8 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    admin_user_id.as_str().to_string(),
-                    admin_user_id.as_str().to_string(),
+                    actor.user_id().as_str().to_string(),
+                    actor.user_id().as_str().to_string(),
                     AuditAction::RoomDeleted,
                     AuditTargetType::Room,
                     Some(room_id.as_str().to_string()),
@@ -3870,15 +3943,17 @@ impl RoomService {
         room_id: &RoomId,
         admin_user_id: &UserId,
     ) -> Result<()> {
-        tracing::info!(room_id = %room_id, admin_user_id = %admin_user_id, "Admin deleting orphaned room");
+        let actor = self.load_authorized_admin_actor(admin_user_id).await?;
+        self.admin_delete_orphaned_room_as(room_id, &actor).await
+    }
 
-        // Verify caller has admin/root role (defense-in-depth)
-        let admin_user = self.user_service.get_user(admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+    pub async fn admin_delete_orphaned_room_as(
+        &self,
+        room_id: &RoomId,
+        actor: &AuthorizedAdminActor,
+    ) -> Result<()> {
+        let admin_user_id = actor.user_id();
+        tracing::info!(room_id = %room_id, admin_user_id = %admin_user_id, "Admin deleting orphaned room");
 
         // First, verify the room exists and check if it's orphaned
         let room = self
@@ -3932,8 +4007,8 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    admin_user_id.as_str().to_string(),
-                    admin_user_id.as_str().to_string(),
+                    actor.user_id().as_str().to_string(),
+                    actor.user_id().as_str().to_string(),
                     AuditAction::RoomDeleted,
                     AuditTargetType::Room,
                     Some(room_id.as_str().to_string()),
@@ -3968,15 +4043,27 @@ impl RoomService {
         playlist_id: Option<PlaylistId>,
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
-        let admin_user = self.user_service.get_user(&admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+        let actor = self.load_authorized_admin_actor(&admin_user_id).await?;
+        self.admin_start_playback_as(room_id, &actor, media_id, playlist_id, target)
+            .await
+    }
 
+    pub async fn admin_start_playback_as(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        media_id: Option<MediaId>,
+        playlist_id: Option<PlaylistId>,
+        target: Vec<u8>,
+    ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_switch(room_id, admin_user_id, media_id, playlist_id, target)
+            .admin_switch(
+                room_id,
+                actor.user_id().clone(),
+                media_id,
+                playlist_id,
+                target,
+            )
             .await
     }
 
@@ -3988,15 +4075,17 @@ impl RoomService {
         room_id: RoomId,
         admin_user_id: UserId,
     ) -> Result<RoomPlaybackState> {
-        let admin_user = self.user_service.get_user(&admin_user_id).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
+        let actor = self.load_authorized_admin_actor(&admin_user_id).await?;
+        self.admin_stop_playback_as(room_id, &actor).await
+    }
 
+    pub async fn admin_stop_playback_as(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+    ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_reset(room_id, admin_user_id)
+            .admin_reset(room_id, actor.user_id().clone())
             .await
     }
 

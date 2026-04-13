@@ -12,6 +12,7 @@ use synctv_core::bootstrap::{load_config_with_options, LoadConfigOptions};
 use synctv_core::config::absolute_display_path;
 #[cfg(test)]
 use synctv_core::config::default_management_unix_socket_path;
+use synctv_core::models::PermissionBits;
 use synctv_core::time as app_time;
 use synctv_management::proto as management_proto;
 
@@ -4308,6 +4309,7 @@ struct HumanRoom {
     description: String,
     updated_at: String,
     is_banned: bool,
+    availability: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4316,6 +4318,7 @@ struct HumanAdminRoom {
     name: String,
     creator_id: String,
     creator_username: String,
+    creator_status: String,
     status: String,
     settings: Value,
     member_count: i32,
@@ -4331,11 +4334,17 @@ struct HumanRoomMember {
     user_id: String,
     username: String,
     role: String,
+    status: String,
     permissions: u64,
+    permission_names: Vec<String>,
     added_permissions: u64,
+    added_permission_names: Vec<String>,
     removed_permissions: u64,
+    removed_permission_names: Vec<String>,
     admin_added_permissions: u64,
+    admin_added_permission_names: Vec<String>,
     admin_removed_permissions: u64,
+    admin_removed_permission_names: Vec<String>,
     joined_at: String,
     is_online: bool,
 }
@@ -4366,6 +4375,7 @@ struct HumanPlaylist {
     item_count: i32,
     created_at: String,
     updated_at: String,
+    availability: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4380,6 +4390,7 @@ struct HumanMedia {
     added_by: String,
     provider_instance_name: String,
     source_config: Value,
+    availability: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4599,6 +4610,8 @@ impl ToHuman for synctv_proto::client::Room {
             description: self.description.clone(),
             updated_at: humanize_timestamp(self.updated_at),
             is_banned: self.is_banned,
+            availability: humanize_resource_availability(i64::from(self.availability))
+                .unwrap_or_else(|| self.availability.to_string()),
         }
     }
 }
@@ -4612,6 +4625,8 @@ impl ToHuman for synctv_proto::admin::AdminRoom {
             name: self.name.clone(),
             creator_id: self.creator_id.clone(),
             creator_username: self.creator_username.clone(),
+            creator_status: humanize_user_status(i64::from(self.creator_status))
+                .unwrap_or_else(|| self.creator_status.to_string()),
             status: humanize_room_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
             settings: parse_json_bytes(&self.settings),
@@ -4634,11 +4649,18 @@ impl ToHuman for synctv_proto::common::RoomMember {
             username: self.username.clone(),
             role: humanize_room_member_role(i64::from(self.role))
                 .unwrap_or_else(|| self.role.to_string()),
+            status: humanize_member_status(i64::from(self.status))
+                .unwrap_or_else(|| self.status.to_string()),
             permissions: self.permissions,
+            permission_names: humanize_permission_bits(self.permissions),
             added_permissions: self.added_permissions,
+            added_permission_names: humanize_permission_bits(self.added_permissions),
             removed_permissions: self.removed_permissions,
+            removed_permission_names: humanize_permission_bits(self.removed_permissions),
             admin_added_permissions: self.admin_added_permissions,
+            admin_added_permission_names: humanize_permission_bits(self.admin_added_permissions),
             admin_removed_permissions: self.admin_removed_permissions,
+            admin_removed_permission_names: humanize_permission_bits(self.admin_removed_permissions),
             joined_at: humanize_timestamp(self.joined_at),
             is_online: self.is_online,
         }
@@ -4702,6 +4724,8 @@ impl ToHuman for synctv_proto::client::Playlist {
             item_count: self.item_count,
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),
+            availability: humanize_resource_availability(i64::from(self.availability))
+                .unwrap_or_else(|| self.availability.to_string()),
         }
     }
 }
@@ -4721,6 +4745,8 @@ impl ToHuman for synctv_proto::client::Media {
             added_by: self.added_by.clone(),
             provider_instance_name: self.provider_instance_name.clone(),
             source_config: parse_json_bytes(&self.source_config),
+            availability: humanize_resource_availability(i64::from(self.availability))
+                .unwrap_or_else(|| self.availability.to_string()),
         }
     }
 }
@@ -5362,6 +5388,19 @@ fn humanize_room_status(raw: i64) -> Option<String> {
     )
 }
 
+fn humanize_resource_availability(raw: i64) -> Option<String> {
+    use synctv_proto::client::ResourceAvailability;
+
+    Some(
+        match ResourceAvailability::try_from(i64_to_i32(raw)?).ok()? {
+            ResourceAvailability::Unspecified => "unspecified",
+            ResourceAvailability::Available => "available",
+            ResourceAvailability::CreatorInactive => "creator_inactive",
+        }
+        .to_string(),
+    )
+}
+
 fn humanize_room_member_role(raw: i64) -> Option<String> {
     use synctv_proto::common::RoomMemberRole;
 
@@ -5375,6 +5414,59 @@ fn humanize_room_member_role(raw: i64) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+fn humanize_member_status(raw: i64) -> Option<String> {
+    use synctv_proto::common::MemberStatus;
+
+    Some(
+        match MemberStatus::try_from(i64_to_i32(raw)?).ok()? {
+            MemberStatus::Unspecified => "unspecified",
+            MemberStatus::Active => "active",
+            MemberStatus::Pending => "pending",
+            MemberStatus::Rejected => "rejected",
+            MemberStatus::Banned => "banned",
+            MemberStatus::Left => "left",
+        }
+        .to_string(),
+    )
+}
+
+fn humanize_permission_bits(bits: u64) -> Vec<String> {
+    [
+        (PermissionBits::SEND_CHAT, "send_chat"),
+        (PermissionBits::ADD_MEDIA, "add_media"),
+        (PermissionBits::DELETE_MEDIA_SELF, "delete_media_self"),
+        (PermissionBits::DELETE_MEDIA_ANY, "delete_media_any"),
+        (PermissionBits::EDIT_MEDIA_SELF, "edit_media_self"),
+        (PermissionBits::EDIT_MEDIA_ANY, "edit_media_any"),
+        (PermissionBits::REORDER_PLAYLIST, "reorder_playlist"),
+        (PermissionBits::CLEAR_PLAYLIST, "clear_playlist"),
+        (PermissionBits::START_LIVE, "start_live"),
+        (PermissionBits::RESERVED_9, "reserved_9"),
+        (PermissionBits::PLAY_CONTROL, "play_control"),
+        (PermissionBits::CHANGE_CURRENT_MEDIA, "change_current_media"),
+        (PermissionBits::CHANGE_PLAYBACK_RATE, "change_playback_rate"),
+        (PermissionBits::APPROVE_MEMBER, "approve_member"),
+        (PermissionBits::KICK_MEMBER, "kick_member"),
+        (PermissionBits::BAN_MEMBER, "ban_member"),
+        (
+            PermissionBits::SET_MEMBER_PERMISSIONS,
+            "set_member_permissions",
+        ),
+        (PermissionBits::ADD_MEMBER, "add_member"),
+        (PermissionBits::SET_ROOM_SETTINGS, "set_room_settings"),
+        (PermissionBits::DELETE_CHAT, "delete_chat"),
+        (PermissionBits::DELETE_ROOM, "delete_room"),
+        (PermissionBits::VIEW_PLAYLIST, "view_playlist"),
+        (PermissionBits::VIEW_MEMBER_LIST, "view_member_list"),
+        (PermissionBits::VIEW_CHAT_HISTORY, "view_chat_history"),
+        (PermissionBits::USE_WEBRTC, "use_webrtc"),
+    ]
+    .into_iter()
+    .filter(|&(permission, _)| bits & permission != 0)
+    .map(|(_, name)| name.to_string())
+    .collect()
 }
 
 fn humanize_provider_instance_status(raw: i64) -> Option<String> {
@@ -8141,6 +8233,7 @@ mod tests {
                 description: String::new(),
                 updated_at: 1_775_291_071_i64,
                 is_banned: false,
+                availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
             }),
             playback_state: None,
             membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -8150,12 +8243,13 @@ mod tests {
                 user_id: "user-1".into(),
                 username: "root".into(),
                 role: synctv_proto::common::RoomMemberRole::Creator as i32,
-                permissions: 0,
-                status: synctv_proto::common::MemberStatus::Active as i32,
-                added_permissions: 0,
-                removed_permissions: 0,
-                admin_added_permissions: 0,
-                admin_removed_permissions: 0,
+                permissions: synctv_core::models::PermissionBits::SEND_CHAT
+                    | synctv_core::models::PermissionBits::VIEW_PLAYLIST,
+                status: synctv_proto::common::MemberStatus::Pending as i32,
+                added_permissions: synctv_core::models::PermissionBits::ADD_MEDIA,
+                removed_permissions: synctv_core::models::PermissionBits::DELETE_MEDIA_SELF,
+                admin_added_permissions: synctv_core::models::PermissionBits::KICK_MEMBER,
+                admin_removed_permissions: synctv_core::models::PermissionBits::BAN_MEMBER,
                 joined_at: 1_775_291_657_i64,
                 is_online: true,
             }],
@@ -8179,7 +8273,29 @@ mod tests {
         .expect("human output should render");
 
         assert_eq!(rendered["room"]["status"], "closed");
+        assert_eq!(rendered["room"]["availability"], "creator_inactive");
         assert_eq!(rendered["members"][0]["role"], "creator");
+        assert_eq!(rendered["members"][0]["status"], "pending");
+        assert_eq!(
+            rendered["members"][0]["permission_names"],
+            json!(["send_chat", "view_playlist"])
+        );
+        assert_eq!(
+            rendered["members"][0]["added_permission_names"],
+            json!(["add_media"])
+        );
+        assert_eq!(
+            rendered["members"][0]["removed_permission_names"],
+            json!(["delete_media_self"])
+        );
+        assert_eq!(
+            rendered["members"][0]["admin_added_permission_names"],
+            json!(["kick_member"])
+        );
+        assert_eq!(
+            rendered["members"][0]["admin_removed_permission_names"],
+            json!(["ban_member"])
+        );
         assert_eq!(
             rendered["members"][0]["joined_at"],
             "2026-04-04 08:34:17 +00:00 (UTC) (1775291657)"
@@ -8197,6 +8313,7 @@ mod tests {
                 name: "General".into(),
                 creator_id: "user-1".into(),
                 creator_username: "root".into(),
+                creator_status: synctv_proto::common::UserStatus::Banned as i32,
                 status: synctv_proto::common::RoomStatus::Active as i32,
                 settings: br#"{"public":true}"#.to_vec(),
                 member_count: 3,
@@ -8210,10 +8327,45 @@ mod tests {
         .expect("human output should render");
 
         assert_eq!(rendered["rooms"][0]["status"], "active");
+        assert_eq!(rendered["rooms"][0]["creator_status"], "banned");
         assert_eq!(
             rendered["rooms"][0]["created_at"],
             "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
         );
+    }
+
+    #[test]
+    fn render_human_output_includes_media_and_playlist_availability() {
+        let rendered_media = render_human_output(&synctv_proto::client::Media {
+            id: "media-1".into(),
+            room_id: "room-1".into(),
+            provider: "direct".into(),
+            title: "Example".into(),
+            metadata: br#"{"duration":1}"#.to_vec(),
+            position: 1.0,
+            added_at: 1_775_291_657_i64,
+            added_by: "user-1".into(),
+            provider_instance_name: "default".into(),
+            source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+            availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
+        })
+        .expect("media human output should render");
+        let rendered_playlist = render_human_output(&synctv_proto::client::Playlist {
+            id: "playlist-1".into(),
+            room_id: "room-1".into(),
+            name: "Default".into(),
+            parent_id: String::new(),
+            position: 1.0,
+            is_dynamic: false,
+            item_count: 1,
+            created_at: 1_775_144_583_i64,
+            updated_at: 1_775_291_071_i64,
+            availability: synctv_proto::client::ResourceAvailability::Available as i32,
+        })
+        .expect("playlist human output should render");
+
+        assert_eq!(rendered_media["availability"], "creator_inactive");
+        assert_eq!(rendered_playlist["availability"], "available");
     }
 
     #[test]

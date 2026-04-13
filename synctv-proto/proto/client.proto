@@ -172,6 +172,7 @@ message Room {
     string description = 8; // Room description
     int64 updated_at = 9; // Last updated timestamp
     bool is_banned = 10; // Ban flag set by global admin only
+    ResourceAvailability availability = 11; // Availability derived from creator state
 }
 
 message Media {
@@ -1622,6 +1623,7 @@ message CheckRoomResponse {
     bool exists = 1;
     bool requires_password = 2;
     string name = 3;
+    ResourceAvailability availability = 4;
 }
 
 message GetHotRoomsRequest {

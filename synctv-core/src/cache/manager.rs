@@ -183,7 +183,7 @@ mod tests {
     use crate::cache::{CacheInvalidationRuntime, CacheInvalidationService};
 
     fn make_caches() -> (Arc<UserCache>, Arc<RoomCache>) {
-        let l2: Arc<dyn crate::cache::CacheL2Backend> = Arc::new(crate::cache::NoopCacheL2);
+        let l2 = crate::cache::local_l2_cache_backend();
         let user_cache =
             Arc::new(UserCache::new(l2.clone(), 100, 5, 0, "test:user:".to_string()).unwrap());
         let room_cache = Arc::new(RoomCache::new(l2, 100, 5, 0, "test:room:".to_string()).unwrap());

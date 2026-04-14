@@ -280,9 +280,6 @@ impl ClusterNodeDirectoryFactory for RedisClusterNodeDirectoryFactory {
         )?))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 #[derive(Clone, Default)]
@@ -302,9 +299,6 @@ impl ClusterNodeDirectoryFactory for LocalClusterNodeDirectoryFactory {
         )?))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "local"
-    }
 }
 
 impl NodeRegistry {

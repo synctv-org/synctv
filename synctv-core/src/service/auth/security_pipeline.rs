@@ -506,7 +506,7 @@ mod tests {
     use sqlx::PgPool;
 
     use crate::{
-        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
         service::{
             auth::{BruteForceProtection, JwtService},
@@ -570,8 +570,7 @@ mod tests {
         let jwt_service =
             JwtService::new("test-secret-key-for-security-pipeline-unit-tests-min-32")
                 .expect("failed to create jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 0);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 0);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());

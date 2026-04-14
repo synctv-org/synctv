@@ -651,7 +651,7 @@ impl UserService {
     ) -> Self {
         // Default to a local limiter; composition roots can inject any
         // distributed or local implementation via set_refresh_rate_limiter().
-        let refresh_rate_limiter = RateLimiter::in_memory_only("synctv:".to_string());
+        let refresh_rate_limiter = RateLimiter::local_only("synctv:".to_string());
 
         Self {
             repository: UserRepository::new(pool),
@@ -2241,12 +2241,8 @@ mod tests {
         let jwt_service =
             crate::service::JwtService::new("test_secret_key_that_is_at_least_32_bytes_long")
                 .unwrap();
-        let username_cache = crate::cache::UsernameCache::new(
-            std::sync::Arc::new(crate::cache::NoopCacheL2),
-            "test:username:".to_string(),
-            100,
-            60,
-        );
+        let username_cache =
+            crate::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let token_blacklist: std::sync::Arc<dyn crate::service::TokenBlacklistStore> =
             std::sync::Arc::new(crate::service::InMemoryTokenBlacklistStore::new(
                 100, 3600, 86400,
@@ -2265,7 +2261,7 @@ mod tests {
         );
 
         user_service.set_refresh_rate_limiter_for_tests(
-            RateLimiter::in_memory_only("test-refresh:".to_string()).with_strict_distributed(),
+            RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
         );
 
         let result = user_service
@@ -2286,12 +2282,7 @@ mod tests {
             "test-secret-key-minimum-length-32-chars-required",
         )
         .unwrap();
-        let username_cache = crate::cache::UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:".to_string(),
-            100,
-            0,
-        );
+        let username_cache = crate::cache::UsernameCache::local_only("test:".to_string(), 100, 0);
         let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400),
         );
@@ -2307,8 +2298,7 @@ mod tests {
             key_builder,
             brute_force,
         );
-        user_service.refresh_rate_limiter =
-            RateLimiter::in_memory_only("refresh-nonstrict:".to_string());
+        user_service.refresh_rate_limiter = RateLimiter::local_only("refresh-nonstrict:".to_string());
 
         let result = user_service
             .refresh_rate_limiter

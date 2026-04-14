@@ -76,9 +76,8 @@ fn fake_proxy_services() -> ProxyServices {
     let jwt =
         synctv_core::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
             .expect("jwt");
-    let l2 = Arc::new(synctv_core::cache::NoopCacheL2);
     let username_cache =
-        synctv_core::cache::UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+        synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
         1000, 3600, 86400,
     ));

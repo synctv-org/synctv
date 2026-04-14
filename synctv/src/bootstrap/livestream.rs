@@ -11,9 +11,9 @@ struct LivestreamRuntimeBindings {
     publisher_registry: Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
     user_stream_index: Arc<dyn rtmp_auth::UserStreamIndex>,
     #[cfg(test)]
-    publisher_registry_backend: &'static str,
+    publisher_registry_shared: bool,
     #[cfg(test)]
-    user_stream_index_backend: &'static str,
+    user_stream_index_shared: bool,
 }
 
 struct CoreRegistryConnectionRuntime {
@@ -29,35 +29,34 @@ impl synctv_livestream::relay::RegistryConnectionRuntime for CoreRegistryConnect
 
 fn publisher_registry_from_shared_state_profile(
     profile: &SharedStateProfile,
-) -> Result<(Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, &'static str)> {
+) -> Result<(Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, bool)> {
     match profile.state_mode() {
         SharedStateMode::SharedRequired => Ok((
-            Arc::new(synctv_livestream::relay::StreamRegistry::from_runtime(
+            synctv_livestream::relay::shared_stream_registry(
                 Arc::new(CoreRegistryConnectionRuntime {
                     runtime: profile.require_shared_runtime("livestream publisher registry")?,
                 }),
                 profile.key_prefix().to_string(),
-            )),
-            "redis",
+            ),
+            true,
         )),
-        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => Ok((
-            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
-            "memory",
-        )),
+        SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => {
+            Ok((synctv_livestream::relay::local_stream_registry(), false))
+        }
     }
 }
 
 fn build_livestream_runtime_bindings(
     profile: &SharedStateProfile,
 ) -> Result<LivestreamRuntimeBindings> {
-    let (publisher_registry, publisher_registry_backend) =
+    let (publisher_registry, publisher_registry_shared) =
         publisher_registry_from_shared_state_profile(profile)?;
     let user_stream_index = rtmp_auth::user_stream_index_from_shared_state_profile(profile)?;
-    let user_stream_index_backend = user_stream_index.backend_name();
+    let user_stream_index_shared = user_stream_index.supports_cross_node_lookup();
 
     info!(
-        publisher_registry_backend,
-        user_stream_index_backend,
+        publisher_registry_shared,
+        user_stream_index_shared,
         state_mode = ?profile.state_mode(),
         "Livestream runtime initialized"
     );
@@ -66,9 +65,9 @@ fn build_livestream_runtime_bindings(
         publisher_registry,
         user_stream_index,
         #[cfg(test)]
-        publisher_registry_backend,
+        publisher_registry_shared,
         #[cfg(test)]
-        user_stream_index_backend,
+        user_stream_index_shared,
     })
 }
 
@@ -226,8 +225,8 @@ mod tests {
         let runtime = build_livestream_runtime_bindings(&profile)
             .expect("local-only profile should build local livestream runtime");
 
-        assert_eq!(runtime.publisher_registry_backend, "memory");
-        assert_eq!(runtime.user_stream_index_backend, "local-only");
+        assert!(!runtime.publisher_registry_shared);
+        assert!(!runtime.user_stream_index_shared);
     }
 
     struct MockRedisRuntime;
@@ -250,8 +249,8 @@ mod tests {
         let runtime = build_livestream_runtime_bindings(&profile)
             .expect("standalone profile should keep livestream runtime local");
 
-        assert_eq!(runtime.publisher_registry_backend, "memory");
-        assert_eq!(runtime.user_stream_index_backend, "local-only");
+        assert!(!runtime.publisher_registry_shared);
+        assert!(!runtime.user_stream_index_shared);
     }
 
     #[test]
@@ -281,8 +280,8 @@ mod tests {
         let runtime = build_livestream_runtime_bindings(&profile)
             .expect("cluster profile with runtime should build shared livestream runtime");
 
-        assert_eq!(runtime.publisher_registry_backend, "redis");
-        assert_eq!(runtime.user_stream_index_backend, "redis");
+        assert!(runtime.publisher_registry_shared);
+        assert!(runtime.user_stream_index_shared);
     }
 
     #[test]

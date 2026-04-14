@@ -82,7 +82,7 @@ impl std::fmt::Debug for ClusterConfig {
                 &self
                     .distributed_transport_factory
                     .as_ref()
-                    .map(|factory| factory.backend_name()),
+                    .map(|_| "configured"),
             )
             .field(
                 "message_runtime",
@@ -1044,7 +1044,7 @@ impl ClusterManager {
             total_rooms: self.message_hub.room_count(),
             total_connections: self.message_hub.connection_count(),
             tracked_events: self.deduplicator.len(),
-            redis_enabled: self.redis_publish_tx.is_some(),
+            distributed_enabled: self.redis_publish_tx.is_some(),
             is_quarantined: self.is_quarantined(),
             has_connection_manager: self.connection_manager.is_some(),
             has_leader_elector: self.leader_elector.is_some(),
@@ -1132,7 +1132,7 @@ pub struct ClusterMetrics {
     pub total_rooms: usize,
     pub total_connections: usize,
     pub tracked_events: usize,
-    pub redis_enabled: bool,
+    pub distributed_enabled: bool,
     /// Whether this node is quarantined due to epoch mismatch (split-brain)
     pub is_quarantined: bool,
     /// Whether a coordinated `ConnectionManager` was injected.
@@ -1173,9 +1173,6 @@ mod tests {
             }))
         }
 
-        fn backend_name(&self) -> &'static str {
-            "stub"
-        }
     }
 
     #[async_trait]
@@ -1196,9 +1193,6 @@ mod tests {
             self.shutdown_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn backend_name(&self) -> &'static str {
-            "stub"
-        }
     }
 
     struct FixedMetricsRoomRuntime {
@@ -1358,6 +1352,30 @@ mod tests {
 
         let metrics = manager.metrics();
         assert_eq!(metrics.total_connections, 0);
+    }
+
+    #[test]
+    fn test_cluster_config_debug_reports_transport_configuration_without_backend_name() {
+        let factory = StubTransportFactory::default();
+        let config = ClusterConfig {
+            distributed_transport_factory: Some(Arc::new(factory)),
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            cluster_enabled: true,
+            node_id: "debug-node".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 8,
+            publish_channel_capacity: 16,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("distributed_transport_factory: Some(\"configured\")"));
+        assert!(!debug.contains("stub"));
+        assert!(!debug.contains("redis"));
+        assert!(!debug.contains("backend"));
     }
 
     #[tokio::test]
@@ -1550,8 +1568,8 @@ mod tests {
         // Verify metrics show single-node mode
         let metrics = manager.metrics();
         assert!(
-            !metrics.redis_enabled,
-            "Metrics should show Redis is not enabled"
+            !metrics.distributed_enabled,
+            "Metrics should show distributed transport is not enabled"
         );
     }
 
@@ -2408,7 +2426,7 @@ mod tests {
         assert_eq!(metrics.node_id, "test_metrics_quarantine");
         assert_eq!(metrics.total_rooms, 0);
         assert_eq!(metrics.total_connections, 0);
-        assert!(!metrics.redis_enabled);
+        assert!(!metrics.distributed_enabled);
         assert!(
             !metrics.is_quarantined,
             "Should not be quarantined initially"
@@ -2442,8 +2460,8 @@ mod tests {
         let manager = result.expect("local-only ClusterManager should still initialize");
         let metrics = manager.metrics();
         assert!(
-            !metrics.redis_enabled,
-            "manager should remain local-only without Redis"
+            !metrics.distributed_enabled,
+            "manager should remain local-only without distributed transport"
         );
     }
 
@@ -2568,7 +2586,7 @@ mod tests {
             "standalone mode must not start Redis publish channels"
         );
         assert!(
-            !manager.metrics().redis_enabled,
+            !manager.metrics().distributed_enabled,
             "standalone mode must report local-only transport even when Redis is configured"
         );
     }
@@ -2600,7 +2618,7 @@ mod tests {
             "transport factory must be used to start distributed transport"
         );
         assert!(
-            manager.metrics().redis_enabled,
+            manager.metrics().distributed_enabled,
             "distributed transport should mark cross-node fanout as enabled"
         );
 

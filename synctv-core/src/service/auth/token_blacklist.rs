@@ -568,21 +568,6 @@ pub struct TieredTokenBlacklistStore {
 }
 
 impl TieredTokenBlacklistStore {
-    /// Create a new tiered token blacklist store.
-    ///
-    /// - `pg`: The `PostgreSQL` store used as durable primary.
-    /// - `redis_conn`: Optional shared Redis connection handle for L2 caching.
-    ///   Uses `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
-    /// - `key_prefix`: Redis key prefix (e.g., `"synctv:"`).
-    #[must_use]
-    pub fn new(
-        pg: PgTokenBlacklistStore,
-        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-        key_prefix: String,
-    ) -> Self {
-        Self::from_runtime(pg, crate::shared_runtime_from_conn(redis_conn), key_prefix)
-    }
-
     #[must_use]
     pub fn from_runtime(
         pg: PgTokenBlacklistStore,
@@ -1713,7 +1698,11 @@ mod tests {
             .acquire_timeout(Duration::from_secs(1))
             .connect_lazy("postgres://dummy:dummy@localhost/dummy")
             .expect("connect_lazy should not fail");
-        TieredTokenBlacklistStore::new(PgTokenBlacklistStore::new(pool), None, "test:".to_string())
+        TieredTokenBlacklistStore::from_runtime(
+            PgTokenBlacklistStore::new(pool),
+            None,
+            "test:".to_string(),
+        )
     }
 
     // Helper: create an InMemoryTokenBlacklistStore for testing fallback scenarios.

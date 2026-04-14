@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use synctv_core::models::id::{MediaId, RoomId, UserId};
+use synctv_core::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use synctv_core::models::permission::PermissionBits;
 use synctv_core::models::playback::RoomPlaybackState;
+use synctv_core::models::Playlist;
 
 /// The kind of cache to invalidate in a `CacheInvalidate` cluster event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +133,36 @@ pub enum ClusterEvent {
         user_id: UserId,
         username: String,
         media_ids: Vec<MediaId>,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Playlist created in a room.
+    PlaylistCreated {
+        event_id: String,
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        playlist: Playlist,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Playlist updated in a room.
+    PlaylistUpdated {
+        event_id: String,
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        playlist: Playlist,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Playlist deleted from a room.
+    PlaylistDeleted {
+        event_id: String,
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        playlist_id: PlaylistId,
         timestamp: DateTime<Utc>,
     },
 
@@ -345,6 +376,9 @@ impl ClusterEvent {
             | Self::MediaUpdated { event_id, .. }
             | Self::MediaRemovedBatch { event_id, .. }
             | Self::PlaylistReordered { event_id, .. }
+            | Self::PlaylistCreated { event_id, .. }
+            | Self::PlaylistUpdated { event_id, .. }
+            | Self::PlaylistDeleted { event_id, .. }
             | Self::PermissionChanged { event_id, .. }
             | Self::RoomSettingsChanged { event_id, .. }
             | Self::WebRTCSignaling { event_id, .. }
@@ -376,6 +410,9 @@ impl ClusterEvent {
             | Self::MediaUpdated { room_id, .. }
             | Self::MediaRemovedBatch { room_id, .. }
             | Self::PlaylistReordered { room_id, .. }
+            | Self::PlaylistCreated { room_id, .. }
+            | Self::PlaylistUpdated { room_id, .. }
+            | Self::PlaylistDeleted { room_id, .. }
             | Self::PermissionChanged { room_id, .. }
             | Self::RoomSettingsChanged { room_id, .. }
             | Self::WebRTCSignaling { room_id, .. }
@@ -407,6 +444,9 @@ impl ClusterEvent {
             | Self::MediaUpdated { user_id, .. }
             | Self::MediaRemovedBatch { user_id, .. }
             | Self::PlaylistReordered { user_id, .. }
+            | Self::PlaylistCreated { user_id, .. }
+            | Self::PlaylistUpdated { user_id, .. }
+            | Self::PlaylistDeleted { user_id, .. }
             | Self::RoomSettingsChanged { user_id, .. }
             | Self::WebRTCJoin { user_id, .. }
             | Self::WebRTCLeave { user_id, .. }
@@ -438,6 +478,9 @@ impl ClusterEvent {
             | Self::MediaUpdated { timestamp, .. }
             | Self::MediaRemovedBatch { timestamp, .. }
             | Self::PlaylistReordered { timestamp, .. }
+            | Self::PlaylistCreated { timestamp, .. }
+            | Self::PlaylistUpdated { timestamp, .. }
+            | Self::PlaylistDeleted { timestamp, .. }
             | Self::PermissionChanged { timestamp, .. }
             | Self::RoomSettingsChanged { timestamp, .. }
             | Self::WebRTCSignaling { timestamp, .. }
@@ -521,6 +564,9 @@ impl ClusterEvent {
             Self::MediaUpdated { .. } => "media_updated",
             Self::MediaRemovedBatch { .. } => "media_removed_batch",
             Self::PlaylistReordered { .. } => "playlist_reordered",
+            Self::PlaylistCreated { .. } => "playlist_created",
+            Self::PlaylistUpdated { .. } => "playlist_updated",
+            Self::PlaylistDeleted { .. } => "playlist_deleted",
             Self::PermissionChanged { .. } => "permission_changed",
             Self::RoomSettingsChanged { .. } => "room_settings_changed",
             Self::WebRTCSignaling { .. } => "webrtc_signaling",

@@ -922,7 +922,7 @@ async fn test_cluster_metrics() {
     assert_eq!(metrics.node_id, "test_node");
     assert_eq!(metrics.total_rooms, 1);
     assert_eq!(metrics.total_connections, 1);
-    assert!(!metrics.redis_enabled);
+    assert!(!metrics.distributed_enabled);
 
     manager.shutdown().await;
 }

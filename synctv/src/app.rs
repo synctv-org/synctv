@@ -46,7 +46,10 @@ use crate::bootstrap::cluster::{
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
-use crate::cluster_bridge::{ClusterMemberEventBroadcaster, ClusterPlaybackBroadcaster};
+use crate::cluster_bridge::{
+    room_event_to_cluster_event, ClusterMemberEventBroadcaster, ClusterPlaybackBroadcaster,
+    ClusterPlaylistBroadcaster, LocalPlaylistBroadcaster,
+};
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
@@ -148,6 +151,29 @@ const fn should_run_startup_partition_initialization(_config: &Config) -> bool {
 
 const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bool) -> bool {
     has_admin_user
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationLockStartupStrategy {
+    Distributed,
+    PgAdvisory,
+    PgAdvisorySentinel,
+}
+
+const fn migration_lock_startup_strategy(
+    deployment_mode: &synctv_core::config::RedisDeploymentMode,
+    has_shared_runtime: bool,
+) -> MigrationLockStartupStrategy {
+    if matches!(
+        deployment_mode,
+        synctv_core::config::RedisDeploymentMode::Sentinel
+    ) {
+        MigrationLockStartupStrategy::PgAdvisorySentinel
+    } else if has_shared_runtime {
+        MigrationLockStartupStrategy::Distributed
+    } else {
+        MigrationLockStartupStrategy::PgAdvisory
+    }
 }
 
 fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow::Error {
@@ -311,12 +337,48 @@ fn build_room_message_runtime(
 fn wire_room_service_cluster_broadcasters(
     room_service: &Arc<synctv_core::service::RoomService>,
     cluster_manager: Arc<ClusterManager>,
+    playlist_broadcaster: Option<Arc<dyn synctv_core::service::PlaylistBroadcaster>>,
 ) {
     room_service.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
         cluster_manager: cluster_manager.clone(),
     }));
+    if let Some(playlist_broadcaster) = playlist_broadcaster {
+        room_service.set_playlist_cluster_broadcaster(playlist_broadcaster);
+    }
     room_service
         .set_member_event_broadcaster(Arc::new(ClusterMemberEventBroadcaster { cluster_manager }));
+}
+
+fn start_room_notification_bridge(
+    notification_service: Arc<synctv_core::service::NotificationService>,
+    cluster_manager: Arc<ClusterManager>,
+    shutdown: &mut ShutdownCoordinator,
+) {
+    let cancel = shutdown.register_token("room_notification_bridge");
+    shutdown.register_task(
+        "room_notification_bridge",
+        synctv_core::spawn::spawn_monitored("room_notification_bridge", async move {
+            let mut rx = notification_service.subscribe();
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => return,
+                    event = rx.recv() => {
+                        match event {
+                            Ok((room_id, room_event)) => {
+                                if let Some(cluster_event) = room_event_to_cluster_event(&room_id, &room_event) {
+                                    let _ = cluster_manager.broadcast(cluster_event);
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!(skipped, "room notification bridge lagged behind realtime events");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        }
+                    }
+                }
+            }
+        }),
+    );
 }
 
 async fn build_local_cluster_manager(
@@ -520,11 +582,8 @@ impl Application {
         } else {
             info!("Running without Redis (standalone mode)");
         }
-        if let Some(provider) = &cluster_coordination_provider {
-            info!(
-                coordination_backend = provider.backend_name(),
-                "Cluster coordination backend initialized"
-            );
+        if cluster_coordination_provider.is_some() {
+            info!("Cluster coordination backend initialized");
         }
 
         // Database (with cancellable pool metrics task)
@@ -558,20 +617,22 @@ impl Application {
             &infra.config,
             infra.shared_runtime.clone(),
         );
-        match migration_lock.backend_name() {
-            "pg-advisory"
-                if matches!(
-                    infra.config.redis.deployment_mode,
-                    synctv_core::config::RedisDeploymentMode::Sentinel
-                ) =>
-            {
+        match migration_lock_startup_strategy(
+            &infra.config.redis.deployment_mode,
+            infra.shared_runtime.is_some(),
+        ) {
+            MigrationLockStartupStrategy::PgAdvisorySentinel => {
                 warn!(
                     "Redis Sentinel deployment detected; using PostgreSQL advisory lock for \
                      migrations because single-instance Redis locks are unsafe during failover"
                 );
             }
-            "redis" => info!("Using Redis distributed lock for migrations"),
-            _ => info!("Using PostgreSQL advisory lock for migrations"),
+            MigrationLockStartupStrategy::Distributed => {
+                info!("Using distributed migration coordination lock");
+            }
+            MigrationLockStartupStrategy::PgAdvisory => {
+                info!("Using PostgreSQL advisory lock for migrations");
+            }
         }
         crate::migrations::run_migrations(
             &infra.pool,
@@ -1026,6 +1087,14 @@ impl Application {
             wire_room_service_cluster_broadcasters(
                 &core.services.room_service,
                 cluster_manager.clone(),
+                Some(Arc::new(ClusterPlaylistBroadcaster {
+                    cluster_manager: cluster_manager.clone(),
+                })),
+            );
+            start_room_notification_bridge(
+                core.services.room_notification_service.clone(),
+                cluster_manager.clone(),
+                shutdown,
             );
             info!("Cluster mode disabled — initialized local-only ClusterManager");
             return Ok(ClusterState {
@@ -1099,6 +1168,9 @@ impl Application {
         wire_room_service_cluster_broadcasters(
             &core.services.room_service,
             cluster_manager.clone(),
+            Some(Arc::new(LocalPlaylistBroadcaster {
+                cluster_manager: cluster_manager.clone(),
+            })),
         );
         info!("PlaybackService wired with cluster broadcaster");
 
@@ -1262,7 +1334,7 @@ mod tests {
         OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
     };
     use synctv_core::{
-        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{KeyBuilder, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
         RedisConnectionRuntime, SharedRedisConnectionRuntime,
@@ -1448,8 +1520,7 @@ mod tests {
         let jwt_service =
             synctv_core::service::JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
                 .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 64, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
 
         UserService::new(
             pool,
@@ -1635,16 +1706,14 @@ mod tests {
 
     #[test]
     fn test_sentinel_mode_uses_pg_advisory_migration_lock_strategy() {
-        let mut config = minimal_valid_startup_config();
-        config.redis.deployment_mode = synctv_core::config::RedisDeploymentMode::Sentinel;
-
-        let uses_pg_advisory = matches!(
-            config.redis.deployment_mode,
-            synctv_core::config::RedisDeploymentMode::Sentinel
-        );
-
         assert!(
-            uses_pg_advisory,
+            matches!(
+                migration_lock_startup_strategy(
+                    &synctv_core::config::RedisDeploymentMode::Sentinel,
+                    true,
+                ),
+                MigrationLockStartupStrategy::PgAdvisorySentinel
+            ),
             "Sentinel deployments must avoid single-instance Redis migration locks"
         );
     }
@@ -1678,7 +1747,7 @@ mod tests {
             "single-node realtime paths need a wired connection manager"
         );
         assert!(
-            !metrics.redis_enabled,
+            !metrics.distributed_enabled,
             "local-only cluster manager must not require Redis"
         );
 
@@ -1717,12 +1786,24 @@ mod tests {
             .expect("local cluster manager should build"),
         );
 
-        wire_room_service_cluster_broadcasters(&room_service, cluster_manager);
+        wire_room_service_cluster_broadcasters(
+            &room_service,
+            cluster_manager.clone(),
+            Some(Arc::new(ClusterPlaylistBroadcaster {
+                cluster_manager: cluster_manager.clone(),
+            })),
+        );
 
         assert!(
             room_service.has_member_event_broadcaster(),
             "cluster broadcaster wiring must cover member kicks/bans in addition to playback"
         );
+        assert!(
+            room_service.has_playlist_cluster_broadcaster(),
+            "cluster broadcaster wiring must cover playlist lifecycle broadcasts"
+        );
+
+        cluster_manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -1745,11 +1826,11 @@ mod tests {
         .expect("cluster mode should require and accept shared realtime connection state");
 
         let cluster_config = ClusterConfig {
-            distributed_transport_factory: Some(Arc::new(
-                synctv_cluster::RedisClusterMessageTransportFactory::new(
+            distributed_transport_factory: Some(
+                synctv_cluster::build_cluster_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(client),
                 ),
-            )),
+            ),
             message_runtime: build_room_message_runtime(&realtime_profile)
                 .expect("shared message runtime should initialize"),
             cluster_enabled: true,

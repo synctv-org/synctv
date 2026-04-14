@@ -412,14 +412,14 @@ mod rate_limiter {
 
     #[tokio::test]
     async fn test_in_memory_allows_within_limit() {
-        let limiter = RateLimiter::in_memory_only("test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
         let result = limiter.check_rate_limit("test_key", 5, 60).await;
         assert!(result.is_ok(), "First request should be allowed");
     }
 
     #[tokio::test]
     async fn test_in_memory_blocks_after_exceeding_limit() {
-        let limiter = RateLimiter::in_memory_only("test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
         let key = "burst_test_key";
 
         // Exhaust the limit
@@ -437,7 +437,7 @@ mod rate_limiter {
 
     #[tokio::test]
     async fn test_different_keys_independent() {
-        let limiter = RateLimiter::in_memory_only("test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         // Exhaust limit for key_a
         for _ in 0..5 {
@@ -451,14 +451,14 @@ mod rate_limiter {
 
     #[test]
     fn test_sync_rate_limit_allows_within_limit() {
-        let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
+        let limiter = RateLimiter::local_only("sync_test:".to_string());
         let result = limiter.check_rate_limit_sync("grpc_key", 10, 60);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_sync_rate_limit_blocks_after_exceeding() {
-        let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
+        let limiter = RateLimiter::local_only("sync_test:".to_string());
         for _ in 0..10 {
             let _ = limiter.check_rate_limit_sync("grpc_burst", 10, 60);
         }
@@ -468,7 +468,7 @@ mod rate_limiter {
 
     #[tokio::test]
     async fn test_health_check_without_redis() {
-        let limiter = RateLimiter::in_memory_only("test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
         let result = limiter.health_check().await;
         assert!(result.is_err(), "Should error when Redis not configured");
         assert!(result.unwrap_err().contains("not configured"));
@@ -719,7 +719,7 @@ mod websocket_e2e {
         rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> Arc<synctv_core::service::ChatService> {
         let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
-        let chat_rate_limiter = RateLimiter::in_memory_only("test_chat:".to_string());
+        let chat_rate_limiter = RateLimiter::local_only("test_chat:".to_string());
         let content_filter = synctv_core::service::ContentFilter::new();
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
@@ -828,9 +828,11 @@ mod websocket_e2e {
         ));
 
         // UsernameCache with Redis L2 backend
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
-            redis_conn.clone(),
-        ));
+        let l2_backend = Arc::new(
+            synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
+                synctv_core::shared_runtime(redis_conn.clone()),
+            ),
+        );
         let username_cache =
             UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
@@ -881,11 +883,11 @@ mod websocket_e2e {
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
         let cluster_config = ClusterConfig {
-            distributed_transport_factory: Some(Arc::new(
-                synctv_cluster::RedisClusterMessageTransportFactory::new(
+            distributed_transport_factory: Some(
+                synctv_cluster::build_cluster_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
                 ),
-            )),
+            ),
             message_runtime: synctv_cluster::build_room_message_runtime(
                 &SharedStateProfile::from_runtime(
                     Some(shared_runtime),
@@ -923,7 +925,7 @@ mod websocket_e2e {
         let connection_manager_ret = connection_manager.clone();
 
         // Rate limiter (in-memory only for tests)
-        let rate_limiter = RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter = RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:"));
 
         // Build AppState
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
@@ -986,18 +988,14 @@ mod websocket_e2e {
             user_provider_credential_repo.clone(),
         ));
 
-        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::from_store(
-            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-            None,
-        ));
+        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -1089,7 +1087,7 @@ mod websocket_e2e {
             emby_api: emby_api.clone(),
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             provider_stores: std::sync::Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
+                synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
             ),
             proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {
@@ -3975,7 +3973,7 @@ mod websocket_connection_limit_timing {
         username_cache: UsernameCache,
     ) -> Arc<synctv_core::service::ChatService> {
         let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
-        let chat_rate_limiter = RateLimiter::in_memory_only("test_chat:".to_string());
+        let chat_rate_limiter = RateLimiter::local_only("test_chat:".to_string());
         let content_filter = synctv_core::service::ContentFilter::new();
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
@@ -4095,9 +4093,11 @@ mod websocket_connection_limit_timing {
                 .expect("Redis ConnectionManager"),
         ));
 
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
-            redis_conn.clone(),
-        ));
+        let l2_backend = Arc::new(
+            synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
+                synctv_core::shared_runtime(redis_conn.clone()),
+            ),
+        );
         let username_cache =
             UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
@@ -4141,11 +4141,11 @@ mod websocket_connection_limit_timing {
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
         let cluster_config = ClusterConfig {
-            distributed_transport_factory: Some(Arc::new(
-                synctv_cluster::RedisClusterMessageTransportFactory::new(
+            distributed_transport_factory: Some(
+                synctv_cluster::build_cluster_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
                 ),
-            )),
+            ),
             message_runtime: synctv_cluster::build_room_message_runtime(
                 &SharedStateProfile::from_runtime(
                     Some(shared_runtime),
@@ -4191,7 +4191,7 @@ mod websocket_connection_limit_timing {
         );
         let connection_manager_ret = connection_manager.clone();
 
-        let rate_limiter = RateLimiter::in_memory_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter = RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:"));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
@@ -4252,8 +4252,7 @@ mod websocket_connection_limit_timing {
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -4287,10 +4286,7 @@ mod websocket_connection_limit_timing {
             },
             live_streaming_infrastructure: None,
             rate_limiter,
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                None,
-            )),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
@@ -4323,7 +4319,7 @@ mod websocket_connection_limit_timing {
             ),
         );
         let shared_provider_stores = std::sync::Arc::new(
-            synctv_core::provider::store::ProviderStoreRegistry::new(None, ""),
+            synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
         );
         let shared_proxy_provider_registry =
             std::sync::Arc::new(providers.build_proxy_registry());

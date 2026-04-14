@@ -24,7 +24,7 @@ async fn start_redis() -> (
 #[ignore = "Requires Docker"]
 async fn test_set_if_newer_absent_key() {
     let (_container, conn) = start_redis().await;
-    let l2 = RedisCacheL2::new(conn);
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:absent";
     let json = r#"{"name":"alice","updated_at":"2024-01-01T12:00:00Z"}"#;
@@ -43,7 +43,7 @@ async fn test_set_if_newer_absent_key() {
 #[ignore = "Requires Docker"]
 async fn test_set_if_newer_newer_wins() {
     let (_container, conn) = start_redis().await;
-    let l2 = RedisCacheL2::new(conn);
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:newer_wins";
     let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
@@ -66,7 +66,7 @@ async fn test_set_if_newer_newer_wins() {
 #[ignore = "Requires Docker"]
 async fn test_set_if_newer_older_rejected() {
     let (_container, conn) = start_redis().await;
-    let l2 = RedisCacheL2::new(conn);
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:older_rejected";
     let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
@@ -90,7 +90,7 @@ async fn test_set_if_newer_older_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_set_if_newer_concurrent() {
     let (_container, conn) = start_redis().await;
-    let l2 = std::sync::Arc::new(RedisCacheL2::new(conn));
+    let l2 = std::sync::Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn)));
 
     let key = "test:sin:concurrent";
 
@@ -131,7 +131,7 @@ async fn test_set_if_newer_concurrent() {
 #[ignore = "Requires Docker"]
 async fn test_delete_by_prefix_100_plus_keys() {
     let (_container, conn) = start_redis().await;
-    let l2 = RedisCacheL2::new(conn.clone());
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
 
     // Insert 150 keys with the same prefix
     let prefix = "test:dbp:batch:";
@@ -162,7 +162,7 @@ async fn test_delete_by_prefix_100_plus_keys() {
 #[ignore = "Requires Docker"]
 async fn test_delete_by_prefix_isolation() {
     let (_container, conn) = start_redis().await;
-    let l2 = RedisCacheL2::new(conn.clone());
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
 
     let prefix_a = "test:dbp:iso_a:";
     let prefix_b = "test:dbp:iso_b:";

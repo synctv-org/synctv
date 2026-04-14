@@ -101,6 +101,17 @@ impl UsernameCache {
         }
     }
 
+    /// Create a username cache for local-only operation without shared L2 state.
+    #[must_use]
+    pub fn local_only(key_prefix: String, memory_cache_size: usize, ttl_seconds: u64) -> Self {
+        Self::new(
+            crate::cache::local_l2_cache_backend(),
+            key_prefix,
+            memory_cache_size,
+            ttl_seconds,
+        )
+    }
+
     /// Set the cache invalidation service for cross-replica sync
     #[must_use]
     pub fn with_invalidation_service(

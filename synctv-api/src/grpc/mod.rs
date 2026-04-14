@@ -245,13 +245,6 @@ const fn should_mark_notification_service_serving(notification_service_available
     notification_service_available
 }
 
-const fn should_fail_user_notification_fanout(
-    redis_publish_succeeded: bool,
-    cluster_redis_enabled: bool,
-) -> bool {
-    cluster_redis_enabled && !redis_publish_succeeded
-}
-
 const fn should_register_email_service(email_available: bool, email_token_available: bool) -> bool {
     email_available && email_token_available
 }
@@ -548,7 +541,9 @@ use synctv_core::service::{
 };
 use synctv_core::Config;
 use crate::cluster_fanout::ClusterFanoutService;
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::{
+    RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
+};
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -1029,7 +1024,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         // when the gRPC server stops.
         if let Some(ref event_service) = event_service_for_rt {
             let event_service = Arc::clone(event_service);
-            let cluster_redis_enabled = event_service.metrics().redis_enabled;
             let mut notification_rx = notif_svc.subscribe_events();
             // Clone the optional shutdown watch receiver so the bridge task
             // can stop cleanly when the server receives a shutdown signal.
@@ -1069,10 +1063,12 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                                         notification_type: event.notification.notification_type.to_string(),
                                         timestamp: chrono::Utc::now(),
                                     };
-                                    let redis_sent = event_service.publish_only(cluster_event);
-                                    if should_fail_user_notification_fanout(redis_sent, cluster_redis_enabled) {
+                                    let outcome = event_service.publish_only_outcome(cluster_event);
+                                    if !outcome.satisfies(
+                                        RealtimeDeliveryRequirement::DistributedIfAvailable,
+                                    ) {
                                         tracing::error!(
-                                            "Notification-to-cluster bridge failed to publish user notification to Redis"
+                                            "Notification-to-cluster bridge failed to reach the distributed fan-out path"
                                         );
                                     }
                                 }
@@ -1330,19 +1326,18 @@ mod tests {
         effective_grpc_request_timeout, extract_client_ip, grpc_service_registration_plan,
         grpc_unary_request_timeout, map_provider_error, resolve_provider_proxy_runtime,
         set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_fail_user_notification_fanout, should_mark_cluster_service_serving,
-        should_mark_email_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
-        should_mark_provider_services_serving, should_register_cluster_grpc_service,
-        should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements, FallbackHttpAppStateDeps,
-        GrpcHealthRegistrationState,
+        should_mark_cluster_service_serving, should_mark_email_service_serving,
+        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_email_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
     use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use synctv_cluster::sync::{BroadcastResult, ClusterEvent};
-    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::{RoomId, UserId};
     use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::provider::{
@@ -1355,7 +1350,10 @@ mod tests {
         RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
         UserService,
     };
-    use crate::runtime::{RealtimeConnectionService, RealtimeEventService, RealtimeMetrics};
+    use crate::runtime::{
+        RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
+        RealtimeEventService, RealtimeMetrics,
+    };
     use tokio::sync::{broadcast, mpsc};
     use tonic::metadata::{MetadataKey, MetadataValue};
     use tonic_health::pb::health_check_response::ServingStatus;
@@ -1377,7 +1375,7 @@ mod tests {
 
     struct FakeRealtimeEventService {
         node_id: String,
-        redis_enabled: bool,
+        distributed_enabled: bool,
     }
 
     #[async_trait]
@@ -1414,7 +1412,7 @@ mod tests {
 
         fn metrics(&self) -> RealtimeMetrics {
             RealtimeMetrics {
-                redis_enabled: self.redis_enabled,
+                distributed_enabled: self.distributed_enabled,
             }
         }
 
@@ -1432,8 +1430,7 @@ mod tests {
         let config = Arc::new(synctv_core::Config::default());
         let jwt_service =
             JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars").expect("jwt");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             jwt_service.clone(),
@@ -1529,8 +1526,7 @@ mod tests {
                 config: Arc::new(synctv_core::Config::default()),
                 user_service: context.user_service,
                 user_cache: Arc::new(
-                    synctv_core::cache::UserCache::new(
-                        Arc::new(NoopCacheL2),
+                    synctv_core::cache::UserCache::local_only(
                         128,
                         60,
                         300,
@@ -1563,11 +1559,8 @@ mod tests {
                 chat_service: None,
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
-                rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                    Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                    None,
-                )),
+                rate_limiter: RateLimiter::local_only("test:".to_string()),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
                 redis_runtime: None,
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
@@ -1597,17 +1590,13 @@ mod tests {
             ));
         let event_service: Arc<dyn RealtimeEventService> = Arc::new(FakeRealtimeEventService {
             node_id: "fallback-http-node".to_string(),
-            redis_enabled: true,
+            distributed_enabled: true,
         });
         let provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
-            Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-                None,
+            Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only(
                 context.config.redis.key_prefix.clone(),
             ));
-        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::from_store(
-            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-            None,
-        ));
+        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
         let proxy_signing_key = Arc::new(synctv_core::service::ProxySigningKey::derive_from(
             b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
         ));
@@ -1625,8 +1614,7 @@ mod tests {
         let http_state = build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: context.user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -1656,7 +1644,7 @@ mod tests {
                 None, false,
             ),
             redis_runtime: None,
-            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
+            rate_limiter: RateLimiter::local_only("test:".to_string()),
             messaging_rate_limit_config: messaging_rate_limit_config.clone(),
             credential_encryption: None,
             credential_repo: context.credential_repo,
@@ -1765,7 +1753,7 @@ mod tests {
     fn test_cluster_node_id_uses_injected_event_service() {
         let event_service: Arc<dyn RealtimeEventService> = Arc::new(FakeRealtimeEventService {
             node_id: "fake-node".to_string(),
-            redis_enabled: true,
+            distributed_enabled: true,
         });
 
         assert_eq!(
@@ -2015,10 +2003,36 @@ mod tests {
     }
 
     #[test]
-    fn test_user_notification_fanout_requires_redis_when_cluster_enabled() {
-        assert!(should_fail_user_notification_fanout(false, true));
-        assert!(!should_fail_user_notification_fanout(true, true));
-        assert!(!should_fail_user_notification_fanout(false, false));
+    fn test_user_notification_fanout_requires_distributed_delivery_only_when_available() {
+        let requirement = RealtimeDeliveryRequirement::DistributedIfAvailable;
+
+        assert!(
+            !RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                true,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: false,
+                },
+            )
+            .satisfies(requirement)
+        );
     }
 
     #[test]

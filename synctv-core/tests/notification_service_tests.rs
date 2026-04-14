@@ -135,6 +135,8 @@ fn test_event_type_names_all_variants() {
         ),
         (
             RoomEvent::MediaAdded {
+                user_id: UserId::new(),
+                username: "test".to_string(),
                 media_id: "m1".to_string(),
                 title: "Test".to_string(),
                 url: "http://example.com".to_string(),
@@ -144,20 +146,39 @@ fn test_event_type_names_all_variants() {
         ),
         (
             RoomEvent::MediaRemoved {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
                 media_id: "m1".to_string(),
             },
             "media_removed",
         ),
         (
             RoomEvent::PlaylistReordered {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
                 media_ids: vec!["m1".to_string()],
             },
             "playlist_reordered",
         ),
         (
+            RoomEvent::PlaylistDeleted {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
+                playlist_id: "pl1".to_string(),
+            },
+            "playlist_deleted",
+        ),
+        (
             RoomEvent::PermissionChanged {
                 user_id: UserId::new(),
-                permissions: 0,
+                role: 1,
+                effective_permissions: 0,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: 0,
+                admin_removed_permissions: 0,
+                updated_by_user_id: UserId::new(),
+                updated_by_username: "test".to_string(),
             },
             "permission_changed",
         ),
@@ -170,6 +191,8 @@ fn test_event_type_names_all_variants() {
         (
             RoomEvent::SettingsUpdated {
                 settings: serde_json::json!({}),
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
             },
             "settings_updated",
         ),

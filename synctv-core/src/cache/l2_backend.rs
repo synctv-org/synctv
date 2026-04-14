@@ -9,8 +9,7 @@
 
 use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{
-    DirectRedisConnectionRuntime, Error, RedisConnectionRuntime, Result, SharedStateProfile,
-    SharedRedisConnectionRuntime,
+    Error, RedisConnectionRuntime, Result, SharedStateProfile,
 };
 use async_trait::async_trait;
 use std::future::Future;
@@ -89,9 +88,6 @@ pub trait CacheL2Backend: Send + Sync {
     /// Whether this backend is active (i.e., has a real remote store).
     /// Used for metrics and TTL enforcement decisions.
     fn is_active(&self) -> bool;
-
-    /// A label for logging/debug purposes.
-    fn backend_name(&self) -> &'static str;
 }
 
 // ============================================================================
@@ -112,21 +108,6 @@ pub struct RedisCacheL2 {
 }
 
 impl RedisCacheL2 {
-    /// Create from a shared, hot-swappable connection (recommended for Sentinel mode).
-    #[must_use]
-    pub fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
-        Self::from_runtime(std::sync::Arc::new(SharedRedisConnectionRuntime::new(conn)))
-    }
-
-    /// Create from a plain `ConnectionManager` snapshot.
-    ///
-    /// Wraps it in an `Arc<RwLock<>>` internally for API uniformity. Suitable
-    /// for standalone mode where the connection is never hot-swapped.
-    #[must_use]
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Self::from_runtime(std::sync::Arc::new(DirectRedisConnectionRuntime::new(conn)))
-    }
-
     #[must_use]
     pub fn from_runtime(conn: std::sync::Arc<dyn RedisConnectionRuntime>) -> Self {
         Self { conn }
@@ -146,6 +127,11 @@ pub fn build_l2_cache_backend(
         Some(runtime) => std::sync::Arc::new(RedisCacheL2::from_runtime(runtime)),
         None => std::sync::Arc::new(NoopCacheL2),
     }
+}
+
+#[must_use]
+pub fn local_l2_cache_backend() -> std::sync::Arc<dyn CacheL2Backend> {
+    std::sync::Arc::new(NoopCacheL2)
 }
 
 #[must_use]
@@ -350,10 +336,6 @@ impl CacheL2Backend for RedisCacheL2 {
     fn is_active(&self) -> bool {
         true
     }
-
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 // ============================================================================
@@ -409,10 +391,6 @@ impl CacheL2Backend for NoopCacheL2 {
 
     fn is_active(&self) -> bool {
         false
-    }
-
-    fn backend_name(&self) -> &'static str {
-        "noop"
     }
 }
 
@@ -521,10 +499,6 @@ mod tests {
 
         fn is_active(&self) -> bool {
             true
-        }
-
-        fn backend_name(&self) -> &'static str {
-            "slow_mock"
         }
     }
 

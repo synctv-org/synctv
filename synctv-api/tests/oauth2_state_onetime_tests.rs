@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::UserId;
 use synctv_core::service::{
-    oauth2::InMemoryOAuthStateStore, OAuth2State, OAuthStateStore,
+    local_oauth_state_store, OAuth2State, OAuthStateStore,
 };
 
 // ============================================================================
@@ -28,8 +28,8 @@ use synctv_core::service::{
 // ============================================================================
 
 /// Create a test state store
-fn create_state_store() -> Arc<InMemoryOAuthStateStore> {
-    Arc::new(InMemoryOAuthStateStore::new())
+fn create_state_store() -> Arc<dyn OAuthStateStore> {
+    local_oauth_state_store()
 }
 
 /// Create a test OAuth2 state
@@ -319,16 +319,15 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
 }
 
 // ============================================================================
-// TDD Test 8: Store backend name is correct
+// TDD Test 8: Store capability is correct
 // ============================================================================
 
 #[tokio::test]
-async fn test_in_memory_state_store_backend_name() {
+async fn test_in_memory_state_store_reports_single_node_scope() {
     let state_store = create_state_store();
-    assert_eq!(
-        state_store.backend_name(),
-        "memory",
-        "InMemoryOAuthStateStore should report 'memory' as backend"
+    assert!(
+        !state_store.supports_cross_node_single_use(),
+        "InMemoryOAuthStateStore should remain single-node scoped"
     );
 }
 

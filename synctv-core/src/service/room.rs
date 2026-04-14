@@ -96,7 +96,7 @@ use crate::{
     },
     Error, InternalExt, Result,
 };
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -107,22 +107,28 @@ const MAX_DELETE_TARGETS: usize = 100;
 #[derive(Debug, Clone)]
 pub struct AuthorizedAdminActor {
     user_id: UserId,
+    username: String,
 }
 
 impl AuthorizedAdminActor {
-    pub fn new(user_id: UserId, role: UserRole) -> Result<Self> {
+    pub fn new(user_id: UserId, username: String, role: UserRole) -> Result<Self> {
         if !role.is_admin_or_above() {
             return Err(Error::Authorization(
                 "Admin role required for this operation".to_string(),
             ));
         }
 
-        Ok(Self { user_id })
+        Ok(Self { user_id, username })
     }
 
     #[must_use]
     pub fn user_id(&self) -> &UserId {
         &self.user_id
+    }
+
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
     }
 }
 
@@ -188,7 +194,15 @@ pub struct DeleteEntriesRequest {
 pub struct DeleteEntriesResult {
     pub deleted_playlists: usize,
     pub deleted_media: usize,
+    pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteEntriesPlan {
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_reset: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -200,6 +214,7 @@ pub struct ClearPlaylistResult {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct EntryDeletionImpact {
+    pub playlist_nodes: Vec<(PlaylistId, i32)>,
     pub deleted_playlist_ids: Vec<PlaylistId>,
     pub deleted_media_ids: Vec<MediaId>,
     pub playback_reset: bool,
@@ -240,7 +255,7 @@ impl RoomService {
         admin_user_id: &UserId,
     ) -> Result<AuthorizedAdminActor> {
         let admin_user = self.user_service.get_user(admin_user_id).await?;
-        AuthorizedAdminActor::new(admin_user_id.clone(), admin_user.role)
+        AuthorizedAdminActor::new(admin_user_id.clone(), admin_user.username, admin_user.role)
     }
 
     async fn enforce_room_ownership_limit(
@@ -601,6 +616,15 @@ impl RoomService {
         self.member_service.set_event_broadcaster(broadcaster);
     }
 
+    /// Set the cluster broadcaster on the inner playlist service for cross-replica sync.
+    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
+    pub fn set_playlist_cluster_broadcaster(
+        &self,
+        broadcaster: Arc<dyn crate::service::PlaylistBroadcaster>,
+    ) {
+        self.playlist_service.set_cluster_broadcaster(broadcaster);
+    }
+
     /// Wire the cache invalidation service into the inner playback service
     /// so it can broadcast invalidation messages to other replicas on updates.
     pub fn set_playback_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
@@ -786,6 +810,11 @@ impl RoomService {
     #[doc(hidden)]
     pub fn has_member_event_broadcaster(&self) -> bool {
         self.member_service.has_event_broadcaster()
+    }
+
+    #[doc(hidden)]
+    pub fn has_playlist_cluster_broadcaster(&self) -> bool {
+        self.playlist_service.has_cluster_broadcaster()
     }
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
@@ -2398,13 +2427,10 @@ impl RoomService {
         let room_id_clone = room_id.clone();
         let settings_clone = settings.clone();
         let room_settings_repo = self.room_settings_repo.clone();
-        let permission_service = self.permission_service.clone();
-        let invalidation_service = self.cache_invalidation.clone();
-        let notification_service = self.notification_service.clone();
-        let user_id_clone = user_id.clone();
         let audit_service = self.audit_service.clone();
 
-        super::optimistic_retry::retry_with_optimistic_lock_timeout(
+        let (previous_settings, updated_settings) =
+            super::optimistic_retry::retry_with_optimistic_lock_timeout(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
@@ -2413,60 +2439,41 @@ impl RoomService {
                 let room_id = room_id_clone.clone();
                 let settings = settings_clone.clone();
                 let room_settings_repo = room_settings_repo.clone();
-                let permission_service = permission_service.clone();
-                let invalidation_service = invalidation_service.clone();
-                let notification_service = notification_service.clone();
-                let user_id = user_id_clone.clone();
-                let audit_service = audit_service.clone();
                 async move {
-                    let (_current, version) = room_settings_repo.get_with_version(&room_id).await?;
+                    let (current, version) = room_settings_repo.get_with_version(&room_id).await?;
                     room_settings_repo
                         .set_settings_with_version(&room_id, &settings, version)
                         .await?;
-
-                    // Invalidate permission cache for all room members
-                    permission_service.invalidate_room_cache(&room_id).await;
-
-                    // Broadcast cache invalidation
-                    if let Some(ref service) = invalidation_service {
-                        if let Err(e) = service.invalidate_and_broadcast_room(&room_id).await {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id.as_str(),
-                                "Failed to broadcast room cache invalidation"
-                            );
-                        }
-                    }
-
-                    // Notify clients
-                    let settings_json = serde_json::to_value(&settings).map_err(|e| {
-                        crate::Error::Internal(format!("Failed to serialize settings: {e}"))
-                    })?;
-                    let _ = notification_service
-                        .notify_settings_updated(&room_id, settings_json.clone())
-                        ;
-
-                    // Audit log
-                    if let Some(ref audit) = audit_service {
-                        let _ = audit
-                            .log(
-                                user_id.as_str().to_string(),
-                                user_id.as_str().to_string(),
-                                AuditAction::RoomSettingsUpdated,
-                                AuditTargetType::Room,
-                                Some(room_id.as_str().to_string()),
-                                settings_json,
-                                None,
-                                None,
-                            )
-                            .await;
-                    }
-
-                    Ok(())
+                    Ok((current, settings))
                 }
             },
         )
         .await?;
+
+        let settings_json = self
+            .finalize_room_settings_update(
+                &room_id,
+                &previous_settings,
+                &updated_settings,
+                Some(&user_id),
+                "",
+            )
+            .await?;
+
+        if let Some(ref audit) = audit_service {
+            let _ = audit
+                .log(
+                    user_id.as_str().to_string(),
+                    user_id.as_str().to_string(),
+                    AuditAction::RoomSettingsUpdated,
+                    AuditTargetType::Room,
+                    Some(room_id.as_str().to_string()),
+                    settings_json,
+                    None,
+                    None,
+                )
+                .await;
+        }
 
         Ok(room)
     }
@@ -2519,6 +2526,14 @@ impl RoomService {
             .unwrap_or(0))
     }
 
+    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
+        self.user_service
+            .get_user(user_id)
+            .await
+            .map(|user| user.username)
+            .unwrap_or_default()
+    }
+
     /// Get settings for multiple rooms in a single query (avoids N+1)
     pub async fn get_room_settings_batch(
         &self,
@@ -2533,21 +2548,26 @@ impl RoomService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<RoomSettings> {
-        let result = super::optimistic_retry::retry_with_optimistic_lock(
+        settings.validate_permissions()?;
+
+        let (previous_settings, updated_settings) =
+            super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings update failed after maximum retry attempts",
             || async {
-                let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
+                let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
                 self.room_settings_repo
                     .set_settings_with_version(room_id, settings, version)
                     .await?;
-                Ok(settings.clone())
+                Ok((current, settings.clone()))
             },
         )
         .await?;
-        self.notify_room_settings_invalidation(room_id).await;
-        Ok(result)
+        self.finalize_room_settings_update(room_id, &previous_settings, &updated_settings, None, "")
+            .await?;
+
+        Ok(updated_settings)
     }
 
     /// Update single room setting by key (requires `SET_ROOM_SETTINGS` permission)
@@ -2575,9 +2595,11 @@ impl RoomService {
         RoomSettingsRegistry::validate_setting(key, value)?;
 
         // 3. CAS update with retry
+        let mut previous_settings = None;
         let mut final_settings = None;
         for attempt in 0..Self::MAX_RETRIES {
             let (mut settings, version) = self.room_settings_repo.get_with_version(room_id).await?;
+            let current = settings.clone();
             settings.set_by_key(key, value)?;
             settings.validate_permissions()?;
 
@@ -2587,6 +2609,7 @@ impl RoomService {
                 .await
             {
                 Ok(_new_version) => {
+                    previous_settings = Some(current);
                     final_settings = Some(settings);
                     break;
                 }
@@ -2606,36 +2629,61 @@ impl RoomService {
             }
         }
 
+        let previous_settings = previous_settings.ok_or_else(|| {
+            Error::Internal("Settings update failed after maximum retry attempts".to_string())
+        })?;
         let settings = final_settings.ok_or_else(|| {
             Error::Internal("Settings update failed after maximum retry attempts".to_string())
         })?;
 
-        // 4. Post-apply hooks (side effects after commit)
-        self.run_post_apply_hooks(room_id, key, value).await;
-        self.permission_service.invalidate_room_cache(room_id).await;
-        self.notify_room_invalidation(room_id).await;
-        self.notify_room_settings_invalidation(room_id).await;
+        self.finalize_room_settings_update(room_id, &previous_settings, &settings, Some(user_id), "")
+            .await?;
 
         serde_json::to_string(&settings).internal_with_err("Failed to serialize settings")
     }
 
-    /// Post-apply hooks: side effects triggered after a setting change commits.
-    ///
-    /// Centralized registry — add new side effects here when a setting
-    /// change needs to trigger external actions (notifications, membership cleanup, etc.).
-    async fn run_post_apply_hooks(&self, room_id: &RoomId, key: &str, value: &str) {
-        use crate::{
-            models::room_settings::{AllowGuestJoin, RequirePassword, RoomSetting},
-            service::notification::GuestKickReason,
-        };
+    async fn finalize_room_settings_update(
+        &self,
+        room_id: &RoomId,
+        previous_settings: &RoomSettings,
+        updated_settings: &RoomSettings,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+    ) -> Result<serde_json::Value> {
+        self.run_post_apply_hooks_for_settings_update(room_id, previous_settings, updated_settings)
+            .await;
+        self.permission_service.invalidate_room_cache(room_id).await;
+        self.notify_room_invalidation(room_id).await;
+        self.notify_room_settings_invalidation(room_id).await;
 
-        let guest_kick_reason = if key == AllowGuestJoin::KEY && value == "false" {
-            Some(GuestKickReason::RoomGuestModeDisabled)
-        } else if key == RequirePassword::KEY && value == "true" {
-            Some(GuestKickReason::RoomPasswordAdded)
-        } else {
-            None
-        };
+        let settings_json = serde_json::to_value(updated_settings)
+            .internal_with_err("Failed to serialize settings")?;
+        let _ = self.notification_service.notify_settings_updated(
+            room_id,
+            actor_user_id,
+            actor_username,
+            settings_json.clone(),
+        );
+
+        Ok(settings_json)
+    }
+
+    async fn run_post_apply_hooks_for_settings_update(
+        &self,
+        room_id: &RoomId,
+        previous_settings: &RoomSettings,
+        updated_settings: &RoomSettings,
+    ) {
+        use crate::service::notification::GuestKickReason;
+
+        let guest_kick_reason =
+            if previous_settings.allow_guest_join.0 && !updated_settings.allow_guest_join.0 {
+                Some(GuestKickReason::RoomGuestModeDisabled)
+            } else if !previous_settings.require_password.0 && updated_settings.require_password.0 {
+                Some(GuestKickReason::RoomPasswordAdded)
+            } else {
+                None
+            };
 
         if let Some(reason) = guest_kick_reason {
             if let Err(e) = self.revoke_all_guest_access(room_id, reason).await {
@@ -2656,22 +2704,29 @@ impl RoomService {
 
         let default_settings = RoomSettings::default();
 
-        let result = super::optimistic_retry::retry_with_optimistic_lock(
+        let (previous_settings, updated_settings) = super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings reset failed after maximum retry attempts",
             || async {
-                let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
+                let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
                 self.room_settings_repo
                     .set_settings_with_version(room_id, &default_settings, version)
                     .await?;
-                serde_json::to_string(&default_settings)
-                    .internal_with_err("Failed to serialize settings")
+                Ok((current, default_settings.clone()))
             },
         )
         .await?;
-        self.notify_room_settings_invalidation(room_id).await;
-        Ok(result)
+        self.finalize_room_settings_update(
+            room_id,
+            &previous_settings,
+            &updated_settings,
+            Some(user_id),
+            "",
+        )
+        .await?;
+
+        serde_json::to_string(&updated_settings).internal_with_err("Failed to serialize settings")
     }
 
     /// Check room password
@@ -3237,13 +3292,30 @@ impl RoomService {
         user_id: UserId,
         request: DeleteEntriesRequest,
     ) -> Result<DeleteEntriesResult> {
+        let (result, ()) = self
+            .delete_entries_with_precommit(room_id, user_id, request, |_| async { Ok(()) })
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn delete_entries_with_precommit<T, F, Fut>(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: DeleteEntriesRequest,
+        precommit: F,
+    ) -> Result<(DeleteEntriesResult, T)>
+    where
+        F: FnOnce(DeleteEntriesPlan) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
         let force = request.force;
         let total_targets = playlist_ids.len() + media_ids.len();
 
         if total_targets == 0 {
-            return Ok(DeleteEntriesResult::default());
+            return Ok((DeleteEntriesResult::default(), precommit(DeleteEntriesPlan::default()).await?));
         }
 
         if total_targets > MAX_DELETE_TARGETS {
@@ -3333,8 +3405,15 @@ impl RoomService {
         }
 
         let impact =
-            delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
+            plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
+        let precommit_result = precommit(DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+        })
+        .await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
 
         tx.commit().await?;
 
@@ -3345,17 +3424,39 @@ impl RoomService {
                 .await;
         }
 
-        if !impact.deleted_media_ids.is_empty() {
+        let should_notify_playlist_delete = !impact.deleted_playlist_ids.is_empty();
+        if !impact.deleted_media_ids.is_empty() || should_notify_playlist_delete {
+            let actor_username = self.resolve_actor_username(&user_id).await;
             for media_id in &impact.deleted_media_ids {
                 if let Err(error) = self
                     .notification_service
-                    .notify_media_removed(&room_id, media_id.as_str())
+                    .notify_media_removed(
+                        &room_id,
+                        Some(&user_id),
+                        &actor_username,
+                        media_id.as_str(),
+                    )
                 {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id.as_str(),
                         media_id = %media_id.as_str(),
                         "Failed to broadcast media removed event"
+                    );
+                }
+            }
+            for playlist_id in &impact.deleted_playlist_ids {
+                if let Err(error) = self.notification_service.notify_playlist_deleted(
+                    &room_id,
+                    Some(&user_id),
+                    &actor_username,
+                    playlist_id.as_str(),
+                ) {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        playlist_id = %playlist_id.as_str(),
+                        "Failed to broadcast playlist deleted event"
                     );
                 }
             }
@@ -3369,11 +3470,7 @@ impl RoomService {
             "Entries deleted"
         );
 
-        Ok(DeleteEntriesResult {
-            deleted_playlists: impact.deleted_playlist_ids.len(),
-            deleted_media: impact.deleted_media_ids.len(),
-            deleted_media_ids: impact.deleted_media_ids,
-        })
+        Ok((delete_entries_result_from_impact(impact), precommit_result))
     }
 
     /// Delete a mixed set of media and playlists as a global admin.
@@ -3387,12 +3484,17 @@ impl RoomService {
         self.admin_delete_entries_as(room_id, &actor, request).await
     }
 
-    pub async fn admin_delete_entries_as(
+    pub async fn admin_delete_entries_as_with_precommit<T, F, Fut>(
         &self,
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
         request: DeleteEntriesRequest,
-    ) -> Result<DeleteEntriesResult> {
+        precommit: F,
+    ) -> Result<(DeleteEntriesResult, T)>
+    where
+        F: FnOnce(DeleteEntriesPlan) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
         let admin_user_id = actor.user_id().clone();
 
         let playlist_ids = dedup_ids(request.playlist_ids);
@@ -3401,7 +3503,10 @@ impl RoomService {
         let total_targets = playlist_ids.len() + media_ids.len();
 
         if total_targets == 0 {
-            return Ok(DeleteEntriesResult::default());
+            return Ok((
+                DeleteEntriesResult::default(),
+                precommit(DeleteEntriesPlan::default()).await?,
+            ));
         }
 
         if total_targets > MAX_DELETE_TARGETS {
@@ -3449,8 +3554,15 @@ impl RoomService {
         }
 
         let impact =
-            delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
+            plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
+        let precommit_result = precommit(DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+        })
+        .await?;
+        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
 
         tx.commit().await?;
 
@@ -3461,17 +3573,37 @@ impl RoomService {
                 .await;
         }
 
-        if !impact.deleted_media_ids.is_empty() {
+        if !impact.deleted_media_ids.is_empty() || !impact.deleted_playlist_ids.is_empty() {
             for media_id in &impact.deleted_media_ids {
                 if let Err(error) = self
                     .notification_service
-                    .notify_media_removed(&room_id, media_id.as_str())
+                    .notify_media_removed(
+                        &room_id,
+                        Some(&admin_user_id),
+                        actor.username(),
+                        media_id.as_str(),
+                    )
                 {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id.as_str(),
                         media_id = %media_id.as_str(),
                         "Failed to broadcast media removed event"
+                    );
+                }
+            }
+            for playlist_id in &impact.deleted_playlist_ids {
+                if let Err(error) = self.notification_service.notify_playlist_deleted(
+                    &room_id,
+                    Some(&admin_user_id),
+                    actor.username(),
+                    playlist_id.as_str(),
+                ) {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %room_id.as_str(),
+                        playlist_id = %playlist_id.as_str(),
+                        "Failed to broadcast playlist deleted event"
                     );
                 }
             }
@@ -3485,11 +3617,21 @@ impl RoomService {
             "Entries deleted by admin"
         );
 
-        Ok(DeleteEntriesResult {
-            deleted_playlists: impact.deleted_playlist_ids.len(),
-            deleted_media: impact.deleted_media_ids.len(),
-            deleted_media_ids: impact.deleted_media_ids,
-        })
+        Ok((delete_entries_result_from_impact(impact), precommit_result))
+    }
+
+    pub async fn admin_delete_entries_as(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        request: DeleteEntriesRequest,
+    ) -> Result<DeleteEntriesResult> {
+        let (result, ()) = self
+            .admin_delete_entries_as_with_precommit(room_id, actor, request, |_| async {
+                Ok(())
+            })
+            .await?;
+        Ok(result)
     }
 
     /// Get media directly under the room root.
@@ -3627,7 +3769,7 @@ impl RoomService {
         for media_id in &deleted_media_ids {
             if let Err(error) = self
                 .notification_service
-                .notify_media_removed(&room_id, media_id.as_str())
+                .notify_media_removed(&room_id, None, "", media_id.as_str())
             {
                 tracing::warn!(
                     error = %error,
@@ -4430,7 +4572,7 @@ impl RoomService {
         for media_id in deleted_media_ids {
             if let Err(error) = self
                 .notification_service
-                .notify_media_removed(room_id, media_id.as_str())
+                .notify_media_removed(room_id, None, "", media_id.as_str())
             {
                 tracing::warn!(
                     error = %error,
@@ -4727,7 +4869,7 @@ async fn collect_deleted_media_ids_in_tx(
         .collect()
 }
 
-async fn reset_playback_for_deleted_entries_in_tx(
+async fn plan_playback_reset_for_deleted_entries_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
     deleted_playlist_ids: &[PlaylistId],
@@ -4773,22 +4915,6 @@ async fn reset_playback_for_deleted_entries_in_tx(
         ));
     }
 
-    sqlx::query(
-        "UPDATE room_playback_state
-         SET playing_media_id = NULL,
-             playing_playlist_id = NULL,
-             target = ''::bytea,
-             \"current_time\" = 0,
-             speed = 1.0,
-             is_playing = false,
-             version = version + 1,
-             updated_at = NOW()
-         WHERE room_id = $1",
-    )
-    .bind(room_id.as_str())
-    .execute(&mut **tx)
-    .await?;
-
     Ok(true)
 }
 
@@ -4818,7 +4944,52 @@ async fn delete_playlist_ids_in_depth_order_in_tx(
     Ok(())
 }
 
-pub(crate) async fn delete_entries_in_room_in_tx(
+fn delete_entries_result_from_impact(impact: EntryDeletionImpact) -> DeleteEntriesResult {
+    DeleteEntriesResult {
+        deleted_playlists: impact.deleted_playlist_ids.len(),
+        deleted_media: impact.deleted_media_ids.len(),
+        deleted_playlist_ids: impact.deleted_playlist_ids,
+        deleted_media_ids: impact.deleted_media_ids,
+    }
+}
+
+async fn apply_delete_entries_impact_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &RoomId,
+    impact: &EntryDeletionImpact,
+) -> Result<()> {
+    if impact.playback_reset {
+        sqlx::query(
+            "UPDATE room_playback_state
+             SET playing_media_id = NULL,
+                 playing_playlist_id = NULL,
+                 target = ''::bytea,
+                 \"current_time\" = 0,
+                 speed = 1.0,
+                 is_playing = false,
+                 version = version + 1,
+                 updated_at = NOW()
+             WHERE room_id = $1",
+        )
+        .bind(room_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    if !impact.deleted_media_ids.is_empty() {
+        let media_id_strs: Vec<&str> = impact.deleted_media_ids.iter().map(MediaId::as_str).collect();
+        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
+            .bind(&media_id_strs)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    delete_playlist_ids_in_depth_order_in_tx(tx, &impact.playlist_nodes).await?;
+
+    Ok(())
+}
+
+async fn plan_delete_entries_in_room_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
     root_playlist_ids: &[PlaylistId],
@@ -4834,7 +5005,7 @@ pub(crate) async fn delete_entries_in_room_in_tx(
     let deleted_media_ids =
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, explicit_media_ids)
             .await?;
-    let playback_reset = reset_playback_for_deleted_entries_in_tx(
+    let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
         tx,
         room_id,
         &deleted_playlist_ids,
@@ -4843,17 +5014,8 @@ pub(crate) async fn delete_entries_in_room_in_tx(
     )
     .await?;
 
-    if !deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
-        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
-            .bind(&media_id_strs)
-            .execute(&mut **tx)
-            .await?;
-    }
-
-    delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
-
     Ok(EntryDeletionImpact {
+        playlist_nodes,
         deleted_playlist_ids,
         deleted_media_ids,
         playback_reset,
@@ -5006,7 +5168,7 @@ mod tests {
     use crate::test_helpers::RoomFixture;
     use crate::Error;
     use crate::{
-        cache::{CacheInvalidationService, KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
         service::{
             auth::{BruteForceProtection, JwtService},
@@ -5091,12 +5253,8 @@ mod tests {
 
     fn make_user_service(pool: PgPool) -> UserService {
         let jwt_service = JwtService::new("room-service-test-secret-key-32bytes!!").unwrap();
-        let username_cache = UsernameCache::new(
-            Arc::new(NoopCacheL2),
-            "room-service:test:username:".to_string(),
-            128,
-            60,
-        );
+        let username_cache =
+            UsernameCache::local_only("room-service:test:username:".to_string(), 128, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let brute_force = BruteForceProtection::in_memory("room-service-test".to_string());
 

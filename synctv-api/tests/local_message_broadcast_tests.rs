@@ -48,7 +48,7 @@ async fn test_cluster_manager_single_node_mode_works() {
     // Verify metrics show Redis is not enabled
     let metrics = manager.metrics();
     assert!(
-        !metrics.redis_enabled,
+        !metrics.distributed_enabled,
         "Metrics should show Redis is not enabled in single-node mode"
     );
 }
@@ -437,7 +437,7 @@ async fn test_lazy_cluster_manager_creation() {
     // Verify it works
     let metrics = cm1.metrics();
     assert!(
-        !metrics.redis_enabled,
+        !metrics.distributed_enabled,
         "Local ClusterManager should not have Redis enabled"
     );
 }

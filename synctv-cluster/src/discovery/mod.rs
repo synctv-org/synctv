@@ -8,6 +8,9 @@ pub mod node_registry;
 pub mod runtime;
 pub mod static_discovery;
 
+use std::sync::Arc;
+use synctv_core::RedisCoordinationRuntime;
+
 pub use health_monitor::{HealthMonitor, NodeHealth};
 #[cfg(feature = "k8s")]
 pub use k8s_dns::K8sDnsDiscovery;
@@ -24,6 +27,18 @@ use tonic::transport::Endpoint;
 
 use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
 use crate::grpc::synctv::cluster::{self, GetNodesRequest};
+
+#[must_use]
+pub fn build_cluster_node_directory_factory(
+    runtime: Arc<dyn RedisCoordinationRuntime>,
+) -> Arc<dyn ClusterNodeDirectoryFactory> {
+    Arc::new(RedisClusterNodeDirectoryFactory::new(runtime))
+}
+
+#[must_use]
+pub fn build_local_cluster_node_directory_factory() -> Arc<dyn ClusterNodeDirectoryFactory> {
+    Arc::new(LocalClusterNodeDirectoryFactory)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbedNodeIdentity {

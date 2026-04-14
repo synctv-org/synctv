@@ -26,8 +26,6 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::cache::NoopCacheL2;
-#[cfg(test)]
 use crate::ManagedRedisRuntime;
 
 const WEAK_JWT_SECRETS: &[&str] = &[
@@ -228,11 +226,7 @@ fn build_migration_lock_from_runtime(
     deployment_mode: &crate::config::RedisDeploymentMode,
     shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
 ) -> Arc<dyn crate::service::MigrationLock> {
-    if matches!(
-        deployment_mode,
-        crate::config::RedisDeploymentMode::Sentinel
-    ) || shared_runtime.is_none()
-    {
+    if should_use_pg_advisory_migration_lock(deployment_mode, shared_runtime.is_some()) {
         return Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool));
     }
 
@@ -253,6 +247,16 @@ pub fn build_migration_lock(
         &config.redis.deployment_mode,
         shared_runtime,
     )
+}
+
+const fn should_use_pg_advisory_migration_lock(
+    deployment_mode: &crate::config::RedisDeploymentMode,
+    has_shared_runtime: bool,
+) -> bool {
+    matches!(
+        deployment_mode,
+        crate::config::RedisDeploymentMode::Sentinel
+    ) || !has_shared_runtime
 }
 
 fn handle_provider_invalidation_listener_result(
@@ -382,7 +386,7 @@ pub async fn init_services_with_options(
     // stale snapshot.
     let cache_l2: Arc<dyn CacheL2Backend> =
         build_l2_cache_backend_from_profile(&shared_state_profile);
-    info!("Cache L2 backend: {}", cache_l2.backend_name());
+    info!(l2_cache_enabled = cache_l2.is_active(), "Cache L2 initialized");
 
     // Initialize username cache (using config values)
     let username_cache_capacity = usize::try_from(config.cache.username_cache_capacity)
@@ -637,7 +641,7 @@ pub async fn init_services_with_options(
 
     let ws_ticket_service = build_ws_ticket_service(&shared_state_profile)?;
     info!(
-        backend = %ws_ticket_service.backend_name(),
+        cross_node_capable = ws_ticket_service.supports_cluster_runtime(),
         "WebSocket ticket service initialized"
     );
 
@@ -859,7 +863,10 @@ fn build_oauth_state_store(
 ) -> Result<Arc<dyn crate::service::OAuthStateStore>, anyhow::Error> {
     let store = crate::service::oauth2::state_store_from_shared_state_profile(profile)
         .map_err(anyhow::Error::from)?;
-    info!(backend = store.backend_name(), "OAuth2 state store initialized");
+    info!(
+        cross_node_single_use = store.supports_cross_node_single_use(),
+        "OAuth2 state store initialized"
+    );
     Ok(store)
 }
 
@@ -1157,12 +1164,8 @@ mod tests {
             "test-jwt-secret-key-for-refresh-limit-minimum-32-chars",
         )
         .expect("jwt service");
-        let username_cache = crate::cache::UsernameCache::new(
-            Arc::new(crate::cache::NoopCacheL2),
-            "test:username:".to_string(),
-            64,
-            60,
-        );
+        let username_cache =
+            crate::cache::UsernameCache::local_only("test:username:".to_string(), 64, 60);
         let mut user_service = UserService::new(
             pool,
             jwt_service,
@@ -1218,52 +1221,31 @@ mod tests {
         let service = build_ws_ticket_service(&profile)
             .expect("standalone mode should allow local WebSocket ticket storage");
 
-        assert_eq!(service.backend_name(), "memory");
+        assert!(!service.supports_cluster_runtime());
     }
 
-    #[tokio::test]
-    async fn test_build_migration_lock_uses_pg_advisory_without_shared_runtime() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-
-        let lock = build_migration_lock_from_runtime(
-            pool,
+    #[test]
+    fn test_build_migration_lock_uses_pg_advisory_without_shared_runtime() {
+        assert!(should_use_pg_advisory_migration_lock(
             &crate::config::RedisDeploymentMode::Standalone,
-            None,
-        );
-
-        assert_eq!(lock.backend_name(), "pg-advisory");
+            false,
+        ));
     }
 
-    #[tokio::test]
-    async fn test_build_migration_lock_uses_pg_advisory_in_sentinel_mode() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-
-        let lock = build_migration_lock_from_runtime(
-            pool,
+    #[test]
+    fn test_build_migration_lock_uses_pg_advisory_in_sentinel_mode() {
+        assert!(should_use_pg_advisory_migration_lock(
             &crate::config::RedisDeploymentMode::Sentinel,
-            Some(Arc::new(FakeRedisRuntime)),
-        );
-
-        assert_eq!(lock.backend_name(), "pg-advisory");
+            true,
+        ));
     }
 
-    #[tokio::test]
-    async fn test_build_migration_lock_uses_redis_backend_in_standalone_redis_mode() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-
-        let lock = build_migration_lock_from_runtime(
-            pool,
+    #[test]
+    fn test_build_migration_lock_uses_redis_backend_in_standalone_redis_mode() {
+        assert!(!should_use_pg_advisory_migration_lock(
             &crate::config::RedisDeploymentMode::Standalone,
-            Some(Arc::new(FakeRedisRuntime)),
-        );
-
-        assert_eq!(lock.backend_name(), "redis");
+            true,
+        ));
     }
 
     #[tokio::test]
@@ -1283,7 +1265,7 @@ mod tests {
         let service = build_ws_ticket_service(&profile)
             .expect("distributed ticket storage should be accepted");
 
-        assert_eq!(service.backend_name(), "redis");
+        assert!(service.supports_cluster_runtime());
     }
 
     #[test]
@@ -1346,8 +1328,7 @@ mod tests {
             60,
         )
         .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
@@ -1433,8 +1414,7 @@ mod tests {
             60,
         )
         .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
@@ -1517,8 +1497,7 @@ mod tests {
             60,
         )
         .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
@@ -1572,8 +1551,7 @@ mod tests {
             60,
         )
         .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
@@ -1624,8 +1602,7 @@ mod tests {
             60,
         )
         .expect("jwt service");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:user:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
@@ -1833,7 +1810,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_email_token_service_requires_email_service() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let limiter = RateLimiter::in_memory_only("test-email-token:".to_string());
+        let limiter = RateLimiter::local_only("test-email-token:".to_string());
 
         assert!(
             build_email_token_service(pool.clone(), false, &limiter).is_none(),

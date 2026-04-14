@@ -267,10 +267,9 @@ async fn test_cluster_mode_with_redis_succeeds() {
     let (_container, conn, prefix) = start_redis().await;
 
     let service = redis_ticket_service(conn, &prefix, Some(30));
-    assert_eq!(
-        service.backend_name(),
-        "redis",
-        "Cluster mode with Redis should use Redis backend"
+    assert!(
+        service.supports_cluster_runtime(),
+        "Cluster mode with Redis should use cross-node capable ticket storage"
     );
 }
 
@@ -313,7 +312,7 @@ async fn test_with_redis_creates_redis_backend() {
 
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    assert_eq!(service.backend_name(), "redis");
+    assert!(service.supports_cluster_runtime());
 }
 
 /// Test: simulate multi-replica scenario - ticket created on "replica A"

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         room_settings::RequireApproval, RoomSettings, SignupMethod, User, UserId, UserRole,
@@ -42,8 +42,7 @@ fn make_user(username: &str) -> User {
 
 fn make_user_service(pool: sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
-    let username_cache =
-        UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     UserService::new(
         pool,

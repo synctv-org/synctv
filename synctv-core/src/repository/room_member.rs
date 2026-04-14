@@ -49,6 +49,11 @@ impl RoomMemberRepository {
         Self { pool }
     }
 
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     fn build_room_member_order_by(query: &RoomMemberListQuery) -> String {
         let direction = query.sort_direction.as_sql();
         match query.sort_by {
@@ -1268,27 +1273,29 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Ban member from room
+    /// Ban member from room.
     ///
-    /// Only bans members that are not already banned (`status != Banned`),
-    /// preserving the original ban audit info (`banned_at`, `banned_by`, `banned_reason`).
+    /// This can ban both active members and historical non-banned member rows
+    /// (for example users who already left the room but still need to be blocked
+    /// from rejoining). Already-banned rows are left untouched to preserve the
+    /// existing audit fields.
     pub async fn ban_member(
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        banned_by: &UserId,
+        banned_by: Option<&UserId>,
         reason: Option<String>,
     ) -> Result<RoomMember> {
         let result = sqlx::query_as::<_, RoomMember>(
             "UPDATE room_members
              SET
                 status = $3,
-                left_at = CURRENT_TIMESTAMP,
+                left_at = COALESCE(left_at, CURRENT_TIMESTAMP),
                 banned_at = $4,
                 banned_by = $5,
                 banned_reason = $6,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND status != $3
+             WHERE room_id = $1 AND user_id = $2 AND status != $3
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -1300,7 +1307,7 @@ impl RoomMemberRepository {
         .bind(user_id.as_str())
         .bind(MemberStatus::Banned)
         .bind(chrono::Utc::now())
-        .bind(banned_by.as_str())
+        .bind(banned_by.map(UserId::as_str))
         .bind(reason)
         .fetch_optional(&self.pool)
         .await?;

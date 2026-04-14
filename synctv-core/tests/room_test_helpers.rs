@@ -8,7 +8,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
     service::{
@@ -25,8 +25,7 @@ pub fn make_user_service(pool: PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

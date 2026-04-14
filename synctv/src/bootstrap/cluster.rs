@@ -101,8 +101,6 @@ pub trait ClusterCoordinationProvider: Send + Sync {
     ) -> Arc<dyn synctv_cluster::ClusterMessageTransportFactory>;
 
     fn node_directory_factory(&self) -> Arc<dyn ClusterNodeDirectoryFactory>;
-
-    fn backend_name(&self) -> &'static str;
 }
 
 #[derive(Clone)]
@@ -121,10 +119,6 @@ impl ClusterCoordinationProvider for RedisClusterCoordinationProvider {
     fn node_directory_factory(&self) -> Arc<dyn ClusterNodeDirectoryFactory> {
         self.node_directory_factory.clone()
     }
-
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 #[must_use]
@@ -132,12 +126,10 @@ pub fn build_cluster_coordination_provider(
     runtime: Arc<dyn synctv_core::RedisCoordinationRuntime>,
 ) -> Arc<dyn ClusterCoordinationProvider> {
     Arc::new(RedisClusterCoordinationProvider {
-        distributed_transport_factory: Arc::new(
-            synctv_cluster::RedisClusterMessageTransportFactory::new(runtime.clone()),
+        distributed_transport_factory: synctv_cluster::build_cluster_message_transport_factory(
+            runtime.clone(),
         ),
-        node_directory_factory: Arc::new(
-            synctv_cluster::RedisClusterNodeDirectoryFactory::new(runtime),
-        ),
+        node_directory_factory: synctv_cluster::build_cluster_node_directory_factory(runtime),
     })
 }
 
@@ -456,9 +448,6 @@ mod tests {
             ))
         }
 
-        fn backend_name(&self) -> &'static str {
-            "counting-local"
-        }
     }
 
     #[tokio::test]

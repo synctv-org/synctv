@@ -336,7 +336,7 @@ mod permissions {
                 .expect("Redis connection manager"),
         ));
         let username_cache = UsernameCache::new(
-            Arc::new(RedisCacheL2::new_shared(redis_conn.clone())),
+            Arc::new(RedisCacheL2::from_runtime(synctv_core::shared_runtime(redis_conn.clone()))),
             format!("{redis_key_prefix}un:"),
             100,
             300,

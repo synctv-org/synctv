@@ -10,7 +10,88 @@ pub use synctv_cluster::sync::ConnectionRuntime as RealtimeConnectionService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RealtimeMetrics {
-    pub redis_enabled: bool,
+    pub distributed_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeDeliveryRequirement {
+    BestEffort,
+    AnyAvailablePath,
+    DistributedWhenAvailable,
+    DistributedIfAvailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealtimeDeliveryOutcome {
+    local_delivered: bool,
+    distributed_delivered: bool,
+    distributed_available: bool,
+}
+
+impl RealtimeDeliveryOutcome {
+    #[must_use]
+    pub const fn from_broadcast(result: &BroadcastResult, metrics: RealtimeMetrics) -> Self {
+        Self {
+            local_delivered: result.local_sent > 0,
+            distributed_delivered: result.redis_sent,
+            distributed_available: metrics.distributed_enabled,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_publish_only(
+        distributed_delivered: bool,
+        metrics: RealtimeMetrics,
+    ) -> Self {
+        Self {
+            local_delivered: false,
+            distributed_delivered,
+            distributed_available: metrics.distributed_enabled,
+        }
+    }
+
+    #[must_use]
+    pub const fn local_delivered(self) -> bool {
+        self.local_delivered
+    }
+
+    #[must_use]
+    pub const fn distributed_available(self) -> bool {
+        self.distributed_available
+    }
+
+    #[must_use]
+    pub const fn distributed_delivered(self) -> bool {
+        self.distributed_delivered
+    }
+
+    #[must_use]
+    pub const fn delivered_to_any(self) -> bool {
+        self.local_delivered || self.distributed_delivered
+    }
+
+    #[must_use]
+    pub const fn distributed_delivery_missed(self) -> bool {
+        self.distributed_available && !self.distributed_delivered
+    }
+
+    #[must_use]
+    pub const fn satisfies(self, requirement: RealtimeDeliveryRequirement) -> bool {
+        match requirement {
+            RealtimeDeliveryRequirement::BestEffort => true,
+            RealtimeDeliveryRequirement::AnyAvailablePath => self.delivered_to_any(),
+            RealtimeDeliveryRequirement::DistributedWhenAvailable => {
+                if self.distributed_available {
+                    self.distributed_delivered
+                } else {
+                    self.delivered_to_any()
+                }
+            }
+            RealtimeDeliveryRequirement::DistributedIfAvailable => {
+                !self.distributed_available || self.distributed_delivered
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -33,6 +114,23 @@ pub trait RealtimeEventService: Send + Sync {
     fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent>;
 
     fn metrics(&self) -> RealtimeMetrics;
+
+    fn broadcast_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+        let result = self.broadcast(event);
+        RealtimeDeliveryOutcome::from_broadcast(&result, self.metrics())
+    }
+
+    fn publish_only_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+        RealtimeDeliveryOutcome::from_publish_only(self.publish_only(event), self.metrics())
+    }
+
+    fn retry_broadcast_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+        if self.metrics().distributed_enabled {
+            self.publish_only_outcome(event)
+        } else {
+            self.broadcast_outcome(event)
+        }
+    }
 
     fn node_id(&self) -> &str;
 
@@ -85,7 +183,7 @@ impl RealtimeEventService for ClusterManager {
     fn metrics(&self) -> RealtimeMetrics {
         let metrics = ClusterManager::metrics(self);
         RealtimeMetrics {
-            redis_enabled: metrics.redis_enabled,
+            distributed_enabled: metrics.distributed_enabled,
         }
     }
 
@@ -158,12 +256,14 @@ impl RealtimeEventService for ClusterRealtimeEventService {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
+        ClusterRealtimeEventService, RealtimeConnectionService, RealtimeDeliveryOutcome,
+        RealtimeDeliveryRequirement, RealtimeEventService,
     };
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterEvent, ClusterManager, ConnectionLimits, ConnectionManager,
+        BroadcastResult, ClusterConfig, ClusterEvent, ClusterManager, ConnectionLimits,
+        ConnectionManager,
     };
     use synctv_core::models::{RoomId, UserId};
 
@@ -227,7 +327,7 @@ mod tests {
 
         assert_eq!(event_service.broadcast_local(&room_id(), &event), 1);
         assert!(matches!(room_rx.recv().await, Some(ClusterEvent::ChatMessage { .. })));
-        assert!(!event_service.metrics().redis_enabled);
+        assert!(!event_service.metrics().distributed_enabled);
 
         cluster_manager.shutdown().await;
     }
@@ -265,5 +365,35 @@ mod tests {
         );
 
         connection_service.shutdown().await;
+    }
+
+    #[test]
+    fn test_publish_only_delivery_requirement_allows_standalone_without_distributed_backend() {
+        let metrics = super::RealtimeMetrics {
+            distributed_enabled: false,
+        };
+
+        let outcome = RealtimeDeliveryOutcome::from_publish_only(false, metrics);
+
+        assert!(outcome.satisfies(RealtimeDeliveryRequirement::DistributedIfAvailable));
+        assert!(!outcome.satisfies(RealtimeDeliveryRequirement::AnyAvailablePath));
+    }
+
+    #[test]
+    fn test_broadcast_delivery_requirement_prefers_distributed_when_available() {
+        let metrics = super::RealtimeMetrics {
+            distributed_enabled: true,
+        };
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &BroadcastResult {
+                local_sent: 3,
+                redis_sent: false,
+            },
+            metrics,
+        );
+
+        assert!(!outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
+        assert!(outcome.satisfies(RealtimeDeliveryRequirement::AnyAvailablePath));
+        assert!(outcome.distributed_delivery_missed());
     }
 }

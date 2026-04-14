@@ -33,7 +33,7 @@ fn email_addr_key(email: &str) -> String {
 
 #[tokio::test]
 async fn test_email_ip_rate_limit_allows_up_to_limit() {
-    let limiter = RateLimiter::in_memory_only("test_email_ip:".to_string());
+    let limiter = RateLimiter::local_only("test_email_ip:".to_string());
     let key = email_ip_key("192.168.1.100");
 
     for i in 0..EMAIL_IP_MAX_REQUESTS {
@@ -46,7 +46,7 @@ async fn test_email_ip_rate_limit_allows_up_to_limit() {
 
 #[tokio::test]
 async fn test_email_ip_rate_limit_blocks_after_limit() {
-    let limiter = RateLimiter::in_memory_only("test_email_ip_block:".to_string());
+    let limiter = RateLimiter::local_only("test_email_ip_block:".to_string());
     let key = email_ip_key("192.168.1.101");
 
     // Exhaust the limit
@@ -69,7 +69,7 @@ async fn test_email_ip_rate_limit_blocks_after_limit() {
 
 #[tokio::test]
 async fn test_email_ip_rate_limit_different_ips_independent() {
-    let limiter = RateLimiter::in_memory_only("test_email_ip_indep:".to_string());
+    let limiter = RateLimiter::local_only("test_email_ip_indep:".to_string());
     let key_ip1 = email_ip_key("10.0.0.1");
     let key_ip2 = email_ip_key("10.0.0.2");
 
@@ -106,7 +106,7 @@ async fn test_email_ip_rate_limit_different_ips_independent() {
 
 #[tokio::test]
 async fn test_email_addr_rate_limit_allows_up_to_limit() {
-    let limiter = RateLimiter::in_memory_only("test_email_addr:".to_string());
+    let limiter = RateLimiter::local_only("test_email_addr:".to_string());
     let key = email_addr_key("user@example.com");
 
     for i in 0..EMAIL_ADDR_MAX_REQUESTS {
@@ -119,7 +119,7 @@ async fn test_email_addr_rate_limit_allows_up_to_limit() {
 
 #[tokio::test]
 async fn test_email_addr_rate_limit_blocks_after_limit() {
-    let limiter = RateLimiter::in_memory_only("test_email_addr_block:".to_string());
+    let limiter = RateLimiter::local_only("test_email_addr_block:".to_string());
     let key = email_addr_key("user@example.com");
 
     // Exhaust the limit (3 per hour)
@@ -142,7 +142,7 @@ async fn test_email_addr_rate_limit_blocks_after_limit() {
 
 #[tokio::test]
 async fn test_email_addr_rate_limit_different_emails_independent() {
-    let limiter = RateLimiter::in_memory_only("test_email_addr_indep:".to_string());
+    let limiter = RateLimiter::local_only("test_email_addr_indep:".to_string());
     let key1 = email_addr_key("alice@example.com");
     let key2 = email_addr_key("bob@example.com");
 
@@ -179,7 +179,7 @@ async fn test_email_addr_rate_limit_different_emails_independent() {
 
 #[tokio::test]
 async fn test_email_different_emails_from_same_ip_hit_ip_limit() {
-    let limiter = RateLimiter::in_memory_only("test_email_combined:".to_string());
+    let limiter = RateLimiter::local_only("test_email_combined:".to_string());
     let ip = "10.0.0.50";
     let ip_key = email_ip_key(ip);
 
@@ -230,7 +230,7 @@ async fn test_email_different_emails_from_same_ip_hit_ip_limit() {
 
 #[tokio::test]
 async fn test_email_rate_limit_error_contains_retry_after() {
-    let limiter = RateLimiter::in_memory_only("test_email_retry:".to_string());
+    let limiter = RateLimiter::local_only("test_email_retry:".to_string());
     let key = email_addr_key("test@example.com");
 
     // Exhaust the limit
@@ -261,7 +261,7 @@ async fn test_email_rate_limit_error_contains_retry_after() {
 #[tokio::test]
 async fn test_email_rate_limit_keys_are_case_normalized() {
     // Email addresses should be lowercased for rate limiting to prevent bypasses
-    let limiter = RateLimiter::in_memory_only("test_email_case:".to_string());
+    let limiter = RateLimiter::local_only("test_email_case:".to_string());
 
     // Simulate what the handler does: lowercase the email before building the key
     let email_upper = "User@Example.COM";

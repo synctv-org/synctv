@@ -328,7 +328,7 @@ mod tests {
         use crate::service::rate_limit::RateLimiter;
 
         // Create rate limiter with in-memory backend
-        let limiter = RateLimiter::in_memory_only("email_token_test:".to_string());
+        let limiter = RateLimiter::local_only("email_token_test:".to_string());
 
         // Create service with aggressive rate limiting for testing
         let config = EmailTokenRateLimitConfig {

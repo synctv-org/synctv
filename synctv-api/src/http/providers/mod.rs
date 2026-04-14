@@ -260,7 +260,7 @@ mod tests {
     use bytes::Bytes;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::{RoomStatus, SignupMethod, UserStatus};
     use synctv_core::provider::error::ProviderError;
@@ -447,8 +447,7 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             synctv_core::service::JwtService::new(
@@ -483,8 +482,7 @@ mod tests {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -517,11 +515,8 @@ mod tests {
             chat_service: None,
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                None,
-            )),
+            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
@@ -567,8 +562,7 @@ mod tests {
     }
 
     fn make_proxy_test_state(pool: sqlx::PgPool) -> AppState {
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service = synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
@@ -600,8 +594,7 @@ mod tests {
                 config: Arc::new(synctv_core::Config::default()),
                 user_service,
                 user_cache: Arc::new(
-                    synctv_core::cache::UserCache::new(
-                        Arc::new(synctv_core::cache::NoopCacheL2),
+                    synctv_core::cache::UserCache::local_only(
                         128,
                         60,
                         300,
@@ -634,11 +627,8 @@ mod tests {
                 chat_service: None,
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
-                rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                    Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                    None,
-                )),
+                rate_limiter: RateLimiter::local_only("test:".to_string()),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
                 redis_runtime: None,
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,

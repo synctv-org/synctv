@@ -15,7 +15,7 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{Playlist, RoomPlaybackState, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
@@ -29,8 +29,7 @@ use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

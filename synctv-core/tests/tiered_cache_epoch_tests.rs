@@ -137,10 +137,6 @@ impl CacheL2Backend for DelayedL2 {
     fn is_active(&self) -> bool {
         true
     }
-
-    fn backend_name(&self) -> &'static str {
-        "delayed_mock"
-    }
 }
 
 #[tokio::test]

@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         MediaId, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
@@ -59,8 +59,7 @@ fn create_jwt_service() -> JwtService {
 
 fn create_user_service(pool: sqlx::PgPool) -> UserService {
     let jwt_service = create_jwt_service();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

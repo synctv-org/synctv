@@ -669,7 +669,6 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TieredCache")
             .field("cache_type", &self.cache_type)
-            .field("l2_backend", &self.l2.backend_name())
             .field("l2_active", &self.l2.is_active())
             .field("l2_ttl_seconds", &self.l2_ttl_seconds)
             .field("key_prefix", &self.key_prefix)

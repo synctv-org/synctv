@@ -581,7 +581,12 @@ async fn test_list_by_room_paginated_excludes_banned_members() {
     // Ban these members
     for user in &banned_users {
         member_repo
-            .ban_member(&room.id, &user.id, &owner.id, Some("test ban".to_string()))
+            .ban_member(
+                &room.id,
+                &user.id,
+                Some(&owner.id),
+                Some("test ban".to_string()),
+            )
             .await
             .unwrap();
     }

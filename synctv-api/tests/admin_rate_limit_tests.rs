@@ -33,7 +33,7 @@ fn admin_anon_key(ip: &str) -> String {
 
 #[tokio::test]
 async fn test_admin_rate_limit_allows_up_to_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_basic:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_basic:".to_string());
     let key = admin_user_key("admin_user_001");
 
     for i in 0..ADMIN_MAX_REQUESTS {
@@ -46,7 +46,7 @@ async fn test_admin_rate_limit_allows_up_to_limit() {
 
 #[tokio::test]
 async fn test_admin_rate_limit_blocks_after_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_block:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_block:".to_string());
     let key = admin_user_key("admin_user_002");
 
     // Exhaust the limit
@@ -69,7 +69,7 @@ async fn test_admin_rate_limit_blocks_after_limit() {
 
 #[tokio::test]
 async fn test_admin_rate_limit_different_users_independent() {
-    let limiter = RateLimiter::in_memory_only("test_admin_indep:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_indep:".to_string());
     let key_admin1 = admin_user_key("admin_alice");
     let key_admin2 = admin_user_key("admin_bob");
 
@@ -106,7 +106,7 @@ async fn test_admin_rate_limit_different_users_independent() {
 
 #[tokio::test]
 async fn test_admin_anonymous_rate_limit_allows_up_to_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_anon:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_anon:".to_string());
     let key = admin_anon_key("192.168.1.100");
 
     for i in 0..ADMIN_MAX_REQUESTS {
@@ -119,7 +119,7 @@ async fn test_admin_anonymous_rate_limit_allows_up_to_limit() {
 
 #[tokio::test]
 async fn test_admin_anonymous_rate_limit_blocks_after_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_anon_block:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_anon_block:".to_string());
     let key = admin_anon_key("192.168.1.101");
 
     // Exhaust the limit
@@ -142,7 +142,7 @@ async fn test_admin_anonymous_rate_limit_blocks_after_limit() {
 
 #[tokio::test]
 async fn test_admin_anonymous_different_ips_independent() {
-    let limiter = RateLimiter::in_memory_only("test_admin_anon_indep:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_anon_indep:".to_string());
     let key_ip1 = admin_anon_key("10.0.0.1");
     let key_ip2 = admin_anon_key("10.0.0.2");
 
@@ -179,7 +179,7 @@ async fn test_admin_anonymous_different_ips_independent() {
 
 #[tokio::test]
 async fn test_admin_rate_limit_error_contains_retry_after() {
-    let limiter = RateLimiter::in_memory_only("test_admin_retry:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_retry:".to_string());
     let key = admin_user_key("admin_test_001");
 
     // Exhaust the limit
@@ -221,7 +221,7 @@ async fn test_admin_rate_limit_category_wide() {
     // The middleware uses "ratelimit:admin:{user/ip}" as the key,
     // which means ALL admin endpoints share the same bucket.
     // This test verifies that behavior.
-    let limiter = RateLimiter::in_memory_only("test_admin_category:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_category:".to_string());
     let key = admin_user_key("admin_shared_bucket");
 
     // Simulate requests to different admin endpoints (delete room, ban user, settings)
@@ -250,7 +250,7 @@ async fn test_admin_rate_limit_category_wide() {
 #[tokio::test]
 async fn test_admin_rate_limit_isolated_from_auth() {
     // Admin rate limit should be independent from auth rate limit
-    let limiter = RateLimiter::in_memory_only("test_admin_vs_auth:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_vs_auth:".to_string());
     let admin_key = admin_user_key("admin_user_003");
     let auth_key = "ratelimit:auth:user:admin_user_003".to_string();
 
@@ -281,7 +281,7 @@ async fn test_admin_rate_limit_isolated_from_auth() {
 #[tokio::test]
 async fn test_admin_rate_limit_isolated_from_write() {
     // Admin rate limit should be independent from write rate limit
-    let limiter = RateLimiter::in_memory_only("test_admin_vs_write:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_vs_write:".to_string());
     let admin_key = admin_user_key("admin_user_004");
     let write_key = "ratelimit:write:user:admin_user_004".to_string();
 
@@ -316,7 +316,7 @@ async fn test_admin_rate_limit_isolated_from_write() {
 #[tokio::test]
 async fn test_admin_rate_limit_prevents_burst() {
     // Simulate a burst of 50 requests - only 30 should succeed
-    let limiter = RateLimiter::in_memory_only("test_admin_burst:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_burst:".to_string());
     let key = admin_user_key("admin_burster");
 
     let mut successes = 0;
@@ -348,7 +348,7 @@ async fn test_admin_rate_limit_prevents_burst() {
 async fn test_admin_rate_limit_returns_429_equivalent() {
     // This test verifies that the rate limit error can be converted
     // to an HTTP 429 response (simulation without full axum integration)
-    let limiter = RateLimiter::in_memory_only("test_admin_429:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_429:".to_string());
     let key = admin_user_key("admin_429_test");
 
     // Exhaust the limit
@@ -401,7 +401,7 @@ async fn test_admin_rate_limit_returns_429_equivalent() {
 /// Simulates rate limiting for DELETE /api/admin/rooms/{id}
 #[tokio::test]
 async fn test_admin_delete_room_rate_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_delete_room:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_delete_room:".to_string());
     let key = admin_user_key("admin_room_deleter");
 
     // Simulate multiple room deletion attempts
@@ -425,7 +425,7 @@ async fn test_admin_delete_room_rate_limit() {
 /// Simulates rate limiting for POST /api/admin/users/{id}/ban
 #[tokio::test]
 async fn test_admin_ban_user_rate_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_ban_user:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_ban_user:".to_string());
     let key = admin_user_key("admin_user_banner");
 
     // Simulate multiple ban attempts
@@ -449,7 +449,7 @@ async fn test_admin_ban_user_rate_limit() {
 /// Simulates rate limiting for PUT /api/admin/settings (via POST)
 #[tokio::test]
 async fn test_admin_settings_rate_limit() {
-    let limiter = RateLimiter::in_memory_only("test_admin_settings:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_settings:".to_string());
     let key = admin_user_key("admin_settings_changer");
 
     // Simulate multiple settings change attempts
@@ -477,7 +477,7 @@ async fn test_admin_settings_rate_limit() {
 #[tokio::test]
 async fn test_admin_rate_limit_mitigates_dos_attack() {
     // Simulate a DoS attack scenario: 1000 rapid requests
-    let limiter = RateLimiter::in_memory_only("test_admin_dos:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_dos:".to_string());
     let attacker_key = admin_user_key("attacker");
 
     let mut blocked_count = 0;
@@ -511,7 +511,7 @@ async fn test_admin_rate_limit_mitigates_dos_attack() {
 #[tokio::test]
 async fn test_admin_rate_limit_protpects_other_users_during_dos() {
     // Verify that DoS attack by one user doesn't affect other users
-    let limiter = RateLimiter::in_memory_only("test_admin_dos_isolation:".to_string());
+    let limiter = RateLimiter::local_only("test_admin_dos_isolation:".to_string());
     let attacker_key = admin_user_key("attacker");
     let victim_key = admin_user_key("victim");
 

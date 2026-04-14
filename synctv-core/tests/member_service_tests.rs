@@ -11,7 +11,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         room_settings::MaxMembers, MemberStatus, PermissionBits, RoomRole, User, UserId, UserRole,
@@ -49,8 +49,7 @@ impl MemberEventBroadcaster for TimingMockBroadcaster {
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -468,6 +467,66 @@ async fn test_unban_clears_status() {
         member.banned_at.is_none(),
         "banned_at should be cleared after unban"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_ban_member_can_ban_departed_member() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("admin_ban_departed_creator"))
+        .await
+        .unwrap();
+    let target = user_repo
+        .create(&make_user("admin_ban_departed_target"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Admin Ban Departed Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+    room_service
+        .leave_room(room.id.clone(), target.id.clone())
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .admin_ban_member(
+            room.id.clone(),
+            creator.id.clone(),
+            &creator.username,
+            target.id.clone(),
+            Some(creator.id.clone()),
+            Some("prevent rejoin".to_string()),
+        )
+        .await
+        .expect("admin ban should also work for departed historical memberships");
+
+    let persisted = member_repo
+        .get_any(&room.id, &target.id)
+        .await
+        .unwrap()
+        .expect("departed member row should still exist");
+    assert_eq!(persisted.status, MemberStatus::Banned);
+    assert_eq!(persisted.banned_by.as_ref(), Some(&creator.id));
+    assert_eq!(persisted.banned_reason.as_deref(), Some("prevent rejoin"));
 }
 
 #[tokio::test]

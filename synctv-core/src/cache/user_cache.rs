@@ -160,6 +160,22 @@ impl UserCache {
         Ok(Self { inner })
     }
 
+    /// Create a user cache for local-only operation without shared L2 state.
+    pub fn local_only(
+        l1_max_capacity: u64,
+        l1_ttl_seconds: u64,
+        l2_ttl_seconds: u64,
+        key_prefix: String,
+    ) -> Result<Self> {
+        Self::new(
+            crate::cache::local_l2_cache_backend(),
+            l1_max_capacity,
+            l1_ttl_seconds,
+            l2_ttl_seconds,
+            key_prefix,
+        )
+    }
+
     /// Get user data from cache
     ///
     /// Checks L1 first, then L2. Returns None if not found in either cache.

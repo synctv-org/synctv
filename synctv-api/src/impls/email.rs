@@ -441,7 +441,7 @@ mod tests {
         GENERIC_EMAIL_LOGIN_MESSAGE, GENERIC_PASSWORD_RESET_MESSAGE,
     };
     use std::sync::Arc;
-    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::service::{
         auth::BruteForceProtection, EmailService, EmailTokenService, InMemoryTokenBlacklistStore,
@@ -469,8 +469,7 @@ mod tests {
     }
 
     fn build_test_email_api(pool: sqlx::PgPool) -> EmailApiImpl {
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service =
             JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
         let user_service = Arc::new(UserService::new(
@@ -487,7 +486,7 @@ mod tests {
             user_service,
             Arc::new(EmailService::new(None).unwrap()),
             Arc::new(EmailTokenService::new(pool)),
-            RateLimiter::in_memory_only("email-api-tests:".to_string()),
+            RateLimiter::local_only("email-api-tests:".to_string()),
         )
     }
 

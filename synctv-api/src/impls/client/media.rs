@@ -229,7 +229,7 @@ pub(crate) fn build_add_media_request(
 
 pub(crate) fn build_delete_entries_request(
     req: crate::proto::client::DeleteEntriesRequest,
-) -> Result<(CoreDeleteEntriesRequest, Vec<String>), ApiError> {
+) -> Result<(CoreDeleteEntriesRequest, Vec<String>, Vec<String>), ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::DeleteEntriesRequest {
         playlist_ids,
@@ -237,6 +237,7 @@ pub(crate) fn build_delete_entries_request(
         force,
     } = req;
     let media_id_strings = media_ids.clone();
+    let playlist_id_strings = playlist_ids.clone();
     Ok((
         CoreDeleteEntriesRequest {
             playlist_ids: crate::impls::proto_validated_playlist_ids(playlist_ids),
@@ -244,6 +245,7 @@ pub(crate) fn build_delete_entries_request(
             force,
         },
         media_id_strings,
+        playlist_id_strings,
     ))
 }
 
@@ -314,24 +316,6 @@ pub(crate) fn build_edit_media_request(
 }
 
 impl ClientApiImpl {
-    async fn reserve_media_cluster_events(
-        &self,
-        count: usize,
-        failure_message: &'static str,
-    ) -> Result<Vec<crate::impls::ClusterEventPublishReservation>, ApiError> {
-        let mut reservations = Vec::with_capacity(count);
-        for _ in 0..count {
-            if let Some(reservation) = self
-                .cluster_fanout
-                .reserve(failure_message)
-                .await?
-            {
-                reservations.push(reservation);
-            }
-        }
-        Ok(reservations)
-    }
-
     pub async fn add_media(
         &self,
         user_id: &str,
@@ -342,9 +326,7 @@ impl ClientApiImpl {
         let rid = Self::parse_room_id(room_id)?;
         let service_req = build_add_media_request(req)?;
         let playlist_id = service_req.playlist_id.clone();
-        let mut cluster_events = self
-            .reserve_media_cluster_events(1, "failed to fan out MediaAdded to cluster replicas")
-            .await?;
+        let mut cluster_events = self.media_fanout.reserve_added(1).await?;
 
         // Check total playlist size limit before adding
         let existing_count = if let Some(ref playlist_id) = playlist_id {
@@ -383,17 +365,14 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::MediaAdded {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid,
-                    user_id: uid,
-                    username,
-                    media_id: media.id.clone(),
-                    media_title: media.name.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-            });
+            self.media_fanout.publish_added(
+                cluster_event,
+                &rid,
+                &uid,
+                &username,
+                &media.id,
+                &media.name,
+            );
         }
 
         Ok(crate::proto::client::AddMediaResponse {
@@ -422,22 +401,39 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeleteEntriesResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let (service_req, media_id_strings) = build_delete_entries_request(req)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
-        let cluster_events = self
-            .reserve_media_cluster_events(
-                media_id_strings.len(),
-                "failed to fan out MediaRemoved to cluster replicas",
-            )
-            .await?;
-
-        let result = self
+        let (service_req, _explicit_media_ids, _explicit_playlist_ids) =
+            build_delete_entries_request(req)?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
+        let (result, (cluster_events, playlist_cluster_events)) = self
             .room_service
-            .delete_entries(rid.clone(), uid.clone(), service_req)
+            .delete_entries_with_precommit(rid.clone(), uid.clone(), service_req, |plan| async move {
+                let cluster_events = self
+                    .media_fanout
+                    .reserve_removed(plan.deleted_media_ids.len())
+                    .await
+                    .map_err(|error| {
+                        synctv_core::Error::ServiceUnavailable(error.message().to_string())
+                    })?;
+                let mut playlist_cluster_events =
+                    Vec::with_capacity(plan.deleted_playlist_ids.len());
+                for _ in &plan.deleted_playlist_ids {
+                    playlist_cluster_events.push(
+                        self.playlist_fanout
+                            .reserve_deleted()
+                            .await
+                            .map_err(|error| {
+                                synctv_core::Error::ServiceUnavailable(
+                                    error.message().to_string(),
+                                )
+                            })?,
+                    );
+                }
+                Ok((cluster_events, playlist_cluster_events))
+            })
             .await
             .map_err(ApiError::from)?;
 
-        if !cluster_events.is_empty() {
+        if !cluster_events.is_empty() || !playlist_cluster_events.is_empty() {
             let username = self
                 .user_service
                 .get_user(&uid)
@@ -445,26 +441,37 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            for (media_id, cluster_event) in media_id_strings.iter().zip(cluster_events) {
-                cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid.clone(),
-                        username: username.clone(),
-                        media_id: crate::impls::proto_validated_media_id(media_id.clone()),
-                        timestamp: chrono::Utc::now(),
-                    },
-                });
+            for (media_id, cluster_event) in result.deleted_media_ids.iter().zip(cluster_events) {
+                self.media_fanout.publish_removed(
+                    cluster_event,
+                    &rid,
+                    &uid,
+                    &username,
+                    media_id,
+                );
+            }
+
+            for (playlist_id, cluster_event) in
+                result.deleted_playlist_ids.iter().zip(playlist_cluster_events)
+            {
+                self.playlist_fanout.publish_deleted(
+                    cluster_event,
+                    &rid,
+                    &uid,
+                    &username,
+                    playlist_id,
+                );
             }
         }
 
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
-        for media_id in &media_id_strings {
-            self.kick_stream_cluster(room_id, media_id, "media_deleted")
+        for media_id in &result.deleted_media_ids {
+            self.realtime_lifecycle
+                .kick_stream(room_id, media_id.as_str(), "media_deleted")
                 .await;
         }
 
@@ -484,10 +491,8 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let service_req = build_edit_media_request(req)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
-        let mut cluster_events = self
-            .reserve_media_cluster_events(1, "failed to fan out MediaUpdated to cluster replicas")
-            .await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
+        let mut cluster_events = self.media_fanout.reserve_updated(1).await?;
 
         let media = self
             .room_service
@@ -507,22 +512,20 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::MediaUpdated {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid.clone(),
-                    user_id: uid.clone(),
-                    username,
-                    media_id: media.id.clone(),
-                    media_title: media.name.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-            });
+            self.media_fanout.publish_updated(
+                cluster_event,
+                &rid,
+                &uid,
+                &username,
+                &media.id,
+                &media.name,
+            );
         }
 
         // Invalidate room cache on other replicas so they see updated metadata
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         Ok(crate::proto::client::EditMediaResponse {
@@ -538,13 +541,8 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
-        let mut cluster_events = self
-            .reserve_media_cluster_events(
-                1,
-                "failed to fan out MediaRemovedBatch to cluster replicas",
-            )
-            .await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
+        let cluster_event = self.media_fanout.reserve_removed_batch().await?;
 
         // Check permission
         self.room_service
@@ -565,28 +563,24 @@ impl ClientApiImpl {
         // Broadcast a single MediaRemovedBatch event instead of N individual events.
         // This reduces Redis pub/sub traffic from O(n) to O(1) messages.
         if !result.deleted_media_ids.is_empty() {
-            if let Some(cluster_event) = cluster_events.pop() {
-                let username = self
-                    .user_service
-                    .get_user(&uid)
-                    .await
-                    .map(|u| u.username)
-                    .unwrap_or_default();
-                cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid.clone(),
-                        username,
-                        media_ids: result.deleted_media_ids.clone(),
-                        timestamp: chrono::Utc::now(),
-                    },
-                });
-            }
+            let username = self
+                .user_service
+                .get_user(&uid)
+                .await
+                .map(|u| u.username)
+                .unwrap_or_default();
+            self.media_fanout.publish_removed_batch(
+                cluster_event,
+                &rid,
+                &uid,
+                &username,
+                result.deleted_media_ids.clone(),
+            );
         }
 
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         Ok(crate::proto::client::ClearPlaylistResponse {
@@ -611,12 +605,7 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let AddMediaBatchBuildResult { items, playlist_id } = build_add_media_batch_request(req)?;
-        let cluster_events = self
-            .reserve_media_cluster_events(
-                items.len(),
-                "failed to fan out MediaAdded to cluster replicas",
-            )
-            .await?;
+        let cluster_events = self.media_fanout.reserve_added(items.len()).await?;
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
@@ -664,17 +653,14 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
             for (media, cluster_event) in media_list.iter().zip(cluster_events) {
-                cluster_event.publish(synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaAdded {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid.clone(),
-                        username: username.clone(),
-                        media_id: media.id.clone(),
-                        media_title: media.name.clone(),
-                        timestamp: chrono::Utc::now(),
-                    },
-                });
+                self.media_fanout.publish_added(
+                    cluster_event,
+                    &rid,
+                    &uid,
+                    &username,
+                    &media.id,
+                    &media.name,
+                );
             }
         }
 
@@ -706,7 +692,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(Self::map_room_access_error)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let media = self
             .room_service
@@ -716,7 +702,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         Ok(crate::proto::client::MoveMediaResponse {
@@ -1333,7 +1320,7 @@ mod tests {
     fn test_build_delete_entries_request_parses_ids() {
         let playlist_id = synctv_common::snanoid!(12);
         let media_id = synctv_common::snanoid!(12);
-        let (request, media_id_strings) =
+        let (request, media_id_strings, playlist_id_strings) =
             build_delete_entries_request(crate::proto::client::DeleteEntriesRequest {
                 playlist_ids: vec![playlist_id.clone()],
                 media_ids: vec![media_id.clone()],
@@ -1347,6 +1334,7 @@ mod tests {
         assert_eq!(request.media_ids[0].as_str(), media_id);
         assert!(request.force);
         assert_eq!(media_id_strings, vec![media_id]);
+        assert_eq!(playlist_id_strings, vec![playlist_id]);
     }
 
     #[test]

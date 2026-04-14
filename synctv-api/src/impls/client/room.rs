@@ -355,10 +355,7 @@ impl ClientApiImpl {
             validate_password_for_set(&req.password)?;
             Some(req.password)
         };
-        let cluster_event = self
-            .cluster_fanout
-            .reserve("failed to fan out RoomCreated to cluster replicas")
-            .await?;
+        let cluster_event = self.room_lifecycle_fanout.reserve_room_created().await?;
 
         let (room, _member) = self
             .room_service
@@ -366,17 +363,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        self.cluster_fanout.publish(
+        self.room_lifecycle_fanout.publish_room_created(
             cluster_event,
-            synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::RoomCreated {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room.id.clone(),
-                    room_name: room.name.clone(),
-                    creator_id: uid,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
+            &room.id,
+            &room.name,
+            &uid,
         );
 
         let member_count = self
@@ -535,16 +526,9 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
 
-        // Resolve username for the UserLeft event before performing the leave
-        let username = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
         let cluster_event = self
-            .cluster_fanout
-            .reserve("failed to fan out UserLeft to cluster replicas")
+            .membership_event_fanout
+            .reserve_user_left()
             .await?;
 
         self.room_service
@@ -552,22 +536,19 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Force disconnect the user's connections from this room (local)
-        self.connection_service
-            .disconnect_user_from_room(&uid, &rid);
+        // Force disconnect the user's room-scoped connections and any local
+        // publishers tied to the room they just left.
+        self.realtime_lifecycle
+            .disconnect_user_from_room(&rid, &uid)
+            .await;
 
-        self.cluster_fanout.publish(
-            cluster_event,
-            synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::UserLeft {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid,
-                    user_id: uid,
-                    username,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
+        self.membership_event_fanout
+            .publish_user_left(
+                &rid,
+                &uid,
+                cluster_event,
+            )
+            .await?;
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
     }
@@ -579,10 +560,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let cluster_event = self
-            .cluster_fanout
-            .reserve("failed to fan out RoomDeleted to cluster replicas")
-            .await?;
+        let cluster_event = self.room_lifecycle_fanout.reserve_room_deleted().await?;
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
@@ -591,20 +569,13 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        self.cluster_fanout.publish(
-            cluster_event,
-            synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: rid.clone(),
-                    deleted_by: uid,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
+        self.room_lifecycle_fanout
+            .publish_room_deleted(cluster_event, &rid, &uid);
 
-        // 3. Force disconnect all local connections in the deleted room
-        self.connection_service.disconnect_room(&rid);
+        // Force disconnect room members and any active publishers tied to this room.
+        self.realtime_lifecycle
+            .disconnect_room(&rid, "room_deleted")
+            .await;
 
         Ok(crate::proto::client::DeleteRoomResponse { success: true })
     }
@@ -629,7 +600,7 @@ impl ClientApiImpl {
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
         let room_settings_fanout = self
             .room_settings_fanout
-            .reserve_settings_changed(self.cluster_fanout.as_ref())
+            .reserve_settings_changed()
             .await?;
         self.room_service
             .set_settings(rid.clone(), uid.clone(), settings)
@@ -708,7 +679,7 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::Internal(format!("Failed to hash password: {e}")))?;
             Some(hash)
         };
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         self.room_service
             .update_room_password(&rid, password_hash)
@@ -717,7 +688,8 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas so password check uses fresh data
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
@@ -766,7 +738,7 @@ impl ClientApiImpl {
         let rid = Self::parse_room_id(room_id)?;
         let room_settings_fanout = self
             .room_settings_fanout
-            .reserve_settings_changed(self.cluster_fanout.as_ref())
+            .reserve_settings_changed()
             .await?;
         let settings_json = self
             .room_service

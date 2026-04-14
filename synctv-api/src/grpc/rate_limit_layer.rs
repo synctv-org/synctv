@@ -1218,7 +1218,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::in_memory_only("cluster-grpc:".to_string()),
+            RateLimiter::local_only("cluster-grpc:".to_string()),
             Arc::new(config),
             jwt_validator,
         );
@@ -1235,7 +1235,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::in_memory_only("standalone-grpc:".to_string()),
+            RateLimiter::local_only("standalone-grpc:".to_string()),
             Arc::new(config),
             jwt_validator,
         );
@@ -1297,10 +1297,6 @@ mod tests {
 
         async fn health_check(&self) -> Result<(), String> {
             Ok(())
-        }
-
-        fn backend_name(&self) -> &'static str {
-            "stub"
         }
     }
 
@@ -1373,7 +1369,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::in_memory_only("grpc-streaming-test:".to_string()),
+            RateLimiter::local_only("grpc-streaming-test:".to_string()),
             Arc::new(test_config()),
             jwt_validator,
         );

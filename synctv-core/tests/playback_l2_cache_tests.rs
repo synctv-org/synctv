@@ -16,7 +16,7 @@ use redis::AsyncCommands;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{
-        CacheL2Backend, KeyBuilder, NoopCacheL2, PlaybackStateCache, RedisCacheL2, UsernameCache,
+        CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache,
     },
     config::PasswordComplexityConfig,
     models::{RoomId, User, UserId, UserRole, UserStatus},
@@ -42,8 +42,7 @@ async fn start_redis() -> (
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -178,7 +177,7 @@ async fn test_playback_state_l1_miss_hits_l2() {
 
     // After implementation: manually populate L2 to verify it's checked
     // For now, we verify the basic flow works
-    let l2 = RedisCacheL2::new(redis_conn);
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
     let l2_key = format!("synctv:playback:{}", room.id.as_str());
 
     // Manually set in L2 to simulate it being there
@@ -350,7 +349,7 @@ async fn test_playback_state_cross_replica_consistency() {
     );
 
     // Manually test L2 propagation
-    let l2 = RedisCacheL2::new(redis_conn);
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
     let l2_key = format!("synctv:playback:{}", room.id.as_str());
 
     // Set in L2 (simulating what the implementation should do)
@@ -440,7 +439,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
 async fn test_playback_state_l2_has_proper_ttl() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2 = RedisCacheL2::new(redis_conn.clone());
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
     let l2_key = "test:playback:ttl_test";
 
     // Set a value with TTL
@@ -471,7 +470,7 @@ async fn test_playback_state_l2_has_proper_ttl() {
 async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2 = RedisCacheL2::new(redis_conn.clone());
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
     let l2_key = "test:playback:version_test";
 
     // Create a newer state (version 10)
@@ -597,7 +596,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     let (_pg_container, pool) = synctv_core_testing::create_test_pool().await;
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2 = RedisCacheL2::new(redis_conn.clone());
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
 
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -654,7 +653,8 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
 
-    let l2_backend: Arc<dyn CacheL2Backend> = Arc::new(RedisCacheL2::new(redis_conn.clone()));
+    let l2_backend: Arc<dyn CacheL2Backend> =
+        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
     let l2_cache = PlaybackStateCache::new(
         l2_backend,
         128,
@@ -745,7 +745,8 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
 async fn test_playback_state_cache_direct_with_redis() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2_backend = Arc::new(RedisCacheL2::new(redis_conn.clone()));
+    let l2_backend =
+        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
     let cache = PlaybackStateCache::new(
         l2_backend,
         100, // L1 max capacity
@@ -803,7 +804,8 @@ async fn test_playback_state_cache_direct_with_redis() {
 async fn test_playback_state_cache_set_if_newer_with_redis() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2_backend = Arc::new(RedisCacheL2::new(redis_conn.clone()));
+    let l2_backend =
+        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
     let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string())
         .expect("Failed to create PlaybackStateCache");
 

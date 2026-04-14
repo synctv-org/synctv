@@ -2,8 +2,8 @@
 
 use serde_json::Value as JsonValue;
 use synctv_core::models::{
-    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy,
-    SortDirection as CoreSortDirection, UserId,
+    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
+    UserId,
 };
 use synctv_core::service::playlist::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,
@@ -139,6 +139,7 @@ impl ClientApiImpl {
         req: crate::proto::client::CreatePlaylistRequest,
     ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
+        let actor_id = uid.clone();
         let rid = Self::parse_room_id(room_id)?;
 
         // Check membership and add media permission
@@ -148,18 +149,34 @@ impl ClientApiImpl {
             .map_err(Self::map_room_access_error)?;
 
         let service_req = build_create_playlist_request(&rid, req)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+        let playlist_cluster_event = self.playlist_fanout.reserve_created().await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .create_playlist(rid.clone(), uid, service_req)
+            .create_playlist(rid.clone(), actor_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
+        let actor_username = self
+            .user_service
+            .get_user(&actor_id)
+            .await
+            .map(|user| user.username)
+            .unwrap_or_default();
+        self.playlist_fanout.publish_created(
+            playlist_cluster_event,
+            &rid,
+            &actor_id,
+            &actor_username,
+            &playlist,
+        );
+
         // Invalidate room cache on other replicas for playlist structure change
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         let item_count = self
@@ -184,6 +201,7 @@ impl ClientApiImpl {
         req: crate::proto::client::UpdatePlaylistRequest,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
+        let actor_id = uid.clone();
         let rid = Self::parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
@@ -193,18 +211,34 @@ impl ClientApiImpl {
             .map_err(Self::map_room_access_error)?;
 
         let service_req = build_update_playlist_request(req)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+        let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .set_playlist(rid.clone(), uid, service_req)
+            .set_playlist(rid.clone(), actor_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
+        let actor_username = self
+            .user_service
+            .get_user(&actor_id)
+            .await
+            .map(|user| user.username)
+            .unwrap_or_default();
+        self.playlist_fanout.publish_updated(
+            playlist_cluster_event,
+            &rid,
+            &actor_id,
+            &actor_username,
+            &playlist,
+        );
+
         // Invalidate room cache on other replicas for playlist update
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         let item_count = self
@@ -229,6 +263,7 @@ impl ClientApiImpl {
         req: crate::proto::client::MovePlaylistRequest,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
+        let actor_id = uid.clone();
         let rid = Self::parse_room_id(room_id)?;
 
         self.room_service
@@ -237,17 +272,33 @@ impl ClientApiImpl {
             .map_err(Self::map_room_access_error)?;
 
         let service_req = build_move_playlist_request(req)?;
-        let cache_invalidation = self.reserve_room_cache_invalidation(&rid).await?;
+        let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .move_playlist(rid.clone(), uid, service_req)
+            .move_playlist(rid.clone(), actor_id.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
 
+        let actor_username = self
+            .user_service
+            .get_user(&actor_id)
+            .await
+            .map(|user| user.username)
+            .unwrap_or_default();
+        self.playlist_fanout.publish_updated(
+            playlist_cluster_event,
+            &rid,
+            &actor_id,
+            &actor_username,
+            &playlist,
+        );
+
         if let Some(cache_invalidation) = cache_invalidation {
-            cache_invalidation.publish(Self::build_room_cache_invalidation_request(&rid));
+            self.room_cache_fanout
+                .publish_invalidation(Some(cache_invalidation), &rid);
         }
 
         let item_count = self

@@ -171,9 +171,9 @@ mod tests {
     #[tokio::test]
     async fn test_http_flv_state_creation() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let registry = crate::relay::InMemoryStreamRegistry::new();
+        let registry = crate::relay::local_stream_registry();
 
-        let state = HttpFlvState::new(std::sync::Arc::new(registry), event_sender);
+        let state = HttpFlvState::new(registry, event_sender);
         assert!(Arc::strong_count(&state.registry) >= 1);
     }
 

@@ -1150,7 +1150,7 @@ async fn test_diagnose_add_conflict_banned_user() {
         .ban_member(
             &room.id,
             &user.id,
-            &owner.id,
+            Some(&owner.id),
             Some("bad behavior".to_string()),
         )
         .await
@@ -1266,7 +1266,7 @@ async fn test_banned_by_restricts_user_delete() {
         .ban_member(
             &room.id,
             &banned_user.id,
-            &admin.id,
+            Some(&admin.id),
             Some("test banned_by constraint".to_string()),
         )
         .await

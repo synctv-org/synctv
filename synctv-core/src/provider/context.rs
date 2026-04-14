@@ -12,7 +12,7 @@ use crate::service::CredentialEncryption;
 
 /// Provider execution context
 ///
-/// Provides access to database, Redis, user information, and other resources
+/// Provides access to database, shared provider storage, user information, and other resources
 /// needed by providers to generate playback information.
 #[derive(Clone)]
 pub struct ProviderContext<'a> {
@@ -30,9 +30,6 @@ pub struct ProviderContext<'a> {
 
     /// Database connection pool (optional)
     pub db: Option<&'a PgPool>,
-
-    /// Redis connection manager (optional)
-    pub redis: Option<&'a redis::aio::ConnectionManager>,
 
     /// Credential encryption for protecting sensitive data in `source_config` (optional)
     pub credential_encryption: Option<&'a CredentialEncryption>,
@@ -57,7 +54,6 @@ impl<'a> ProviderContext<'a> {
             base_url: None,
             key_prefix,
             db: None,
-            redis: None,
             credential_encryption: None,
             store: None,
             credential_repo: None,
@@ -90,13 +86,6 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_db(mut self, db: &'a PgPool) -> Self {
         self.db = Some(db);
-        self
-    }
-
-    /// Set Redis connection manager
-    #[must_use]
-    pub const fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
-        self.redis = Some(redis);
         self
     }
 
@@ -134,7 +123,7 @@ impl<'a> ProviderContext<'a> {
     /// Validate that all required fields are present for playback generation.
     ///
     /// Returns an error listing missing required fields (`base_url`, `db`).
-    /// Optional fields (`user_id`, `room_id`, `redis`) are not checked.
+    /// Optional fields (`user_id`, `room_id`, `store`) are not checked.
     pub fn validate(&self) -> Result<(), crate::Error> {
         let mut missing = Vec::new();
         if self.base_url.is_none() {

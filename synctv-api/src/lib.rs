@@ -12,6 +12,13 @@ pub mod impls;
 pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
+mod member_fanout;
+mod membership_event_fanout;
+mod media_fanout;
+mod playlist_fanout;
+mod realtime_lifecycle;
+mod room_cache_fanout;
+mod room_lifecycle_fanout;
 pub mod proto;
 pub mod runtime;
 

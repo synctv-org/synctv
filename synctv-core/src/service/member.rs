@@ -11,9 +11,9 @@ use crate::{
         MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Room, RoomId, RoomMember,
         RoomMemberWithUser, RoomRole, RoomSettings, UserId,
     },
-    repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
+    repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::audit::{AuditAction, AuditService, AuditTargetType},
-    service::notification::NotificationService,
+    service::notification::{NotificationService, PermissionChangedNotification},
     service::permission::PermissionService,
     Error, Result,
 };
@@ -221,6 +221,70 @@ impl MemberService {
     #[doc(hidden)]
     pub fn has_event_broadcaster(&self) -> bool {
         self.event_broadcaster.read().is_some()
+    }
+
+    const fn room_role_to_proto_i32(role: RoomRole) -> i32 {
+        match role {
+            RoomRole::Guest => 1,
+            RoomRole::Member => 2,
+            RoomRole::Admin => 3,
+            RoomRole::Creator => 4,
+        }
+    }
+
+    async fn notify_permission_changed(
+        &self,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        actor_username: &str,
+        member: &RoomMember,
+    ) {
+        let resolved_actor_username = if actor_username.trim().is_empty() {
+            self.lookup_username(actor_id).await
+        } else {
+            actor_username.to_string()
+        };
+        let room_settings = if let Some(repo) = self.room_settings_repo.as_ref() {
+            repo.get(room_id).await.unwrap_or_default()
+        } else {
+            RoomSettings::default()
+        };
+        let role_defaults = self
+            .permission_service
+            .calculate_role_default_permissions(&member.role, &room_settings);
+        let effective_permissions = member.effective_permissions(role_defaults).0;
+
+        if let Err(error) = self.notification_service.notify_permission_changed(
+            room_id,
+            PermissionChangedNotification {
+                user_id: &member.user_id,
+                role: Self::room_role_to_proto_i32(member.role),
+                effective_permissions,
+                added_permissions: member.added_permissions,
+                removed_permissions: member.removed_permissions,
+                admin_added_permissions: member.admin_added_permissions,
+                admin_removed_permissions: member.admin_removed_permissions,
+                updated_by_user_id: actor_id,
+                updated_by_username: &resolved_actor_username,
+            },
+        ) {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id.as_str(),
+                user_id = %member.user_id.as_str(),
+                "Failed to broadcast permission changed event"
+            );
+        }
+    }
+
+    async fn lookup_username(&self, user_id: &UserId) -> String {
+        UserRepository::new(self.member_repo.pool().clone())
+            .get_by_id(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|user| user.username)
+            .unwrap_or_default()
     }
 
     /// Log an audit event if the audit service is configured.
@@ -563,6 +627,9 @@ impl MemberService {
         )
         .await;
 
+        self.notify_permission_changed(&room_id, &granter_id, "", &updated_member)
+            .await;
+
         Ok(updated_member)
     }
 
@@ -686,6 +753,8 @@ impl MemberService {
             .await;
 
             if !has_permission_changes {
+                self.notify_permission_changed(&room_id, &actor_id, &actor_username, &updated_member)
+                    .await;
                 return Ok(updated_member);
             }
         }
@@ -746,6 +815,9 @@ impl MemberService {
             }),
         )
         .await;
+
+        self.notify_permission_changed(&room_id, &actor_id, &actor_username, &updated_member)
+            .await;
 
         Ok(updated_member)
     }
@@ -1114,6 +1186,7 @@ impl MemberService {
         actor_id: UserId,
         actor_username: &str,
         target_user_id: UserId,
+        persisted_banned_by: Option<UserId>,
         reason: Option<String>,
     ) -> Result<()> {
         if actor_id == target_user_id {
@@ -1121,7 +1194,12 @@ impl MemberService {
         }
 
         self.member_repo
-            .ban_member(&room_id, &target_user_id, &actor_id, reason.clone())
+            .ban_member(
+                &room_id,
+                &target_user_id,
+                persisted_banned_by.as_ref(),
+                reason.clone(),
+            )
             .await?;
 
         self.permission_service

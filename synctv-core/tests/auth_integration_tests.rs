@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{self, NoopCacheL2},
+    cache,
     config::PasswordComplexityConfig,
     models::UserStatus,
     repository::UserRepository,
@@ -40,8 +40,7 @@ fn create_jwt_service() -> JwtService {
 
 fn create_user_service(pool: PgPool) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache =
-        cache::UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 1000, 0);
+    let username_cache = cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());

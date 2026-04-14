@@ -475,7 +475,7 @@ impl RoomSettingsService {
 
         let _ = self
             .notification_service
-            .notify_settings_updated(room_id, settings_value)
+            .notify_settings_updated(room_id, None, "", settings_value)
             ;
     }
 

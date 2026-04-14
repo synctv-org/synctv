@@ -1211,7 +1211,7 @@ mod tests {
     use bytes::Bytes;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
-    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::provider::{
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderSet, RtmpProvider,
@@ -1325,8 +1325,7 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             synctv_core::service::JwtService::new(
@@ -1364,8 +1363,7 @@ mod tests {
         let router_config = RouterConfig {
             config: Arc::new(config),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -1399,11 +1397,8 @@ mod tests {
             chat_service: None,
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                None,
-            )),
+            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
@@ -1544,8 +1539,7 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 128, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             synctv_core::service::JwtService::new(
@@ -1581,8 +1575,7 @@ mod tests {
         }));
         let injected_provider_stores: Arc<
             dyn synctv_core::provider::store::ProviderStoreResolver,
-        > = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-            None,
+        > = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only(
             "shared:test:",
         ));
         let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
@@ -1595,8 +1588,7 @@ mod tests {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::new(
-                    Arc::new(NoopCacheL2),
+                synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
@@ -1633,11 +1625,8 @@ mod tests {
             chat_service: None,
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::in_memory_only("test:".to_string()),
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::from_store(
-                Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                None,
-            )),
+            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: Some(injected_provider_stores.clone()),
             shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),

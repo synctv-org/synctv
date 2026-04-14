@@ -556,7 +556,7 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_after_commit() {
     use synctv_core::{
-        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
@@ -574,8 +574,7 @@ async fn test_cache_invalidation_after_commit() {
     // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -721,7 +720,7 @@ async fn test_cache_invalidation_after_commit() {
 async fn test_cache_invalidation_rollback_does_not_broadcast() {
     use sqlx::Transaction;
     use synctv_core::{
-        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
@@ -739,8 +738,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

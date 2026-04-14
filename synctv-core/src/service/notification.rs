@@ -71,23 +71,51 @@ pub enum RoomEvent {
     },
     /// Media added to playlist
     MediaAdded {
+        user_id: UserId,
+        username: String,
         media_id: String,
         title: String,
         url: String,
         position: f64,
     },
     /// Media removed from playlist
-    MediaRemoved { media_id: String },
+    MediaRemoved {
+        user_id: Option<UserId>,
+        username: String,
+        media_id: String,
+    },
     /// Media updated (name or position changed)
     MediaUpdated {
+        user_id: UserId,
+        username: String,
         media_id: String,
         title: String,
         position: f64,
     },
     /// Playlist reordered
-    PlaylistReordered { media_ids: Vec<String> },
+    PlaylistReordered {
+        user_id: Option<UserId>,
+        username: String,
+        media_ids: Vec<String>,
+    },
+    /// Playlist deleted
+    PlaylistDeleted {
+        user_id: Option<UserId>,
+        username: String,
+        playlist_id: String,
+    },
     /// Member permissions changed
-    PermissionChanged { user_id: UserId, permissions: i64 },
+    PermissionChanged {
+        user_id: UserId,
+        role: i32,
+        effective_permissions: u64,
+        added_permissions: u64,
+        removed_permissions: u64,
+        admin_added_permissions: u64,
+        admin_removed_permissions: u64,
+        updated_by_user_id: UserId,
+        updated_by_username: String,
+    },
     /// Member kicked
     MemberKicked { user_id: UserId },
     /// Guest kicked (for anonymous guests)
@@ -96,13 +124,40 @@ pub enum RoomEvent {
         message: String,
     },
     /// Room settings updated
-    SettingsUpdated { settings: serde_json::Value },
+    SettingsUpdated {
+        settings: serde_json::Value,
+        user_id: Option<UserId>,
+        username: String,
+    },
     /// Room deleted
     RoomDeleted,
     /// Live stream started (publisher connected)
     StreamStarted { media_id: String, user_id: UserId },
     /// Live stream stopped (publisher disconnected)
     StreamStopped { media_id: String, user_id: UserId },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MediaAddedNotification<'a> {
+    pub user_id: &'a UserId,
+    pub username: &'a str,
+    pub media_id: &'a str,
+    pub title: &'a str,
+    pub url: &'a str,
+    pub position: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PermissionChangedNotification<'a> {
+    pub user_id: &'a UserId,
+    pub role: i32,
+    pub effective_permissions: u64,
+    pub added_permissions: u64,
+    pub removed_permissions: u64,
+    pub admin_added_permissions: u64,
+    pub admin_removed_permissions: u64,
+    pub updated_by_user_id: &'a UserId,
+    pub updated_by_username: &'a str,
 }
 
 impl RoomEvent {
@@ -125,6 +180,7 @@ impl RoomEvent {
             Self::MediaRemoved { .. } => "media_removed",
             Self::MediaUpdated { .. } => "media_updated",
             Self::PlaylistReordered { .. } => "playlist_reordered",
+            Self::PlaylistDeleted { .. } => "playlist_deleted",
             Self::PermissionChanged { .. } => "permission_changed",
             Self::MemberKicked { .. } => "member_kicked",
             Self::GuestKicked { .. } => "guest_kicked",
@@ -301,23 +357,30 @@ impl NotificationService {
     pub fn notify_media_added(
         &self,
         room_id: &RoomId,
-        media_id: &str,
-        title: &str,
-        url: &str,
-        position: f64,
+        notification: MediaAddedNotification<'_>,
     ) -> Result<()> {
         let event = RoomEvent::MediaAdded {
-            media_id: media_id.to_string(),
-            title: title.to_string(),
-            url: url.to_string(),
-            position,
+            user_id: notification.user_id.clone(),
+            username: notification.username.to_string(),
+            media_id: notification.media_id.to_string(),
+            title: notification.title.to_string(),
+            url: notification.url.to_string(),
+            position: notification.position,
         };
         self.broadcast_to_room(room_id, &event)
     }
 
     /// Notify media removed
-    pub fn notify_media_removed(&self, room_id: &RoomId, media_id: &str) -> Result<()> {
+    pub fn notify_media_removed(
+        &self,
+        room_id: &RoomId,
+        user_id: Option<&UserId>,
+        username: &str,
+        media_id: &str,
+    ) -> Result<()> {
         let event = RoomEvent::MediaRemoved {
+            user_id: user_id.cloned(),
+            username: username.to_string(),
             media_id: media_id.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -327,11 +390,15 @@ impl NotificationService {
     pub fn notify_media_updated(
         &self,
         room_id: &RoomId,
+        user_id: &UserId,
+        username: &str,
         media_id: &str,
         title: &str,
         position: f64,
     ) -> Result<()> {
         let event = RoomEvent::MediaUpdated {
+            user_id: user_id.clone(),
+            username: username.to_string(),
             media_id: media_id.to_string(),
             title: title.to_string(),
             position,
@@ -343,10 +410,30 @@ impl NotificationService {
     pub fn notify_playlist_reordered(
         &self,
         room_id: &RoomId,
+        user_id: Option<&UserId>,
+        username: &str,
         media_ids: &[String],
     ) -> Result<()> {
         let event = RoomEvent::PlaylistReordered {
+            user_id: user_id.cloned(),
+            username: username.to_string(),
             media_ids: media_ids.to_vec(),
+        };
+        self.broadcast_to_room(room_id, &event)
+    }
+
+    /// Notify playlist deleted.
+    pub fn notify_playlist_deleted(
+        &self,
+        room_id: &RoomId,
+        user_id: Option<&UserId>,
+        username: &str,
+        playlist_id: &str,
+    ) -> Result<()> {
+        let event = RoomEvent::PlaylistDeleted {
+            user_id: user_id.cloned(),
+            username: username.to_string(),
+            playlist_id: playlist_id.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -355,12 +442,18 @@ impl NotificationService {
     pub fn notify_permission_changed(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
-        permissions: i64,
+        notification: PermissionChangedNotification<'_>,
     ) -> Result<()> {
         let event = RoomEvent::PermissionChanged {
-            user_id: user_id.clone(),
-            permissions,
+            user_id: notification.user_id.clone(),
+            role: notification.role,
+            effective_permissions: notification.effective_permissions,
+            added_permissions: notification.added_permissions,
+            removed_permissions: notification.removed_permissions,
+            admin_added_permissions: notification.admin_added_permissions,
+            admin_removed_permissions: notification.admin_removed_permissions,
+            updated_by_user_id: notification.updated_by_user_id.clone(),
+            updated_by_username: notification.updated_by_username.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -377,9 +470,15 @@ impl NotificationService {
     pub fn notify_settings_updated(
         &self,
         room_id: &RoomId,
+        user_id: Option<&UserId>,
+        username: &str,
         settings: serde_json::Value,
     ) -> Result<()> {
-        let event = RoomEvent::SettingsUpdated { settings };
+        let event = RoomEvent::SettingsUpdated {
+            settings,
+            user_id: user_id.cloned(),
+            username: username.to_string(),
+        };
         self.broadcast_to_room(room_id, &event)
     }
 
@@ -564,25 +663,45 @@ mod tests {
                 media_id: Some("media123".to_string()),
             },
             RoomEvent::MediaAdded {
+                user_id: UserId::new(),
+                username: "test".to_string(),
                 media_id: "media123".to_string(),
                 title: "Test Video".to_string(),
                 url: "http://example.com/video.mp4".to_string(),
                 position: 1.0,
             },
             RoomEvent::MediaRemoved {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
                 media_id: "media123".to_string(),
             },
             RoomEvent::MediaUpdated {
+                user_id: UserId::new(),
+                username: "test".to_string(),
                 media_id: "media123".to_string(),
                 title: "Updated Video".to_string(),
                 position: 2.0,
             },
             RoomEvent::PlaylistReordered {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
                 media_ids: vec!["media1".to_string(), "media2".to_string()],
+            },
+            RoomEvent::PlaylistDeleted {
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
+                playlist_id: "playlist123".to_string(),
             },
             RoomEvent::PermissionChanged {
                 user_id: UserId::new(),
-                permissions: 123,
+                role: 1,
+                effective_permissions: 123,
+                added_permissions: 1,
+                removed_permissions: 2,
+                admin_added_permissions: 4,
+                admin_removed_permissions: 8,
+                updated_by_user_id: UserId::new(),
+                updated_by_username: "test".to_string(),
             },
             RoomEvent::MemberKicked {
                 user_id: UserId::new(),
@@ -593,6 +712,8 @@ mod tests {
             },
             RoomEvent::SettingsUpdated {
                 settings: serde_json::json!({"key": "value"}),
+                user_id: Some(UserId::new()),
+                username: "test".to_string(),
             },
             RoomEvent::RoomDeleted,
             RoomEvent::StreamStarted {

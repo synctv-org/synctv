@@ -118,17 +118,17 @@ async fn test_on_play_always_rejected() {
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::{AuthCallback, AuthPublishRewrite};
 
 /// Mock auth callback that tracks rollback calls
 struct MockAuthCallback {
-    registry: Arc<InMemoryStreamRegistry>,
+    registry: Arc<dyn StreamRegistryTrait>,
     rollback_count: Arc<AtomicUsize>,
 }
 
 impl MockAuthCallback {
-    fn new(registry: Arc<InMemoryStreamRegistry>) -> Self {
+    fn new(registry: Arc<dyn StreamRegistryTrait>) -> Self {
         Self {
             registry,
             rollback_count: Arc::new(AtomicUsize::new(0)),
@@ -192,7 +192,7 @@ impl AuthCallback for MockAuthCallback {
 /// Test that `on_publish_rollback` is called and properly cleans up registry
 #[tokio::test]
 async fn test_publish_rollback_cleans_registry() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = Arc::new(MockAuthCallback::new(registry.clone()));
 
     // Simulate successful auth (registers in registry)
@@ -221,7 +221,7 @@ async fn test_publish_rollback_cleans_registry() {
 /// Test that rollback is idempotent (calling twice should not panic)
 #[tokio::test]
 async fn test_publish_rollback_is_idempotent() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = Arc::new(MockAuthCallback::new(registry.clone()));
 
     // Simulate successful auth
@@ -240,7 +240,7 @@ async fn test_publish_rollback_is_idempotent() {
 /// Test that rollback handles non-existent entries gracefully
 #[tokio::test]
 async fn test_publish_rollback_nonexistent_entry() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = Arc::new(MockAuthCallback::new(registry.clone()));
 
     // Call rollback on non-existent entry - should not panic
@@ -255,7 +255,7 @@ async fn test_publish_rollback_nonexistent_entry() {
 /// Test full publish-failure-rollback sequence
 #[tokio::test]
 async fn test_full_publish_failure_sequence() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = Arc::new(MockAuthCallback::new(registry.clone()));
 
     // Step 1: Auth succeeds (register in registry)
@@ -394,11 +394,11 @@ use std::sync::atomic::AtomicBool;
 /// Mock auth callback that checks is_restarting flag
 struct MockRestartAwareAuthCallback {
     is_restarting: Arc<AtomicBool>,
-    registry: Arc<InMemoryStreamRegistry>,
+    registry: Arc<dyn StreamRegistryTrait>,
 }
 
 impl MockRestartAwareAuthCallback {
-    const fn new(is_restarting: Arc<AtomicBool>, registry: Arc<InMemoryStreamRegistry>) -> Self {
+    fn new(is_restarting: Arc<AtomicBool>, registry: Arc<dyn StreamRegistryTrait>) -> Self {
         Self {
             is_restarting,
             registry,
@@ -462,7 +462,7 @@ impl AuthCallback for MockRestartAwareAuthCallback {
 #[tokio::test]
 async fn test_publication_rejected_when_restarting() {
     let is_restarting = Arc::new(AtomicBool::new(true));
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
     // Attempt to publish while restarting
@@ -489,7 +489,7 @@ async fn test_publication_rejected_when_restarting() {
 #[tokio::test]
 async fn test_publication_allowed_when_not_restarting() {
     let is_restarting = Arc::new(AtomicBool::new(false));
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
     // Attempt to publish when not restarting
@@ -511,7 +511,7 @@ async fn test_publication_allowed_when_not_restarting() {
 #[tokio::test]
 async fn test_restarting_flag_toggles_publication_access() {
     let is_restarting = Arc::new(AtomicBool::new(false));
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
     // Step 1: Publication allowed when not restarting

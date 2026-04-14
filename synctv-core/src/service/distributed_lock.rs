@@ -92,9 +92,6 @@ where
 /// program against this trait instead of depending on Redis directly.
 #[async_trait::async_trait]
 pub trait MigrationLock: Send + Sync {
-    /// A label for logging and diagnostics (for example `redis` or `pg-advisory`).
-    fn backend_name(&self) -> &'static str;
-
     /// Try to acquire the lock.
     ///
     /// Returns `Ok(Some(lock_value))` if acquired, `Ok(None)` if already held,
@@ -174,10 +171,6 @@ where
 /// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
 #[async_trait::async_trait]
 impl MigrationLock for DistributedLock {
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
-
     async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
         Self::acquire(self, key, ttl_secs)
             .await
@@ -238,10 +231,6 @@ impl PgAdvisoryMigrationLock {
 
 #[async_trait::async_trait]
 impl MigrationLock for PgAdvisoryMigrationLock {
-    fn backend_name(&self) -> &'static str {
-        "pg-advisory"
-    }
-
     async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
         let mut conn = self.pool.acquire().await.map_err(|e| {
             anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")

@@ -5814,6 +5814,7 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "synctv-proxy",
+ "synctv-xiu",
  "tempfile",
  "testcontainers",
  "testcontainers-modules",

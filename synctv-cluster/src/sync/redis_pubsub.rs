@@ -327,9 +327,6 @@ impl ClusterMessageTransportFactory for RedisClusterMessageTransportFactory {
         )?))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 impl RedisPubSub {
@@ -2338,9 +2335,6 @@ impl ClusterMessageTransport for RedisPubSub {
         RedisPubSub::shutdown(self).await;
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 /// Parse a Redis Stream ID (`"{timestamp_ms}-{seq}"`) into a `(u64, u64)` tuple.

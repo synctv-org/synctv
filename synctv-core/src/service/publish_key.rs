@@ -89,8 +89,10 @@ pub trait JtiStore: Send + Sync {
     /// Check if a JTI has been claimed (fast path, may be local-only).
     async fn is_claimed(&self, jti: &str) -> bool;
 
-    /// A label for logging/debug purposes.
-    fn backend_name(&self) -> &'static str;
+    /// Whether claims are coordinated across nodes instead of being local-only.
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
 
     /// Whether backend errors reject the claim instead of degrading locally.
     fn fail_closed(&self) -> bool {
@@ -119,20 +121,6 @@ pub struct RedisJtiStore {
 }
 
 impl RedisJtiStore {
-    /// Create from a shared connection handle (Sentinel-safe).
-    #[must_use]
-    pub fn new_shared(
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-        cache_ttl_secs: u64,
-    ) -> Self {
-        Self::from_runtime(
-            crate::shared_runtime(shared_conn),
-            key_prefix,
-            cache_ttl_secs,
-        )
-    }
-
     #[must_use]
     pub fn from_runtime(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
@@ -195,8 +183,8 @@ impl RedisJtiStore {
         key_prefix: String,
         cache_ttl_secs: u64,
     ) -> Self {
-        Self::new_shared(
-            Arc::new(tokio::sync::RwLock::new(conn)),
+        Self::from_runtime(
+            crate::shared_runtime(Arc::new(tokio::sync::RwLock::new(conn))),
             key_prefix,
             cache_ttl_secs,
         )
@@ -272,8 +260,8 @@ impl JtiStore for RedisJtiStore {
         self.fail_closed
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
     }
 }
 
@@ -337,10 +325,6 @@ impl JtiStore for InMemoryJtiStore {
     async fn is_claimed(&self, jti: &str) -> bool {
         self.cache.contains_key(jti)
     }
-
-    fn backend_name(&self) -> &'static str {
-        "memory"
-    }
 }
 
 // ============================================================================
@@ -363,7 +347,11 @@ impl std::fmt::Debug for PublishKeyService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublishKeyService")
             .field("token_ttl_hours", &self.token_ttl_hours)
-            .field("backend", &self.jti_store.backend_name())
+            .field(
+                "cross_node_single_use",
+                &self.jti_store.supports_cross_node_single_use(),
+            )
+            .field("fail_closed", &self.jti_store.fail_closed())
             .finish()
     }
 }
@@ -967,9 +955,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_jti_store_backend_name() {
+    async fn test_in_memory_jti_store_is_local_only() {
         let store = InMemoryJtiStore::new(3600);
-        assert_eq!(store.backend_name(), "memory");
+        assert!(!store.supports_cross_node_single_use());
+        assert!(!store.fail_closed());
+    }
+
+    #[test]
+    fn test_publish_key_service_debug_reports_capabilities_not_backend_names() {
+        let service = PublishKeyService::new(create_jwt_service(), 24);
+        let debug = format!("{service:?}");
+
+        assert!(debug.contains("cross_node_single_use: false"));
+        assert!(debug.contains("fail_closed: false"));
+        assert!(!debug.contains("memory"));
+        assert!(!debug.contains("redis"));
+        assert!(!debug.contains("backend"));
     }
 
     #[tokio::test]
@@ -997,7 +998,9 @@ mod tests {
 
         let debug = format!("{service:?}");
         assert!(debug.contains("12"));
-        assert!(debug.contains("memory"));
+        assert!(debug.contains("cross_node_single_use: false"));
+        assert!(debug.contains("fail_closed: false"));
+        assert!(!debug.contains("memory"));
     }
 
     // ========== B4: InMemoryJtiStore concurrent try_claim atomicity ==========
@@ -1117,8 +1120,9 @@ mod tests {
         async fn is_claimed(&self, _jti: &str) -> bool {
             false
         }
-        fn backend_name(&self) -> &'static str {
-            "fail_closed_test"
+
+        fn supports_cross_node_single_use(&self) -> bool {
+            true
         }
     }
 }

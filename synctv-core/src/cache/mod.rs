@@ -12,8 +12,8 @@ pub mod username_cache;
 pub use invalidation::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 pub use key_builder::KeyBuilder;
 pub use l2_backend::{
-    build_l2_cache_backend, build_l2_cache_backend_from_profile, CacheL2Backend, NoopCacheL2,
-    RedisCacheL2,
+    build_l2_cache_backend, build_l2_cache_backend_from_profile, local_l2_cache_backend,
+    CacheL2Backend, NoopCacheL2, RedisCacheL2,
 };
 pub use manager::CacheManager;
 pub use playback_cache::PlaybackStateCache;

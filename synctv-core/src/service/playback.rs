@@ -1653,7 +1653,7 @@ impl PlaybackService {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheInvalidationService, CacheL2Backend, KeyBuilder, NoopCacheL2, UsernameCache,
+        CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache,
     };
     use crate::config::PasswordComplexityConfig;
     use crate::models::RoomId;
@@ -1723,16 +1723,11 @@ mod tests {
         fn is_active(&self) -> bool {
             true
         }
-
-        fn backend_name(&self) -> &'static str {
-            "counting"
-        }
     }
 
     fn make_user_service(pool: PgPool) -> UserService {
         let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
-        let l2 = Arc::new(NoopCacheL2);
-        let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let password_complexity = PasswordComplexityConfig::default();
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");

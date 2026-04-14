@@ -8,10 +8,8 @@ use crate::impls::{ApiError, ClusterEventPublishReservation};
 
 #[async_trait]
 pub trait RoomSettingsFanoutService: Send + Sync {
-    async fn reserve_settings_changed(
-        &self,
-        cluster_fanout: &dyn ClusterFanoutService,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+    async fn reserve_settings_changed(&self)
+        -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
     fn publish_settings_changed(
         &self,
@@ -23,39 +21,32 @@ pub trait RoomSettingsFanoutService: Send + Sync {
     );
 }
 
-#[derive(Debug, Default)]
-pub struct LocalRoomSettingsFanoutService;
+pub struct DefaultRoomSettingsFanoutService {
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+}
 
-#[async_trait]
-impl RoomSettingsFanoutService for LocalRoomSettingsFanoutService {
-    async fn reserve_settings_changed(
-        &self,
-        _cluster_fanout: &dyn ClusterFanoutService,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        Ok(None)
-    }
-
-    fn publish_settings_changed(
-        &self,
-        _reservation: Option<ClusterEventPublishReservation>,
-        _room_id: &RoomId,
-        _actor_user_id: &UserId,
-        _actor_username: &str,
-        _settings_json: Vec<u8>,
-    ) {
+impl DefaultRoomSettingsFanoutService {
+    #[must_use]
+    pub fn new(cluster_fanout: Arc<dyn ClusterFanoutService>) -> Self {
+        Self { cluster_fanout }
     }
 }
 
-#[derive(Debug, Default)]
-pub struct DefaultRoomSettingsFanoutService;
+impl std::fmt::Debug for DefaultRoomSettingsFanoutService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultRoomSettingsFanoutService")
+            .field(
+                "cluster_fanout_distributed",
+                &self.cluster_fanout.is_distributed_enabled(),
+            )
+            .finish()
+    }
+}
 
 #[async_trait]
 impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
-    async fn reserve_settings_changed(
-        &self,
-        cluster_fanout: &dyn ClusterFanoutService,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        cluster_fanout
+    async fn reserve_settings_changed(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+        self.cluster_fanout
             .reserve("failed to fan out RoomSettingsChanged to cluster replicas")
             .await
     }
@@ -84,13 +75,15 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
 }
 
 #[must_use]
-pub fn default_room_settings_fanout_service() -> Arc<dyn RoomSettingsFanoutService> {
-    Arc::new(DefaultRoomSettingsFanoutService)
+pub fn default_room_settings_fanout_service(
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+) -> Arc<dyn RoomSettingsFanoutService> {
+    Arc::new(DefaultRoomSettingsFanoutService::new(cluster_fanout))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_room_settings_fanout_service, LocalRoomSettingsFanoutService, RoomSettingsFanoutService};
+    use super::default_room_settings_fanout_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
     use synctv_cluster::sync::ClusterEvent;
     use synctv_core::models::{RoomId, UserId};
@@ -104,13 +97,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_local_room_settings_fanout_is_noop() {
-        let reservation = LocalRoomSettingsFanoutService
-            .reserve_settings_changed(default_cluster_fanout_service(None, false).as_ref())
+    async fn test_room_settings_fanout_is_noop_when_cluster_fanout_is_local() {
+        let service = default_room_settings_fanout_service(default_cluster_fanout_service(None, false));
+        let reservation = service
+            .reserve_settings_changed()
             .await
             .expect("local room settings fanout should not fail");
 
-        LocalRoomSettingsFanoutService.publish_settings_changed(
+        service.publish_settings_changed(
             reservation,
             &room_id(),
             &user_id(),
@@ -122,11 +116,11 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_room_settings_fanout_publishes_when_channel_available() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_settings_fanout_service();
-        let cluster_fanout = default_cluster_fanout_service(Some(tx), true);
+        let service =
+            default_room_settings_fanout_service(default_cluster_fanout_service(Some(tx), true));
 
         let reservation = service
-            .reserve_settings_changed(cluster_fanout.as_ref())
+            .reserve_settings_changed()
             .await
             .expect("cluster room settings fanout should reserve");
 

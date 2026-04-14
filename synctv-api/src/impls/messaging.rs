@@ -51,7 +51,9 @@ static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
 
 use crate::proto::client::{ClientMessage, ServerMessage};
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::{
+    RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeJoinError {
@@ -121,17 +123,6 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 /// This provides backpressure when the system is under heavy load.
 /// When exceeded, new messages receive a `ResourceExhausted` error.
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
-
-const fn should_fail_webrtc_signal_broadcast(
-    result: &synctv_cluster::sync::BroadcastResult,
-    cluster_redis_enabled: bool,
-) -> bool {
-    if cluster_redis_enabled {
-        !result.redis_sent
-    } else {
-        result.local_sent == 0 && !result.redis_sent
-    }
-}
 
 fn i64_to_i32_saturating(value: i64) -> i32 {
     i32::try_from(value).unwrap_or_else(|_| {
@@ -1625,12 +1616,12 @@ impl StreamMessageHandler {
             joined_at: chrono::Utc::now(),
             timestamp: chrono::Utc::now(),
         };
-        let result = self.event_service.broadcast(event);
-        if !result.redis_sent {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 user_id = %self.user_id.as_str(),
-                "UserJoined cluster broadcast did not reach Redis (non-critical: join is local-only)"
+                "UserJoined broadcast missed the distributed fan-out path (non-critical: join is local-only)"
             );
         }
     }
@@ -1783,15 +1774,12 @@ impl StreamMessageHandler {
                 );
                 None
             }
-            UserLeftDeliveryPlan::LocalAndRedis => Some(self.event_service.broadcast(event)),
+            UserLeftDeliveryPlan::LocalAndRedis => Some(self.event_service.broadcast_outcome(event)),
         };
 
-        if let Some(result) = result {
+        if let Some(outcome) = result {
             if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
-                && should_retry_user_left_broadcast(
-                    &result,
-                    self.event_service.metrics().redis_enabled,
-                )
+                && !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable)
             {
                 // Critical UserLeft event failed to reach any destination.
                 // This can happen when Redis is temporarily unavailable.
@@ -1836,18 +1824,19 @@ impl StreamMessageHandler {
                                     timestamp: chrono::Utc::now(),
                                 };
 
-                                let retry_result = synctv_cluster::sync::BroadcastResult {
-                                    local_sent: 0,
-                                    redis_sent: event_service.publish_only(retry_event),
-                                };
+                                let retry_outcome =
+                                    event_service.retry_broadcast_outcome(retry_event);
 
-                                if retry_result.redis_sent {
+                                if retry_outcome.satisfies(
+                                    RealtimeDeliveryRequirement::DistributedWhenAvailable,
+                                ) {
                                     tracing::info!(
                                         user = %username,
                                         room = %room_id.as_str(),
                                         connection = %connection_id,
                                         attempt = attempt,
-                                        redis_sent = retry_result.redis_sent,
+                                        local_delivered = retry_outcome.local_delivered(),
+                                        distributed_delivered = retry_outcome.distributed_delivered(),
                                         "UserLeft retry succeeded"
                                     );
                                     return;
@@ -2496,11 +2485,11 @@ impl StreamMessageHandler {
 
         // Broadcast to cluster (handles both local and Redis).
         // Chat is non-critical: log if Redis was not reached but do not fail the operation.
-        let result = self.event_service.broadcast(event);
-        if !result.redis_sent {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "ChatMessage cluster broadcast did not reach Redis (message may not be visible on other replicas)"
+                "ChatMessage broadcast missed the distributed fan-out path (message may not be visible on other replicas)"
             );
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["chat_no_redis"])
@@ -2532,11 +2521,11 @@ impl StreamMessageHandler {
 
         // Broadcast to cluster (handles both local and Redis).
         // Danmaku is ephemeral and non-critical.
-        let result = self.event_service.broadcast(event);
-        if !result.redis_sent {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if outcome.distributed_delivery_missed() {
             tracing::debug!(
                 room_id = %self.room_id.as_str(),
-                "Danmaku cluster broadcast did not reach Redis (ephemeral, acceptable)"
+                "Danmaku broadcast missed the distributed fan-out path (ephemeral, acceptable)"
             );
         }
     }
@@ -2580,20 +2569,18 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
-        let result = self.event_service.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(
-            &result,
-            self.event_service.metrics().redis_enabled,
-        ) {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "WebRTC offer cluster broadcast did not reach Redis while cluster fan-out is enabled"
+                "WebRTC offer realtime delivery did not satisfy distributed delivery requirements"
             );
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
-                "WebRTC offer delivery failed: cluster Redis publish unavailable".to_string(),
+                "WebRTC offer delivery failed: distributed realtime fan-out unavailable"
+                    .to_string(),
             );
         }
 
@@ -2637,20 +2624,18 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
-        let result = self.event_service.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(
-            &result,
-            self.event_service.metrics().redis_enabled,
-        ) {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "WebRTC answer cluster broadcast did not reach Redis while cluster fan-out is enabled"
+                "WebRTC answer realtime delivery did not satisfy distributed delivery requirements"
             );
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
-                "WebRTC answer delivery failed: cluster Redis publish unavailable".to_string(),
+                "WebRTC answer delivery failed: distributed realtime fan-out unavailable"
+                    .to_string(),
             );
         }
 
@@ -2694,20 +2679,17 @@ impl StreamMessageHandler {
         };
 
         // Cross-replica ICE signaling must reach Redis when cluster mode is enabled.
-        let result = self.event_service.broadcast(event);
-        if should_fail_webrtc_signal_broadcast(
-            &result,
-            self.event_service.metrics().redis_enabled,
-        ) {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
-                "ICE candidate cluster broadcast did not reach Redis while cluster fan-out is enabled"
+                "ICE candidate realtime delivery did not satisfy distributed delivery requirements"
             );
             synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
-                "WebRTC ICE candidate delivery failed: cluster Redis publish unavailable"
+                "WebRTC ICE candidate delivery failed: distributed realtime fan-out unavailable"
                     .to_string(),
             );
         }
@@ -2768,12 +2750,12 @@ impl StreamMessageHandler {
         };
 
         // WebRTC join is semi-critical: log at warn if not propagated to Redis.
-        let result = self.event_service.broadcast(event);
-        if !result.redis_sent {
+        let outcome = self.event_service.broadcast_outcome(event);
+        if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 user_id = %self.user_id.as_str(),
-                "WebRTC join cluster broadcast did not reach Redis (peer may not be visible cross-replica)"
+                "WebRTC join broadcast missed the distributed fan-out path (peer may not be visible cross-replica)"
             );
         }
 
@@ -2827,13 +2809,13 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // WebRTC leave is semi-critical: log at warn if not propagated to Redis.
-        let result = self.event_service.broadcast(event);
-        if !result.redis_sent {
+        // WebRTC leave is semi-critical: log at warn if distributed fan-out misses.
+        let outcome = self.event_service.broadcast_outcome(event);
+        if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id.as_str(),
                 user_id = %self.user_id.as_str(),
-                "WebRTC leave cluster broadcast did not reach Redis (peer may remain visible cross-replica)"
+                "WebRTC leave broadcast missed the distributed fan-out path (peer may remain visible cross-replica)"
             );
         }
 
@@ -3077,8 +3059,8 @@ fn cluster_event_to_server_messages(
     use crate::proto::client::server_message::Message;
     use crate::proto::client::{
         ChatMessageReceive, ErrorMessage, MediaRemovedBatch, MediaUpdated, PlaybackState,
-        PlaybackStateChanged, PlaylistReordered, RoomSettingsChanged, ServerMessage,
-        UserJoinedRoom, UserLeftRoom,
+        PlaybackStateChanged, PlaylistCreated, PlaylistDeleted, PlaylistReordered,
+        PlaylistUpdated, RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
     };
     use synctv_cluster::sync::ClusterEvent;
     use synctv_proto::common::RoomMember;
@@ -3234,6 +3216,24 @@ fn cluster_event_to_server_messages(
                 media_ids: media_ids.iter().map(|id| id.as_str().to_string()).collect(),
                 reordered_by: username.clone(),
                 reordered_by_user_id: user_id.as_str().to_string(),
+            })),
+        }],
+        ClusterEvent::PlaylistCreated { playlist, .. } => vec![ServerMessage {
+            message: Some(Message::PlaylistCreated(PlaylistCreated {
+                room_id: room_id.to_string(),
+                playlist: Some(crate::impls::client::convert::playlist_to_proto(playlist, 0)),
+            })),
+        }],
+        ClusterEvent::PlaylistUpdated { playlist, .. } => vec![ServerMessage {
+            message: Some(Message::PlaylistUpdated(PlaylistUpdated {
+                room_id: room_id.to_string(),
+                playlist: Some(crate::impls::client::convert::playlist_to_proto(playlist, 0)),
+            })),
+        }],
+        ClusterEvent::PlaylistDeleted { playlist_id, .. } => vec![ServerMessage {
+            message: Some(Message::PlaylistDeleted(PlaylistDeleted {
+                room_id: room_id.to_string(),
+                playlist_id: playlist_id.as_str().to_string(),
             })),
         }],
         ClusterEvent::PermissionChanged {
@@ -3441,17 +3441,6 @@ fn cluster_event_to_server_messages(
             // not forwarded to WebSocket clients via the room event path
             vec![]
         }
-    }
-}
-
-const fn should_retry_user_left_broadcast(
-    result: &synctv_cluster::sync::BroadcastResult,
-    cluster_redis_enabled: bool,
-) -> bool {
-    if cluster_redis_enabled {
-        !result.redis_sent
-    } else {
-        result.local_sent == 0
     }
 }
 
@@ -3676,6 +3665,7 @@ impl ProtoCodec {
 mod tests {
     use super::*;
     use crate::proto::client::server_message::Message;
+    use crate::runtime::RealtimeDeliveryOutcome;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3685,11 +3675,11 @@ mod tests {
         ConnectionManager,
     };
     use synctv_cluster::sync::{ClusterEvent, NotificationLevel, RoomMessageHub};
-    use synctv_core::cache::{KeyBuilder, NoopCacheL2, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
     use synctv_core::models::notification::{Notification, NotificationType};
-    use synctv_core::models::{MediaId, PermissionBits, RoomId, RoomPlaybackState, UserId};
+    use synctv_core::models::{MediaId, PermissionBits, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId};
     use synctv_core::repository::NotificationRepository;
     use synctv_core::repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
@@ -3712,6 +3702,22 @@ mod tests {
     }
     fn media_id() -> MediaId {
         MediaId::from_string("media_test".to_string())
+    }
+    fn playlist() -> Playlist {
+        Playlist {
+            id: PlaylistId::from_string("playlist_test".to_string()),
+            room_id: room_id(),
+            creator_id: Some(user_id()),
+            name: "Test Playlist".to_string(),
+            parent_id: None,
+            position: 1.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: now(),
+            updated_at: now(),
+            version: 1,
+        }
     }
     fn now() -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
@@ -3936,8 +3942,7 @@ mod tests {
     fn test_user_service(pool: sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
-        let l2 = Arc::new(NoopCacheL2);
-        let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let password_complexity = PasswordComplexityConfig::default();
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
         let key_builder = KeyBuilder::new("test");
@@ -3960,10 +3965,9 @@ mod tests {
 
     fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
         let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-        let rate_limiter = RateLimiter::in_memory_only("test:chat:".to_string());
+        let rate_limiter = RateLimiter::local_only("test:chat:".to_string());
         let content_filter = ContentFilter::new();
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let member_repo = RoomMemberRepository::new(pool.clone());
         let room_repo = RoomRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool);
@@ -4041,11 +4045,11 @@ mod tests {
         Arc::new(
             ClusterManager::new(
                 ClusterConfig {
-                    distributed_transport_factory: Some(Arc::new(
-                        synctv_cluster::RedisClusterMessageTransportFactory::new(
+                    distributed_transport_factory: Some(
+                        synctv_cluster::build_cluster_message_transport_factory(
                             synctv_core::coordination_runtime_from_client(redis_client),
                         ),
-                    )),
+                    ),
                     message_runtime: build_room_message_runtime(&realtime_profile)
                         .expect("shared message runtime should initialize"),
                     cluster_enabled: false,
@@ -4084,7 +4088,7 @@ mod tests {
             test_chat_service(pool),
             event_service,
             connection_service,
-            Arc::new(RateLimiter::in_memory_only("test:handler:".to_string())),
+            Arc::new(RateLimiter::local_only("test:handler:".to_string())),
             Arc::new(RateLimitConfig::default()),
             Arc::new(ContentFilter::new()),
             sender,
@@ -4139,7 +4143,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::in_memory_only(format!(
+            Arc::new(RateLimiter::local_only(format!(
                 "test:fixture:{node_id}:"
             ))),
             Arc::new(RateLimitConfig::default()),
@@ -4935,6 +4939,78 @@ mod tests {
     }
 
     #[test]
+    fn test_playlist_created_event_conversion() {
+        let event = ClusterEvent::PlaylistCreated {
+            event_id: "evt6d".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "grace".to_string(),
+            playlist: playlist(),
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::PlaylistCreated(created)) => {
+                assert_eq!(created.room_id, "room_test");
+                let playlist = created.playlist.as_ref().expect("playlist payload");
+                assert_eq!(playlist.id, "playlist_test");
+                assert_eq!(playlist.name, "Test Playlist");
+            }
+            other => panic!("Expected PlaylistCreated, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_playlist_updated_event_conversion() {
+        let mut updated_playlist = playlist();
+        updated_playlist.name = "Renamed Playlist".to_string();
+        let event = ClusterEvent::PlaylistUpdated {
+            event_id: "evt6e".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "heidi".to_string(),
+            playlist: updated_playlist,
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::PlaylistUpdated(updated)) => {
+                assert_eq!(updated.room_id, "room_test");
+                let playlist = updated.playlist.as_ref().expect("playlist payload");
+                assert_eq!(playlist.id, "playlist_test");
+                assert_eq!(playlist.name, "Renamed Playlist");
+            }
+            other => panic!("Expected PlaylistUpdated, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_playlist_deleted_event_conversion() {
+        let event = ClusterEvent::PlaylistDeleted {
+            event_id: "evt6f".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "ivan".to_string(),
+            playlist_id: PlaylistId::from_string("playlist_test".to_string()),
+            timestamp: now(),
+        };
+
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::PlaylistDeleted(deleted)) => {
+                assert_eq!(deleted.room_id, "room_test");
+                assert_eq!(deleted.playlist_id, "playlist_test");
+            }
+            other => panic!("Expected PlaylistDeleted, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_webrtc_offer_event_conversion() {
         let event = ClusterEvent::WebRTCSignaling {
             event_id: "evt7".to_string(),
@@ -5653,76 +5729,102 @@ mod tests {
     }
 
     #[test]
-    fn test_user_left_requires_retry_when_cluster_redis_enabled_but_publish_fails() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 1,
-            redis_sent: false,
-        };
-
-        let should_retry = super::should_retry_user_left_broadcast(&result, true);
+    fn test_user_left_requires_retry_when_distributed_delivery_is_missing() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 1,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        );
 
         assert!(
-            should_retry,
-            "when cluster Redis fan-out is configured, local delivery alone is insufficient for UserLeft consistency"
+            !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable),
+            "when distributed fan-out is configured, local delivery alone is insufficient for UserLeft consistency"
         );
     }
 
     #[test]
     fn test_user_left_does_not_retry_in_single_node_mode_after_local_delivery() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 1,
-            redis_sent: false,
-        };
-
-        let should_retry = super::should_retry_user_left_broadcast(&result, false);
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 1,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: false,
+            },
+        );
 
         assert!(
-            !should_retry,
+            outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable),
             "single-node mode should not spawn retries when the local subscriber already received UserLeft"
         );
     }
 
     #[test]
-    fn test_webrtc_signal_requires_redis_delivery_when_cluster_enabled() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 1,
-            redis_sent: false,
-        };
+    fn test_webrtc_signal_requires_distributed_delivery_when_available() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 1,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        );
 
         assert!(
-            super::should_fail_webrtc_signal_broadcast(&result, true),
-            "cluster-mode WebRTC signaling must fail closed unless Redis publish succeeds because local room fan-out cannot prove the targeted peer received the signal"
+            !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable),
+            "cluster-mode WebRTC signaling must fail closed unless distributed publish succeeds because local room fan-out cannot prove the targeted peer received the signal"
         );
     }
 
     #[test]
-    fn test_webrtc_signal_allows_single_node_delivery_without_redis() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 1,
-            redis_sent: false,
-        };
+    fn test_webrtc_signal_allows_single_node_delivery_without_distributed_backend() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 1,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: false,
+            },
+        );
 
-        assert!(!super::should_fail_webrtc_signal_broadcast(&result, false));
+        assert!(outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
     }
 
     #[test]
-    fn test_webrtc_signal_allows_cluster_delivery_when_redis_publish_succeeds() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 0,
-            redis_sent: true,
-        };
+    fn test_webrtc_signal_allows_cluster_delivery_when_distributed_publish_succeeds() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 0,
+                redis_sent: true,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        );
 
-        assert!(!super::should_fail_webrtc_signal_broadcast(&result, true));
+        assert!(outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
     }
 
     #[test]
-    fn test_webrtc_signal_fails_when_neither_local_nor_redis_delivery_succeeds() {
-        let result = synctv_cluster::sync::BroadcastResult {
-            local_sent: 0,
-            redis_sent: false,
-        };
+    fn test_webrtc_signal_fails_when_no_delivery_path_succeeds() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 0,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        );
 
-        assert!(super::should_fail_webrtc_signal_broadcast(&result, true));
+        assert!(!outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
     }
 
     #[test]
@@ -5795,7 +5897,7 @@ mod tests {
             test_chat_service(pool),
             event_service,
             manager.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:conn-id-only-match:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),
@@ -5836,7 +5938,7 @@ mod tests {
             test_chat_service(pool),
             event_service,
             manager.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:conn-id-only-reject:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),
@@ -6020,7 +6122,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:pre-join-room-closed:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),
@@ -6106,7 +6208,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:pre-join-room-owner-inactive:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),
@@ -6198,7 +6300,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:pre-join-user-banned:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),
@@ -6290,7 +6392,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::in_memory_only(
+            Arc::new(RateLimiter::local_only(
                 "test:pre-join-subscription-fail:".to_string(),
             )),
             Arc::new(RateLimitConfig::default()),

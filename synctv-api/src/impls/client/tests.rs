@@ -41,12 +41,7 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                 "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
             )
             .expect("jwt"),
-            synctv_core::cache::UsernameCache::new(
-                Arc::new(synctv_core::cache::NoopCacheL2),
-                "test:username:".to_string(),
-                128,
-                60,
-            ),
+            synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
             synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                 128, 3600, 86400,
@@ -66,8 +61,7 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                     "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UsernameCache::local_only(
                     "test:username:".to_string(),
                     128,
                     60,
@@ -162,12 +156,7 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                 "test-secret-key-for-client-api-provider-store-minimum-32-chars",
             )
             .expect("jwt"),
-            synctv_core::cache::UsernameCache::new(
-                Arc::new(synctv_core::cache::NoopCacheL2),
-                "test:username:".to_string(),
-                128,
-                60,
-            ),
+            synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
             synctv_core::config::PasswordComplexityConfig::default(),
             Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
                 128, 3600, 86400,
@@ -187,8 +176,7 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                     "test-secret-key-for-client-api-provider-store-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UsernameCache::local_only(
                     "test:username:".to_string(),
                     128,
                     60,
@@ -1123,41 +1111,6 @@ const _: () = assert!(
     super::ClientApiImpl::MAX_PLAYLIST_SIZE > 100,
     "MAX_PLAYLIST_SIZE must exceed single batch limit"
 );
-
-// === E1: publish_room_cache_invalidation helper tests ===
-
-#[test]
-fn test_build_room_cache_invalidation_event_produces_correct_target() {
-    // The helper should produce a CacheInvalidate event targeting the given room
-    use synctv_cluster::sync::{CacheTarget, ClusterEvent};
-
-    let rid = RoomId::from_string("test_room_e1".to_string());
-    let request = super::ClientApiImpl::build_room_cache_invalidation_request(&rid);
-
-    match request.event {
-        ClusterEvent::CacheInvalidate {
-            ref targets,
-            ref event_id,
-            ..
-        } => {
-            assert_eq!(targets.len(), 1, "Should have exactly one cache target");
-            match &targets[0] {
-                CacheTarget::Room { room_id } => {
-                    assert_eq!(room_id, "test_room_e1");
-                }
-                other => panic!("Expected CacheTarget::Room, got {other:?}"),
-            }
-            assert!(
-                !event_id.is_empty(),
-                "event_id should be a non-empty shared base62 ID"
-            );
-        }
-        other => panic!(
-            "Expected ClusterEvent::CacheInvalidate, got {:?}",
-            std::mem::discriminant(&other)
-        ),
-    }
-}
 
 // === A6: Permission calculation in list_my_rooms tests ===
 

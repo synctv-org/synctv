@@ -36,7 +36,7 @@ pub(crate) mod convert;
 mod tests;
 
 use std::sync::Arc;
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::RoomId;
 use synctv_core::service::{RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
@@ -52,6 +52,17 @@ use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::impls::ApiError;
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
+use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
+use crate::membership_event_fanout::{
+    default_membership_event_fanout_service, MembershipEventFanoutService,
+};
+use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
+use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
+use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
+use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
+use crate::room_lifecycle_fanout::{
+    default_room_lifecycle_fanout_service, RoomLifecycleFanoutService,
+};
 use crate::runtime::RealtimeConnectionService;
 
 fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
@@ -125,6 +136,13 @@ pub struct ClientApiImpl {
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub cluster_fanout: Arc<dyn ClusterFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
+    pub member_fanout: Arc<dyn MemberFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    pub media_fanout: Arc<dyn MediaFanoutService>,
+    pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
+    pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
@@ -204,7 +222,22 @@ impl ClientApiImpl {
         )));
         let cluster_fanout =
             default_cluster_fanout_service(None, config.cluster_runtime_enabled());
-        let room_settings_fanout = default_room_settings_fanout_service();
+        let room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        let member_fanout = default_member_fanout_service(cluster_fanout.clone());
+        let membership_event_fanout = default_membership_event_fanout_service(
+            cluster_fanout.clone(),
+            room_service.clone(),
+            user_service.clone(),
+        );
+        let media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        let realtime_lifecycle = default_realtime_lifecycle_service(
+            connection_service.clone(),
+            live_streaming_infrastructure.clone(),
+            cluster_fanout.clone(),
+        );
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
         Self {
             user_service,
             room_service,
@@ -217,6 +250,13 @@ impl ClientApiImpl {
             settings_registry,
             cluster_fanout,
             room_settings_fanout,
+            member_fanout,
+            membership_event_fanout,
+            media_fanout,
+            playlist_fanout,
+            room_cache_fanout,
+            realtime_lifecycle,
+            room_lifecycle_fanout,
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -237,7 +277,22 @@ impl ClientApiImpl {
         )));
         let cluster_fanout =
             default_cluster_fanout_service(None, config.config.cluster_runtime_enabled());
-        let room_settings_fanout = default_room_settings_fanout_service();
+        let room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        let member_fanout = default_member_fanout_service(cluster_fanout.clone());
+        let membership_event_fanout = default_membership_event_fanout_service(
+            cluster_fanout.clone(),
+            config.room_service.clone(),
+            config.user_service.clone(),
+        );
+        let media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        let realtime_lifecycle = default_realtime_lifecycle_service(
+            config.connection_service.clone(),
+            config.live_streaming_infrastructure.clone(),
+            cluster_fanout.clone(),
+        );
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
@@ -250,6 +305,13 @@ impl ClientApiImpl {
             settings_registry: config.settings_registry,
             cluster_fanout,
             room_settings_fanout,
+            member_fanout,
+            membership_event_fanout,
+            media_fanout,
+            playlist_fanout,
+            room_cache_fanout,
+            realtime_lifecycle,
+            room_lifecycle_fanout,
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -268,6 +330,23 @@ impl ClientApiImpl {
         mut self,
         cluster_fanout: Arc<dyn ClusterFanoutService>,
     ) -> Self {
+        self.room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        self.member_fanout = default_member_fanout_service(cluster_fanout.clone());
+        self.membership_event_fanout = default_membership_event_fanout_service(
+            cluster_fanout.clone(),
+            self.room_service.clone(),
+            self.user_service.clone(),
+        );
+        self.media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        self.playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
+        self.room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        self.realtime_lifecycle = default_realtime_lifecycle_service(
+            self.connection_service.clone(),
+            self.live_streaming_infrastructure.clone(),
+            cluster_fanout.clone(),
+        );
+        self.room_lifecycle_fanout =
+            default_room_lifecycle_fanout_service(cluster_fanout.clone());
         self.cluster_fanout = cluster_fanout;
         self
     }
@@ -356,171 +435,4 @@ impl ClientApiImpl {
         self
     }
 
-    /// Build a `PublishRequest` for room cache invalidation.
-    ///
-    /// This is a pure function that constructs the event without any I/O,
-    /// making it easily testable.
-    #[must_use]
-    pub fn build_room_cache_invalidation_request(
-        room_id: &synctv_core::models::RoomId,
-    ) -> synctv_cluster::sync::PublishRequest {
-        synctv_cluster::sync::PublishRequest {
-            event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                event_id: synctv_common::snanoid!(16),
-                targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                    room_id: room_id.as_str().to_string(),
-                }],
-                timestamp: chrono::Utc::now(),
-            },
-        }
-    }
-
-    /// Reserve cluster fanout capacity for a room cache invalidation event.
-    ///
-    /// Reserving before the mutation avoids returning failure after state has
-    /// already committed when the cross-replica publish channel is full/closed.
-    async fn reserve_room_cache_invalidation(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-    ) -> Result<Option<crate::impls::ClusterEventPublishReservation>, ApiError> {
-        let _ = room_id;
-        self.cluster_fanout
-            .reserve("failed to fan out room cache invalidation to cluster replicas")
-            .await
-    }
-
-    /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
-    ///
-    /// Used after media deletion to terminate any active RTMP stream.
-    async fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
-        super::kick_stream_cluster(
-            self.live_streaming_infrastructure.as_ref(),
-            self.cluster_fanout.as_ref(),
-            room_id,
-            media_id,
-            reason,
-        )
-        .await;
-    }
-
-    /// Publish a permission change event to other cluster replicas.
-    ///
-    /// Fetches actual usernames and effective permissions before broadcasting
-    /// so that receivers get correct data without needing additional lookups.
-    ///
-    /// Returns an error in cluster mode when the event cannot be queued, so
-    /// callers can fail closed instead of committing a mutation that other
-    /// replicas will continue to serve from stale permission cache.
-    async fn publish_permission_changed_with_reservation(
-        &self,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        changed_by: &UserId,
-        reservation: Option<crate::impls::ClusterEventPublishReservation>,
-    ) -> Result<(), ApiError> {
-        // Fetch room settings for proper three-layer permission calculation
-        let room_settings = self
-            .room_service
-            .get_room_settings(room_id)
-            .await
-            .unwrap_or_default();
-
-        // Fetch actual usernames and permissions for the event
-        let (target_username, new_permissions, role, added_permissions, removed_permissions) =
-            match self
-                .room_service
-                .member_service()
-                .get_member(room_id, target_user_id)
-                .await
-            {
-                Ok(Some(member)) => {
-                    let username = self
-                        .user_service
-                        .get_user(target_user_id)
-                        .await
-                        .map(|u| u.username)
-                        .unwrap_or_default();
-                    let role_default = self
-                        .room_service
-                        .permission_service()
-                        .calculate_role_default_permissions(&member.role, &room_settings);
-                    let perms = member.effective_permissions(role_default);
-                    let role_i32 = match member.role {
-                        synctv_core::models::RoomRole::Creator => {
-                            synctv_proto::common::RoomMemberRole::Creator as i32
-                        }
-                        synctv_core::models::RoomRole::Admin => {
-                            synctv_proto::common::RoomMemberRole::Admin as i32
-                        }
-                        synctv_core::models::RoomRole::Member => {
-                            synctv_proto::common::RoomMemberRole::Member as i32
-                        }
-                        synctv_core::models::RoomRole::Guest => {
-                            synctv_proto::common::RoomMemberRole::Guest as i32
-                        }
-                    };
-                    (
-                        username,
-                        perms,
-                        role_i32,
-                        member.added_permissions,
-                        member.removed_permissions,
-                    )
-                }
-                _ => (
-                    String::new(),
-                    synctv_core::models::PermissionBits::empty(),
-                    synctv_proto::common::RoomMemberRole::Member as i32,
-                    0u64,
-                    0u64,
-                ),
-            };
-
-        let changed_by_username = self
-            .user_service
-            .get_user(changed_by)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
-
-        let request = synctv_cluster::sync::PublishRequest {
-            event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                target_user_id: target_user_id.clone(),
-                target_username,
-                changed_by: changed_by.clone(),
-                changed_by_username,
-                new_permissions,
-                role,
-                added_permissions: synctv_core::models::PermissionBits(added_permissions),
-                removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
-                admin_added_permissions: synctv_core::models::PermissionBits(0),
-                admin_removed_permissions: synctv_core::models::PermissionBits(0),
-                timestamp: chrono::Utc::now(),
-            },
-        };
-
-        if let Some(reservation) = reservation {
-            reservation.publish(request);
-            return Ok(());
-        }
-
-        self.cluster_fanout
-            .reserve("failed to fan out permission changes to cluster replicas")
-            .await
-            .map(|reservation| {
-                if let Some(reservation) = reservation {
-                    reservation.publish(request);
-                }
-            })
-        .inspect_err(|error| {
-            tracing::warn!(
-                room_id = %room_id.as_str(),
-                target_user_id = %target_user_id.as_str(),
-                error = %error.message(),
-                "Permission change fanout failed"
-            );
-        })
-    }
 }

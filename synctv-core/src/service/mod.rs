@@ -78,7 +78,10 @@ pub use notification_partition_manager::{
     ensure_notification_partitions_on_startup, NotificationPartitionHealth,
     NotificationPartitionManager,
 };
-pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore};
+pub use oauth2::{
+    local_oauth_state_store, shared_oauth_state_store, OAuth2Service, OAuth2State,
+    OAuth2UserInfo, OAuthStateStore,
+};
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};

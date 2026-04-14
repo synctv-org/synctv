@@ -519,7 +519,6 @@ fn extract_token_from_query(query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::InMemoryStreamRegistry;
     use crate::relay::MockStreamRegistry;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
@@ -605,7 +604,7 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let guard = runtime.block_on(async {
-                let registry = Arc::new(InMemoryStreamRegistry::new());
+                let registry = crate::relay::local_stream_registry();
                 PublisherGuard::new(registry, "room1".to_string(), "media1".to_string(), Some(1))
             });
             drop(runtime);
@@ -620,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rollback_does_not_remove_newer_registration() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         let publish_key_service = Arc::new(PublishKeyService::new(
             JwtService::new("test-secret-key-for-rtmp-auth-rollback-1234567890").expect("jwt"),
             24,
@@ -712,7 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_rollback_of_old_publish_does_not_remove_new_attempt() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         let publish_key_service = Arc::new(PublishKeyService::new(
             JwtService::new("test-secret-key-for-rtmp-auth-reconnect-1234567890").expect("jwt"),
             24,
@@ -797,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_unpublish_does_not_drop_newer_pending_rollback_epoch() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         let publish_key_service = Arc::new(PublishKeyService::new(
             JwtService::new("test-secret-key-for-rtmp-auth-unpublish-1234567890").expect("jwt"),
             24,

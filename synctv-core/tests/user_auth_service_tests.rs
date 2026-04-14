@@ -13,15 +13,14 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{CacheL2Backend, KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{CacheL2Backend, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{OAuth2Provider, UserId},
     repository::{UserOAuthProviderRepository, UserRepository},
     service::{
         auth::{jwt::JwtService, TestPasswordHasher},
-        oauth2::InMemoryOAuthStateStore,
-        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter,
-        TokenBlacklistStore, UserService,
+        local_oauth_state_store, BruteForceProtection, InMemoryTokenBlacklistStore,
+        OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -58,8 +57,7 @@ fn create_user_service_with_blacklist(
     pool: PgPool,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
 ) -> UserService {
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 1000, 0);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
@@ -210,10 +208,6 @@ impl CacheL2Backend for FailingCacheL2 {
 
     fn is_active(&self) -> bool {
         true
-    }
-
-    fn backend_name(&self) -> &'static str {
-        "failing"
     }
 }
 
@@ -1697,7 +1691,7 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     let user_service = create_user_service(pool.clone());
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
-        Arc::new(InMemoryOAuthStateStore::new()),
+        local_oauth_state_store(),
         synctv_core::oauth2::ProviderRegistry::new(),
         false,
     )
@@ -1777,7 +1771,7 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
     let user_service = create_user_service(pool.clone());
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
-        Arc::new(InMemoryOAuthStateStore::new()),
+        local_oauth_state_store(),
         synctv_core::oauth2::ProviderRegistry::new(),
         false,
     )
@@ -2117,7 +2111,7 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
 async fn test_refresh_token_rate_limit_recovers() {
     let (_container, pool) = create_test_pool().await;
     let mut service = create_user_service(pool.clone());
-    service.set_refresh_rate_limiter_for_tests(RateLimiter::in_memory_only(
+    service.set_refresh_rate_limiter_for_tests(RateLimiter::local_only(
         "test-refresh-recover-short-window:".to_string(),
     ));
     service.set_refresh_rate_limit_config_for_tests(1, 1);

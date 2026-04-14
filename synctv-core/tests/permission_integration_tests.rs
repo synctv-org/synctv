@@ -234,7 +234,7 @@ async fn test_permission_banned_member_denied() {
         .ban_member(
             &room.id,
             &user_id,
-            &creator_id,
+            Some(&creator_id),
             Some("Test ban".to_string()),
         )
         .await

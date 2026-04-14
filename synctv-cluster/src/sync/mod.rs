@@ -9,6 +9,10 @@ pub mod room_hub;
 pub mod runtime;
 pub mod transport;
 
+use std::sync::Arc;
+
+use synctv_core::RedisCoordinationRuntime;
+
 pub use cluster_manager::{BroadcastResult, ClusterConfig, ClusterManager, ClusterMetrics};
 pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
@@ -26,3 +30,10 @@ pub use transport::{
     ClusterMessageTransport, ClusterMessageTransportConfig, ClusterMessageTransportFactory,
     ClusterMessageTransportRuntime,
 };
+
+#[must_use]
+pub fn build_cluster_message_transport_factory(
+    runtime: Arc<dyn RedisCoordinationRuntime>,
+) -> Arc<dyn ClusterMessageTransportFactory> {
+    Arc::new(redis_pubsub::RedisClusterMessageTransportFactory::new(runtime))
+}

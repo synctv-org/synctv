@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::{AuthCallback, AuthPublishRewrite};
 
 // ==================================================================
@@ -52,7 +52,7 @@ impl CallbackTracker {
 
 /// Mock auth callback that simulates JWT validation and room permission checks
 struct MockRtmpAuthCallback {
-    registry: Arc<InMemoryStreamRegistry>,
+    registry: Arc<dyn StreamRegistryTrait>,
     tracker: Arc<CallbackTracker>,
     /// Simulates whether the JWT token is valid
     should_authenticate: bool,
@@ -65,7 +65,7 @@ struct MockRtmpAuthCallback {
 }
 
 impl MockRtmpAuthCallback {
-    fn new(registry: Arc<InMemoryStreamRegistry>, tracker: Arc<CallbackTracker>) -> Self {
+    fn new(registry: Arc<dyn StreamRegistryTrait>, tracker: Arc<CallbackTracker>) -> Self {
         Self {
             registry,
             tracker,
@@ -193,7 +193,7 @@ impl AuthCallback for MockRtmpAuthCallback {
 /// Test that a valid JWT token is accepted and produces correct rewrite
 #[tokio::test]
 async fn test_jwt_token_validation_success() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room123")
@@ -220,7 +220,7 @@ async fn test_jwt_token_validation_success() {
 /// Test that an invalid JWT token is rejected
 #[tokio::test]
 async fn test_jwt_token_validation_failure() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone()).with_auth_result(false);
 
@@ -240,7 +240,7 @@ async fn test_jwt_token_validation_failure() {
 /// Test JWT token extraction from query string
 #[tokio::test]
 async fn test_jwt_token_from_query_string() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room123")
@@ -267,7 +267,7 @@ async fn test_jwt_token_from_query_string() {
 /// Test that `room_id` mismatch is detected
 #[tokio::test]
 async fn test_room_id_mismatch_rejected() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room_A")
@@ -292,7 +292,7 @@ async fn test_room_id_mismatch_rejected() {
 /// Test that correct `room_id` is accepted
 #[tokio::test]
 async fn test_room_id_match_accepted() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("correct_room")
@@ -310,7 +310,7 @@ async fn test_room_id_match_accepted() {
 /// Test that registry is cleaned up when authentication fails
 #[tokio::test]
 async fn test_auth_failure_does_not_leave_stale_entry() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone()).with_auth_result(false);
 
@@ -324,7 +324,7 @@ async fn test_auth_failure_does_not_leave_stale_entry() {
 /// Test that rollback is called when `StreamHub` publish fails after auth
 #[tokio::test]
 async fn test_rollback_on_streamhub_failure() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room1")
@@ -355,7 +355,7 @@ async fn test_rollback_on_streamhub_failure() {
 /// Test that `on_unpublish` cleans up registry
 #[tokio::test]
 async fn test_on_unpublish_cleanup() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room1")
@@ -377,7 +377,7 @@ async fn test_on_unpublish_cleanup() {
 /// Test `on_unpublish` is idempotent
 #[tokio::test]
 async fn test_on_unpublish_idempotent() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone());
 
@@ -398,7 +398,7 @@ async fn test_on_unpublish_idempotent() {
 /// Test that duplicate publisher is rejected
 #[tokio::test]
 async fn test_duplicate_publisher_rejected() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room1")
@@ -425,7 +425,7 @@ async fn test_duplicate_publisher_rejected() {
 /// Test that RTMP play is always rejected
 #[tokio::test]
 async fn test_on_play_always_rejected() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone());
 

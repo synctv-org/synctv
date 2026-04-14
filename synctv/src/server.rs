@@ -1636,7 +1636,7 @@ mod tests {
     use std::time::Duration;
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::{
-        cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+        cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
         service::{
@@ -1665,8 +1665,7 @@ mod tests {
     fn test_user_service(pool: sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt");
-        let username_cache =
-            UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 64, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
 
         UserService::new(
             pool,
@@ -1720,8 +1719,7 @@ mod tests {
                 config: config.clone(),
                 user_service,
                 user_cache: Arc::new(
-                    synctv_core::cache::UserCache::new(
-                        Arc::new(synctv_core::cache::NoopCacheL2),
+                    synctv_core::cache::UserCache::local_only(
                         128,
                         60,
                         300,
@@ -1751,15 +1749,10 @@ mod tests {
                 chat_service: None,
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
-                rate_limiter: synctv_core::service::RateLimiter::in_memory_only(
+                rate_limiter: synctv_core::service::RateLimiter::local_only(
                     "test:".to_string(),
                 ),
-                ws_ticket_service: Arc::new(
-                    synctv_core::service::WsTicketService::from_store(
-                        Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-                        None,
-                    ),
-                ),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
                 redis_runtime: None,
                 shared_provider_stores: Some(shared_runtime.provider_stores.clone()),
                 shared_proxy_signing_key: Some(shared_runtime.signing_key.clone()),
@@ -2324,7 +2317,6 @@ mod tests {
         use synctv_cluster::sync::{ClusterConfig, ClusterManager, RoomMessageHub};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
-        use synctv_livestream::relay::InMemoryStreamRegistry;
         use tokio::sync::mpsc;
 
         let cluster_manager = ClusterManager::new(
@@ -2347,7 +2339,7 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let (event_sender, _event_receiver) = mpsc::channel(8);
         let pull_manager = Arc::new(PullStreamManager::new(
             registry.clone(),
@@ -2382,7 +2374,6 @@ mod tests {
         use synctv_core::models::{MediaId, RoomId};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
-        use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
         use tokio::sync::mpsc;
 
         let cluster_manager = ClusterManager::new(
@@ -2405,7 +2396,7 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         registry
             .try_register_publisher(
                 "room-1",
@@ -2497,7 +2488,6 @@ mod tests {
         use synctv_core::models::{RoomId, UserId};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
-        use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
         use tokio::sync::mpsc;
 
         let cluster_manager = ClusterManager::new(
@@ -2520,7 +2510,7 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         registry
             .try_register_publisher(
                 "room-1",

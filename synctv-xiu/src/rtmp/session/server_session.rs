@@ -36,6 +36,7 @@ use {
 };
 
 const MAX_HANDSHAKE_BUFFER: usize = 8192;
+const MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN: usize = 2048;
 
 enum ServerSessionState {
     Handshake,
@@ -758,7 +759,7 @@ impl ServerSession {
             value: SessionErrorValue::NoStreamName,
         })?;
 
-        if raw_stream_name.len() > 256 {
+        if raw_stream_name.len() > MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN {
             return Err(SessionError {
                 value: SessionErrorValue::NoStreamName,
             });
@@ -818,7 +819,7 @@ impl ServerSession {
 
         let stream_name_with_query = match other_values.remove(0) {
             Amf0ValueType::UTF8String(val) => {
-                if val.len() > 256 {
+                if val.len() > MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN {
                     return Err(SessionError {
                         value: SessionErrorValue::Amf0ValueCountNotCorrect,
                     });

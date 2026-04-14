@@ -138,9 +138,6 @@ pub trait TicketStore: Send + Sync {
         expected_room_id: &RoomId,
     ) -> Result<Option<WsTicketData>>;
 
-    /// A label for logging/debug purposes (e.g. "redis", "memory").
-    fn backend_name(&self) -> &'static str;
-
     /// Whether this store can safely validate and consume tickets across nodes.
     ///
     /// Clustered WebSocket authentication requires a shared backend because the
@@ -336,10 +333,6 @@ impl TicketStore for RedisTicketStore {
         Ok(Some(data))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
-
     fn supports_cluster_runtime(&self) -> bool {
         true
     }
@@ -474,10 +467,6 @@ impl TicketStore for InMemoryTicketStore {
         Ok(Some(entry.data))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "memory"
-    }
-
     fn supports_cluster_runtime(&self) -> bool {
         false
     }
@@ -500,7 +489,7 @@ pub struct WsTicketService {
 impl std::fmt::Debug for WsTicketService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsTicketService")
-            .field("backend", &self.store.backend_name())
+            .field("cross_node_capable", &self.store.supports_cluster_runtime())
             .field("ticket_ttl_secs", &self.ticket_ttl_secs)
             .finish()
     }
@@ -531,6 +520,11 @@ impl WsTicketService {
         Self::from_store(Arc::new(InMemoryTicketStore::new(ttl)), ticket_ttl_secs)
     }
 
+    #[must_use]
+    pub fn local_only(ticket_ttl_secs: Option<u64>) -> Self {
+        Self::with_memory(ticket_ttl_secs)
+    }
+
     pub fn from_shared_state_profile(
         profile: &SharedStateProfile,
         ticket_ttl_secs: Option<u64>,
@@ -556,12 +550,6 @@ impl WsTicketService {
     #[must_use]
     pub const fn ticket_ttl_secs(&self) -> u64 {
         self.ticket_ttl_secs
-    }
-
-    /// Return the backend name (e.g. "redis", "memory").
-    #[must_use]
-    pub fn backend_name(&self) -> &'static str {
-        self.store.backend_name()
     }
 
     /// Whether the configured store is safe to use when cluster runtime is enabled.
@@ -603,7 +591,7 @@ impl WsTicketService {
         debug!(
             user_id = %user_id.as_str(),
             ttl_secs = self.ticket_ttl_secs,
-            mode = %self.store.backend_name(),
+            cross_node_capable = self.store.supports_cluster_runtime(),
             "WebSocket ticket created"
         );
 
@@ -625,10 +613,14 @@ impl WsTicketService {
         ticket: &str,
         expected_room_id: &RoomId,
     ) -> Result<ValidatedTicket> {
-        let mode = self.store.backend_name();
+        let cross_node_capable = self.store.supports_cluster_runtime();
 
         let Some(ticket_data) = self.store.consume(ticket, expected_room_id).await? else {
-            debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
+            debug!(
+                ticket = %ticket,
+                cross_node_capable,
+                "WebSocket ticket not found or expired"
+            );
             return Err(Error::Authorization(
                 "Invalid or expired ticket".to_string(),
             ));
@@ -639,7 +631,7 @@ impl WsTicketService {
             debug!(
                 ticket_room = %ticket_data.room_id,
                 expected_room = %expected_room_id.as_str(),
-                mode = %mode,
+                cross_node_capable,
                 "WebSocket ticket rejected: room mismatch"
             );
             return Err(Error::Authorization(
@@ -650,7 +642,7 @@ impl WsTicketService {
         debug!(
             user_id = %ticket_data.user_id,
             room_id = %ticket_data.room_id,
-            mode = %mode,
+            cross_node_capable,
             "WebSocket ticket validated and consumed"
         );
 
@@ -674,7 +666,7 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         user_validator: &dyn UserValidator,
     ) -> Result<ValidatedTicket> {
-        let mode = self.store.backend_name();
+        let cross_node_capable = self.store.supports_cluster_runtime();
 
         let pending = self
             .validate_checked(ticket, expected_room_id, user_validator)
@@ -687,7 +679,7 @@ impl WsTicketService {
         {
             debug!(
                 ticket = %ticket,
-                mode = %mode,
+                cross_node_capable,
                 "WebSocket ticket already consumed during checked validation"
             );
             return Err(Error::Authorization(
@@ -698,7 +690,7 @@ impl WsTicketService {
         debug!(
             user_id = %pending.user_id.as_str(),
             room_id = %pending.ticket_data.room_id,
-            mode = %mode,
+            cross_node_capable,
             "WebSocket ticket validated and consumed with user check"
         );
 
@@ -719,10 +711,14 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         user_validator: &dyn UserValidator,
     ) -> Result<PendingValidatedTicket> {
-        let mode = self.store.backend_name();
+        let cross_node_capable = self.store.supports_cluster_runtime();
 
         let Some(ticket_data) = self.store.load(ticket, expected_room_id).await? else {
-            debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
+            debug!(
+                ticket = %ticket,
+                cross_node_capable,
+                "WebSocket ticket not found or expired"
+            );
             return Err(Error::Authorization(
                 "Invalid or expired ticket".to_string(),
             ));
@@ -739,7 +735,7 @@ impl WsTicketService {
                 debug!(
                     user_id = %user_id.as_str(),
                     error = %e,
-                    mode = %mode,
+                    cross_node_capable,
                     "WebSocket ticket rejected: user validation failed"
                 );
                 match crate::service::auth::SecurityPipeline::classify_auth_error(&e) {
@@ -758,7 +754,7 @@ impl WsTicketService {
                 user_id = %user_id.as_str(),
                 ticket_pv = ticket_data.password_version,
                 current_pv = user_validation.password_version,
-                mode = %mode,
+                cross_node_capable,
                 "WebSocket ticket rejected: password changed after ticket issued"
             );
             return Err(Error::Authorization("Authentication failed".to_string()));
@@ -767,7 +763,7 @@ impl WsTicketService {
         debug!(
             user_id = %user_id.as_str(),
             room_id = %ticket_data.room_id,
-            mode = %mode,
+            cross_node_capable,
             "WebSocket ticket prevalidated with user check"
         );
 
@@ -785,7 +781,7 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         pending: &PendingValidatedTicket,
     ) -> Result<ValidatedTicket> {
-        let mode = self.store.backend_name();
+        let cross_node_capable = self.store.supports_cluster_runtime();
 
         if !self
             .store
@@ -794,7 +790,7 @@ impl WsTicketService {
         {
             debug!(
                 ticket = %ticket,
-                mode = %mode,
+                cross_node_capable,
                 "WebSocket ticket already consumed before final handshake commit"
             );
             return Err(Error::Authorization(
@@ -805,7 +801,7 @@ impl WsTicketService {
         debug!(
             user_id = %pending.user_id.as_str(),
             room_id = %pending.ticket_data.room_id,
-            mode = %mode,
+            cross_node_capable,
             "WebSocket ticket consumed after prevalidated handshake succeeded"
         );
 
@@ -874,7 +870,7 @@ mod tests {
         let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
         let service = WsTicketService::with_redis_runtime(runtime, "synctv:", Some(30));
 
-        assert_eq!(service.backend_name(), "redis");
+        assert!(service.supports_cluster_runtime());
         assert_eq!(service.ticket_ttl_secs(), 30);
     }
 
@@ -1275,8 +1271,8 @@ mod tests {
 
     #[test]
     fn test_non_cluster_mode_allows_memory() {
-        let service = WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), None);
-        assert_eq!(service.store.backend_name(), "memory");
+        let service = WsTicketService::local_only(None);
+        assert!(!service.supports_cluster_runtime());
     }
 
     // ============================================================================
@@ -1286,15 +1282,13 @@ mod tests {
     /// Test: backend selection without Redis uses memory.
     #[test]
     fn test_new_without_redis_uses_memory_backend() {
-        let service =
-            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), Some(30));
-        assert_eq!(service.backend_name(), "memory");
+        let service = WsTicketService::local_only(Some(30));
+        assert!(!service.supports_cluster_runtime());
     }
 
     #[test]
     fn test_new_without_redis_preserves_custom_ttl() {
-        let service =
-            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(60)), Some(60));
+        let service = WsTicketService::local_only(Some(60));
         assert_eq!(service.ticket_ttl_secs(), 60);
     }
 
@@ -1302,12 +1296,10 @@ mod tests {
     /// Single-replica deployments should still function without Redis.
     #[test]
     fn test_non_cluster_mode_without_redis_succeeds() {
-        let service =
-            WsTicketService::from_store(Arc::new(InMemoryTicketStore::new(30)), Some(30));
-        assert_eq!(
-            service.backend_name(),
-            "memory",
-            "Non-cluster mode without Redis should use memory backend"
+        let service = WsTicketService::local_only(Some(30));
+        assert!(
+            !service.supports_cluster_runtime(),
+            "Non-cluster mode without Redis should use single-node ticket storage"
         );
     }
 
@@ -1317,7 +1309,7 @@ mod tests {
         let store = Arc::new(InMemoryTicketStore::new(30));
         let service = WsTicketService::from_store(store, Some(45));
 
-        assert_eq!(service.backend_name(), "memory");
+        assert!(!service.supports_cluster_runtime());
         assert_eq!(service.ticket_ttl_secs(), 45);
     }
 

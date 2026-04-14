@@ -35,8 +35,6 @@ pub trait ClusterMessageTransport: Send + Sync {
     ) -> Result<ClusterMessageTransportRuntime>;
 
     async fn shutdown(&self);
-
-    fn backend_name(&self) -> &'static str;
 }
 
 pub trait ClusterMessageTransportFactory: Send + Sync {
@@ -44,6 +42,4 @@ pub trait ClusterMessageTransportFactory: Send + Sync {
         &self,
         config: ClusterMessageTransportConfig,
     ) -> Result<Arc<dyn ClusterMessageTransport>>;
-
-    fn backend_name(&self) -> &'static str;
 }

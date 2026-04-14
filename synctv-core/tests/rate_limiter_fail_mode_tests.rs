@@ -43,7 +43,7 @@ use tokio::sync::RwLock;
 #[tokio::test]
 async fn test_fail_open_allows_requests_without_redis() {
     // Create an in-memory only limiter (simulates Redis unavailable from start)
-    let limiter = RateLimiter::in_memory_only("fail_open:".to_string());
+    let limiter = RateLimiter::local_only("fail_open:".to_string());
 
     // With in-memory backend, check_rate_limit should still work
     let result = limiter.check_rate_limit("test_key", 5, 1).await;
@@ -56,7 +56,7 @@ async fn test_fail_open_allows_requests_without_redis() {
 /// Verifies that fail-open mode still enforces limits (just per-replica).
 #[tokio::test]
 async fn test_fail_open_still_enforces_per_replica_limits() {
-    let limiter = RateLimiter::in_memory_only("fail_open_limit:".to_string());
+    let limiter = RateLimiter::local_only("fail_open_limit:".to_string());
 
     // Exhaust the limit
     for _ in 0..5 {
@@ -81,7 +81,7 @@ async fn test_fail_open_still_enforces_per_replica_limits() {
 /// fail-closed mode to ensure global limits are never exceeded.
 #[tokio::test]
 async fn test_fail_closed_denies_requests_without_redis() {
-    let limiter = RateLimiter::in_memory_only("fail_closed:".to_string());
+    let limiter = RateLimiter::local_only("fail_closed:".to_string());
 
     // Without Redis, distributed check should deny all requests
     let result = limiter
@@ -125,7 +125,7 @@ async fn test_fail_closed_denies_requests_without_redis() {
 #[tokio::test]
 async fn test_redis_failure_falls_back_gracefully() {
     // Create an in-memory limiter to simulate Redis being unavailable
-    let limiter = RateLimiter::in_memory_only("redis_failure:".to_string());
+    let limiter = RateLimiter::local_only("redis_failure:".to_string());
 
     // Simulate multiple requests - all should work with fail-open
     for i in 0..3 {
@@ -140,7 +140,7 @@ async fn test_redis_failure_falls_back_gracefully() {
 /// Verifies that health_check returns error when Redis is unavailable.
 #[tokio::test]
 async fn test_health_check_detects_redis_unavailable() {
-    let limiter = RateLimiter::in_memory_only("health_check:".to_string());
+    let limiter = RateLimiter::local_only("health_check:".to_string());
 
     let result = limiter.health_check().await;
     assert!(
@@ -179,7 +179,7 @@ async fn test_health_check_detects_redis_unavailable() {
 /// The fallback to in-memory should be transparent.
 #[tokio::test]
 async fn test_fail_open_does_not_propagate_redis_errors() {
-    let limiter = RateLimiter::in_memory_only("no_propagate:".to_string());
+    let limiter = RateLimiter::local_only("no_propagate:".to_string());
 
     // In-memory backend should never return RedisError
     for _ in 0..5 {
@@ -208,7 +208,7 @@ async fn test_fail_open_does_not_propagate_redis_errors() {
 /// Therefore, `check_rate_limit_sync` always uses in-memory limiting.
 #[test]
 fn test_sync_rate_limit_uses_in_memory_only() {
-    let limiter = RateLimiter::in_memory_only("sync:".to_string());
+    let limiter = RateLimiter::local_only("sync:".to_string());
 
     // Sync method should work regardless of Redis availability
     for _ in 0..5 {
@@ -227,7 +227,7 @@ fn test_sync_rate_limit_uses_in_memory_only() {
 /// Verifies that sync rate limiting uses a separate key prefix.
 #[test]
 fn test_sync_rate_limit_uses_grpc_prefix() {
-    let limiter = RateLimiter::in_memory_only("sync_prefix:".to_string());
+    let limiter = RateLimiter::local_only("sync_prefix:".to_string());
 
     // Use up sync quota
     for _ in 0..5 {
@@ -269,8 +269,8 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
         )
         .await;
         if let Ok(Ok(conn)) = conn_result {
-            let limiter = RateLimiter::new(
-                Some(Arc::new(RwLock::new(conn))),
+            let limiter = RateLimiter::from_redis_runtime(
+                synctv_core::shared_runtime_from_conn(Some(Arc::new(RwLock::new(conn)))),
                 "redis_strict:".to_string(),
             );
 
@@ -282,7 +282,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
             );
         } else {
             // Connection failed, use in-memory which also fails closed
-            let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
+            let limiter = RateLimiter::local_only("redis_strict:".to_string());
             let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
             assert!(
                 matches!(result, Err(RateLimitError::BackendUnavailable(_))),
@@ -291,7 +291,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
         }
     } else {
         // If we can't even create client, use in-memory which also fails closed
-        let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
+        let limiter = RateLimiter::local_only("redis_strict:".to_string());
         let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
         assert!(
             matches!(result, Err(RateLimitError::BackendUnavailable(_))),
@@ -358,7 +358,7 @@ fn test_security_considerations_documentation() {
 /// Verifies that fail-closed mode reports backend unavailability distinctly.
 #[tokio::test]
 async fn test_fail_closed_reports_backend_unavailable() {
-    let limiter = RateLimiter::in_memory_only("retry_after:".to_string());
+    let limiter = RateLimiter::local_only("retry_after:".to_string());
 
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     if let Err(RateLimitError::BackendUnavailable(message)) = result {
@@ -374,7 +374,7 @@ async fn test_fail_closed_reports_backend_unavailable() {
 /// Verifies that fail-open mode returns meaningful retry_after when limit exceeded.
 #[tokio::test]
 async fn test_fail_open_retry_after_when_limited() {
-    let limiter = RateLimiter::in_memory_only("retry_open:".to_string());
+    let limiter = RateLimiter::local_only("retry_open:".to_string());
 
     // Exhaust the limit
     for _ in 0..5 {
@@ -397,23 +397,21 @@ async fn test_fail_open_retry_after_when_limited() {
 }
 
 // ============================================================================
-// Test 12: Verify backend_name reports correctly
+// Test 12: Verify in-memory construction remains usable without shared state
 // ============================================================================
 
-/// Verifies that backend_name correctly identifies the backend type.
+/// Verifies that non-distributed construction still provides working local checks.
 #[tokio::test]
-async fn test_backend_name_identification() {
-    let memory_limiter = RateLimiter::in_memory_only("backend_test:".to_string());
-    assert_eq!(
-        memory_limiter.backend_name(),
-        "memory",
-        "In-memory limiter should report 'memory' backend"
-    );
+async fn test_in_memory_construction_still_allows_local_checks() {
+    let memory_limiter = RateLimiter::local_only("backend_test:".to_string());
+    memory_limiter
+        .check_rate_limit("user:memory", 1, 60)
+        .await
+        .expect("in-memory limiter should allow the first request");
 
-    let none_limiter = RateLimiter::new(None, "backend_test:".to_string());
-    assert_eq!(
-        none_limiter.backend_name(),
-        "memory",
-        "Limiter without Redis should report 'memory' backend"
-    );
+    let none_limiter = RateLimiter::local_only("backend_test:".to_string());
+    none_limiter
+        .check_rate_limit("user:none", 1, 60)
+        .await
+        .expect("limiter without shared runtime should still allow local checks");
 }

@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 
 #[tokio::test]
 async fn test_in_memory_rate_limiter_allows_under_limit() {
-    let limiter = RateLimiter::in_memory_only("test_allow:".to_string());
+    let limiter = RateLimiter::local_only("test_allow:".to_string());
 
     // Send 5 requests with a limit of 10 -- all should pass
     for i in 0..5 {
@@ -30,7 +30,7 @@ async fn test_in_memory_rate_limiter_allows_under_limit() {
 
 #[tokio::test]
 async fn test_in_memory_rate_limiter_blocks_over_limit() {
-    let limiter = RateLimiter::in_memory_only("test_block:".to_string());
+    let limiter = RateLimiter::local_only("test_block:".to_string());
     let key = "user:block:chat";
 
     // Exhaust the limit
@@ -51,7 +51,7 @@ async fn test_in_memory_rate_limiter_blocks_over_limit() {
 
 #[tokio::test]
 async fn test_in_memory_rate_limiter_window_expiry() {
-    let limiter = RateLimiter::in_memory_only("test_expiry:".to_string());
+    let limiter = RateLimiter::local_only("test_expiry:".to_string());
     let key = "user:expiry:chat";
 
     // Exhaust the limit
@@ -73,7 +73,7 @@ async fn test_in_memory_rate_limiter_window_expiry() {
 
 #[tokio::test]
 async fn test_in_memory_independent_keys() {
-    let limiter = RateLimiter::in_memory_only("test_indep:".to_string());
+    let limiter = RateLimiter::local_only("test_indep:".to_string());
 
     // Exhaust key1
     for _ in 0..5 {
@@ -87,7 +87,7 @@ async fn test_in_memory_independent_keys() {
 
 #[test]
 fn test_in_memory_sync_check() {
-    let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
+    let limiter = RateLimiter::local_only("sync_test:".to_string());
 
     for _ in 0..5 {
         limiter.check_rate_limit_sync("key", 5, 1).unwrap();
@@ -100,7 +100,7 @@ fn test_in_memory_sync_check() {
 
 #[tokio::test]
 async fn test_in_memory_distributed_uses_governor() {
-    let limiter = RateLimiter::in_memory_only("dist:".to_string());
+    let limiter = RateLimiter::local_only("dist:".to_string());
 
     // Without Redis, the async check should work using in-memory governor.
     // Note: check_rate_limit_distributed (check_strict) intentionally fails
@@ -137,8 +137,8 @@ async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, Re
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_allows_under_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(
-        Some(Arc::new(RwLock::new(conn))),
+    let limiter = RateLimiter::from_redis_runtime(
+        synctv_core::shared_runtime_from_conn(Some(Arc::new(RwLock::new(conn)))),
         "redis_allow:".to_string(),
     );
 
@@ -157,8 +157,8 @@ async fn test_redis_rate_limiter_allows_under_limit() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_blocks_over_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(
-        Some(Arc::new(RwLock::new(conn))),
+    let limiter = RateLimiter::from_redis_runtime(
+        synctv_core::shared_runtime_from_conn(Some(Arc::new(RwLock::new(conn)))),
         "redis_block:".to_string(),
     );
 
@@ -183,7 +183,10 @@ async fn test_redis_rate_limiter_blocks_over_limit() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_concurrent_requests() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(Some(Arc::new(RwLock::new(conn))), "redis_conc:".to_string());
+    let limiter = RateLimiter::from_redis_runtime(
+        synctv_core::shared_runtime_from_conn(Some(Arc::new(RwLock::new(conn)))),
+        "redis_conc:".to_string(),
+    );
 
     let key = "user:redis_conc:chat";
     limiter.reset(key).await.unwrap();
@@ -217,8 +220,8 @@ async fn test_redis_rate_limiter_concurrent_requests() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_strict_enforcement() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(
-        Some(Arc::new(RwLock::new(conn))),
+    let limiter = RateLimiter::from_redis_runtime(
+        synctv_core::shared_runtime_from_conn(Some(Arc::new(RwLock::new(conn)))),
         "redis_strict:".to_string(),
     );
 
@@ -245,7 +248,7 @@ async fn test_redis_rate_limiter_strict_enforcement() {
 async fn test_redis_rate_limiter_distributed_fails_closed_without_redis() {
     // In-memory-only limiter should fail closed for distributed checks
     // when Redis is not configured (security-critical operations)
-    let limiter = RateLimiter::in_memory_only("redis_fc:".to_string());
+    let limiter = RateLimiter::local_only("redis_fc:".to_string());
 
     // Should deny ALL requests when Redis is not configured (fail-closed)
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;

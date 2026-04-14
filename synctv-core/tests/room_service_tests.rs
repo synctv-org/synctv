@@ -10,7 +10,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         room_settings::{AllowAutoJoin, RequireApproval},
@@ -48,8 +48,7 @@ fn make_user_service(pool: PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -1327,10 +1326,6 @@ impl MockDistributedLock {
 
 #[async_trait::async_trait]
 impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLock {
-    fn backend_name(&self) -> &'static str {
-        "mock-distributed-lock"
-    }
-
     async fn acquire(&self, key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
         if self
             .should_fail_acquire
@@ -2617,6 +2612,135 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_set_room_settings_emits_settings_updated_notification() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let mut event_rx = room_service.notification_service().subscribe();
+
+    let owner = user_repo
+        .create(&make_user("settings_notify_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Settings Notify Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let updated_settings = RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+        ..RoomSettings::default()
+    };
+
+    room_service
+        .set_room_settings(&room.id, &updated_settings)
+        .await
+        .unwrap();
+
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("expected room settings notification")
+            .unwrap();
+    assert_eq!(event_room_id, room.id);
+    match event {
+        RoomEvent::SettingsUpdated { settings, .. } => {
+            assert_eq!(settings["chat_enabled"], false);
+            assert_eq!(settings["allow_guest_join"], true);
+        }
+        other => panic!("expected SettingsUpdated event, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let mut event_rx = room_service.notification_service().subscribe();
+
+    let owner = user_repo
+        .create(&make_user("full_replace_guest_owner"))
+        .await
+        .unwrap();
+    let guest = user_repo
+        .create(&make_user("full_replace_guest_member"))
+        .await
+        .unwrap();
+
+    let initial_settings = RoomSettings {
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+        require_password: synctv_core::models::room_settings::RequirePassword(false),
+        ..RoomSettings::default()
+    };
+
+    let (room, _) = room_service
+        .create_room(
+            "Full Replace Guest Kick Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(initial_settings),
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .member_service()
+        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .await
+        .unwrap();
+    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
+
+    let updated_settings = RoomSettings {
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
+        require_password: synctv_core::models::room_settings::RequirePassword(false),
+        ..RoomSettings::default()
+    };
+
+    room_service
+        .set_room_settings(&room.id, &updated_settings)
+        .await
+        .unwrap();
+
+    let mut guest_kicked = false;
+    for _ in 0..3 {
+        let (event_room_id, event) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("expected room event after full settings replacement")
+                .unwrap();
+        assert_eq!(event_room_id, room.id);
+        if let RoomEvent::GuestKicked { reason, message } = event {
+            assert!(matches!(reason, GuestKickReason::RoomGuestModeDisabled));
+            assert!(
+                message.to_ascii_lowercase().contains("guest"),
+                "guest kick message should describe the removal: {message}"
+            );
+            guest_kicked = true;
+            break;
+        }
+    }
+
+    assert!(guest_kicked, "full settings replacement should kick guests");
+    assert!(
+        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        "guest membership should be revoked after disabling guest join via full settings replacement"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_room_settings_password_required_triggers_guest_kick() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3266,7 +3390,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
 
     assert_eq!(event_room_id, room.id);
     match event {
-        RoomEvent::MediaRemoved { media_id } => {
+        RoomEvent::MediaRemoved { media_id, .. } => {
             assert_eq!(media_id, media.id.as_str());
         }
         other => panic!("expected MediaRemoved event, got: {other:?}"),
@@ -3350,7 +3474,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
 
         assert_eq!(event_room_id, room.id);
         match event {
-            RoomEvent::MediaRemoved { media_id } => {
+            RoomEvent::MediaRemoved { media_id, .. } => {
                 removed_ids.insert(media_id);
             }
             other => panic!("expected MediaRemoved event, got: {other:?}"),
@@ -3680,10 +3804,81 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
 
     assert_eq!(event_room_id, room.id);
     match event {
-        RoomEvent::MediaRemoved { media_id } => {
+        RoomEvent::MediaRemoved { media_id, .. } => {
             assert_eq!(media_id, media.id.as_str());
         }
         other => panic!("expected MediaRemoved event, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("delete_entries_playlist_notify_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Delete Entries Playlist Notify".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: "notify-playlist".to_string(),
+            parent_id: None,
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut event_rx = room_service.notification_service().subscribe();
+
+    room_service
+        .delete_entries(
+            room.id.clone(),
+            owner.id.clone(),
+            synctv_core::service::room::DeleteEntriesRequest {
+                playlist_ids: vec![playlist.id.clone()],
+                media_ids: Vec::new(),
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+
+    let (event_room_id, event) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("expected local playlist delete notification")
+            .unwrap();
+
+    assert_eq!(event_room_id, room.id);
+    match event {
+        RoomEvent::PlaylistDeleted { playlist_id, .. } => {
+            assert_eq!(playlist_id, playlist.id.as_str());
+        }
+        other => panic!("expected PlaylistDeleted event, got: {other:?}"),
     }
 }
 

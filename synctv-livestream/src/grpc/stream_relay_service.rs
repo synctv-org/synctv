@@ -621,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes() {
-        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         registry
             .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
             .await
@@ -673,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_rtmp_stream_waits_for_temporarily_full_streamhub_queue() {
-        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         registry
             .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
             .await
@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_rtmp_stream_maps_full_streamhub_queue_to_resource_exhausted() {
-        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         registry
             .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
             .await
@@ -786,7 +786,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_rtmp_stream_maps_closed_streamhub_queue_to_internal() {
-        let registry = Arc::new(crate::relay::InMemoryStreamRegistry::new());
+        let registry = crate::relay::local_stream_registry();
         registry
             .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
             .await

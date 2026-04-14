@@ -25,33 +25,53 @@ pub trait ClusterFanoutService: Send + Sync {
     fn is_distributed_enabled(&self) -> bool;
 }
 
-#[derive(Debug, Clone)]
-pub struct DefaultClusterFanoutService {
-    publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
-    cluster_mode: bool,
+#[derive(Debug, Clone, Default)]
+pub struct NoopClusterFanoutService;
+
+#[async_trait]
+impl ClusterFanoutService for NoopClusterFanoutService {
+    async fn reserve(
+        &self,
+        _failure_message: &'static str,
+    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+        Ok(None)
+    }
+
+    fn publish(
+        &self,
+        _reservation: Option<ClusterEventPublishReservation>,
+        _request: PublishRequest,
+    ) {
+    }
+
+    async fn try_publish(&self, _request: PublishRequest) -> bool {
+        false
+    }
+
+    fn is_distributed_enabled(&self) -> bool {
+        false
+    }
 }
 
-impl DefaultClusterFanoutService {
+#[derive(Debug, Clone)]
+pub struct QueuedClusterFanoutService {
+    publish_tx: tokio::sync::mpsc::Sender<PublishRequest>,
+}
+
+impl QueuedClusterFanoutService {
     #[must_use]
-    pub const fn new(
-        publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
-        cluster_mode: bool,
-    ) -> Self {
-        Self {
-            publish_tx,
-            cluster_mode,
-        }
+    pub const fn new(publish_tx: tokio::sync::mpsc::Sender<PublishRequest>) -> Self {
+        Self { publish_tx }
     }
 }
 
 #[async_trait]
-impl ClusterFanoutService for DefaultClusterFanoutService {
+impl ClusterFanoutService for QueuedClusterFanoutService {
     async fn reserve(
         &self,
         failure_message: &'static str,
     ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        reserve_cluster_event_publish(self.publish_tx.as_ref(), self.cluster_mode, failure_message)
-            .await
+        reserve_cluster_event_publish(Some(&self.publish_tx), true, failure_message).await
     }
 
     fn publish(
@@ -65,14 +85,11 @@ impl ClusterFanoutService for DefaultClusterFanoutService {
     }
 
     async fn try_publish(&self, request: PublishRequest) -> bool {
-        match self.publish_tx.as_ref() {
-            Some(tx) => try_publish_cluster_event(tx, request).await,
-            None => false,
-        }
+        try_publish_cluster_event(&self.publish_tx, request).await
     }
 
     fn is_distributed_enabled(&self) -> bool {
-        self.cluster_mode && self.publish_tx.is_some()
+        true
     }
 }
 
@@ -81,7 +98,13 @@ pub fn default_cluster_fanout_service(
     publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
     cluster_mode: bool,
 ) -> Arc<dyn ClusterFanoutService> {
-    Arc::new(DefaultClusterFanoutService::new(publish_tx, cluster_mode))
+    if cluster_mode {
+        if let Some(publish_tx) = publish_tx {
+            return Arc::new(QueuedClusterFanoutService::new(publish_tx));
+        }
+    }
+
+    Arc::new(NoopClusterFanoutService)
 }
 
 #[cfg(test)]
@@ -134,6 +157,22 @@ mod tests {
         assert!(
             service.is_distributed_enabled(),
             "configured clustered fanout should report distributed mode as enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cluster_fanout_without_publish_channel_degrades_to_noop() {
+        let service = default_cluster_fanout_service(None, true);
+
+        let reservation = service
+            .reserve("should not fail without channel")
+            .await
+            .expect("missing queue should degrade to no-op fanout");
+
+        assert!(reservation.is_none());
+        assert!(
+            !service.is_distributed_enabled(),
+            "fanout without a publish channel must report distributed delivery as disabled"
         );
     }
 }

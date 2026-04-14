@@ -57,9 +57,6 @@ pub trait OAuthStateStore: Send + Sync {
     /// Returns `Ok(None)` for unknown or already-consumed tokens.
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>>;
 
-    /// Return the backend name (e.g. "redis", "memory").
-    fn backend_name(&self) -> &'static str;
-
     /// Whether this store can safely enforce single-use semantics across nodes.
     ///
     /// Clustered OAuth2 callback handling requires a shared state store because
@@ -84,19 +81,34 @@ pub fn state_store_from_shared_state_profile(
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             let shared_runtime = profile.require_shared_runtime("single-use OAuth2 state storage")?;
-            Ok(Arc::new(RedisOAuthStateStore::from_runtime(
+            Ok(shared_oauth_state_store(
                 shared_runtime,
                 profile.key_prefix().to_string(),
-            )))
+            ))
         }
-        SharedStateMode::SharedBestEffort => Ok(Arc::new(RedisOAuthStateStore::from_runtime(
+        SharedStateMode::SharedBestEffort => Ok(shared_oauth_state_store(
             profile
                 .shared_runtime()
                 .expect("shared state profile guarantees runtime in best-effort mode"),
             profile.key_prefix().to_string(),
-        ))),
-        SharedStateMode::LocalOnly => Ok(Arc::new(InMemoryOAuthStateStore::new())),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_oauth_state_store()),
     }
+}
+
+/// Build a local-only OAuth state store behind the trait abstraction.
+#[must_use]
+pub fn local_oauth_state_store() -> Arc<dyn OAuthStateStore> {
+    Arc::new(InMemoryOAuthStateStore::new())
+}
+
+/// Build a shared OAuth state store behind the trait abstraction.
+#[must_use]
+pub fn shared_oauth_state_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn OAuthStateStore> {
+    Arc::new(RedisOAuthStateStore::from_runtime(runtime, key_prefix))
 }
 
 // ============================================================================
@@ -128,15 +140,6 @@ impl RedisOAuthStateStore {
         } else {
             format!("{key_prefix}:")
         }
-    }
-
-    /// Create from the shared `Arc<RwLock<ConnectionManager>>`.
-    #[must_use]
-    pub fn new(
-        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: impl Into<String>,
-    ) -> Self {
-        Self::from_runtime(crate::shared_runtime(conn), key_prefix)
     }
 
     #[must_use]
@@ -176,10 +179,6 @@ where
 
 #[async_trait::async_trait]
 impl OAuthStateStore for RedisOAuthStateStore {
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
-
     fn supports_cross_node_single_use(&self) -> bool {
         true
     }
@@ -314,10 +313,6 @@ impl Default for InMemoryOAuthStateStore {
 
 #[async_trait::async_trait]
 impl OAuthStateStore for InMemoryOAuthStateStore {
-    fn backend_name(&self) -> &'static str {
-        "memory"
-    }
-
     fn supports_cross_node_single_use(&self) -> bool {
         false
     }
@@ -463,8 +458,8 @@ impl OAuth2Service {
         }
 
         info!(
-            "OAuth2 service initialized (backend: {})",
-            state_store.backend_name()
+            cross_node_single_use = state_store.supports_cross_node_single_use(),
+            "OAuth2 service initialized"
         );
 
         Ok(Self {
@@ -1206,7 +1201,6 @@ mod tests {
         let store = state_store_from_shared_state_profile(&profile)
             .expect("standalone mode should allow local OAuth2 state storage");
 
-        assert_eq!(store.backend_name(), "memory");
         assert!(
             !store.supports_cross_node_single_use(),
             "local store must not claim cross-node single-use guarantees"
@@ -1251,7 +1245,6 @@ mod tests {
         let store = state_store_from_shared_state_profile(&profile)
             .expect("shared runtime profile should yield a distributed OAuth2 state store");
 
-        assert_eq!(store.backend_name(), "redis");
         assert!(
             store.supports_cross_node_single_use(),
             "shared store must claim cross-node single-use guarantees"
@@ -1328,7 +1321,7 @@ mod tests {
     fn create_test_service_with_cluster_mode(cluster_mode: bool) -> OAuth2Service {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let state_store = local_oauth_state_store();
         OAuth2Service::new(
             repo,
             state_store,
@@ -2562,7 +2555,7 @@ mod tests {
     async fn test_cluster_mode_without_redis_returns_error() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let state_store = local_oauth_state_store();
 
         let result = OAuth2Service::new(
             repo,
@@ -2600,7 +2593,7 @@ mod tests {
     async fn test_cluster_mode_error_message_is_actionable() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let state_store = local_oauth_state_store();
 
         let result = OAuth2Service::new(
             repo,
@@ -2623,7 +2616,7 @@ mod tests {
     async fn test_non_cluster_mode_allows_memory() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let state_store = local_oauth_state_store();
 
         let result = OAuth2Service::new(
             repo,
@@ -2645,7 +2638,7 @@ mod tests {
         // Cluster mode should fail immediately at service creation
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let state_store = local_oauth_state_store();
         let service_result = OAuth2Service::new(
             repo,
             state_store,

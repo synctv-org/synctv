@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         room_settings::{ChatEnabled, DanmakuEnabled},
@@ -37,8 +37,7 @@ use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -69,10 +68,9 @@ fn make_chat_service_with_config(
     rate_limit_config: RateLimitConfig,
 ) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
+    let rate_limiter = RateLimiter::local_only("test:chat:".to_string());
     let content_filter = ContentFilter::new();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -289,15 +287,14 @@ async fn test_send_message_rate_limit_triggers() {
 
     // Build chat service with very restrictive rate limit (1 msg/sec, 1 sec window)
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::new(None, "test:chatrl:".to_string());
+    let rate_limiter = RateLimiter::local_only("test:chatrl:".to_string());
     let rate_limit_config = RateLimitConfig {
         chat_per_second: 1,
         danmaku_per_second: 1,
         window_seconds: 1,
     };
     let content_filter = ContentFilter::new();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     username_cache
         .set(&creator.id, &creator.username)
         .await
@@ -631,11 +628,10 @@ fn make_chat_service_with_observer(
     _observer: Arc<NotificationObserver>,
 ) -> (ChatService, UsernameCache, NotificationService) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
+    let rate_limiter = RateLimiter::local_only("test:chat:".to_string());
     let rate_limit_config = RateLimitConfig::default();
     let content_filter = ContentFilter::new();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -694,11 +690,10 @@ async fn test_send_message_broadcasts_to_room_members() {
 
     // Build chat service with the counting broadcaster
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::new(None, "test:chat_broadcast:".to_string());
+    let rate_limiter = RateLimiter::local_only("test:chat_broadcast:".to_string());
     let rate_limit_config = RateLimitConfig::default();
     let content_filter = ContentFilter::new();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     username_cache
         .set(&creator.id, &creator.username)
         .await

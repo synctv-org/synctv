@@ -18,7 +18,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_livestream::relay::StreamRegistryTrait;
 use tokio::sync::{oneshot, Barrier, Notify};
 
 /// Simulates the cleanup sequence during `StreamHub` restart with concurrent
@@ -28,7 +27,7 @@ use tokio::sync::{oneshot, Barrier, Notify};
 /// concurrently.
 #[tokio::test]
 async fn test_cleanup_during_concurrent_unregistration() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register multiple publishers
@@ -99,7 +98,7 @@ async fn test_cleanup_during_concurrent_unregistration() {
 /// during the cleanup window.
 #[tokio::test]
 async fn test_cleanup_during_concurrent_registration() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register initial publishers
@@ -167,7 +166,7 @@ async fn test_cleanup_during_concurrent_registration() {
 /// Test that multiple concurrent cleanups for the same node are safe.
 #[tokio::test]
 async fn test_concurrent_cleanups_same_node() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register publishers
@@ -215,7 +214,7 @@ async fn test_concurrent_cleanups_same_node() {
 /// Test that cleanup followed by immediate re-registration works correctly.
 #[tokio::test]
 async fn test_cleanup_then_reregister_sequence() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register initial publishers
@@ -278,7 +277,7 @@ async fn test_cleanup_then_reregister_sequence() {
 /// when cleanup starts.
 #[tokio::test]
 async fn test_stop_then_cleanup_with_delayed_unregistration() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register publishers
@@ -349,7 +348,7 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
 /// before cleanup starts, reducing the race window.
 #[tokio::test]
 async fn test_stop_delay_then_cleanup_prevents_race() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register publishers
@@ -426,7 +425,7 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
 /// Cleanup should only affect streams owned by the target node.
 #[tokio::test]
 async fn test_cleanup_only_affects_target_node() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
 
     // Register streams for multiple nodes
     registry
@@ -461,7 +460,7 @@ async fn test_cleanup_only_affects_target_node() {
 /// Calling cleanup multiple times should be safe.
 #[tokio::test]
 async fn test_cleanup_is_idempotent() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Register publishers
@@ -494,7 +493,7 @@ async fn test_cleanup_is_idempotent() {
 /// Stress test: rapid cleanup and re-registration cycles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_stress_cleanup_reregister_cycles() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     let iterations: usize = 10;
@@ -554,7 +553,7 @@ async fn test_stress_cleanup_reregister_cycles() {
 /// reducing the race window between cleanup and unregister operations.
 #[tokio::test]
 async fn test_complete_restart_sequence_with_delay_fix() {
-    let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let node_id = "test-node";
 
     // Phase 1: Active streams

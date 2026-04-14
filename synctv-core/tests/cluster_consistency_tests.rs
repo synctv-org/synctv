@@ -21,7 +21,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
     cache::{
-        CacheInvalidationService, InvalidationMessage, KeyBuilder, NoopCacheL2, UsernameCache,
+        CacheInvalidationService, InvalidationMessage, KeyBuilder, UsernameCache,
     },
     config::PasswordComplexityConfig,
     models::{
@@ -145,8 +145,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
 
 fn make_user_service(pool: PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
-    let l2 = Arc::new(NoopCacheL2);
-    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

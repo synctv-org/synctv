@@ -13,7 +13,7 @@ use crate::{
     models::{PermissionBits, Playlist, PlaylistId, RoomId, UserId},
     provider::ProviderContext,
     repository::PlaylistRepository,
-    repository::UserProviderCredentialRepository,
+    repository::{UserProviderCredentialRepository, UserRepository},
     service::{permission::PermissionService, ProvidersManager},
     Error, Result,
 };
@@ -27,6 +27,15 @@ use serde_json::Value as JsonValue;
 pub trait PlaylistBroadcaster: Send + Sync {
     /// Broadcast that a playlist was created.
     fn broadcast_playlist_created(
+        &self,
+        room_id: &RoomId,
+        playlist: &Playlist,
+        user_id: &UserId,
+        username: &str,
+    );
+
+    /// Broadcast that a playlist was updated.
+    fn broadcast_playlist_updated(
         &self,
         room_id: &RoomId,
         playlist: &Playlist,
@@ -136,7 +145,7 @@ pub struct PlaylistService {
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
-    cluster_broadcaster: Option<Arc<dyn PlaylistBroadcaster>>,
+    cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
 }
 
 impl std::fmt::Debug for PlaylistService {
@@ -146,6 +155,16 @@ impl std::fmt::Debug for PlaylistService {
 }
 
 impl PlaylistService {
+    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
+        UserRepository::new(self.playlist_repo.pool().clone())
+            .get_by_id(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|user| user.username)
+            .unwrap_or_default()
+    }
+
     fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
         if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
             return Err(Error::ServiceUnavailable(format!(
@@ -169,13 +188,18 @@ impl PlaylistService {
             providers_manager,
             credential_encryption: None,
             credential_repo: None,
-            cluster_broadcaster: None,
+            cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
     /// Set the cluster broadcaster for cross-replica playlist sync
-    pub fn set_cluster_broadcaster(&mut self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
-        self.cluster_broadcaster = Some(broadcaster);
+    pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
+        *self.cluster_broadcaster.write() = Some(broadcaster);
+    }
+
+    #[doc(hidden)]
+    pub fn has_cluster_broadcaster(&self) -> bool {
+        self.cluster_broadcaster.read().is_some()
     }
 
     /// Get a reference to the providers manager.
@@ -396,10 +420,16 @@ impl PlaylistService {
             is_dynamic = created_playlist.is_dynamic(),
             "Playlist created"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         // Broadcast to cluster replicas
-        if let Some(ref broadcaster) = self.cluster_broadcaster {
-            broadcaster.broadcast_playlist_created(&room_id, &created_playlist, &user_id, "");
+        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
+            broadcaster.broadcast_playlist_created(
+                &room_id,
+                &created_playlist,
+                &user_id,
+                &actor_username,
+            );
         }
 
         Ok(created_playlist)
@@ -557,6 +587,15 @@ impl PlaylistService {
                         playlist_id = %request.playlist_id.as_str(),
                         "Playlist updated"
                     );
+                    let actor_username = self.resolve_actor_username(&user_id).await;
+                    if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
+                        broadcaster.broadcast_playlist_updated(
+                            &room_id,
+                            &updated_playlist,
+                            &user_id,
+                            &actor_username,
+                        );
+                    }
                     return Ok(updated_playlist);
                 }
                 Err(Error::OptimisticLockConflict) => {
@@ -647,6 +686,10 @@ impl PlaylistService {
         }
 
         tx.commit().await?;
+        let actor_username = self.resolve_actor_username(&user_id).await;
+        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
+            broadcaster.broadcast_playlist_updated(&room_id, &moved, &user_id, &actor_username);
+        }
         Ok(moved)
     }
 
@@ -711,10 +754,16 @@ impl PlaylistService {
             playlist_id = %playlist_id.as_str(),
             "Playlist deleted"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         // Broadcast to cluster replicas
-        if let Some(ref broadcaster) = self.cluster_broadcaster {
-            broadcaster.broadcast_playlist_deleted(&room_id, &playlist_id, &user_id, "");
+        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
+            broadcaster.broadcast_playlist_deleted(
+                &room_id,
+                &playlist_id,
+                &user_id,
+                &actor_username,
+            );
         }
 
         Ok(())

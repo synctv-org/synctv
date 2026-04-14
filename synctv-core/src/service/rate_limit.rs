@@ -230,9 +230,6 @@ pub trait RateLimitBackend: Send + Sync {
 
     /// Health check. Returns `Ok(())` if the backend is healthy.
     async fn health_check(&self) -> std::result::Result<(), String>;
-
-    /// A label for logging/debug purposes.
-    fn backend_name(&self) -> &'static str;
 }
 
 // ============================================================================
@@ -472,10 +469,6 @@ impl RateLimitBackend for RedisRateLimitBackend {
             .map_err(|e| format!("Redis ping failed: {e}"))?;
         Ok(())
     }
-
-    fn backend_name(&self) -> &'static str {
-        "redis"
-    }
 }
 
 // ============================================================================
@@ -551,10 +544,6 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
     async fn health_check(&self) -> std::result::Result<(), String> {
         Err("Redis not configured".to_string())
     }
-
-    fn backend_name(&self) -> &'static str {
-        "memory"
-    }
 }
 
 // ============================================================================
@@ -586,16 +575,6 @@ impl RateLimiter {
         }
     }
 
-    /// Create a new `RateLimiter`, choosing backend based on Redis availability.
-    ///
-    /// Accepts the shared `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
-    pub fn new(
-        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-        key_prefix: String,
-    ) -> Self {
-        Self::from_redis_runtime(crate::shared_runtime_from_conn(redis_conn), key_prefix)
-    }
-
     #[must_use]
     pub fn from_redis_runtime(
         redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
@@ -625,13 +604,13 @@ impl RateLimiter {
                 profile.shared_runtime(),
                 profile.key_prefix().to_string(),
             )),
-            SharedStateMode::LocalOnly => Ok(Self::in_memory_only(profile.key_prefix().to_string())),
+            SharedStateMode::LocalOnly => Ok(Self::local_only(profile.key_prefix().to_string())),
         }
     }
 
-    /// Create a `RateLimiter` with in-memory fallback only (no Redis)
+    /// Create a local-only `RateLimiter` without shared state.
     #[must_use]
-    pub fn in_memory_only(key_prefix: String) -> Self {
+    pub fn local_only(key_prefix: String) -> Self {
         let backend = Arc::new(InMemoryRateLimitBackend::new(key_prefix.clone()));
         Self::from_backend(backend, key_prefix)
     }
@@ -710,12 +689,6 @@ impl RateLimiter {
     pub async fn reset(&self, key: &str) -> Result<()> {
         self.backend.reset(key).await
     }
-
-    /// Return the backend name.
-    #[must_use]
-    pub fn backend_name(&self) -> &'static str {
-        self.backend.backend_name()
-    }
 }
 
 /// Rate limit configuration
@@ -745,8 +718,23 @@ mod tests {
 
     #[test]
     fn test_rate_limiter_without_redis() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
-        assert_eq!(limiter.backend_name(), "memory");
+        let limiter = RateLimiter::local_only("test:".to_string());
+        limiter
+            .check_rate_limit_sync("test-user", 5, 1)
+            .expect("limiter without shared runtime should still allow local sync checks");
+    }
+
+    #[tokio::test]
+    async fn test_local_only_rate_limiter_supports_single_node_checks() {
+        let limiter = RateLimiter::local_only("test-local-only:".to_string());
+        limiter
+            .check_rate_limit("test-user", 2, 60)
+            .await
+            .expect("local-only limiter should allow the first request");
+        limiter
+            .check_rate_limit("test-user", 2, 60)
+            .await
+            .expect("local-only limiter should allow requests within the local quota");
     }
 
     #[tokio::test]
@@ -775,7 +763,8 @@ mod tests {
     async fn test_rate_limit_basic() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter = RateLimiter::new(Some(conn), "test:".to_string());
+        let limiter =
+            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
 
         let key = "user:test1:chat";
         limiter.reset(key).await.unwrap();
@@ -802,7 +791,8 @@ mod tests {
     async fn test_rate_limit_sliding_window() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter = RateLimiter::new(Some(conn), "test:".to_string());
+        let limiter =
+            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
 
         let key = "user:test2:chat";
         limiter.reset(key).await.unwrap();
@@ -824,7 +814,8 @@ mod tests {
     async fn test_get_quota() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter = RateLimiter::new(Some(conn), "test:".to_string());
+        let limiter =
+            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
 
         let key = "user:test3:chat";
         limiter.reset(key).await.unwrap();
@@ -843,7 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_without_redis_uses_governor_fallback() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         let key = "user:test_gov:chat";
         for i in 0..10 {
@@ -862,7 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_governor_independent_keys() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         for _ in 0..5 {
             limiter.check_rate_limit("key1", 5, 1).await.unwrap();
@@ -873,7 +864,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_room_password_rate_limit_pattern() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         let ip = "192.168.1.1";
         let room_id = "room_abc";
@@ -895,7 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_room_password_rate_limit_per_ip_isolation() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         let room_id = "room_xyz";
         let key_ip1 = format!("room_password_check:10.0.0.1:{room_id}");
@@ -910,7 +901,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_room_password_rate_limit_per_room_isolation() {
-        let limiter = RateLimiter::new(None, "test:".to_string());
+        let limiter = RateLimiter::local_only("test:".to_string());
 
         let ip = "10.0.0.1";
         let key_room1 = format!("room_password_check:{ip}:room_1");
@@ -925,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_burst_all_within_limit() {
-        let limiter = RateLimiter::in_memory_only("burst_test:".to_string());
+        let limiter = RateLimiter::local_only("burst_test:".to_string());
 
         let mut handles = Vec::new();
         for _ in 0..10 {
@@ -950,7 +941,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_burst_exceeding_limit() {
-        let limiter = RateLimiter::in_memory_only("burst_over:".to_string());
+        let limiter = RateLimiter::local_only("burst_over:".to_string());
 
         let mut handles = Vec::new();
         for _ in 0..20 {
@@ -975,13 +966,13 @@ mod tests {
 
     #[test]
     fn test_check_rate_limit_sync_allows_within_limit() {
-        let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
+        let limiter = RateLimiter::local_only("sync_test:".to_string());
         assert!(limiter.check_rate_limit_sync("sync_key", 5, 1).is_ok());
     }
 
     #[test]
     fn test_check_rate_limit_sync_blocks_over_limit() {
-        let limiter = RateLimiter::in_memory_only("sync_block:".to_string());
+        let limiter = RateLimiter::local_only("sync_block:".to_string());
 
         for _ in 0..5 {
             limiter.check_rate_limit_sync("sync_key", 5, 1).unwrap();
@@ -996,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_check_rate_limit_sync_uses_grpc_key_prefix() {
-        let limiter = RateLimiter::in_memory_only("myprefix:".to_string());
+        let limiter = RateLimiter::local_only("myprefix:".to_string());
 
         for _ in 0..3 {
             limiter.check_rate_limit_sync("key1", 3, 1).unwrap();
@@ -1011,7 +1002,7 @@ mod tests {
     #[tokio::test]
     async fn test_strict_distributed_flag_makes_check_rate_limit_fail_closed() {
         let limiter =
-            RateLimiter::in_memory_only("strict_switch:".to_string()).with_strict_distributed();
+            RateLimiter::local_only("strict_switch:".to_string()).with_strict_distributed();
 
         let result = limiter.check_rate_limit("key", 5, 60).await;
         assert!(
@@ -1022,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_strict_in_memory_check_rate_limit_still_allows_requests() {
-        let limiter = RateLimiter::in_memory_only("non_strict_switch:".to_string());
+        let limiter = RateLimiter::local_only("non_strict_switch:".to_string());
 
         let result = limiter.check_rate_limit("key", 5, 60).await;
         assert!(
@@ -1033,7 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_check_strict_fails_closed() {
-        let limiter = RateLimiter::in_memory_only("strict_test:".to_string());
+        let limiter = RateLimiter::local_only("strict_test:".to_string());
 
         // Should reject because distributed coordination is unavailable.
         let result = limiter
@@ -1048,7 +1039,7 @@ mod tests {
     /// Test that check_strict with in-memory backend fails closed for every key.
     #[tokio::test]
     async fn test_in_memory_check_strict_rejects_all_keys() {
-        let limiter = RateLimiter::in_memory_only("strict_keys:".to_string());
+        let limiter = RateLimiter::local_only("strict_keys:".to_string());
 
         // key1 should fail closed
         let result1 = limiter.check_rate_limit_distributed("key1", 5, 1).await;
@@ -1115,7 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_quota_without_redis_returns_max() {
-        let limiter = RateLimiter::in_memory_only("quota_test:".to_string());
+        let limiter = RateLimiter::local_only("quota_test:".to_string());
 
         let (remaining, reset) = limiter.get_quota("key", 10, 1).await.unwrap();
         assert_eq!(remaining, 10);
@@ -1124,7 +1115,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_quota_without_redis_does_not_consume_token() {
-        let limiter = RateLimiter::in_memory_only("quota_no_consume:".to_string());
+        let limiter = RateLimiter::local_only("quota_no_consume:".to_string());
 
         for _ in 0..20 {
             let (remaining, _) = limiter.get_quota("key", 10, 1).await.unwrap();
@@ -1141,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_without_redis() {
-        let limiter = RateLimiter::in_memory_only("health:".to_string());
+        let limiter = RateLimiter::local_only("health:".to_string());
         let result = limiter.health_check().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not configured"));
@@ -1149,7 +1140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_different_quotas_are_independent() {
-        let limiter = RateLimiter::in_memory_only("quotas:".to_string());
+        let limiter = RateLimiter::local_only("quotas:".to_string());
 
         for _ in 0..5 {
             limiter.check_rate_limit("same_key", 5, 1).await.unwrap();
@@ -1170,7 +1161,7 @@ mod tests {
         .and_then(std::result::Result::ok);
 
         if conn.is_none() {
-            let limiter = RateLimiter::in_memory_only("fallback_test:".to_string());
+            let limiter = RateLimiter::local_only("fallback_test:".to_string());
             for i in 0..5 {
                 limiter
                     .check_rate_limit("fb_key", 5, 1)
@@ -1188,7 +1179,10 @@ mod tests {
         }
 
         let conn = Arc::new(tokio::sync::RwLock::new(conn.unwrap()));
-        let limiter = RateLimiter::new(Some(conn), "fallback_test:".to_string());
+        let limiter = RateLimiter::from_redis_runtime(
+            crate::shared_runtime_from_conn(Some(conn)),
+            "fallback_test:".to_string(),
+        );
 
         let result = limiter.check_rate_limit("test_key", 10, 1).await;
 

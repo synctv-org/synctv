@@ -8,7 +8,7 @@ use chrono::Utc;
 use synctv_api::impls::ClientApiImpl;
 use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
-    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         Media, PlayMode, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole,
@@ -64,8 +64,7 @@ fn make_user(username: &str) -> User {
 
 fn make_user_service(pool: sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
-    let username_cache =
-        UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 100, 60);
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let mut svc = UserService::new(
         pool,
@@ -700,8 +699,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     );
     media_repo.create(&media).await.unwrap();
 
-    let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::new(
-        None,
+    let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
         "test:provider:".to_string(),
     ));
     let client_api = ClientApiImpl::new(

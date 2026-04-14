@@ -42,9 +42,9 @@ async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_wri
     let key = "jti:pg_primary_required";
     let redis_key = format!("{key_prefix}bl:{key}");
 
-    let store = TieredTokenBlacklistStore::new(
+    let store = TieredTokenBlacklistStore::from_runtime(
         unavailable_pg_store(),
-        Some(shared_conn),
+        synctv_core::shared_runtime_from_conn(Some(shared_conn)),
         key_prefix.clone(),
     );
 

@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{RedisConnectionRuntime, SharedRedisConnectionRuntime, SharedStateProfile};
+use crate::{RedisConnectionRuntime, SharedStateProfile};
 
 /// Errors returned by provider store operations.
 #[derive(Debug, Error)]
@@ -236,10 +236,6 @@ pub struct RedisProviderStore {
 }
 
 impl RedisProviderStore {
-    pub fn new(shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
-        Self::from_runtime(Arc::new(SharedRedisConnectionRuntime::new(shared_conn)))
-    }
-
     #[must_use]
     pub fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>) -> Self {
         Self { redis_runtime }
@@ -393,20 +389,6 @@ pub struct ProviderStoreRegistry {
 }
 
 impl ProviderStoreRegistry {
-    /// Create a new registry, optionally backed by Redis (Sentinel-safe shared handle).
-    pub fn new(
-        redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-        key_prefix: impl Into<String>,
-    ) -> Self {
-        Self::from_runtime(
-            redis.map(|shared_conn| {
-                Arc::new(SharedRedisConnectionRuntime::new(shared_conn))
-                    as Arc<dyn RedisConnectionRuntime>
-            }),
-            key_prefix,
-        )
-    }
-
     /// Create a new registry from an injected runtime abstraction.
     pub fn from_runtime(
         redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
@@ -417,6 +399,11 @@ impl ProviderStoreRegistry {
             stores: Mutex::new(HashMap::new()),
             key_prefix: key_prefix.into().into(),
         }
+    }
+
+    /// Create a registry that is explicitly local-only.
+    pub fn local_only(key_prefix: impl Into<String>) -> Self {
+        Self::from_runtime(None, key_prefix)
     }
 
     /// Get or lazily create a store for the given provider name.
@@ -457,23 +444,6 @@ impl ProviderStoreResolver for ProviderStoreRegistry {
     fn key_prefix(&self) -> &str {
         Self::key_prefix(self)
     }
-}
-
-pub fn build_provider_store_resolver(
-    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-    key_prefix: impl Into<String>,
-) -> Arc<dyn ProviderStoreResolver> {
-    Arc::new(ProviderStoreRegistry::new(redis, key_prefix))
-}
-
-pub fn build_provider_store_resolver_from_shared_conn(
-    redis: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-    key_prefix: impl Into<String>,
-) -> Arc<dyn ProviderStoreResolver> {
-    build_provider_store_resolver_from_runtime(
-        crate::shared_runtime_from_conn(redis),
-        key_prefix,
-    )
 }
 
 pub fn build_provider_store_resolver_from_runtime(
@@ -677,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_store_registry_lazy_creation() {
-        let registry = ProviderStoreRegistry::new(None, "");
+        let registry = ProviderStoreRegistry::local_only("");
 
         // First load creates the store
         let store1 = registry.load("bilibili");
@@ -697,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_provider_store_registry_any_name() {
-        let registry = ProviderStoreRegistry::new(None, "");
+        let registry = ProviderStoreRegistry::local_only("");
         // Any arbitrary provider name works — no pre-registration needed
         let _store = registry.load("my_custom_provider");
         let _store2 = registry.load("another_one");
@@ -705,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_store_registry_respects_configured_prefix() {
-        let registry = ProviderStoreRegistry::new(None, "tenant-a:");
+        let registry = ProviderStoreRegistry::local_only("tenant-a:");
         let store = registry.load("bilibili");
         store
             .set_raw("cache-key", b"value", Duration::from_mins(1))
@@ -719,7 +689,7 @@ mod tests {
             "same prefixed store should be reused"
         );
 
-        let other_registry = ProviderStoreRegistry::new(None, "tenant-b:");
+        let other_registry = ProviderStoreRegistry::local_only("tenant-b:");
         let other = other_registry.load("bilibili");
         assert!(
             other.get_raw("cache-key").await.unwrap().is_none(),
@@ -768,7 +738,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_redis_lock_drop_does_not_delete_new_owner_lock() {
         let (_container, shared_conn) = start_redis().await;
-        let store = RedisProviderStore::new(shared_conn.clone());
+        let store = RedisProviderStore::from_runtime(crate::shared_runtime(shared_conn.clone()));
         let lock_key = "provider-lock-race";
 
         let first_guard = store.lock(lock_key, Duration::from_secs(1)).await.unwrap();

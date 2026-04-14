@@ -51,11 +51,11 @@ pub trait UserStreamIndex: Send + Sync {
 
     async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>>;
 
-    fn backend_name(&self) -> &'static str;
+    fn supports_cross_node_lookup(&self) -> bool;
 }
 
 #[derive(Default)]
-pub struct LocalOnlyUserStreamIndex;
+struct LocalOnlyUserStreamIndex;
 
 #[async_trait]
 impl UserStreamIndex for LocalOnlyUserStreamIndex {
@@ -77,19 +77,19 @@ impl UserStreamIndex for LocalOnlyUserStreamIndex {
         Ok(None)
     }
 
-    fn backend_name(&self) -> &'static str {
-        "local-only"
+    fn supports_cross_node_lookup(&self) -> bool {
+        false
     }
 }
 
-pub struct SharedUserStreamIndex {
+struct SharedUserStreamIndex {
     redis_runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
 }
 
 impl SharedUserStreamIndex {
     #[must_use]
-    pub fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
+    fn from_runtime(redis_runtime: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
         Self {
             redis_runtime,
             key_prefix,
@@ -98,7 +98,7 @@ impl SharedUserStreamIndex {
 
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(shared_conn: Arc<RwLock<redis::aio::ConnectionManager>>, key_prefix: String) -> Self {
+    fn new(shared_conn: Arc<RwLock<redis::aio::ConnectionManager>>, key_prefix: String) -> Self {
         Self::from_runtime(synctv_core::shared_runtime(shared_conn), key_prefix)
     }
 
@@ -149,8 +149,8 @@ impl UserStreamIndex for SharedUserStreamIndex {
         }))
     }
 
-    fn backend_name(&self) -> &'static str {
-        "redis"
+    fn supports_cross_node_lookup(&self) -> bool {
+        true
     }
 }
 
@@ -394,7 +394,7 @@ impl SyncTvRtmpAuth {
         if let Err(error) = self.user_stream_index.delete(user_id).await {
             tracing::warn!(
                 user_id = %user_id,
-                backend = %self.user_stream_index.backend_name(),
+                cross_node_lookup = self.user_stream_index.supports_cross_node_lookup(),
                 "Failed to remove user-stream index entry on {} (non-fatal): {}",
                 context,
                 error
@@ -930,7 +930,7 @@ impl SyncTvRtmpAuth {
         {
             tracing::error!(
                 user_id = %validated.user_id,
-                backend = %self.user_stream_index.backend_name(),
+                cross_node_lookup = self.user_stream_index.supports_cross_node_lookup(),
                 "Failed to write shared user-stream index after publisher registration: {}. \
                  Rolling back publisher registration to maintain consistency.",
                 error
@@ -1004,7 +1004,7 @@ impl SyncTvRtmpAuth {
             Err(error) => {
                 tracing::warn!(
                     user_id = %user_id,
-                    backend = %self.user_stream_index.backend_name(),
+                    cross_node_lookup = self.user_stream_index.supports_cross_node_lookup(),
                     "Failed to query shared user-stream index: {}",
                     error
                 );
@@ -1027,17 +1027,18 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use synctv_livestream::relay::{InMemoryStreamRegistry, PublisherInfo, StreamRegistryTrait};
+    use synctv_livestream::relay::{
+        local_stream_registry, PublisherInfo, StreamRegistryTrait,
+    };
     use tokio::sync::RwLock;
 
-    #[derive(Debug)]
     struct FlakyUnregisterRegistry {
-        inner: Arc<InMemoryStreamRegistry>,
+        inner: Arc<dyn StreamRegistryTrait>,
         fail_unregister_if_epoch_matches_times: AtomicUsize,
     }
 
     impl FlakyUnregisterRegistry {
-        fn new(inner: Arc<InMemoryStreamRegistry>) -> Self {
+        fn new(inner: Arc<dyn StreamRegistryTrait>) -> Self {
             Self {
                 inner,
                 fail_unregister_if_epoch_matches_times: AtomicUsize::new(0),
@@ -1300,8 +1301,7 @@ mod tests {
                         "test-secret-key-for-http-router-tests-minimum-32-chars",
                     )
                     .expect("jwt"),
-                    synctv_core::cache::UsernameCache::new(
-                        Arc::new(synctv_core::cache::NoopCacheL2),
+                    synctv_core::cache::UsernameCache::local_only(
                         "test:username:".to_string(),
                         16,
                         60,
@@ -1322,8 +1322,7 @@ mod tests {
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UsernameCache::local_only(
                     "test:username:".to_string(),
                     16,
                     60,
@@ -1342,7 +1341,7 @@ mod tests {
                 .expect("jwt"),
             )),
             Arc::new(synctv_livestream::api::StreamTracker::new()),
-            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
+            synctv_livestream::relay::local_stream_registry(),
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
             None,
@@ -1359,7 +1358,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_unpublish_does_not_remove_newer_registration() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
         let room_id = "room-delayed-unpublish";
@@ -1411,7 +1410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_unpublish_preserves_newer_rollback_fence() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
         let room_id = "room-delayed-fence";
@@ -1459,7 +1458,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_rollback_does_not_remove_newer_registration() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
         let room_id = "room-delayed-rollback";
@@ -1506,9 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unpublish_retry_preserves_fence_until_cleanup_succeeds() {
-        let registry = Arc::new(FlakyUnregisterRegistry::new(Arc::new(
-            InMemoryStreamRegistry::new(),
-        )));
+        let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
         let auth = make_test_auth_with_registry_dyn(registry.clone());
 
         let room_id = "room-retry-unpublish";
@@ -1545,9 +1542,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rollback_retry_preserves_fence_until_cleanup_succeeds() {
-        let registry = Arc::new(FlakyUnregisterRegistry::new(Arc::new(
-            InMemoryStreamRegistry::new(),
-        )));
+        let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
         let auth = make_test_auth_with_registry_dyn(registry.clone());
 
         let room_id = "room-retry-rollback";
@@ -1584,7 +1579,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unpublish_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
@@ -1620,7 +1615,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rollback_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
@@ -1658,7 +1653,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_restarted_unpublish_does_not_remove_replacement_publisher() {
-        let registry = Arc::new(InMemoryStreamRegistry::new());
+        let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
@@ -1719,7 +1714,7 @@ mod tests {
         }
     }
 
-    fn make_test_auth_with_registry(registry: Arc<InMemoryStreamRegistry>) -> SyncTvRtmpAuth {
+    fn make_test_auth_with_registry(registry: Arc<dyn StreamRegistryTrait>) -> SyncTvRtmpAuth {
         make_test_auth_with_registry_dyn(registry)
     }
 
@@ -1736,8 +1731,7 @@ mod tests {
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UsernameCache::local_only(
                     "test:username:".to_string(),
                     16,
                     60,
@@ -1842,8 +1836,7 @@ mod tests {
                         "test-secret-key-for-http-router-tests-minimum-32-chars",
                     )
                     .expect("jwt"),
-                    synctv_core::cache::UsernameCache::new(
-                        Arc::new(synctv_core::cache::NoopCacheL2),
+                    synctv_core::cache::UsernameCache::local_only(
                         "test:username:".to_string(),
                         16,
                         60,
@@ -1864,8 +1857,7 @@ mod tests {
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::new(
-                    Arc::new(synctv_core::cache::NoopCacheL2),
+                synctv_core::cache::UsernameCache::local_only(
                     "test:username:".to_string(),
                     16,
                     60,
@@ -1884,7 +1876,7 @@ mod tests {
                 .expect("jwt"),
             )),
             Arc::new(synctv_livestream::api::StreamTracker::new()),
-            Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new()),
+            synctv_livestream::relay::local_stream_registry(),
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
             None,
@@ -1927,9 +1919,7 @@ mod tests {
                 .expect("initial connection manager should build"),
         ));
         let runtime: Arc<dyn RedisConnectionRuntime> = synctv_core::shared_runtime(shared);
-        let auth = make_test_auth_with_registry_dyn(Arc::new(
-            synctv_livestream::relay::InMemoryStreamRegistry::new(),
-        ))
+        let auth = make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
         .with_user_stream_index(Arc::new(SharedUserStreamIndex::from_runtime(
             runtime,
             "test:".to_string(),
@@ -1983,16 +1973,15 @@ mod tests {
             }
         }
 
-        fn backend_name(&self) -> &'static str {
-            "shared-mock"
+        fn supports_cross_node_lookup(&self) -> bool {
+            true
         }
     }
 
     #[tokio::test]
     async fn test_get_user_stream_uses_injected_shared_user_stream_index() {
-        let auth = make_test_auth_with_registry_dyn(Arc::new(
-            synctv_livestream::relay::InMemoryStreamRegistry::new(),
-        ))
+        let auth =
+            make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
         .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
 
         let user_stream = auth.get_user_stream("shared-user").await;
@@ -2019,7 +2008,7 @@ mod tests {
         let index = user_stream_index_from_shared_state_profile(&profile)
             .expect("local-only profile should build local RTMP index");
 
-        assert_eq!(index.backend_name(), "local-only");
+        assert!(!index.supports_cross_node_lookup());
     }
 
     #[test]
@@ -2033,7 +2022,7 @@ mod tests {
         let index = user_stream_index_from_shared_state_profile(&profile)
             .expect("standalone profile should keep RTMP index local");
 
-        assert_eq!(index.backend_name(), "local-only");
+        assert!(!index.supports_cross_node_lookup());
     }
 
     #[test]
@@ -2063,7 +2052,7 @@ mod tests {
         let index = user_stream_index_from_shared_state_profile(&profile)
             .expect("cluster profile with runtime should build shared RTMP index");
 
-        assert_eq!(index.backend_name(), "redis");
+        assert!(index.supports_cross_node_lookup());
     }
 
     // ========== StreamLifecycleEvent ==========

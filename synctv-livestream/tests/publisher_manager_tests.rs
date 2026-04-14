@@ -1,20 +1,19 @@
-//! `PublisherManager` unit tests using `InMemoryStreamRegistry`.
+//! `PublisherManager` unit tests using a local-only stream registry.
 //!
 //! These tests verify publish/unpublish handling and active publisher tracking.
-//! They use `InMemoryStreamRegistry` instead of `MockStreamRegistry` (which is only
-//! available in cfg(test) within the crate).
+//! They use the local-only registry helper instead of crate-private mocks.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+use synctv_livestream::relay::StreamRegistryTrait;
 
-/// Helper to create a test `PublisherManager` with an `InMemoryStreamRegistry`.
+/// Helper to create a test `PublisherManager` with a local-only registry.
 fn setup() -> (
     synctv_livestream::relay::PublisherManager,
-    Arc<InMemoryStreamRegistry>,
+    Arc<dyn StreamRegistryTrait>,
     tokio::sync::mpsc::Receiver<synctv_xiu::streamhub::define::StreamHubEvent>,
 ) {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let manager = synctv_livestream::relay::PublisherManager::new(
         registry.clone(),
@@ -90,7 +89,7 @@ async fn test_reregister_all_publishers_empty() {
 
 #[tokio::test]
 async fn test_with_api_address() {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let manager =
         synctv_livestream::relay::PublisherManager::new(registry, "test-node".to_string(), tx)

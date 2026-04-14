@@ -1,31 +1,70 @@
 //! User operations: `get_profile`, `set_username`, `set_password`
 
 use crate::impls::ApiError;
-use synctv_core::models::UserId;
+use crate::realtime_lifecycle::DeletedRoomFanoutReservation;
+use synctv_core::models::{PageParams, RoomId, UserId};
 use synctv_core::validation::UsernameValidator;
 
 use super::convert::user_to_proto;
 use super::ClientApiImpl;
 
+const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
+
+async fn list_owned_room_ids(api: &ClientApiImpl, user_id: &UserId) -> Result<Vec<RoomId>, ApiError> {
+    let mut page = 1;
+    let mut room_ids = Vec::new();
+
+    loop {
+        let (rooms, total) = api
+            .room_service
+            .list_rooms_by_creator(
+                user_id,
+                PageParams::new(Some(page), Some(USER_ROOM_DELETION_PAGE_SIZE)),
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        if rooms.is_empty() {
+            break;
+        }
+
+        room_ids.extend(rooms.into_iter().map(|room| room.id));
+        if i64::try_from(room_ids.len()).unwrap_or(i64::MAX) >= total {
+            break;
+        }
+
+        page += 1;
+    }
+
+    Ok(room_ids)
+}
+
 impl ClientApiImpl {
     pub async fn delete_current_user(&self, user_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
+        let owned_room_ids = list_owned_room_ids(self, &uid).await?;
+        let mut deleted_room_fanout = Vec::with_capacity(owned_room_ids.len());
+        for room_id in owned_room_ids {
+            deleted_room_fanout.push(DeletedRoomFanoutReservation {
+                room_id,
+                reservation: self.room_lifecycle_fanout.reserve_room_deleted().await?,
+            });
+        }
         let summary = self
             .user_service
             .delete_user_with_summary(&uid)
             .await
             .map_err(ApiError::from)?;
 
-        crate::impls::finalize_user_deletion(crate::impls::UserDeletionFinalizeArgs {
-            room_service: &self.room_service,
-            connection_service: self.connection_service.as_ref(),
-            live_streaming_infrastructure: self.live_streaming_infrastructure.as_ref(),
-            cluster_fanout: self.cluster_fanout.as_ref(),
-            summary: &summary,
-            deleted_by: &uid,
-            disconnect_reason: "user_deleted",
-        })
-        .await;
+        self.realtime_lifecycle
+            .finalize_user_deletion(
+                self.room_service.as_ref(),
+                &summary,
+                &uid,
+                "user_deleted",
+                deleted_room_fanout,
+            )
+            .await;
 
         Ok(())
     }

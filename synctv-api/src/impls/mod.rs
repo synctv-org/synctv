@@ -6,7 +6,6 @@
 //! All methods use grpc-generated types for parameters and return values.
 use std::time::Duration;
 use synctv_livestream::error::StreamError;
-use crate::cluster_fanout::ClusterFanoutService;
 
 pub mod admin;
 pub mod client;
@@ -175,77 +174,6 @@ pub async fn require_cluster_event_publish(
     Ok(())
 }
 
-/// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
-///
-/// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media
-/// deletion to terminate any active RTMP stream.
-pub async fn kick_stream_cluster(
-    live_streaming_infrastructure: Option<
-        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
-    >,
-    cluster_fanout: &dyn ClusterFanoutService,
-    room_id: &str,
-    media_id: &str,
-    reason: &str,
-) {
-    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-    use synctv_core::models::{MediaId as Mid, RoomId as Rid};
-
-    // 1. Local kick (no-op if stream not on this node)
-    if let Some(infra) = live_streaming_infrastructure {
-        if let Err(e) = infra.kick_publisher(room_id, media_id) {
-            tracing::warn!(room_id, media_id, error = %e, "Failed to kick local publisher");
-        }
-    }
-
-    // 2. Cluster-wide via Redis
-    if !cluster_fanout
-        .try_publish(PublishRequest {
-            event: ClusterEvent::KickPublisher {
-                event_id: synctv_common::snanoid!(16),
-                room_id: Rid::from_string(room_id.to_string()),
-                media_id: Mid::from_string(media_id.to_string()),
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-        })
-        .await
-        && cluster_fanout.is_distributed_enabled()
-    {
-        tracing::warn!(
-            room_id,
-            media_id,
-            "Failed to send cluster-wide kick event after bounded retry"
-        );
-    }
-}
-
-pub async fn active_room_stream_media_ids(
-    live_streaming_infrastructure: Option<
-        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
-    >,
-    room_id: &str,
-) -> Vec<String> {
-    let mut media_ids = std::collections::BTreeSet::new();
-
-    if let Some(infra) = live_streaming_infrastructure {
-        media_ids.extend(infra.user_stream_tracker.get_room_streams(room_id));
-
-        match infra.registry.list_streams_for_room(room_id).await {
-            Ok(remote_media_ids) => media_ids.extend(remote_media_ids),
-            Err(error) => {
-                tracing::warn!(
-                    room_id,
-                    error = %error,
-                    "Failed to list room streams from registry; falling back to local tracker view"
-                );
-            }
-        }
-    }
-
-    media_ids.into_iter().collect()
-}
-
 fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiError {
     ApiError::InvalidInput(format!("Invalid {field}: {err}"))
 }
@@ -327,147 +255,6 @@ pub fn parse_optional_playlist_id_param(
     }
 }
 
-pub async fn disconnect_deleted_user(
-    connection_service: &dyn crate::runtime::RealtimeConnectionService,
-    live_streaming_infrastructure: Option<
-        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
-    >,
-    cluster_fanout: &dyn ClusterFanoutService,
-    user_id: &synctv_core::models::UserId,
-    reason: &str,
-) {
-    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-
-    connection_service.disconnect_user(user_id);
-
-    if let Some(infra) = live_streaming_infrastructure {
-        let streams = infra.user_stream_tracker.get_user_streams(user_id.as_str());
-
-        for (room_id, media_id) in &streams {
-            kick_stream_cluster(
-                Some(infra),
-                cluster_fanout,
-                room_id,
-                media_id,
-                reason,
-            )
-            .await;
-        }
-
-        infra.kick_user_publishers(user_id.as_str()).await;
-    }
-
-    let _ = cluster_fanout
-        .try_publish(PublishRequest {
-            event: ClusterEvent::KickUser {
-                event_id: synctv_common::snanoid!(16),
-                user_id: user_id.clone(),
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-        })
-        .await;
-}
-
-pub async fn finalize_user_deletion(
-    args: UserDeletionFinalizeArgs<'_>,
-) {
-    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-
-    let UserDeletionFinalizeArgs {
-        room_service,
-        connection_service,
-        live_streaming_infrastructure,
-        cluster_fanout,
-        summary,
-        deleted_by,
-        disconnect_reason,
-    } = args;
-
-    for room_id in &summary.membership_room_ids {
-        room_service
-            .permission_service()
-            .invalidate_cache(room_id, &summary.user_id)
-            .await;
-    }
-
-    for impact in &summary.modified_rooms {
-        room_service
-            .finalize_entry_deletions_after_commit(
-                &impact.room_id,
-                &impact.deleted_media_ids,
-                impact.playback_reset,
-            )
-            .await;
-
-        for media_id in &impact.deleted_media_ids {
-            kick_stream_cluster(
-                live_streaming_infrastructure,
-                cluster_fanout,
-                impact.room_id.as_str(),
-                media_id.as_str(),
-                "user_resource_deleted",
-            )
-            .await;
-        }
-    }
-
-    for room_id in &summary.deleted_room_ids {
-        room_service
-            .finalize_deleted_room_after_commit(room_id)
-            .await;
-
-        let _ = cluster_fanout
-            .try_publish(PublishRequest {
-                event: ClusterEvent::RoomDeleted {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    deleted_by: deleted_by.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-            })
-            .await;
-
-        connection_service.disconnect_room(room_id);
-
-        let media_ids =
-            active_room_stream_media_ids(live_streaming_infrastructure, room_id.as_str()).await;
-        for media_id in &media_ids {
-            kick_stream_cluster(
-                live_streaming_infrastructure,
-                cluster_fanout,
-                room_id.as_str(),
-                media_id,
-                "room_deleted",
-            )
-            .await;
-        }
-
-        if let Some(infra) = live_streaming_infrastructure {
-            infra.kick_room_publishers(room_id.as_str()).await;
-        }
-    }
-
-    disconnect_deleted_user(
-        connection_service,
-        live_streaming_infrastructure,
-        cluster_fanout,
-        &summary.user_id,
-        disconnect_reason,
-    )
-    .await;
-}
-
-pub struct UserDeletionFinalizeArgs<'a> {
-    pub room_service: &'a synctv_core::service::RoomService,
-    pub connection_service: &'a dyn crate::runtime::RealtimeConnectionService,
-    pub live_streaming_infrastructure:
-        Option<&'a std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
-    pub cluster_fanout: &'a dyn ClusterFanoutService,
-    pub summary: &'a synctv_core::service::user::UserDeletionSummary,
-    pub deleted_by: &'a synctv_core::models::UserId,
-    pub disconnect_reason: &'a str,
-}
 
 /// Application-level error codes for client-side programmatic handling.
 ///
@@ -960,9 +747,6 @@ pub fn parse_api_error_string(err: &str) -> (ErrorKind, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster_fanout::ClusterFanoutService;
-    use async_trait::async_trait;
-    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 
     #[test]
     fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
@@ -1407,58 +1191,6 @@ mod tests {
 
         assert!(matches!(err, ApiError::ServiceUnavailable(_)));
         assert_eq!(err.message(), "critical cluster event fanout failed");
-    }
-
-    #[tokio::test]
-    async fn test_kick_stream_cluster_uses_cluster_fanout_service() {
-        #[derive(Default)]
-        struct RecordingFanoutService {
-            published: std::sync::Mutex<Vec<PublishRequest>>,
-        }
-
-        #[async_trait]
-        impl ClusterFanoutService for RecordingFanoutService {
-            async fn reserve(
-                &self,
-                _failure_message: &'static str,
-            ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-                Ok(None)
-            }
-
-            fn publish(
-                &self,
-                _reservation: Option<ClusterEventPublishReservation>,
-                _request: PublishRequest,
-            ) {
-            }
-
-            async fn try_publish(
-                &self,
-                request: PublishRequest,
-            ) -> bool {
-                self.published.lock().unwrap().push(request);
-                true
-            }
-
-            fn is_distributed_enabled(&self) -> bool {
-                true
-            }
-        }
-
-        let runtime = RecordingFanoutService::default();
-
-        super::kick_stream_cluster(None, &runtime, "room-kick", "media-kick", "test-reason")
-            .await;
-
-        let published = runtime.published.lock().unwrap();
-        assert_eq!(published.len(), 1, "kick helper should publish exactly one cluster event");
-        assert!(matches!(
-            published[0].event,
-            ClusterEvent::KickPublisher { ref room_id, ref media_id, ref reason, .. }
-                if room_id.as_str() == "room-kick"
-                    && media_id.as_str() == "media-kick"
-                    && reason == "test-reason"
-        ));
     }
 
     #[test]

@@ -11,8 +11,12 @@ use crate::{
     models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
     provider::{DirectoryItem, ProviderContext},
     repository::UserProviderCredentialRepository,
-    repository::{MediaRepository, PlaylistRepository},
-    service::{notification::NotificationService, permission::PermissionService, ProvidersManager},
+    repository::{MediaRepository, PlaylistRepository, UserRepository},
+    service::{
+        notification::{MediaAddedNotification, NotificationService},
+        permission::PermissionService,
+        ProvidersManager,
+    },
     Error, Result,
 };
 use serde_json::Value as JsonValue;
@@ -165,6 +169,16 @@ impl MediaService {
             }
         }
         deduped
+    }
+
+    async fn resolve_actor_username(&self, user_id: &UserId) -> String {
+        UserRepository::new(self.media_repo.pool().clone())
+            .get_by_id(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|user| user.username)
+            .unwrap_or_default()
     }
 
     /// Create a new media service
@@ -357,15 +371,20 @@ impl MediaService {
             provider = %request.provider_instance_name,
             "Media added to playlist"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         if let Err(e) = self
             .notification_service
             .notify_media_added(
                 &room_id,
-                created_media.id.as_str(),
-                &created_media.name,
-                "", // URL is generated dynamically at playback time
-                created_media.position,
+                MediaAddedNotification {
+                    user_id: &user_id,
+                    username: &actor_username,
+                    media_id: created_media.id.as_str(),
+                    title: &created_media.name,
+                    url: "", // URL is generated dynamically at playback time
+                    position: created_media.position,
+                },
             )
         {
             tracing::warn!(
@@ -386,6 +405,7 @@ impl MediaService {
         &self,
         room_id: RoomId,
         admin_user_id: UserId,
+        actor_username: &str,
         request: AddMediaRequest,
     ) -> Result<Media> {
         if let Some(ref playlist_id) = request.playlist_id {
@@ -466,15 +486,18 @@ impl MediaService {
             provider = %request.provider_instance_name,
             "Media added to playlist by admin"
         );
-
         if let Err(e) = self
             .notification_service
             .notify_media_added(
                 &room_id,
-                created_media.id.as_str(),
-                &created_media.name,
-                "",
-                created_media.position,
+                MediaAddedNotification {
+                    user_id: &admin_user_id,
+                    username: actor_username,
+                    media_id: created_media.id.as_str(),
+                    title: &created_media.name,
+                    url: "",
+                    position: created_media.position,
+                },
             )
         {
             tracing::warn!(
@@ -610,11 +633,22 @@ impl MediaService {
             count = created_items.len(),
             "Batch added media to playlist"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         for item in &created_items {
             if let Err(e) = self
                 .notification_service
-                .notify_media_added(&room_id, item.id.as_str(), &item.name, "", item.position)
+                .notify_media_added(
+                    &room_id,
+                    MediaAddedNotification {
+                        user_id: &user_id,
+                        username: &actor_username,
+                        media_id: item.id.as_str(),
+                        title: &item.name,
+                        url: "",
+                        position: item.position,
+                    },
+                )
             {
                 tracing::warn!(
                     error = %e,
@@ -695,11 +729,14 @@ impl MediaService {
                         media_id = %request.media_id.as_str(),
                         "Media edited"
                     );
+                    let actor_username = self.resolve_actor_username(&user_id).await;
 
                     if let Err(e) = self
                         .notification_service
                         .notify_media_updated(
                             &room_id,
+                            &user_id,
+                            &actor_username,
                             updated_media.id.as_str(),
                             &updated_media.name,
                             updated_media.position,
@@ -747,6 +784,7 @@ impl MediaService {
         &self,
         room_id: RoomId,
         admin_user_id: UserId,
+        actor_username: &str,
         request: EditMediaRequest,
     ) -> Result<Media> {
         for attempt in 0..Self::EDIT_MAX_RETRIES {
@@ -779,11 +817,12 @@ impl MediaService {
                         media_id = %request.media_id.as_str(),
                         "Media edited by admin"
                     );
-
                     if let Err(e) = self
                         .notification_service
                         .notify_media_updated(
                             &room_id,
+                            &admin_user_id,
+                            actor_username,
                             updated_media.id.as_str(),
                             &updated_media.name,
                             updated_media.position,
@@ -885,10 +924,11 @@ impl MediaService {
             media_id = %media_id.as_str(),
             "Media removed from playlist"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         if let Err(e) = self
             .notification_service
-            .notify_media_removed(&room_id, media_id.as_str())
+            .notify_media_removed(&room_id, Some(&user_id), &actor_username, media_id.as_str())
         {
             tracing::warn!(
                 error = %e,
@@ -1072,11 +1112,12 @@ impl MediaService {
             count = deleted_count,
             "Bulk removed media from playlist"
         );
+        let actor_username = self.resolve_actor_username(&user_id).await;
 
         for mid in &media_ids {
             if let Err(e) = self
                 .notification_service
-                .notify_media_removed(&room_id, mid.as_str())
+                .notify_media_removed(&room_id, Some(&user_id), &actor_username, mid.as_str())
             {
                 tracing::warn!(
                     error = %e,
@@ -1096,7 +1137,7 @@ impl MediaService {
         user_id: UserId,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(room_id, user_id, request, false)
+        self.move_media_internal(room_id, user_id, None, request, false)
             .await
     }
 
@@ -1104,9 +1145,16 @@ impl MediaService {
         &self,
         room_id: RoomId,
         admin_user_id: UserId,
+        actor_username: &str,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(room_id, admin_user_id, request, true)
+        self.move_media_internal(
+            room_id,
+            admin_user_id,
+            Some(actor_username),
+            request,
+            true,
+        )
             .await
     }
 
@@ -1114,6 +1162,7 @@ impl MediaService {
         &self,
         room_id: RoomId,
         user_id: UserId,
+        actor_username: Option<&str>,
         request: MoveMediaRequest,
         bypass_room_permissions: bool,
     ) -> Result<Vec<Media>> {
@@ -1271,6 +1320,11 @@ impl MediaService {
                 .get(&media.id)
                 .is_some_and(|original_scope| *original_scope == media.playlist_id)
         });
+        let actor_username = if let Some(actor_username) = actor_username {
+            actor_username.to_string()
+        } else {
+            self.resolve_actor_username(&user_id).await
+        };
 
         if moved_within_same_scope {
             if moved.len() == 1 {
@@ -1279,6 +1333,8 @@ impl MediaService {
                     .notification_service
                     .notify_media_updated(
                         &room_id,
+                        &user_id,
+                        &actor_username,
                         media.id.as_str(),
                         &media.name,
                         media.position,
@@ -1298,7 +1354,12 @@ impl MediaService {
                     .collect();
                 if let Err(e) = self
                     .notification_service
-                    .notify_playlist_reordered(&room_id, &moved_ids)
+                    .notify_playlist_reordered(
+                        &room_id,
+                        Some(&user_id),
+                        &actor_username,
+                        &moved_ids,
+                    )
                 {
                     tracing::warn!(
                         error = %e,
@@ -1313,7 +1374,12 @@ impl MediaService {
                     if *original_scope != media.playlist_id {
                         if let Err(e) = self
                             .notification_service
-                            .notify_media_removed(&room_id, media.id.as_str())
+                            .notify_media_removed(
+                                &room_id,
+                                Some(&user_id),
+                                &actor_username,
+                                media.id.as_str(),
+                            )
                         {
                             tracing::warn!(
                                 error = %e,
@@ -1326,10 +1392,14 @@ impl MediaService {
                             .notification_service
                             .notify_media_added(
                                 &room_id,
-                                media.id.as_str(),
-                                &media.name,
-                                "",
-                                media.position,
+                                MediaAddedNotification {
+                                    user_id: &user_id,
+                                    username: &actor_username,
+                                    media_id: media.id.as_str(),
+                                    title: &media.name,
+                                    url: "",
+                                    position: media.position,
+                                },
                             )
                         {
                             tracing::warn!(
@@ -1343,6 +1413,8 @@ impl MediaService {
                         .notification_service
                         .notify_media_updated(
                             &room_id,
+                            &user_id,
+                            &actor_username,
                             media.id.as_str(),
                             &media.name,
                             media.position,

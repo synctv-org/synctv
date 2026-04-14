@@ -4,16 +4,14 @@
 //! different cluster secret configurations.
 
 #![allow(clippy::unwrap_used)]
-use std::sync::Arc;
-use synctv_livestream::relay::InMemoryStreamRegistry;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataValue;
 use tonic::Request;
 
 /// Helper to create a `StreamRelayServiceImpl` for testing.
-/// Uses `InMemoryStreamRegistry` to avoid Redis dependency.
+/// Uses the local-only registry helper to avoid Redis dependency.
 fn create_test_service() -> synctv_livestream::grpc::StreamRelayServiceImpl {
-    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _rx) = tokio::sync::mpsc::channel(64);
     let cancel_token = CancellationToken::new();
 

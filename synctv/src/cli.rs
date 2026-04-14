@@ -1228,7 +1228,7 @@ pub struct UserSetRoleArgs {
     #[command(flatten)]
     pub user: UserRefArgs,
 
-    #[arg(value_enum)]
+    #[arg(long, value_enum)]
     pub role: CliUserRole,
 }
 
@@ -6325,6 +6325,28 @@ mod tests {
             }) => {
                 assert_eq!(args.user.user_id.as_deref(), Some("user-123"));
                 assert_eq!(args.new_username, "alice-renamed");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_user_set_role_with_role_flag() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "user",
+            "set-role",
+            "alice",
+            "--role",
+            "admin",
+        ]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::SetRole(args),
+                ..
+            }) => {
+                assert_eq!(args.user.username.as_deref(), Some("alice"));
+                assert!(matches!(args.role, CliUserRole::Admin));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

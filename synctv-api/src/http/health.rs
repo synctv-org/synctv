@@ -139,19 +139,17 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         if ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
             Some(health)
         } else {
-            let backend = svc.backend_name();
             error_messages.push(
-                format!(
-                    "WsTicketService: backend '{backend}' is not safe in cluster mode \
-                     (tickets created on one node cannot be validated on another)"
-                )
+                "WsTicketService: ticket storage is not cross-node capable in cluster mode \
+                 (tickets created on one node cannot be validated on another)"
+                    .to_string(),
             );
             is_healthy = false;
             warn!(
-                backend = %backend,
-                "WsTicketService backend is not safe in cluster mode; cross-replica ticket validation will fail"
+                "WsTicketService storage is not cross-node capable in cluster mode; \
+                 cross-replica ticket validation will fail"
             );
-            Some(format!("unhealthy ({backend}, cluster mode)"))
+            Some("unhealthy (single-node ticket storage in cluster mode)".to_string())
         }
     };
 
@@ -253,9 +251,11 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
         return Some(Err("Cluster node ID is empty".to_string()));
     }
 
-    // If Redis pub/sub should be enabled but isn't, the node can't sync with the cluster
-    if !metrics.redis_enabled {
-        return Some(Err("Cluster Redis pub/sub is not connected".to_string()));
+    // If the distributed event path should be enabled but isn't, the node can't sync with the cluster
+    if !metrics.distributed_enabled {
+        return Some(Err(
+            "Cluster distributed realtime transport is not connected".to_string(),
+        ));
     }
 
     Some(Ok(()))
@@ -321,10 +321,13 @@ async fn check_redis_health_from_conn(
 
 /// Check WebSocket ticket service health
 ///
-/// Reports whether the service is using Redis-backed (multi-replica safe) or
-/// memory-backed (single-replica only) storage.
+/// Reports whether the service supports cross-node ticket validation.
 fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String {
-    format!("healthy ({})", svc.backend_name())
+    if svc.supports_cluster_runtime() {
+        "healthy (cross-node capable ticket storage)".to_string()
+    } else {
+        "healthy (single-node ticket storage)".to_string()
+    }
 }
 
 fn ws_ticket_backend_is_safe_for_mode(
@@ -685,10 +688,6 @@ mod tests {
             Ok(None)
         }
 
-        fn backend_name(&self) -> &'static str {
-            "shared-mock"
-        }
-
         fn supports_cluster_runtime(&self) -> bool {
             true
         }
@@ -1032,10 +1031,7 @@ mod tests {
 
     #[test]
     fn test_ws_ticket_memory_backend_is_only_unhealthy_when_cluster_enabled() {
-        let memory_tickets = synctv_core::service::WsTicketService::from_store(
-            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-            None,
-        );
+        let memory_tickets = synctv_core::service::WsTicketService::local_only(None);
         assert!(
             ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
             "standalone mode should allow memory-backed ws tickets"
@@ -1068,21 +1064,18 @@ mod tests {
             "cluster mode should accept any store that advertises cluster capability"
         );
         assert!(
-            check_ws_ticket_health(&shared_tickets).contains("shared-mock"),
-            "health helper should expose backend mode"
+            check_ws_ticket_health(&shared_tickets).contains("cross-node capable"),
+            "health helper should expose capability rather than backend implementation"
         );
         assert!(
-            check_ws_ticket_health(&memory_tickets).contains("memory"),
-            "health helper should expose backend mode"
+            check_ws_ticket_health(&memory_tickets).contains("single-node"),
+            "health helper should expose capability rather than backend implementation"
         );
     }
 
     #[test]
     fn test_cluster_health_is_skipped_when_distributed_cluster_disabled() {
-        let memory_tickets = synctv_core::service::WsTicketService::from_store(
-            Arc::new(synctv_core::service::ws_ticket::InMemoryTicketStore::new(30)),
-            None,
-        );
+        let memory_tickets = synctv_core::service::WsTicketService::local_only(None);
         assert!(
             ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
             "helper should treat standalone mode as safe"

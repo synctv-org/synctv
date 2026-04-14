@@ -33,8 +33,6 @@ pub trait ClusterNodeDirectoryFactory: Send + Sync {
         heartbeat_timeout_secs: i64,
         key_prefix: &str,
     ) -> Result<Arc<dyn ClusterNodeDirectory>>;
-
-    fn backend_name(&self) -> &'static str;
 }
 
 #[async_trait]

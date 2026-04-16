@@ -68,7 +68,7 @@ pub async fn liveness_check() -> impl IntoResponse {
 
 /// Readiness probe - checks if the application is ready to serve traffic
 ///
-/// **Production Enhancement (#25)**: Health check validates critical dependencies:
+/// Health check validates critical dependencies:
 /// - Database connectivity (`PostgreSQL`) - Executes a test query via `user_service`
 /// - Redis connectivity - Sends PING command, gracefully handles "not configured" case
 /// - Memory pressure - Checks if system memory usage exceeds 90%

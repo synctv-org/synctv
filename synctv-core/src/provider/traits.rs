@@ -1,5 +1,4 @@
 // Media Provider Traits
-//
 // Core interfaces for the provider system
 
 use super::{ProviderContext, ProviderError};
@@ -121,12 +120,8 @@ pub struct DirectoryItem {
 /// It may use different `provider_instances` internally via `RemoteProviderManager`.
 #[async_trait]
 pub trait MediaProvider: Send + Sync {
-    // ========== Basic Information ==========
-
     /// Provider type name (e.g., "bilibili", "alist", "emby")
     fn name(&self) -> &'static str;
-
-    // ========== Core Method (MANDATORY) ==========
 
     /// Generate playback information from `source_config`
     ///
@@ -160,8 +155,6 @@ pub trait MediaProvider: Send + Sync {
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError>;
 
-    // ========== Optional Capabilities ==========
-
     /// Cast to `DynamicFolder` trait if supported
     ///
     /// Providers that implement `DynamicFolder` trait should override this
@@ -190,8 +183,6 @@ pub trait MediaProvider: Send + Sync {
     fn test_client_manager_marker(&self) -> Option<usize> {
         None
     }
-
-    // ========== Validation ==========
 
     /// Validate `source_config` before saving to database
     ///
@@ -225,8 +216,6 @@ pub trait MediaProvider: Send + Sync {
     ) -> Result<Value, ProviderError> {
         Ok(source_config) // Default: no transformation
     }
-
-    // ========== Lifecycle Hooks (Optional) ==========
 
     /// Called when playback starts
     ///

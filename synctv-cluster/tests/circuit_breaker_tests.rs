@@ -22,13 +22,10 @@ fn create_test_circuit_breaker(
     CbConfig::new().failure_policy(policy).build()
 }
 
-// ============================================================================
 // Test 1: Half-open state allows exactly one probe call
-// ============================================================================
 
 #[tokio::test]
 async fn test_half_open_single_probe_wins_race() {
-    // Create a circuit breaker that opens after 1 failure with short backoff
     // Note: failsafe requires backoff >= 1 second
     let cb = Arc::new(create_test_circuit_breaker(
         1,
@@ -45,7 +42,6 @@ async fn test_half_open_single_probe_wins_race() {
         "Circuit should be open after failure"
     );
 
-    // Wait for backoff to expire so circuit transitions to half-open
     tokio::time::sleep(Duration::from_millis(1100)).await;
 
     // After backoff expires, the failsafe circuit breaker transitions to
@@ -86,9 +82,7 @@ async fn test_half_open_single_probe_wins_race() {
     );
 }
 
-// ============================================================================
 // Test 2: Half-open probe failure re-opens the circuit
-// ============================================================================
 
 #[tokio::test]
 async fn test_half_open_probe_failure_reopens() {
@@ -98,7 +92,6 @@ async fn test_half_open_probe_failure_reopens() {
     cb.on_error();
     assert!(!cb.is_call_permitted(), "Circuit should be open");
 
-    // Wait for half-open
     tokio::time::sleep(Duration::from_millis(1100)).await;
 
     // One probe is permitted
@@ -117,9 +110,7 @@ async fn test_half_open_probe_failure_reopens() {
     );
 }
 
-// ============================================================================
 // Test 3: healthy_endpoints filters open circuits
-// ============================================================================
 
 #[tokio::test]
 async fn test_healthy_endpoints_filters_open() {
@@ -142,7 +133,6 @@ async fn test_healthy_endpoints_filters_open() {
         "All endpoints should be healthy initially"
     );
 
-    // Open one endpoint's circuit
     breakers[1].on_error();
 
     let healthy: Vec<_> = endpoints
@@ -162,9 +152,7 @@ async fn test_healthy_endpoints_filters_open() {
     );
 }
 
-// ============================================================================
 // Test 4: Cluster degraded when >50% endpoints have open circuits
-// ============================================================================
 
 #[tokio::test]
 async fn test_cluster_degraded_threshold() {
@@ -173,7 +161,6 @@ async fn test_cluster_degraded_threshold() {
         .map(|_| create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1)))
         .collect();
 
-    // Open 3 out of 4 circuits (>50%)
     for cb in &breakers[0..3] {
         cb.on_error();
     }
@@ -187,9 +174,7 @@ async fn test_cluster_degraded_threshold() {
     );
 }
 
-// ============================================================================
 // Test 5: Failures below threshold keep circuit closed
-// ============================================================================
 
 #[tokio::test]
 async fn test_failure_below_threshold_stays_closed() {

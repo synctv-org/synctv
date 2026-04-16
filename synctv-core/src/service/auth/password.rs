@@ -9,9 +9,7 @@ use tokio::task;
 
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
 // PasswordHasherService trait
-// ---------------------------------------------------------------------------
 
 /// Trait for password hashing and verification.
 ///
@@ -29,9 +27,7 @@ pub trait PasswordHasherService: Send + Sync {
     fn dummy_hash(&self) -> &'static str;
 }
 
-// ---------------------------------------------------------------------------
 // Production implementation (m_cost=64MB, t_cost=3, p_cost=4)
-// ---------------------------------------------------------------------------
 
 /// Production Argon2id password hasher with full-strength parameters.
 pub struct ProdPasswordHasher {
@@ -91,9 +87,7 @@ impl PasswordHasherService for ProdPasswordHasher {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Test implementation (m_cost=8MB, t_cost=1, p_cost=1)
-// ---------------------------------------------------------------------------
 
 /// Lightweight Argon2id password hasher for tests.
 ///

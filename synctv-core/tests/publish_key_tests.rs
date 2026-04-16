@@ -27,14 +27,11 @@ fn create_service_with_short_ttl() -> PublishKeyService {
     PublishKeyService::new(create_jwt_service(), 0)
 }
 
-// ============================================================================
 // Token expiration tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_validate_expired_token_rejected() {
-    // Create a service with 0-hour TTL -- tokens expire at creation time
     let service = create_service_with_short_ttl();
     let room_id = RoomId::new();
     let media_id = MediaId::new();
@@ -44,7 +41,6 @@ async fn test_validate_expired_token_rejected() {
         .generate_publish_key(&room_id, &media_id, &user_id)
         .unwrap();
 
-    // Wait a moment to ensure the token is past its expiration
     tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
 
     let result = service.validate_publish_key(&key.token).await;
@@ -57,9 +53,7 @@ async fn test_validate_expired_token_rejected() {
     }
 }
 
-// ============================================================================
 // InMemoryJtiStore tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -110,9 +104,7 @@ async fn test_in_memory_jti_store_is_claimed() {
     );
 }
 
-// ============================================================================
 // PublishKeyService single-use enforcement
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -207,9 +199,7 @@ async fn test_publish_key_user_validator_failure_does_not_consume_token() {
     assert_eq!(second_result.unwrap(), user_id);
 }
 
-// ============================================================================
 // Redis JTI store tests (require Docker)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -220,7 +210,6 @@ async fn test_redis_jti_store_cross_service_dedup() {
         .await
         .expect("Failed to create Redis ConnectionManager");
 
-    // Create two stores simulating two replicas
     let prefix = test_redis_key_prefix("jti-store");
     let store1 = RedisJtiStore::new(conn.clone(), prefix.clone(), 300);
     let store2 = RedisJtiStore::new(conn.clone(), prefix, 300);

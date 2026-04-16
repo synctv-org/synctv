@@ -7,9 +7,7 @@
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::grpc::error_mapper::map_provider_error;
 
-// ============================================================================
 // AlistError -> tonic::Status mapping
-// ============================================================================
 
 #[test]
 fn test_alist_auth_error_to_unauthenticated() {
@@ -66,9 +64,7 @@ fn test_alist_invalid_config_to_invalid_argument() {
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
 }
 
-// ============================================================================
 // BilibiliError -> tonic::Status mapping
-// ============================================================================
 
 #[test]
 fn test_bilibili_auth_error_to_unauthenticated() {
@@ -160,9 +156,7 @@ fn test_bilibili_response_too_large_to_resource_exhausted() {
     assert!(status.message().contains("20000000"));
 }
 
-// ============================================================================
 // EmbyError -> tonic::Status mapping
-// ============================================================================
 
 #[test]
 fn test_emby_auth_error_to_unauthenticated() {
@@ -235,9 +229,7 @@ fn test_emby_invalid_header_to_internal() {
     assert_eq!(status.code(), tonic::Code::Internal);
 }
 
-// ============================================================================
 // Context string is included in status message
-// ============================================================================
 
 #[test]
 fn test_context_string_included_in_all_error_types() {

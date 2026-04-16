@@ -13,9 +13,7 @@
 use synctv_core::config::{Config, WebRTCConfig, WebRTCMode};
 use synctv_core::models::PermissionBits;
 
-// ============================================================================
 // Test Infrastructure Setup
-// ============================================================================
 
 /// Create a test configuration with WebRTC enabled
 fn test_webrtc_config() -> Config {
@@ -36,10 +34,6 @@ fn test_webrtc_config() -> Config {
     config.server.advertise_host = "test.example.com".to_string();
     config
 }
-
-// ============================================================================
-// Module: ICE Servers Configuration
-// ============================================================================
 
 mod ice_servers {
     use super::*;
@@ -139,10 +133,6 @@ mod ice_servers {
     }
 }
 
-// ============================================================================
-// Module: WebRTC Configuration Modes
-// ============================================================================
-
 mod webrtc_modes {
     use super::*;
 
@@ -205,10 +195,6 @@ mod webrtc_modes {
         assert_eq!(config.turn_credential_ttl_seconds, 86400);
     }
 }
-
-// ============================================================================
-// Module: TURN Credentials Generation
-// ============================================================================
 
 mod turn_credentials {
     use synctv_core::service::turn_server;
@@ -293,10 +279,6 @@ mod turn_credentials {
         );
     }
 }
-
-// ============================================================================
-// Module: WebRTC Permission Checks
-// ============================================================================
 
 mod permissions {
     use super::*;
@@ -600,17 +582,9 @@ mod permissions {
     }
 }
 
-// ============================================================================
-// Module: Network Quality (SFU Removed)
-// ============================================================================
-//
 // Note: Network quality functionality was removed with the SFU module.
 // The get_network_quality API now always returns an empty peer list.
 // This is tested in the HTTP integration tests.
-
-// ============================================================================
-// Module: WebRTC Message Types
-// ============================================================================
 
 mod message_types {
     use synctv_proto::client::{WebRtcAnswer, WebRtcIceCandidate, WebRtcOffer};
@@ -675,10 +649,6 @@ mod message_types {
     }
 }
 
-// ============================================================================
-// Module: ICE Candidate Filtering
-// ============================================================================
-
 mod ice_filtering {
     use std::net::IpAddr;
 
@@ -734,54 +704,33 @@ mod ice_filtering {
     }
 }
 
-// ============================================================================
 // Integration Test Notes
-// ============================================================================
 
-// NOTE: Full end-to-end tests requiring WebSocket connections and database
 // would be added here in a real-world scenario. These tests validate:
-//
-// 1. Complete signaling flow: User A sends offer → User B receives →
 //    User B sends answer → User A receives
-//
-// 2. ICE candidate trickle: Both peers exchange ICE candidates through
 //    the signaling server
-//
-// 3. Permission enforcement: Users without USE_WEBRTC permission are
 //    rejected when attempting to send WebRTC messages
-//
-// 4. Multi-room isolation: WebRTC messages in room A don't leak to room B
-//
-// 5. Cluster behavior: WebRTC signaling works correctly across multiple
 //    server replicas via Redis pub/sub
-//
 // Such tests would require:
 // - testcontainers for PostgreSQL and Redis
 // - WebSocket client library for connection testing
 // - Mocking or actual implementation of connection manager
-//
 // Example test structure:
-//
 // #[tokio::test]
 // async fn test_webrtc_offer_answer_flow() {
 //     let infra = TestInfra::setup().await;
 //     let user_a = infra.create_test_user("alice").await;
 //     let user_b = infra.create_test_user("bob").await;
 //     let room = infra.create_test_room("test_room").await;
-//
 //     let ws_a = infra.connect_websocket(&user_a, &room).await;
 //     let ws_b = infra.connect_websocket(&user_b, &room).await;
-//
 //     // User A sends offer
 //     ws_a.send(Message::WebRtcOffer { to_user_id: user_b.id, sdp: "..." }).await;
-//
 //     // User B receives offer
 //     let offer = ws_b.recv().await.expect("Should receive offer");
 //     assert_matches!(offer, Message::WebRtcOffer { .. });
-//
 //     // User B sends answer
 //     ws_b.send(Message::WebRtcAnswer { to_user_id: user_a.id, sdp: "..." }).await;
-//
 //     // User A receives answer
 //     let answer = ws_a.recv().await.expect("Should receive answer");
 //     assert_matches!(answer, Message::WebRtcAnswer { .. });

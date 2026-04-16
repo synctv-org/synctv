@@ -1,5 +1,4 @@
 // HMAC-signed proxy URL generation and verification.
-//
 // Proxy URLs embed room_id, user_id, version, and expiry directly in the query string,
 // authenticated by an HMAC-SHA256 signature. This replaces JWT auth on proxy routes,
 // allowing URLs to be shared (e.g., in M3U8 playlists) without leaking JWT tokens.

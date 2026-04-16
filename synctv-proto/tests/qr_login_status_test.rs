@@ -109,7 +109,6 @@ fn test_qr_login_status_from_str_name() {
 fn test_qr_status_response_uses_enum() {
     use synctv_proto::providers::bilibili::QrStatusResponse;
 
-    // Create response with enum status
     let response = QrStatusResponse {
         status: QrLoginStatus::Success as i32,
         server_id: String::new(),
@@ -118,7 +117,6 @@ fn test_qr_status_response_uses_enum() {
     // Verify the status field accepts enum values
     assert_eq!(response.status, QrLoginStatus::Success as i32);
 
-    // Create response with different status values
     let expired_response = QrStatusResponse {
         status: QrLoginStatus::Expired as i32,
         server_id: String::new(),

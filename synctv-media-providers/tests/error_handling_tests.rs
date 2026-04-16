@@ -11,8 +11,6 @@ use tokio::net::TcpListener;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// === json_with_limit Tests ===
-
 #[tokio::test]
 async fn test_json_with_limit_valid_json() {
     let server = MockServer::start().await;
@@ -37,7 +35,6 @@ async fn test_json_with_limit_valid_json() {
 async fn test_json_with_limit_exceeds_max() {
     let server = MockServer::start().await;
 
-    // Create a response with a large Content-Length that matches the actual body.
     // We generate a body larger than MAX_RESPONSE_SIZE (16 MB = 16_777_216 bytes).
     // The json_with_limit function checks Content-Length first, so we only need
     // to set a large CL with a matching body.
@@ -56,8 +53,6 @@ async fn test_json_with_limit_exceeds_max() {
         "Expected ResponseTooLarge, got: {err:?}"
     );
 }
-
-// === check_response Tests ===
 
 #[tokio::test]
 async fn test_check_response_200_ok() {
@@ -292,8 +287,6 @@ Connection: close\r\n\
     server.abort();
     let _ = server.await;
 }
-
-// === with_retry Tests ===
 
 #[tokio::test]
 async fn test_with_retry_succeeds_first_attempt() {

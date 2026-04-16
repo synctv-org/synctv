@@ -168,8 +168,6 @@ pub fn logto_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Er
 mod tests {
     use super::*;
 
-    // ==================== Provider Creation ====================
-
     #[test]
     fn test_create_provider_valid_config() {
         let provider = LogtoProvider::create(
@@ -235,8 +233,6 @@ mod tests {
         assert!(matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
     }
 
-    // ==================== Provider Type ====================
-
     #[test]
     fn test_provider_type() {
         let provider = LogtoProvider::create(
@@ -248,8 +244,6 @@ mod tests {
         .unwrap();
         assert_eq!(provider.provider_type(), "logto");
     }
-
-    // ==================== Auth URL Generation ====================
 
     #[tokio::test]
     async fn test_new_auth_url_contains_required_params() {
@@ -294,8 +288,6 @@ mod tests {
         assert!(auth_url.starts_with("https://logto.example.com/oidc/auth"));
         assert!(!auth_url.contains("//oidc"));
     }
-
-    // ==================== Factory Function ====================
 
     #[test]
     fn test_factory_valid_config() {
@@ -347,8 +339,6 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
-
-    // ==================== Config Deserialization ====================
 
     #[test]
     fn test_logto_config_deserialize() {

@@ -1,5 +1,3 @@
-// Module: sync
-
 pub mod cluster_manager;
 pub mod connection_manager;
 pub mod dedup;

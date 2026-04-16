@@ -118,17 +118,13 @@ async fn test_redis_oauth_state_ttl_expiry() {
     // Immediately available
     // (Don't consume -- just verify we can store with short TTL)
 
-    // Wait for expiry
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
-    // Should be expired
     let result = store.consume("ttl_token").await.unwrap();
     assert!(result.is_none(), "Token should have expired after 1s TTL");
 }
 
-// ============================================================================
-// Additional Tests for Task #49: OAuth2 Concurrency and Error Handling
-// ============================================================================
+// Additional Tests for OAuth2 Concurrency and Error Handling
 
 /// Test that concurrent state consumption with barrier synchronization
 /// results in exactly one success (simulates real-world race conditions).
@@ -161,7 +157,6 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
         let nc = none_count.clone();
 
         handles.push(tokio::spawn(async move {
-            // Wait for all tasks to be ready
             b.wait().await;
 
             match s.consume("barrier_token").await {
@@ -183,7 +178,6 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
         h.await.unwrap();
     }
 
-    // CRITICAL: Exactly ONE must succeed due to atomic GET+DEL
     assert_eq!(
         success_count.load(Ordering::SeqCst),
         1,
@@ -252,7 +246,6 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
         "",
     );
 
-    // Create a state that's already expired (6 minutes ago, exceeding 5-minute TTL)
     let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
         instance_name: "expired".to_string(),

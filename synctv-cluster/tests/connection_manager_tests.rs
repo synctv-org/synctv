@@ -16,10 +16,6 @@ fn rid(s: &str) -> RoomId {
     RoomId::from_string(s.to_string())
 }
 
-// ============================================================================
-// Test: disconnect signal retry mechanism - signals queued when channel full
-// ============================================================================
-
 #[tokio::test]
 async fn test_disconnect_signal_queued_when_no_receiver() {
     let mgr = ConnectionManager::default();
@@ -91,7 +87,6 @@ async fn test_disconnect_signal_reliability_under_load() {
     // Subscribe to receive signals
     let mut rx = mgr.subscribe_disconnect();
 
-    // Send multiple disconnect signals rapidly
     for i in 0..10 {
         mgr.disconnect_connection(&format!("c{i}"));
     }
@@ -111,9 +106,7 @@ async fn test_disconnect_signal_reliability_under_load() {
     );
 }
 
-// ============================================================================
 // Test 1: join_room is idempotent
-// ============================================================================
 
 #[tokio::test]
 async fn test_join_room_idempotent() {
@@ -132,9 +125,7 @@ async fn test_join_room_idempotent() {
     );
 }
 
-// ============================================================================
 // Test 2: join_room moves between rooms
-// ============================================================================
 
 #[tokio::test]
 async fn test_join_room_moves_between_rooms() {
@@ -199,9 +190,7 @@ async fn test_join_room_rejection_preserves_previous_room_membership() {
     );
 }
 
-// ============================================================================
 // Test 3: max_duration timeout
-// ============================================================================
 
 #[tokio::test]
 async fn test_max_duration_timeout() {
@@ -231,9 +220,7 @@ async fn test_max_duration_timeout() {
     assert_eq!(timeouts[0], "c1");
 }
 
-// ============================================================================
 // Test 4: total connection limit
-// ============================================================================
 
 #[tokio::test]
 async fn test_total_connection_limit() {
@@ -256,9 +243,7 @@ async fn test_total_connection_limit() {
     assert_eq!(mgr.connection_count(), 2);
 }
 
-// ============================================================================
 // Test 5: disconnect signals
-// ============================================================================
 
 #[tokio::test]
 async fn test_disconnect_signals() {
@@ -299,9 +284,7 @@ async fn test_disconnect_signals() {
     );
 }
 
-// ============================================================================
 // Test 6: RTC connections filter
-// ============================================================================
 
 #[tokio::test]
 async fn test_rtc_connections_filter() {
@@ -332,6 +315,4 @@ async fn test_rtc_connections_filter() {
     );
 }
 
-// ============================================================================
 // Test 7: unregister nonexistent is a no-op
-// ============================================================================

@@ -319,8 +319,6 @@ mod tests {
         assert_eq!(MAX_RESPONSE_SIZE, 16 * 1024 * 1024);
     }
 
-    // === Retryable error tests ===
-
     #[test]
     fn test_is_retryable_network() {
         let err = ProviderClientError::Network("timeout".to_string());

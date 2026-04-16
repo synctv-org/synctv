@@ -17,9 +17,7 @@ fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or(0)
 }
 
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Create a JWT service for testing
 fn create_test_jwt_service() -> synctv_core::service::JwtService {
@@ -61,16 +59,13 @@ impl TokenBlacklistStore for FailingBlacklistStore {
     }
 }
 
-// ============================================================================
 // Test 1: Verify JWT service can create and verify tokens
-// ============================================================================
 
 #[test]
 fn test_jwt_service_creates_valid_tokens() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create access token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -84,9 +79,7 @@ fn test_jwt_service_creates_valid_tokens() {
     );
 }
 
-// ============================================================================
 // Test 2: Verify token has JTI needed for blacklisting
-// ============================================================================
 
 #[test]
 fn test_access_token_has_jti_for_blacklisting() {
@@ -114,9 +107,7 @@ fn test_access_token_has_jti_for_blacklisting() {
     );
 }
 
-// ============================================================================
 // Test 3: Blacklist with working store succeeds
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_with_working_store_succeeds() {
@@ -124,7 +115,6 @@ async fn test_blacklist_with_working_store_succeeds() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -148,9 +138,7 @@ async fn test_blacklist_with_working_store_succeeds() {
     );
 }
 
-// ============================================================================
 // Test 4: Blacklist with failing store returns error
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_with_failing_store_returns_error() {
@@ -158,7 +146,6 @@ async fn test_blacklist_with_failing_store_returns_error() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -182,9 +169,7 @@ async fn test_blacklist_with_failing_store_returns_error() {
     );
 }
 
-// ============================================================================
 // Test 5: Fallback store succeeds when primary fails
-// ============================================================================
 
 #[tokio::test]
 async fn test_fallback_store_succeeds_when_primary_fails() {
@@ -193,7 +178,6 @@ async fn test_fallback_store_succeeds_when_primary_fails() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -217,9 +201,7 @@ async fn test_fallback_store_succeeds_when_primary_fails() {
     );
 }
 
-// ============================================================================
 // Test 6: Logout behavior simulation - working store
-// ============================================================================
 
 /// This test simulates the logout flow with a working blacklist store.
 /// The expected behavior is that logout succeeds.
@@ -229,7 +211,6 @@ async fn test_logout_simulation_working_store() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -273,9 +254,7 @@ async fn test_logout_simulation_working_store() {
     );
 }
 
-// ============================================================================
 // Test 7: Logout behavior simulation - failing store (THE KEY TEST)
-// ============================================================================
 
 /// This test simulates the logout flow with a failing blacklist store.
 ///
@@ -292,7 +271,6 @@ async fn test_logout_simulation_failing_store_must_fail() {
     let jwt = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token
     let token = jwt
         .sign_token(&user_id, synctv_core::service::TokenType::Access, 0)
         .unwrap();
@@ -338,9 +316,7 @@ async fn test_logout_simulation_failing_store_must_fail() {
     );
 }
 
-// ============================================================================
 // Test 8: Verify the fix - logout function must propagate blacklist errors
-// ============================================================================
 
 #[test]
 fn test_logout_internal_error_maps_to_http_500() {

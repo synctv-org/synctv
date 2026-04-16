@@ -142,7 +142,6 @@ pub enum AuditAction {
     RoomRejected,
     StreamKicked,
     RateLimitResetFailed,
-    // Token security events (Task #65)
     UserLogin,
     UserLogout,
     TokenIssued,
@@ -606,10 +605,6 @@ impl AuditService {
         .await
     }
 
-    // ========================================================================
-    // Token Security Audit Methods (Task #65)
-    // ========================================================================
-
     /// Log a successful user login event.
     ///
     /// Records the user ID, username, IP address, and user agent for security
@@ -793,42 +788,42 @@ impl AuditFlushHandle {
 
             loop {
                 tokio::select! {
-                    // Receive events
-                    maybe_record = rx.recv() => {
-                        if let Some(record) = maybe_record {
-                            buffer.push(record);
-                            if buffer.len() >= FLUSH_BATCH_SIZE {
-                                flush_batch(&pool, &mut buffer, &dropped_count).await;
-                            }
-                        } else {
-                            // Channel closed, flush remaining and exit
-                            if !buffer.is_empty() {
-                                flush_batch(&pool, &mut buffer, &dropped_count).await;
-                            }
-                            tracing::info!("Audit flush task: channel closed, exiting");
-                            return;
-                        }
-                    }
-                    // Periodic flush
-                    _ = interval.tick() => {
-                        if !buffer.is_empty() {
-                            flush_batch(&pool, &mut buffer, &dropped_count).await;
-                        }
-                    }
-                    // Graceful shutdown signal
-                    _ = cancel_rx.changed() => {
-                        // Drain remaining items from the channel
-                        rx.close();
-                        while let Some(record) = rx.recv().await {
-                            buffer.push(record);
-                        }
-                        if !buffer.is_empty() {
-                            flush_batch(&pool, &mut buffer, &dropped_count).await;
-                        }
-                        tracing::info!("Audit flush task: graceful shutdown complete");
-                        return;
-                    }
-                }
+                // Receive events
+                                   maybe_record = rx.recv() => {
+                                       if let Some(record) = maybe_record {
+                                           buffer.push(record);
+                                           if buffer.len() >= FLUSH_BATCH_SIZE {
+                                               flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                           }
+                                       } else {
+                // Channel closed, flush remaining and exit
+                                           if !buffer.is_empty() {
+                                               flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                           }
+                                           tracing::info!("Audit flush task: channel closed, exiting");
+                                           return;
+                                       }
+                                   }
+                // Periodic flush
+                                   _ = interval.tick() => {
+                                       if !buffer.is_empty() {
+                                           flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                       }
+                                   }
+                // Graceful shutdown signal
+                                   _ = cancel_rx.changed() => {
+                // Drain remaining items from the channel
+                                       rx.close();
+                                       while let Some(record) = rx.recv().await {
+                                           buffer.push(record);
+                                       }
+                                       if !buffer.is_empty() {
+                                           flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                       }
+                                       tracing::info!("Audit flush task: graceful shutdown complete");
+                                       return;
+                                   }
+                               }
             }
         });
 
@@ -975,8 +970,6 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
 mod tests {
     use super::*;
 
-    // ========== AuditAction Serialization ==========
-
     #[test]
     fn test_audit_action_serialization() {
         let action = AuditAction::UserCreated;
@@ -1028,7 +1021,6 @@ mod tests {
             (AuditAction::RoomApproved, "room_approved"),
             (AuditAction::StreamKicked, "stream_kicked"),
             (AuditAction::RateLimitResetFailed, "rate_limit_reset_failed"),
-            // Token security events (Task #65)
             (AuditAction::UserLogin, "user_login"),
             (AuditAction::UserLogout, "user_logout"),
             (AuditAction::TokenIssued, "token_issued"),
@@ -1060,8 +1052,6 @@ mod tests {
         assert_eq!(original.as_str(), deserialized.as_str());
     }
 
-    // ========== AuditTargetType ==========
-
     #[test]
     fn test_all_target_types_serialize_to_snake_case() {
         let targets = vec![
@@ -1087,8 +1077,6 @@ mod tests {
         let target: AuditTargetType = serde_json::from_str(json).unwrap();
         assert!(matches!(target, AuditTargetType::ProviderInstance));
     }
-
-    // ========== AuditLog Construction ==========
 
     #[test]
     fn test_audit_log_construction() {
@@ -1161,8 +1149,6 @@ mod tests {
         assert_eq!(deserialized.details, log.details);
     }
 
-    // ========== AuditEventParams ==========
-
     #[test]
     fn test_audit_event_params_construction() {
         let params = AuditEventParams {
@@ -1184,8 +1170,6 @@ mod tests {
         assert_eq!(params.details["old_role"], "user");
         assert_eq!(params.details["new_role"], "admin");
     }
-
-    // ========== Details JSON Formatting ==========
 
     #[test]
     fn test_permission_change_details_format() {
@@ -1216,8 +1200,6 @@ mod tests {
             2
         );
     }
-
-    // ========== Buffered AuditService ==========
 
     #[tokio::test]
     async fn test_unbuffered_service_dropped_count_is_zero() {
@@ -1278,8 +1260,6 @@ mod tests {
         assert_eq!(FLUSH_RETRY_BASE_MS, 100);
     }
 
-    // ========== Stream Kick Audit ==========
-
     #[test]
     fn test_stream_kicked_action_serialization() {
         let action = AuditAction::StreamKicked;
@@ -1293,8 +1273,6 @@ mod tests {
         let json = serde_json::to_string(&target).unwrap();
         assert_eq!(json, "\"stream\"");
     }
-
-    // ========== log_stream_kicked Parameter Tests ==========
 
     #[test]
     fn test_log_stream_kicked_target_id_format() {
@@ -1347,10 +1325,6 @@ mod tests {
         assert_eq!(action.as_str(), "stream_kicked");
         assert_eq!(target_type.as_str(), "stream");
     }
-
-    // ========================================================================
-    // Token Security Audit Tests (Task #65)
-    // ========================================================================
 
     #[test]
     fn test_token_actions_serialization() {

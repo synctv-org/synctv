@@ -34,10 +34,6 @@ const RESERVED_USERNAMES: &[&str] = &[
     "team",
 ];
 
-// ============================================================================
-// Test: Reserved words are rejected
-// ============================================================================
-
 #[test]
 fn test_admin_is_rejected() {
     let validator = UsernameValidator::new();
@@ -230,10 +226,6 @@ fn test_service_is_rejected() {
     );
 }
 
-// ============================================================================
-// Test: Case-insensitive matching
-// ============================================================================
-
 #[test]
 fn test_admin_uppercase_is_rejected() {
     let validator = UsernameValidator::new();
@@ -297,10 +289,6 @@ fn test_system_mixed_case_is_rejected() {
         "Error message should mention 'reserved', got: {err_msg}"
     );
 }
-
-// ============================================================================
-// Test: Normal usernames pass validation
-// ============================================================================
 
 #[test]
 fn test_normal_username_john_passes() {
@@ -385,10 +373,6 @@ fn test_username_root_user_passes() {
     );
 }
 
-// ============================================================================
-// Test: All reserved words are covered
-// ============================================================================
-
 #[test]
 fn test_all_reserved_words_are_rejected() {
     let validator = UsernameValidator::new();
@@ -408,10 +392,6 @@ fn test_all_reserved_words_are_rejected() {
         );
     }
 }
-
-// ============================================================================
-// Test: Additional reserved words
-// ============================================================================
 
 #[test]
 fn test_help_is_rejected() {

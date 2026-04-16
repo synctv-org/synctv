@@ -13,9 +13,7 @@ fn create_service() -> NotificationService {
     NotificationService::default()
 }
 
-// ============================================================================
 // Event construction tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_notify_user_joined_event_construction() {
@@ -48,9 +46,7 @@ async fn test_notify_user_joined_event_construction() {
     }
 }
 
-// ============================================================================
 // Subscription tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_subscribe_receives_events_in_order() {
@@ -60,7 +56,6 @@ async fn test_subscribe_receives_events_in_order() {
     let room_id = RoomId::from_string("order_room".to_string());
     let user_id = UserId::from_string("user1".to_string());
 
-    // Send multiple events
     service
         .notify_user_joined(&room_id, &user_id, "alice")
         .unwrap();
@@ -83,9 +78,7 @@ async fn test_subscribe_receives_events_in_order() {
     assert!(matches!(event2, RoomEvent::UserLeft { .. }));
 }
 
-// ============================================================================
 // Event type name tests
-// ============================================================================
 
 #[test]
 fn test_event_type_names_all_variants() {
@@ -223,9 +216,7 @@ fn test_event_type_names_all_variants() {
     }
 }
 
-// ============================================================================
 // Serialization tests
-// ============================================================================
 
 #[test]
 fn test_serialization_user_joined_uses_tagged_type() {

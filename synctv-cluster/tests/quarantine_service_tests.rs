@@ -18,17 +18,12 @@ use std::time::Duration;
 use synctv_cluster::leader::{LeaderElect, LeadershipEvent};
 use tokio::sync::broadcast;
 
-// ============================================================================
 // Test 1: Quarantined node should actively resign leadership
-// ============================================================================
-//
 // When a node enters quarantine (epoch mismatch / split-brain detection),
 // it should call `resign()` to immediately release leadership rather than
 // waiting for the lease to expire naturally.
-//
 // Current behavior: The code at cluster_manager.rs:441-449 logs a warning
 // but doesn't actually resign because `resign()` is private.
-// ============================================================================
 
 /// Mock elector that tracks whether resign was called.
 /// This tests the CONTRACT that quarantine should trigger resign.
@@ -97,15 +92,10 @@ async fn test_quarantine_should_trigger_leadership_lost_event() {
     );
 }
 
-// ============================================================================
 // Test 2: Fan-out requests should check quarantine state
-// ============================================================================
-//
 // When a node is quarantined, it should not participate in fan-out
 // operations because its state may be stale or inconsistent.
-//
 // Current behavior: Fan-out methods in ClusterClient don't check is_quarantined().
-// ============================================================================
 
 /// Test that fan-out should be rejected when quarantined
 /// This tests the expected behavior, not the current implementation.
@@ -114,7 +104,6 @@ fn test_fan_out_should_check_quarantine_state() {
     // Simulate quarantine check logic
     let is_quarantined = true;
 
-    // Expected behavior: fan-out should be rejected
     let fan_out_permitted = !is_quarantined;
 
     assert!(
@@ -135,13 +124,9 @@ fn test_fan_out_permitted_when_not_quarantined() {
     );
 }
 
-// ============================================================================
 // Test 3: Quarantine recovery behavior
-// ============================================================================
-//
 // When a quarantined node successfully completes a heartbeat, it should
 // exit quarantine and be able to participate in cluster operations again.
-// ============================================================================
 
 /// Test quarantine state transition: healthy -> quarantined -> healthy
 #[test]
@@ -177,11 +162,9 @@ async fn test_recovery_from_quarantine_allows_leadership() {
     // Subscribe BEFORE any events are sent
     let mut rx = elector.subscribe();
 
-    // Start as leader, then enter quarantine
     elector.set_leader(false);
     let _ = elector.tx.send(LeadershipEvent::Lost);
 
-    // Wait for Lost event to be processed
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // After recovery (heartbeat succeeds), node can re-acquire leadership

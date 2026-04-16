@@ -1260,8 +1260,6 @@ impl CacheInvalidationService {
         self.broadcast_remote(InvalidationMessage::All).await
     }
 
-    // -- Convenience methods: local invalidation + remote broadcast --------
-    //
     // These ensure the originating node's local caches are invalidated
     // BEFORE (or concurrently with) broadcasting to remote replicas,
     // preventing a stale-read window on the originating node.

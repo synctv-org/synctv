@@ -20,13 +20,8 @@ use synctv_cluster::sync::{
 };
 use synctv_core::models::{PermissionBits, RoomId, UserId};
 
-// ============================================================================
-// Test: ClusterManager works in single-node mode (no Redis)
-// ============================================================================
-
 #[tokio::test]
 async fn test_cluster_manager_single_node_mode_works() {
-    // Create ClusterManager without Redis - should work in single-node mode
     let config = ClusterConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -53,13 +48,8 @@ async fn test_cluster_manager_single_node_mode_works() {
     );
 }
 
-// ============================================================================
-// Test: Local subscription and broadcast without Redis
-// ============================================================================
-
 #[tokio::test]
 async fn test_local_subscribe_and_broadcast() {
-    // Create ClusterManager without Redis
     let config = ClusterConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -125,13 +115,8 @@ async fn test_local_subscribe_and_broadcast() {
     manager.unsubscribe(&conn_id);
 }
 
-// ============================================================================
-// Test: Multiple subscribers all receive broadcasts
-// ============================================================================
-
 #[tokio::test]
 async fn test_multiple_subscribers_receive_broadcasts() {
-    // Create ClusterManager without Redis
     let config = ClusterConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -154,7 +139,6 @@ async fn test_multiple_subscribers_receive_broadcasts() {
 
     let room_id = RoomId::from_string("shared_room".to_string());
 
-    // Create 3 subscribers for the same room
     let mut subscribers = Vec::new();
     for i in 0..3 {
         let user_id = UserId::from_string(format!("user_{i}"));
@@ -206,13 +190,8 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     }
 }
 
-// ============================================================================
-// Test: ConnectionManager works without ClusterManager
-// ============================================================================
-
 #[tokio::test]
 async fn test_connection_manager_works_standalone() {
-    // Create ConnectionManager without ClusterManager
     let limits = ConnectionLimits::default();
     let conn_manager = ConnectionManager::new(limits);
 
@@ -232,10 +211,6 @@ async fn test_connection_manager_works_standalone() {
     conn_manager.unregister(&conn_id).await;
     assert_eq!(conn_manager.connection_count(), 0);
 }
-
-// ============================================================================
-// Test: LocalMessageBroadcaster component for fallback
-// ============================================================================
 
 /// LocalMessageBroadcaster provides local-only message broadcasting
 /// when ClusterManager is not available (no Redis).
@@ -338,7 +313,6 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
     let broadcaster = LocalMessageBroadcaster::new();
     let room_id = RoomId::from_string("shared_room".to_string());
 
-    // Create 3 subscribers
     let mut receivers = Vec::new();
     let mut conn_ids = Vec::new();
     for i in 0..3 {
@@ -382,10 +356,6 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
         broadcaster.unsubscribe(&conn_id);
     }
 }
-
-// ============================================================================
-// Test: Verify local ClusterManager is lazily created
-// ============================================================================
 
 /// Test that a local ClusterManager can be created on-demand.
 /// This is what ClientServiceImpl.get_cluster_manager() does internally.
@@ -442,14 +412,9 @@ async fn test_lazy_cluster_manager_creation() {
     );
 }
 
-// ============================================================================
-// Test: Local ClusterManager supports subscription and broadcast
-// ============================================================================
-
 /// Test that a locally-created ClusterManager supports all necessary operations.
 #[tokio::test]
 async fn test_local_cluster_manager_supports_room_operations() {
-    // Create local ClusterManager
     let config = ClusterConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),

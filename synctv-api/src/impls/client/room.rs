@@ -642,8 +642,6 @@ impl ClientApiImpl {
         })
     }
 
-    // === Room Password Operations ===
-
     /// Set or remove room password
     pub async fn set_room_password(
         &self,
@@ -711,8 +709,6 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
-
-    // === Room Settings Operations ===
 
     /// Get room settings
     ///
@@ -1010,8 +1006,6 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetHotRoomsResponse { rooms: hot_rooms })
     }
-
-    // === Chat Operations ===
 
     pub async fn get_chat_history(
         &self,

@@ -280,7 +280,6 @@ impl Drop for UnitOfWork {
         // Transaction was not explicitly committed/rolled back.
         // sqlx will automatically rollback when the Transaction is dropped,
         // but this is likely a bug in the caller.
-        //
         // In debug mode, panic to catch the bug early.
         // In release mode, just log a warning.
         if needs_handling {
@@ -326,8 +325,6 @@ where
 mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
-
-    // ========== UnitOfWork State Machine Tests ==========
 
     #[test]
     fn test_transaction_error_display() {
@@ -383,8 +380,6 @@ mod tests {
         };
         drop(uow); // Should not panic because rolled_back = true
     }
-
-    // ========== TDD Tests for Uncommitted Detection ==========
 
     /// Test: Uncommitted `UnitOfWork` panics in debug mode when dropped.
     /// This is the key safety feature to catch developer mistakes early.

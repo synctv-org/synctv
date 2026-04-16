@@ -16,8 +16,6 @@ use crate::models::room::RoomStatus;
 use crate::models::RoomId;
 use crate::Result;
 
-// --- CacheKey implementation for RoomId ---
-
 impl CacheKey for RoomId {
     fn as_str(&self) -> &str {
         self.as_str()
@@ -133,8 +131,6 @@ impl CachedRoom {
             updated_at,
         }
     }
-
-    // -- Accessor methods --
 
     /// Get the room ID
     #[must_use]

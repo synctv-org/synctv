@@ -30,9 +30,7 @@ use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
 use tokio::sync::RwLock;
 
-// ============================================================================
 // Test 1: Verify current fail-open behavior (document existing behavior)
-// ============================================================================
 
 /// Documents and verifies that `check_rate_limit` fails open.
 ///
@@ -42,7 +40,6 @@ use tokio::sync::RwLock;
 /// 3. Continue processing requests (graceful degradation)
 #[tokio::test]
 async fn test_fail_open_allows_requests_without_redis() {
-    // Create an in-memory only limiter (simulates Redis unavailable from start)
     let limiter = RateLimiter::local_only("fail_open:".to_string());
 
     // With in-memory backend, check_rate_limit should still work
@@ -63,7 +60,6 @@ async fn test_fail_open_still_enforces_per_replica_limits() {
         limiter.check_rate_limit("key", 5, 1).await.unwrap();
     }
 
-    // Should be rate limited (per-replica limit still enforced)
     let result = limiter.check_rate_limit("key", 5, 1).await;
     assert!(
         matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
@@ -71,9 +67,7 @@ async fn test_fail_open_still_enforces_per_replica_limits() {
     );
 }
 
-// ============================================================================
 // Test 2: Verify fail-closed behavior for security-critical endpoints
-// ============================================================================
 
 /// Verifies that `check_rate_limit_distributed` fails closed without Redis.
 ///
@@ -93,18 +87,14 @@ async fn test_fail_closed_denies_requests_without_redis() {
     );
 }
 
-// ============================================================================
 // Test 3: Verify which endpoints should use which mode
-// ============================================================================
 
 // Documents which endpoints should use fail-open vs fail-closed mode.
-//
 // Fail-open (`check_rate_limit`):
 // - Chat messages
 // - Danmaku
 // - Media playback operations
 // - General API endpoints
-//
 // Fail-closed (`check_rate_limit_distributed`):
 // - Authentication endpoints
 // - Password checking
@@ -112,9 +102,7 @@ async fn test_fail_closed_denies_requests_without_redis() {
 // - Admin operations
 // - Any operation where exceeding global limits is unacceptable
 
-// ============================================================================
 // Test 4: Verify behavior with simulated Redis failure
-// ============================================================================
 
 /// Simulates Redis failure during operation and verifies fail-open behavior.
 ///
@@ -124,7 +112,6 @@ async fn test_fail_closed_denies_requests_without_redis() {
 /// 3. Subsequent requests use in-memory (still functional)
 #[tokio::test]
 async fn test_redis_failure_falls_back_gracefully() {
-    // Create an in-memory limiter to simulate Redis being unavailable
     let limiter = RateLimiter::local_only("redis_failure:".to_string());
 
     // Simulate multiple requests - all should work with fail-open
@@ -153,25 +140,15 @@ async fn test_health_check_detects_redis_unavailable() {
     );
 }
 
-// ============================================================================
 // Test 5: Verify multi-replica behavior implications (documentation)
-// ============================================================================
 
 // Documents the multi-replica implications of fail-open behavior.
-//
 // Scenario: 3 replicas with 10 req/sec limit each.
 // With Redis healthy, global limit stays 10 req/sec.
 // With Redis unavailable, effective limit becomes 30 req/sec.
-//
 // Mitigations:
-// 1. Use fail-closed for critical endpoints.
-// 2. Reduce limits proportionally.
-// 3. Use Redis HA.
-// 4. Monitor `rate_limit_redis_fallbacks_total`.
 
-// ============================================================================
 // Test 7: Verify the fallback does not leak Redis errors to callers
-// ============================================================================
 
 /// Ensures that Redis errors are not propagated to callers in fail-open mode.
 ///
@@ -198,9 +175,7 @@ async fn test_fail_open_does_not_propagate_redis_errors() {
     }
 }
 
-// ============================================================================
 // Test 8: Verify sync rate limiting behavior
-// ============================================================================
 
 /// Verifies that sync rate limiting always uses in-memory (documented limitation).
 ///
@@ -216,7 +191,6 @@ fn test_sync_rate_limit_uses_in_memory_only() {
         assert!(result.is_ok());
     }
 
-    // Should be rate limited
     let result = limiter.check_rate_limit_sync("key", 5, 1);
     assert!(
         matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
@@ -248,16 +222,13 @@ fn test_sync_rate_limit_uses_grpc_prefix() {
     );
 }
 
-// ============================================================================
 // Test 9: Verify fail-closed behavior with Redis backend
-// ============================================================================
 
 /// Verifies that Redis backend's check_strict fails closed on error.
 ///
 /// This test uses a mock/unreachable Redis to verify the fail-closed behavior.
 #[tokio::test]
 async fn test_redis_backend_strict_fails_closed_on_error() {
-    // Create a limiter with a broken Redis connection
     // This simulates a Redis that accepts connections but fails operations
     let client_result = redis::Client::open("redis://127.0.0.1:1");
 
@@ -300,9 +271,7 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
     }
 }
 
-// ============================================================================
 // Test 10: Document security considerations
-// ============================================================================
 
 /// Documents security considerations for rate limiter fail modes.
 ///
@@ -351,9 +320,7 @@ fn test_security_considerations_documentation() {
     );
 }
 
-// ============================================================================
 // Test 11: Verify retry_after_seconds values
-// ============================================================================
 
 /// Verifies that fail-closed mode reports backend unavailability distinctly.
 #[tokio::test]
@@ -396,9 +363,7 @@ async fn test_fail_open_retry_after_when_limited() {
     }
 }
 
-// ============================================================================
 // Test 12: Verify in-memory construction remains usable without shared state
-// ============================================================================
 
 /// Verifies that non-distributed construction still provides working local checks.
 #[tokio::test]

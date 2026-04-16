@@ -1,5 +1,4 @@
 // Custom HLS remuxer using xiu's libraries but pluggable storage abstraction
-//
 // Architecture:
 // - Uses xiu's FlvVideoTagDemuxer/FlvAudioTagDemuxer for FLV parsing
 // - Uses xiu's TsMuxer for TS segment generation
@@ -119,7 +118,7 @@ impl StreamProcessorState {
     /// # Example
     /// ```text
     /// let m3u8 = state.generate_m3u8(|ts_name| {
-    ///     format!("/api/room/live/hls/data/{}/{}/{}?token={}", room_id, movie_id, ts_name, token)
+    /// format!("/api/room/live/hls/data/{}/{}/{}?token={}", room_id, movie_id, ts_name, token)
     /// });
     /// ```
     pub fn generate_m3u8<F>(&self, mut gen_ts_url: F) -> String
@@ -241,7 +240,7 @@ impl CustomHlsRemuxer {
     pub async fn run(&mut self) -> Result<(), HlsRemuxerError> {
         tracing::info!("Custom HLS remuxer started");
 
-        // Fixed #113: Clean up orphaned HLS segments from previous restart
+        // Clean up orphaned HLS segments from previous restart
         // This removes all segments (they are ephemeral and rebuilt on stream publish)
         match self.segment_manager.cleanup_expired().await {
             Ok(deleted) => {
@@ -259,80 +258,80 @@ impl CustomHlsRemuxer {
 
         loop {
             let val = tokio::select! {
-                () = self.cancel_token.cancelled() => {
-                    tracing::info!("HLS remuxer cancelled (shutdown), draining {} handler tasks", self.handler_tasks.len());
-                    self.handler_tasks.abort_all();
-                    while self.handler_tasks.join_next().await.is_some() {}
-                    return Ok(());
-                }
-                // Reap completed handler tasks without blocking
-                Some(result) = self.handler_tasks.join_next(), if !self.handler_tasks.is_empty() => {
-                    if let Err(e) = result {
-                        if !e.is_cancelled() {
-                            tracing::error!("HLS stream handler task panicked: {}", e);
-                        }
-                    }
-                    continue;
-                }
-                result = self.client_event_consumer.recv() => {
-                    match result {
-                        Ok(event) => event,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                "HLS remuxer lagged behind by {n} broadcast events; re-subscribing. \
-                                 {} active handler tasks remain unaffected.",
-                                self.handler_tasks.len()
-                            );
-                            // Existing handler tasks are NOT aborted — they have independent
-                            // data channels. Only Publish events in the skipped window are lost.
-                            self.client_event_consumer = self.client_event_consumer.resubscribe();
+                           () = self.cancel_token.cancelled() => {
+                               tracing::info!("HLS remuxer cancelled (shutdown), draining {} handler tasks", self.handler_tasks.len());
+                               self.handler_tasks.abort_all();
+                               while self.handler_tasks.join_next().await.is_some() {}
+                               return Ok(());
+                           }
+            // Reap completed handler tasks without blocking
+                           Some(result) = self.handler_tasks.join_next(), if !self.handler_tasks.is_empty() => {
+                               if let Err(e) = result {
+                                   if !e.is_cancelled() {
+                                       tracing::error!("HLS stream handler task panicked: {}", e);
+                                   }
+                               }
+                               continue;
+                           }
+                           result = self.client_event_consumer.recv() => {
+                               match result {
+                                   Ok(event) => event,
+                                   Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                       tracing::warn!(
+                                           "HLS remuxer lagged behind by {n} broadcast events; re-subscribing. \
+                                            {} active handler tasks remain unaffected.",
+                                           self.handler_tasks.len()
+                                       );
+            // Existing handler tasks are NOT aborted — they have independent
+            // data channels. Only Publish events in the skipped window are lost.
+                                       self.client_event_consumer = self.client_event_consumer.resubscribe();
 
-                            // Reconcile: start HLS handlers for any active publishers
-                            // that don't already have a running handler.
-                            if let Some(ref source) = self.active_publishers_source {
-                                let active = source();
-                                let mut started = 0u32;
-                                for (app_name, stream_name) in active {
-                                    let key = format!("{app_name}/{stream_name}");
-                                    if self.stream_registry.contains_key(&key) {
-                                        continue; // handler already running
-                                    }
-                                    tracing::info!(
-                                        "HLS remuxer reconciliation: starting handler for {}/{}",
-                                        app_name, stream_name
-                                    );
-                                    let stream_handler = StreamHandler::new(
-                                        app_name,
-                                        stream_name,
-                                        self.event_producer.clone(),
-                                        Arc::clone(&self.segment_manager),
-                                        self.stream_registry.clone(),
-                                        self.activity_callback.clone(),
-                                    );
-                                    self.handler_tasks.spawn(async move {
-                                        if let Err(e) = stream_handler.run().await {
-                                            tracing::error!("HLS stream handler error (reconciliation): {}", e);
-                                        }
-                                    });
-                                    started += 1;
-                                }
-                                if started > 0 {
-                                    tracing::info!(
-                                        "HLS remuxer reconciliation: started {} new handlers after lag",
-                                        started
-                                    );
-                                }
-                            }
-                            continue;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            return Err(HlsRemuxerError::ReceiveError(
-                                tokio::sync::broadcast::error::RecvError::Closed,
-                            ));
-                        }
-                    }
-                }
-            };
+            // Reconcile: start HLS handlers for any active publishers
+            // that don't already have a running handler.
+                                       if let Some(ref source) = self.active_publishers_source {
+                                           let active = source();
+                                           let mut started = 0u32;
+                                           for (app_name, stream_name) in active {
+                                               let key = format!("{app_name}/{stream_name}");
+                                               if self.stream_registry.contains_key(&key) {
+                                                   continue; // handler already running
+                                               }
+                                               tracing::info!(
+                                                   "HLS remuxer reconciliation: starting handler for {}/{}",
+                                                   app_name, stream_name
+                                               );
+                                               let stream_handler = StreamHandler::new(
+                                                   app_name,
+                                                   stream_name,
+                                                   self.event_producer.clone(),
+                                                   Arc::clone(&self.segment_manager),
+                                                   self.stream_registry.clone(),
+                                                   self.activity_callback.clone(),
+                                               );
+                                               self.handler_tasks.spawn(async move {
+                                                   if let Err(e) = stream_handler.run().await {
+                                                       tracing::error!("HLS stream handler error (reconciliation): {}", e);
+                                                   }
+                                               });
+                                               started += 1;
+                                           }
+                                           if started > 0 {
+                                               tracing::info!(
+                                                   "HLS remuxer reconciliation: started {} new handlers after lag",
+                                                   started
+                                               );
+                                           }
+                                       }
+                                       continue;
+                                   }
+                                   Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                       return Err(HlsRemuxerError::ReceiveError(
+                                           tokio::sync::broadcast::error::RecvError::Closed,
+                                       ));
+                                   }
+                               }
+                           }
+                       };
             match val {
                 BroadcastEvent::Publish {
                     identifier,
@@ -994,7 +993,7 @@ impl StreamProcessor {
         is_eof: bool,
     ) -> Result<(), HlsRemuxerError> {
         let ts_data = self.ts_muxer.get_data();
-        // Issue #47: Guard against zero or negative segment durations caused by
+        // Guard against zero or negative segment durations caused by
         // DTS non-monotonicity, first-segment edge cases, or encoder anomalies.
         // A segment with zero/negative duration would produce an invalid M3U8 that
         // players reject with a playlist parse error.

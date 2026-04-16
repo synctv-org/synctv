@@ -1,22 +1,17 @@
 // In-memory storage backend for HLS
-//
 // Useful for:
 // - Testing without filesystem I/O
 // - Temporary caching before OSS upload
 // - Short-lived streams that don't need persistence
-//
 // Note: Data is lost on server restart
-//
 // Memory Safety:
 // - Configurable max memory and max key limits prevent OOM
 // - When limits are reached, oldest entries are evicted (LRU-like by write time)
-//
 // Concurrency:
 // - Uses `parking_lot::RwLock` so multiple readers proceed in parallel while
 //   writers (write/delete/eviction) get exclusive access.  This eliminates the
 //   previous `tokio::sync::Mutex` bottleneck where every read blocked behind
 //   writes.
-//
 // Eviction uses a BTreeMap index keyed by sequence number for O(log N) oldest
 // lookup instead of scanning all entries.
 

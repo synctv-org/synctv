@@ -154,10 +154,6 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-// ============================================================================
-// BruteForceConfig (Task #64)
-// ============================================================================
-
 /// Configuration for brute-force protection thresholds and durations.
 ///
 /// This struct allows customizing the brute-force protection behavior
@@ -175,9 +171,9 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
 ///
 /// ```text
 /// let config = BruteForceConfig {
-///     tier1_threshold: 3,
-///     tier1_lockout_secs: 30,
-///     ..BruteForceConfig::default()
+/// tier1_threshold: 3,
+/// tier1_lockout_secs: 30,
+///..BruteForceConfig::default()
 /// };
 /// let protection = BruteForceProtection::in_memory_with_config("prefix".to_string(), config);
 /// ```
@@ -271,9 +267,7 @@ impl Default for BruteForceConfig {
     }
 }
 
-// ============================================================================
 // AttemptTracker trait
-// ============================================================================
 
 /// Storage backend for brute-force attempt tracking.
 ///
@@ -322,9 +316,7 @@ pub trait AttemptTracker: Send + Sync {
     async fn reset(&self, key: &str) -> Result<()>;
 }
 
-// ============================================================================
 // InMemoryAttemptTracker
-// ============================================================================
 
 /// In-memory [`AttemptTracker`] using moka cache with TTL-based expiry.
 ///
@@ -377,9 +369,7 @@ impl AttemptTracker for InMemoryAttemptTracker {
     }
 }
 
-// ============================================================================
 // RedisAttemptTracker
-// ============================================================================
 
 /// Redis-backed [`AttemptTracker`] with configurable failure handling.
 ///
@@ -718,9 +708,7 @@ impl AttemptTracker for RedisAttemptTracker {
     }
 }
 
-// ============================================================================
 // BruteForceProtection
-// ============================================================================
 
 /// Brute-force protection service.
 ///
@@ -736,11 +724,11 @@ impl AttemptTracker for RedisAttemptTracker {
 #[derive(Clone)]
 pub struct BruteForceProtection {
     key_builder: KeyBuilder,
-    /// Attempt tracker for per-username tracking
+    /// Attempt tracker for per-username tracking.
     username_tracker: Arc<dyn AttemptTracker>,
-    /// Attempt tracker for per-IP tracking
+    /// Attempt tracker for per-IP tracking.
     ip_tracker: Arc<dyn AttemptTracker>,
-    /// Configuration for thresholds and durations (Task #64)
+    /// Configuration for thresholds and durations.
     config: BruteForceConfig,
 }
 
@@ -1275,9 +1263,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // RedisAttemptTracker degradation tracking tests
-    // ========================================================================
 
     /// Test that `RedisAttemptTracker` initializes with degradation tracking in clean state
     #[test]
@@ -1342,9 +1328,7 @@ mod tests {
         // there's no "fallback" or "degraded" state to check
     }
 
-    // ========================================================================
     // Fail-closed mode tests
-    // ========================================================================
 
     /// Test that the `fail_closed` flag is correctly set
     #[test]

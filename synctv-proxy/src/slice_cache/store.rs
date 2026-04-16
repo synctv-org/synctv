@@ -25,9 +25,7 @@ use super::status::CacheStatus;
 /// Number of lock cleanup cycles before triggering a stale-lock sweep.
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
 
-// ------------------------------------------------------------------
 // SliceCache
-// ------------------------------------------------------------------
 
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
@@ -344,9 +342,7 @@ impl SliceCache {
         &self.client
     }
 
-    // ---------------------------------------------------------------
     // Cache key helpers
-    // ---------------------------------------------------------------
 
     /// Compute a deterministic cache key from URL, sorted provider headers,
     /// and slice index.
@@ -413,9 +409,7 @@ impl SliceCache {
         hex::encode(hasher.finalize())
     }
 
-    // ---------------------------------------------------------------
     // Metadata access
-    // ---------------------------------------------------------------
 
     /// Retrieve the stored metadata for a resource, if any.
     /// Updates `last_accessed` on read so that LRU eviction in
@@ -435,9 +429,7 @@ impl SliceCache {
         }
     }
 
-    // ---------------------------------------------------------------
     // Slice fetch
-    // ---------------------------------------------------------------
 
     /// Get or fetch a single aligned slice.
     ///
@@ -701,7 +693,6 @@ impl SliceCache {
         // Early ETag consistency check BEFORE reading the body (nginx header
         // filter pattern).  This avoids reading a full 2 MiB slice body only
         // to discard it on mismatch.
-        //
         // IMPORTANT: we must not hold a DashMap `Ref` across the call to
         // `invalidate_resource`, which needs a write lock on the same shard.
         // Clone the existing ETag out of the DashMap first to avoid deadlock.
@@ -796,9 +787,7 @@ impl SliceCache {
         self.meta.remove(&mk);
     }
 
-    // ---------------------------------------------------------------
     // Cache status helpers
-    // ---------------------------------------------------------------
 
     /// Check whether a key is currently in cache and not expired.
     pub(super) async fn is_cached_and_valid(
@@ -865,9 +854,7 @@ impl SliceCache {
         }
     }
 
-    // ---------------------------------------------------------------
     // Full-body cache
-    // ---------------------------------------------------------------
 
     /// Try to get a full-body entry from cache.
     ///
@@ -993,9 +980,7 @@ impl SliceCache {
         self.updating_keys.remove(key);
     }
 
-    // ---------------------------------------------------------------
     // Lock cleanup (L3 fix)
-    // ---------------------------------------------------------------
 
     /// Periodically remove stale per-key locks that are not currently held
     /// by any task.  A lock is considered stale when the only remaining

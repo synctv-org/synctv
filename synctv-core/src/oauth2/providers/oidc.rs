@@ -353,8 +353,6 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
 mod tests {
     use super::*;
 
-    // ==================== Provider Creation (Issuer-Only / Discovery Mode) ====================
-
     #[test]
     fn test_create_provider_issuer_only() {
         let provider = OidcProvider::create(
@@ -389,8 +387,6 @@ mod tests {
         .unwrap();
         assert_eq!(provider.init_config.issuer, "https://issuer.example.com");
     }
-
-    // ==================== Provider Creation (Static Endpoints) ====================
 
     #[test]
     fn test_create_with_endpoints_all_specified() {
@@ -448,8 +444,6 @@ mod tests {
         assert!(endpoints.userinfo.is_none());
     }
 
-    // ==================== Provider Type ====================
-
     #[test]
     fn test_provider_type() {
         let provider = OidcProvider::create(
@@ -461,8 +455,6 @@ mod tests {
         .unwrap();
         assert_eq!(provider.provider_type(), "oidc");
     }
-
-    // ==================== Auth URL Generation (Static Endpoints) ====================
 
     #[tokio::test]
     async fn test_new_auth_url_with_static_endpoints() {
@@ -514,8 +506,6 @@ mod tests {
         assert_ne!(url1, url2);
         assert_ne!(v1, v2);
     }
-
-    // ==================== Factory Function ====================
 
     #[test]
     fn test_factory_with_issuer_only() {
@@ -622,8 +612,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ==================== Config Deserialization ====================
-
     #[test]
     fn test_oidc_config_deserialize_full() {
         let json = serde_json::json!({
@@ -705,8 +693,6 @@ mod tests {
         assert_eq!(deserialized.token_url, config.token_url);
         assert_eq!(deserialized.userinfo_url, config.userinfo_url);
     }
-
-    // ==================== Lazy Resolution ====================
 
     #[tokio::test]
     async fn test_get_resolved_static_endpoints_succeeds() {

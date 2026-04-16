@@ -19,8 +19,6 @@ fn test_encryption_key() -> Vec<u8> {
     ]
 }
 
-// ========== TEST: FieldEncryption directly ==========
-
 /// Test that `FieldEncryption` works correctly
 /// This is the foundational test - if encryption works, storage will work
 #[test]
@@ -85,8 +83,6 @@ fn test_field_encryption_rejects_plaintext() {
     assert!(result.is_err(), "Plaintext credentials should be rejected");
 }
 
-// ========== TEST: InMemoryCredentialStorage with encryption ==========
-
 /// Test that Alist password round-trips correctly with encryption
 #[tokio::test]
 async fn test_alist_password_round_trip_with_encryption() {
@@ -142,8 +138,6 @@ async fn test_alist_password_round_trip_with_encryption() {
     assert_eq!(h, host);
     assert_eq!(u, username);
 }
-
-// ========== TEST: Multiple Alist credentials have independent encryption ==========
 
 /// Test that multiple Alist credentials for different servers work correctly
 #[tokio::test]
@@ -221,8 +215,6 @@ async fn test_multiple_alist_credentials_encrypted() {
     assert_eq!(password, password2);
 }
 
-// ========== TEST: Emby api_key round trip with encryption ==========
-
 /// Test that Emby `api_key` can be correctly stored and retrieved with encryption
 #[tokio::test]
 async fn test_emby_api_key_round_trip_with_encryption() {
@@ -272,8 +264,6 @@ async fn test_emby_api_key_round_trip_with_encryption() {
     assert_eq!(h, host);
     assert_eq!(uid, emby_user_id);
 }
-
-// ========== TEST: List credentials decrypts all ==========
 
 /// Test that `list_by_user` and `list_by_provider` return decrypted credentials
 #[tokio::test]
@@ -351,8 +341,6 @@ async fn test_list_credentials_are_decrypted() {
         assert_eq!(key, api_key);
     }
 }
-
-// ========== TEST: is_encrypted detection ==========
 
 /// Test that `FieldEncryption::is_encrypted` correctly detects encrypted values
 #[test]

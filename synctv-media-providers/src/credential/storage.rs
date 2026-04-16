@@ -699,8 +699,6 @@ mod tests {
         assert_eq!(server_ids.len(), 2);
     }
 
-    // ========== Encryption Tests ==========
-
     fn test_encryption_key() -> Vec<u8> {
         vec![
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
@@ -884,8 +882,6 @@ mod tests {
             "SESSDATA should be encrypted at rest, got: {raw_sessdata}"
         );
     }
-
-    // ========== Type Mismatch Tests ==========
 
     #[test]
     fn test_as_alist_returns_error_on_type_mismatch() {

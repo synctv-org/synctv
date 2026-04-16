@@ -138,12 +138,12 @@ impl RoomMemberRepository {
     /// # Re-join semantics
     ///
     /// This method intentionally allows users who previously left a room to
-    /// rejoin freely.  When an `ON CONFLICT` row exists **and the user is not
+    /// rejoin freely. When an `ON CONFLICT` row exists **and the user is not
     /// banned**, the `DO UPDATE` branch resets `left_at` to `NULL`, refreshes
-    /// `joined_at`, and bumps the version.  This is the designed rejoin flow:
+    /// `joined_at`, and bumps the version. This is the designed rejoin flow:
     /// left users can re-enter without needing an explicit invite or approval.
     ///
-    /// When the `ON CONFLICT` row exists but the `DO UPDATE ... WHERE` condition
+    /// When the `ON CONFLICT` row exists but the `DO UPDATE... WHERE` condition
     /// is not satisfied (user is **banned**), no row is returned. In that case a
     /// follow-up query determines the specific reason and returns a semantic
     /// error (`Authorization` for banned).
@@ -260,7 +260,7 @@ impl RoomMemberRepository {
     /// - Check max members limit
     /// - Insert the new member
     ///
-    /// All checks use SELECT ... FOR UPDATE to lock rows and prevent race conditions.
+    /// All checks use SELECT... FOR UPDATE to lock rows and prevent race conditions.
     ///
     /// # Arguments
     ///
@@ -329,13 +329,12 @@ impl RoomMemberRepository {
         }
 
         // 4. Check max members limit (if option enabled)
-        //    When max_members is 0 or None, treat as unlimited (no enforcement).
-        //
-        //    IMPORTANT (Task #47): We use a subquery with FOR UPDATE to lock all
-        //    member rows, then count them. This prevents TOCTOU races where two
-        //    concurrent transactions could both see count < max and both insert,
-        //    exceeding the limit. PostgreSQL doesn't allow FOR UPDATE directly
-        //    with aggregate functions like COUNT(*).
+        // When max_members is 0 or None, treat as unlimited (no enforcement).
+        // IMPORTANT: We use a subquery with FOR UPDATE to lock all
+        // member rows, then count them. This prevents TOCTOU races where two
+        // concurrent transactions could both see count < max and both insert,
+        // exceeding the limit. PostgreSQL doesn't allow FOR UPDATE directly
+        // with aggregate functions like COUNT(*).
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
@@ -1773,7 +1772,7 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Diagnose why an `ON CONFLICT DO UPDATE ... WHERE` clause did not match.
+    /// Diagnose why an `ON CONFLICT DO UPDATE... WHERE` clause did not match.
     ///
     /// Queries the existing membership row to determine if the user is banned
     /// or has already left the room, returning a semantic error.

@@ -13,8 +13,6 @@
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::error::*;
 
-// === ProviderClientError Display Tests ===
-
 #[test]
 fn test_error_display_not_implemented() {
     let err = ProviderClientError::NotImplemented("subtitle parsing".to_string());
@@ -39,8 +37,6 @@ fn test_error_display_http_with_retry_after() {
     assert!(msg.contains("429"));
     assert!(msg.contains("https://api.bilibili.com/test"));
 }
-
-// === Retryable Error Classification ===
 
 #[test]
 fn test_is_retryable_bad_gateway() {
@@ -121,8 +117,6 @@ fn test_is_not_retryable_invalid_header() {
     assert!(!err.is_retryable());
 }
 
-// === Error From impls ===
-
 #[test]
 fn test_error_from_serde_json_invalid_type() {
     // Test with a type mismatch error
@@ -139,8 +133,6 @@ fn test_error_from_serde_json_eof() {
     assert!(matches!(err, ProviderClientError::Parse(_)));
 }
 
-// === Provider Backoff Configuration ===
-
 #[test]
 fn test_provider_backoff_creation() {
     let builder = provider_backoff();
@@ -148,15 +140,11 @@ fn test_provider_backoff_creation() {
     let _ = builder;
 }
 
-// === MAX_RESPONSE_SIZE ===
-
 #[test]
 fn test_max_response_size_value() {
     assert_eq!(MAX_RESPONSE_SIZE, 16 * 1024 * 1024);
     assert_eq!(MAX_RESPONSE_SIZE, 16_777_216);
 }
-
-// === SSRF IP Validation Tests ===
 
 mod ssrf_tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -255,8 +243,6 @@ mod ssrf_tests {
         assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 }
-
-// === Alist Type Deserialization Tests ===
 
 mod alist_type_tests {
     use synctv_media_providers::alist::types::*;
@@ -411,8 +397,6 @@ mod alist_type_tests {
         assert!(resp.video_preview_play_info.is_none());
     }
 }
-
-// === Emby Type Deserialization Tests ===
 
 mod emby_type_tests {
     use synctv_media_providers::emby::types::*;
@@ -604,8 +588,6 @@ mod emby_type_tests {
         assert_eq!(item.production_year, Some(2024));
     }
 }
-
-// === Bilibili Type Deserialization Tests ===
 
 mod bilibili_type_tests {
     use synctv_media_providers::bilibili::types::*;
@@ -847,8 +829,6 @@ mod bilibili_type_tests {
     }
 }
 
-// === gRPC Validation Tests ===
-
 mod grpc_validation_tests {
     use synctv_media_providers::grpc::validation::*;
 
@@ -879,8 +859,6 @@ mod grpc_validation_tests {
     }
 }
 
-// === Error Type Alias Tests ===
-
 #[test]
 fn test_alist_error_is_provider_error() {
     use synctv_media_providers::AlistError;
@@ -907,8 +885,6 @@ fn test_emby_error_is_provider_error() {
     assert_eq!(err.to_string(), "API error (code 500): internal error");
     assert!(!err.is_retryable());
 }
-
-// === PROVIDER_USER_AGENT constant ===
 
 #[test]
 fn test_provider_user_agent_is_browser_like() {

@@ -39,9 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// ============================================================================
 // Test 5: Document exponential backoff calculation
-// ============================================================================
 
 /// Test the exponential backoff formula for grace period.
 ///
@@ -83,9 +81,7 @@ fn test_exponential_backoff_formula() {
     }
 }
 
-// ============================================================================
 // Test 6: Document that consecutive_losses is reset on leadership gain
-// ============================================================================
 
 /// Test that consecutive_losses counter is reset when leadership is gained.
 ///
@@ -117,30 +113,23 @@ fn test_consecutive_losses_resets_on_leadership_gain() {
     );
 }
 
-// ============================================================================
 // Test 7: Document limitation and monitoring recommendation
-// ============================================================================
 
 // This test block documents the limitation of local time usage and the
 // recommended monitoring approach.
-//
 // Limitation:
 // The grace period uses local `tokio::time::Instant` which is monotonic
 // but represents the node's local time. If the node's clock is significantly
 // skewed, the grace period duration in wall-clock time may differ from
 // other nodes' perspectives.
-//
 // Impact:
 // - Minimal: The grace period is an optimization, not a correctness guarantee.
 // - `tokio::time::Instant` is monotonic, so at least it's consistent within a node.
 // - Split-brain is prevented by K8s resourceVersion, not grace period.
-//
 // Monitoring:
 // Monitor the `synctv_cluster_leader_election_consecutive_failures` metric.
 // Rising values may indicate network issues, RBAC problems, or K8s API overload.
-// ============================================================================
 // Test 8: Verify checked_sub for Instant arithmetic
-// ============================================================================
 
 /// Test that we can safely subtract from Instant for grace period calculations.
 ///
@@ -154,7 +143,6 @@ fn test_instant_arithmetic_for_grace_period() {
     // We can't directly subtract from Instant, but we can work with elapsed
     let grace_period = Duration::from_secs(10);
 
-    // Wait a tiny bit
     std::thread::sleep(Duration::from_millis(1));
 
     // Check if we're in grace period

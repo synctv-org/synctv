@@ -1,5 +1,4 @@
 // SyncTV API Library
-//
 // Provides gRPC and HTTP API services for SyncTV
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 

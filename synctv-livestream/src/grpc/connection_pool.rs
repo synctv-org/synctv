@@ -1,10 +1,8 @@
 // gRPC connection pool for reusing established channels across requests.
-//
 // Keyed by node address (e.g., "host:port"), each entry holds a tonic Channel
 // that multiplexes HTTP/2 streams. Idle connections are evicted after a
 // configurable TTL to avoid holding stale connections to nodes that may have
 // been replaced.
-//
 // Includes a per-node circuit breaker to prevent retry storms when a publisher
 // node is down. After consecutive failures exceed the threshold, the circuit
 // opens and rejects connection attempts for a cooldown period.

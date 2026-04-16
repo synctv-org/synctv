@@ -1,11 +1,9 @@
 // RTMP Authentication implementation using xiu's AuthCallback trait
-//
 // JWT Claims structure (from synctv-go internal/rtmp/rtmp.go):
 // type Claims struct {
 //     MovieID string `json:"m"`
 //     jwt.RegisteredClaims
 // }
-//
 // RTMP URL scheme:
 // - Publisher: rtmp://host/room_id/JWT_TOKEN  or  rtmp://host/room_id/media_id?token=JWT
 // - Player:   rtmp://host/room_id/media_id
@@ -289,7 +287,6 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         // Atomic registration in Redis BEFORE StreamHub Publish event.
         // This ensures the publisher is discoverable by other nodes as soon as
         // the stream starts, with no window where it's active but unregistered.
-        //
         // Use a guard to ensure cleanup if subsequent steps fail.
         // The guard will be disarmed when the function returns successfully.
         let mut registered_epoch = None;

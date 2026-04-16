@@ -1,16 +1,12 @@
 // Media Provider System
-//
 // Three-tier architecture:
-//
 // Tier 1: synctv-media-providers (Pure provider HTTP clients)
 //   - alist::AlistClient, bilibili::BilibiliClient, emby::EmbyClient
 //   - Independent libraries with no MediaProvider dependency
 //   - Can be used as provider_instances
-//
 // Tier 2: synctv-core/provider (MediaProvider adapters)
 //   - AlistProvider, BilibiliProvider, EmbyProvider
 //   - Call synctv-media-providers clients to implement MediaProvider trait
-//
 // Tier 3: synctv-core/service/providers_manager
 //   - ProvidersManager - manages all MediaProvider instances
 //   - Factory pattern for creating providers

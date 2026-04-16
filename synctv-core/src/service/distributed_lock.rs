@@ -953,11 +953,8 @@ impl Drop for LockGuard {
     }
 }
 
-// ========== Redlock Implementation ==========
-//
 // The Redlock algorithm provides distributed lock safety across Redis failovers
 // by requiring quorum across multiple independent Redis masters.
-//
 // Key properties:
 // - Acquire lock on N/2+1 Redis masters (quorum)
 // - Use short TTL to minimize split-brain window
@@ -1353,8 +1350,6 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
 
-    // ========== Unit Tests (No Docker Required) ==========
-
     #[test]
     fn test_lock_key_format() {
         // Test that lock key is properly formatted with "lock:" prefix
@@ -1489,10 +1484,6 @@ mod tests {
         // Scenario 3: Key doesn't exist -> no delete (return 0)
         // This is handled by GET returning nil
     }
-
-    // ========== MigrationLock Trait Tests ==========
-
-    // ========== Redlock Unit Tests ==========
 
     #[test]
     fn test_redlock_quorum_calculation() {

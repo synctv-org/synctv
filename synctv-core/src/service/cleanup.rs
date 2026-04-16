@@ -176,7 +176,6 @@ impl CleanupService {
         }
 
         // 1. Purge soft-deleted rooms first.
-        //
         // Soft-deleted users can still be referenced by their owned room rows
         // (`rooms.created_by` is `ON DELETE RESTRICT`). Purging rooms before
         // users lets a single cleanup run fully retire the common "user deleted
@@ -621,8 +620,6 @@ impl CleanupService {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ========== Dynamic settings tests ==========
 
     /// Test that `room_ttl_seconds` falls back to config when no registry is set.
     #[tokio::test]

@@ -14,7 +14,7 @@
 //! - **Memory** (single-replica only): Tickets are stored in memory. This is suitable
 //!   for single-instance deployments but will not work correctly with multiple replicas.
 //!
-//! ## Security: TOCTOU Prevention (Issue #17)
+//! ## Security: TOCTOU Prevention
 //!
 //! The `validate_and_consume_checked` method accepts a user validator callback
 //! so callers can reject banned/deleted users without burning an otherwise
@@ -65,7 +65,7 @@ pub struct WsTicketData {
     /// Room ID the ticket is bound to.
     ///
     /// Tickets are room-scoped: a ticket created for room A cannot be used to
-    /// authenticate a WebSocket connection to room B (Issue #65).
+    /// authenticate a WebSocket connection to room B.
     pub room_id: String,
     /// When the ticket was created (Unix timestamp)
     pub created_at: u64,
@@ -95,9 +95,7 @@ pub struct PendingValidatedTicket {
     ticket_data: WsTicketData,
 }
 
-// ============================================================================
 // TicketStore trait
-// ============================================================================
 
 /// Backend storage for WebSocket tickets.
 ///
@@ -145,9 +143,7 @@ pub trait TicketStore: Send + Sync {
     fn supports_cluster_runtime(&self) -> bool;
 }
 
-// ============================================================================
 // Redis implementation
-// ============================================================================
 
 /// Redis-backed ticket store for multi-replica deployments.
 ///
@@ -338,9 +334,7 @@ impl TicketStore for RedisTicketStore {
     }
 }
 
-// ============================================================================
 // In-memory implementation
-// ============================================================================
 
 /// Wrapper that pairs ticket data with its per-entry TTL for moka's `Expiry` trait.
 #[derive(Clone)]
@@ -472,9 +466,7 @@ impl TicketStore for InMemoryTicketStore {
     }
 }
 
-// ============================================================================
 // WsTicketService
-// ============================================================================
 
 /// Service for creating and validating WebSocket tickets.
 ///
@@ -617,7 +609,7 @@ impl WsTicketService {
     ///
     /// Returns a ticket string that can be used once for WebSocket authentication.
     /// The ticket expires after `ticket_ttl_secs` seconds and is only valid for
-    /// the supplied `room_id` (Issue #65).
+    /// the supplied `room_id`.
     ///
     /// The `password_version` is stored in the ticket and validated during consumption
     /// to ensure tickets are invalidated when the user changes their password.
@@ -658,7 +650,7 @@ impl WsTicketService {
     /// Returns [`ValidatedTicket`] containing the user ID and password version if valid
     /// and the ticket's `room_id` matches the expected `room_id`. The ticket is deleted
     /// after use (one-time use). Passing a ticket for a different room returns an error
-    /// so that tickets cannot be replayed across rooms (Issue #65).
+    /// so that tickets cannot be replayed across rooms.
     ///
     /// The caller is responsible for checking that the `password_version` in the returned
     /// [`ValidatedTicket`] matches the current user's password version to ensure the ticket
@@ -1451,9 +1443,7 @@ mod tests {
         assert!(!service.supports_cluster_runtime());
     }
 
-    // ============================================================================
     // Cluster mode Redis dependency tests (TDD)
-    // ============================================================================
 
     /// Test: backend selection without Redis uses memory.
     #[test]

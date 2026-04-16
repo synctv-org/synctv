@@ -1,5 +1,4 @@
 // Pull stream instance — single gRPC relay stream with lifecycle management
-//
 // Pulls RTMP data from a publisher node via gRPC and publishes it into
 // the local StreamHub. GOP cache is handled by StreamHub internally.
 
@@ -144,12 +143,11 @@ impl PullStream {
                 )));
             }
             Err(e) => {
-                // Issue #53: Fail-CLOSED on Redis error to prevent split-brain during
-                // network partitions.  If we cannot validate the epoch, we cannot
-                // confirm that our publisher record is still valid.  Optimistic
+                // Fail-CLOSED on Redis error to prevent split-brain during
+                // network partitions. If we cannot validate the epoch, we cannot
+                // confirm that our publisher record is still valid. Optimistic
                 // continuation ("fail-open") risks streaming stale data from the wrong
                 // publisher node during a network partition scenario.
-                //
                 // The caller (ExternalPublishManager / PullStreamManager) treats this
                 // as a failed start and will retry on the next viewer request.
                 error!(
@@ -213,70 +211,70 @@ impl PullStream {
                 epoch_interval.tick().await;
 
                 let run_result = tokio::select! {
-                    r = grpc_puller.run() => r,
-                    () = child_token.cancelled() => {
-                        info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
-                        timer.observe_duration();
-                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                        break Ok(());
-                    }
-                    () = async {
-                        loop {
-                            epoch_interval.tick().await;
-                            match registry.validate_epoch(&room_id, &media_id, epoch).await {
-                                Ok(true) => {
-                                    // L-04: Reset failure counter on success
-                                    consecutive_epoch_failures = 0;
-                                    debug!(
-                                        "Periodic epoch {} still valid for {}/{}",
-                                        epoch, room_id, media_id
-                                    );
-                                }
-                                Ok(false) => {
-                                    warn!(
-                                        "Periodic epoch re-validation: epoch {} is stale for {}/{}, publisher changed",
-                                        epoch, room_id, media_id
-                                    );
-                                    return;
-                                }
-                                Err(e) => {
-                                    // L-04: Track consecutive failures instead of unconditional fail-open
-                                    consecutive_epoch_failures += 1;
-                                    if consecutive_epoch_failures >= max_consecutive_epoch_failures {
-                                        error!(
-                                            "Epoch validation failed {} consecutive times for {}/{}: {}. \
-                                             Terminating pull stream (publisher may be stale). \
-                                             Stream will reconnect when Redis is available.",
-                                            consecutive_epoch_failures, room_id, media_id, e
-                                        );
-                                        return;
-                                    }
-                                    warn!(
-                                        "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                        room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
-                                    );
-                                }
-                            }
-                        }
-                    } => {
-                        // Epoch became stale during streaming — invalidate HLS cache
-                        // so viewers don't see stale segments for up to 90s TTL.
-                        // Use delayed invalidation to give the new publisher time to
-                        // generate fresh HLS segments before we clear the old cache.
-                        if let Some(ref hls_proxy) = hls_proxy {
-                            hls_proxy.invalidate_stream_cache_delayed(
-                                room_id.clone(),
-                                media_id.clone(),
-                                std::time::Duration::from_secs(3),
-                            );
-                        }
-                        timer.observe_duration();
-                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                        break Err(anyhow::anyhow!(
-                            "Stale epoch detected during streaming: publisher changed for {room_id} / {media_id}"
-                        ));
-                    }
-                };
+                                   r = grpc_puller.run() => r,
+                                   () = child_token.cancelled() => {
+                                       info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
+                                       timer.observe_duration();
+                                       synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                                       break Ok(());
+                                   }
+                                   () = async {
+                                       loop {
+                                           epoch_interval.tick().await;
+                                           match registry.validate_epoch(&room_id, &media_id, epoch).await {
+                                               Ok(true) => {
+                // L-04: Reset failure counter on success
+                                                   consecutive_epoch_failures = 0;
+                                                   debug!(
+                                                       "Periodic epoch {} still valid for {}/{}",
+                                                       epoch, room_id, media_id
+                                                   );
+                                               }
+                                               Ok(false) => {
+                                                   warn!(
+                                                       "Periodic epoch re-validation: epoch {} is stale for {}/{}, publisher changed",
+                                                       epoch, room_id, media_id
+                                                   );
+                                                   return;
+                                               }
+                                               Err(e) => {
+                // L-04: Track consecutive failures instead of unconditional fail-open
+                                                   consecutive_epoch_failures += 1;
+                                                   if consecutive_epoch_failures >= max_consecutive_epoch_failures {
+                                                       error!(
+                                                           "Epoch validation failed {} consecutive times for {}/{}: {}. \
+                                                            Terminating pull stream (publisher may be stale). \
+                                                            Stream will reconnect when Redis is available.",
+                                                           consecutive_epoch_failures, room_id, media_id, e
+                                                       );
+                                                       return;
+                                                   }
+                                                   warn!(
+                                                       "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
+                                                       room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
+                                                   );
+                                               }
+                                           }
+                                       }
+                                   } => {
+                // Epoch became stale during streaming — invalidate HLS cache
+                // so viewers don't see stale segments for up to 90s TTL.
+                // Use delayed invalidation to give the new publisher time to
+                // generate fresh HLS segments before we clear the old cache.
+                                       if let Some(ref hls_proxy) = hls_proxy {
+                                           hls_proxy.invalidate_stream_cache_delayed(
+                                               room_id.clone(),
+                                               media_id.clone(),
+                                               std::time::Duration::from_secs(3),
+                                           );
+                                       }
+                                       timer.observe_duration();
+                                       synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                                       break Err(anyhow::anyhow!(
+                                           "Stale epoch detected during streaming: publisher changed for {room_id} / {media_id}"
+                                       ));
+                                   }
+                               };
 
                 timer.observe_duration();
                 synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();

@@ -73,7 +73,7 @@ pub struct SettingsGroup {
     #[serde(rename = "group")]
     pub group_name: String,
     pub value: String,
-    /// Version for optimistic locking (Task #45)
+    /// Version for optimistic locking.
     pub version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -224,8 +224,6 @@ mod tests {
         );
     }
 
-    // ==================== SettingsGroup Construction ====================
-
     #[test]
     fn test_settings_group_new_auto_key() {
         let sg = SettingsGroup::new("email".to_string(), "{}".to_string());
@@ -281,8 +279,6 @@ mod tests {
         assert_eq!(sg.value, "{\"test\": true}");
     }
 
-    // ==================== Parse Errors ====================
-
     #[test]
     fn test_parse_json_invalid() {
         let sg = SettingsGroup::new("test".to_string(), "not valid json".to_string());
@@ -299,8 +295,6 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not an object"));
     }
 
-    // ==================== SettingsError ====================
-
     #[test]
     fn test_settings_error_display() {
         let err = SettingsError::InvalidPath("foo.bar".to_string());
@@ -313,8 +307,6 @@ mod tests {
         let err = SettingsError::MergeFailed;
         assert!(err.to_string().contains("merge"));
     }
-
-    // ==================== Constants ====================
 
     #[test]
     fn test_group_name_constants() {

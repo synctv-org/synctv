@@ -60,14 +60,14 @@ pub type ProviderFactory = Box<
 /// # Architecture
 /// ```text
 /// ProvidersManager (synctv-core)
-///   ├── Factories (registered for each provider type)
-///   ├── Instances (singleton MediaProvider instances)
-///   └── RemoteProviderManager (for local/remote dispatch)
+/// ├── Factories (registered for each provider type)
+/// ├── Instances (singleton MediaProvider instances)
+/// └── RemoteProviderManager (for local/remote dispatch)
 ///
 /// synctv-api layer
-///   ├── Gets provider instances from ProvidersManager
-///   ├── Registers HTTP/gRPC routes for each provider
-///   └── No hardcoded provider types
+/// ├── Gets provider instances from ProvidersManager
+/// ├── Registers HTTP/gRPC routes for each provider
+/// └── No hardcoded provider types
 /// ```
 pub struct ProvidersManager {
     /// Registered factory functions (`provider_type` → factory)
@@ -687,8 +687,6 @@ mod tests {
             .await;
         assert!(provider.is_ok());
     }
-
-    // ========== Task #27: Provider Manager Tests ==========
 
     #[tokio::test]
     async fn test_provider_lookup_by_instance_id() {

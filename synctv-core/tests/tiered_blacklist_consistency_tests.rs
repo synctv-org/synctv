@@ -25,9 +25,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use synctv_core::service::TokenBlacklistStore;
 
-// ============================================================================
 // Mock Stores for Testing
-// ============================================================================
 
 /// Mock PG store that tracks calls and can simulate failures.
 ///
@@ -124,9 +122,7 @@ impl TokenBlacklistStore for MockPgStore {
     }
 }
 
-// ============================================================================
 // Core Consistency Tests
-// ============================================================================
 
 /// Test 1: PG write must succeed for blacklist() to return Ok
 ///
@@ -156,7 +152,6 @@ async fn test_blacklist_returns_err_on_pg_failure() {
     let pg = Arc::new(MockPgStore::new());
     pg.set_failing(true);
 
-    // Attempt to blacklist should fail
     let result = pg.blacklist("jti:pg_down", 3600).await;
     assert!(
         result.is_err(),
@@ -262,9 +257,7 @@ async fn test_blacklist_if_not_exists_err_on_pg_failure() {
     );
 }
 
-// ============================================================================
 // Negative Cache Consistency Tests
-// ============================================================================
 
 /// Test 7: Negative cache does not prevent PG fallback for new blacklists
 ///
@@ -297,9 +290,7 @@ async fn test_negative_cache_does_not_prevent_eventual_consistency() {
     );
 }
 
-// ============================================================================
 // Edge Cases and Error Handling Tests
-// ============================================================================
 
 /// Test 8: Concurrent blacklist operations maintain consistency
 ///
@@ -401,9 +392,7 @@ async fn test_consistency_matrix() {
     assert!(pg3.is_blacklisted("jti:recovery").await);
 }
 
-// ============================================================================
 // Security Property Tests
-// ============================================================================
 
 /// Test 11: Security invariant - blacklisted token is never incorrectly allowed
 ///
@@ -453,9 +442,7 @@ async fn test_fail_closed_after_successful_blacklist() {
     );
 }
 
-// ============================================================================
 // Documentation Tests - Expected Behavior of TieredTokenBlacklistStore
-// ============================================================================
 
 /// Doc Test 1: Document the write path of TieredTokenBlacklistStore::blacklist()
 ///
@@ -468,13 +455,11 @@ async fn test_fail_closed_after_successful_blacklist() {
 async fn doc_test_blacklist_write_path() {
     let pg = Arc::new(MockPgStore::new());
 
-    // Step 1: Write to PG (must succeed)
     pg.blacklist("jti:doc_test", 3600).await.unwrap();
 
     // Step 2 & 3: Redis and L1 writes are best-effort/always succeed
     // (In real implementation, Redis failure is logged but ignored)
 
-    // Step 4: Verify token is blacklisted
     assert!(pg.is_blacklisted("jti:doc_test").await);
 }
 

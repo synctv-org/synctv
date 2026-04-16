@@ -31,9 +31,7 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 fn make_user_with_role(username: &str, role: UserRole) -> User {
     let now = Utc::now();
@@ -131,17 +129,12 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     (owner, room)
 }
 
-// ============================================================================
-// Test: Concurrent user ban operations
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_user_ban_operations() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
 
-    // Create multiple users to ban
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
@@ -250,17 +243,12 @@ async fn test_concurrent_ban_unban_same_user() {
     );
 }
 
-// ============================================================================
-// Test: Concurrent room ban operations
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_room_ban_operations() {
     let (_container, pool) = create_test_pool().await;
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
 
-    // Create multiple rooms
     let mut room_ids = Vec::with_capacity(10);
     for i in 0..10 {
         let (_owner, room) = setup_test_room(&pool, &format!("Concurrent Ban Room {i}")).await;
@@ -346,10 +334,6 @@ async fn test_concurrent_room_status_changes() {
     assert_eq!(success_count, 10, "All status operations should succeed");
 }
 
-// ============================================================================
-// Test: Concurrent settings updates with optimistic lock
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_global_settings_update_optimistic_lock() {
@@ -425,10 +409,6 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
         conflict_count
     );
 }
-
-// ============================================================================
-// Test: Optimistic lock conflict retry scenarios
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -537,10 +517,6 @@ async fn test_optimistic_lock_retry_succeeds() {
     );
 }
 
-// ============================================================================
-// Test: High concurrency stress test
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_high_concurrency_status_updates() {
@@ -586,10 +562,6 @@ async fn test_high_concurrency_status_updates() {
     assert_eq!(success_count, 50, "All status updates should succeed");
 }
 
-// ============================================================================
-// Test: Concurrent room member operations with ban
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_room_ban_with_members_joining() {
@@ -599,7 +571,6 @@ async fn test_concurrent_room_ban_with_members_joining() {
 
     let (_owner, room) = setup_test_room(&pool, "Ban With Join Room").await;
 
-    // Create 10 users to join
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
@@ -686,10 +657,6 @@ async fn test_concurrent_room_ban_with_members_joining() {
         ban_success
     );
 }
-
-// ============================================================================
-// Test: Concurrent room settings updates
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -778,10 +745,6 @@ async fn test_concurrent_room_settings_update() {
         conflict_count
     );
 }
-
-// ============================================================================
-// Test: Concurrent user role updates with validation
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

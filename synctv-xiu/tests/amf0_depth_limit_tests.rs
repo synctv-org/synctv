@@ -107,11 +107,9 @@ fn test_oversized_object_rejected() {
 
 #[test]
 fn test_ecma_array_depth_limit() {
-    // Create a deeply nested ECMA array structure
     let mut current = IndexMap::new();
     current.insert("value".to_string(), Amf0ValueType::Number(1.0));
 
-    // Create 40 levels of nesting
     for _ in 0..40 {
         let mut wrapper = IndexMap::new();
         wrapper.insert("nested".to_string(), Amf0ValueType::Object(current));

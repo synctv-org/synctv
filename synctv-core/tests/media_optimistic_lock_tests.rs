@@ -121,9 +121,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
     }
 }
 
-// ============================================================================
 // Optimistic Locking Tests with version field
-// ============================================================================
 
 /// Test: `update_with_version` should succeed when version matches
 #[tokio::test]
@@ -132,7 +130,6 @@ async fn test_update_with_version_succeeds_when_version_matches() {
     let ctx = setup_test_context("v1").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a media item
     let media = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -171,7 +168,6 @@ async fn test_update_with_version_conflict_when_version_mismatch() {
     let ctx = setup_test_context("v2").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a media item
     let media = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -221,7 +217,6 @@ async fn test_concurrent_updates_detect_conflict() {
     let ctx = setup_test_context("v3").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a media item
     let media = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -276,7 +271,6 @@ async fn test_sequential_updates_increment_version() {
     let ctx = setup_test_context("v4").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a media item
     let mut media = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -406,7 +400,6 @@ async fn test_version_returned_in_read_operations() {
     let pool = ctx.pool.clone();
     let media_repo = MediaRepository::new(pool);
 
-    // Create and update a media item
     let mut media = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,

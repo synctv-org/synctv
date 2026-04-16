@@ -364,9 +364,7 @@ async fn test_list_active_streams() {
     assert!(streams.contains(&("room2".to_string(), "media2".to_string())));
 }
 
-// ============================================================================
 // LS8: Concurrent InMemoryStreamRegistry tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_register_same_stream() {

@@ -9,9 +9,7 @@
 use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
 use synctv_core_testing::create_test_pool;
 
-// ============================================================================
 // Unbuffered write tests (require Docker)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -161,9 +159,7 @@ async fn test_audit_query_date_range() {
     assert_eq!(rows[0].0, 0, "Event should not be in the past date range");
 }
 
-// ============================================================================
 // Buffered service tests (no DB needed)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -196,8 +192,6 @@ async fn test_unbuffered_service_dropped_count_zero() {
     let service = AuditService::new_unbuffered(pool);
     assert_eq!(service.dropped_count(), 0);
 }
-
-// ========== Stream Kick Audit Tests (Docker required) ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -406,12 +400,9 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
     assert_eq!(targets[1].0, "room_2:media_2");
 }
 
-// ========== S12: Buffer-full drops events ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_buffer_full_increments_dropped_count() {
-    // Create a buffered service with a very small capacity (2)
     // The fake pool means the background flush task will fail to write to DB,
     // and when the buffer is full, try_send will fail and the fallback sync write
     // also fails (fake pool), so dropped_count should be incremented.
@@ -424,7 +415,6 @@ async fn test_buffer_full_increments_dropped_count() {
     // The flush task accumulates events every 5 seconds or 100 events, so the
     // channel should back up quickly.
 
-    // Send many events rapidly to fill the buffer
     let mut error_count = 0;
     for i in 0..100 {
         let result = service

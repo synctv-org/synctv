@@ -12,9 +12,7 @@ fn event_id() -> String {
     synctv_common::snanoid!(16)
 }
 
-// ============================================================================
 // Test 1: is_critical returns true for KickUser
-// ============================================================================
 
 #[test]
 fn test_kick_user_is_critical() {
@@ -28,9 +26,7 @@ fn test_kick_user_is_critical() {
     assert!(event.is_critical(), "KickUser should be a critical event");
 }
 
-// ============================================================================
 // Test 2: is_critical returns true for KickPublisher
-// ============================================================================
 
 #[test]
 fn test_kick_publisher_is_critical() {
@@ -49,9 +45,7 @@ fn test_kick_publisher_is_critical() {
     );
 }
 
-// ============================================================================
 // Test 3: is_critical returns true for KickUserFromRoom
-// ============================================================================
 
 #[test]
 fn test_kick_user_from_room_is_critical() {
@@ -70,9 +64,7 @@ fn test_kick_user_from_room_is_critical() {
     );
 }
 
-// ============================================================================
 // Test 4: is_critical returns true for PermissionChanged
-// ============================================================================
 
 #[test]
 fn test_permission_changed_is_critical() {
@@ -100,9 +92,7 @@ fn test_permission_changed_is_critical() {
     );
 }
 
-// ============================================================================
 // Test 5: is_critical returns true for RoomDeleted
-// ============================================================================
 
 #[test]
 fn test_room_deleted_is_critical() {
@@ -120,9 +110,7 @@ fn test_room_deleted_is_critical() {
     );
 }
 
-// ============================================================================
 // Test 6: is_critical returns true for UserLeft
-// ============================================================================
 
 #[test]
 fn test_user_left_is_critical() {
@@ -138,9 +126,7 @@ fn test_user_left_is_critical() {
     assert!(event.is_critical(), "UserLeft should be a critical event");
 }
 
-// ============================================================================
 // Test 7: is_critical returns false for ChatMessage (non-critical)
-// ============================================================================
 
 #[test]
 fn test_chat_message_is_not_critical() {
@@ -162,9 +148,7 @@ fn test_chat_message_is_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 8: is_critical returns false for PlaybackStateChanged (non-critical)
-// ============================================================================
 
 #[test]
 fn test_playback_state_changed_is_not_critical() {
@@ -184,9 +168,7 @@ fn test_playback_state_changed_is_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 9: is_critical returns false for RoomCreated (non-critical)
-// ============================================================================
 
 #[test]
 fn test_room_created_is_not_critical() {
@@ -205,9 +187,7 @@ fn test_room_created_is_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 10: is_critical returns false for MediaAdded (non-critical)
-// ============================================================================
 
 #[test]
 fn test_media_added_is_not_critical() {
@@ -228,9 +208,7 @@ fn test_media_added_is_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 11: is_critical returns false for MediaRemoved (non-critical)
-// ============================================================================
 
 #[test]
 fn test_media_removed_is_not_critical() {
@@ -250,9 +228,7 @@ fn test_media_removed_is_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 12: Verify all critical event types are covered
-// ============================================================================
 
 #[test]
 fn test_all_critical_events_covered() {

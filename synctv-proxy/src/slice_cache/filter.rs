@@ -26,9 +26,7 @@ use super::store::{FullBodyWrite, SliceCache};
 
 const MAX_BUFFERED_SLICES: usize = 8;
 
-// ------------------------------------------------------------------
 // HEAD helper
-// ------------------------------------------------------------------
 
 fn parse_content_length_header(resp: &reqwest::Response) -> Option<u64> {
     resp.headers()
@@ -127,9 +125,7 @@ pub async fn head_content_length(
     discover_content_length_via_range_get(client, url, provider_headers).await
 }
 
-// ------------------------------------------------------------------
 // proxy_with_cache  --  main entry point
-// ------------------------------------------------------------------
 
 /// Serve a request through the slice cache.
 ///
@@ -171,7 +167,6 @@ pub async fn proxy_with_cache_enabled(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<Response, anyhow::Error> {
-    // ------ BYPASS: cache disabled ------
     if !cache_enabled {
         return stream_through_with_status(
             cache.client(),
@@ -183,12 +178,10 @@ pub async fn proxy_with_cache_enabled(
         .await;
     }
 
-    // ------ No Range header: full-body cache path ------
     if range_header.is_none() {
         return full_body_cache_path(cache, url, provider_headers).await;
     }
 
-    // ------ Range request: slice-cache path ------
     let Some(range_str) = range_header else {
         unreachable!("range_header.is_none() was checked above");
     };
@@ -318,9 +311,7 @@ const fn merge_cache_status(a: CacheStatus, b: CacheStatus) -> CacheStatus {
     }
 }
 
-// ------------------------------------------------------------------
 // Full-body cache path
-// ------------------------------------------------------------------
 
 /// Handle a non-range request through the full-body cache.
 pub(super) async fn full_body_cache_path(
@@ -701,9 +692,7 @@ async fn handle_full_body_response(
         .map_err(|e| anyhow::anyhow!("Failed to build full-body response: {e}"))
 }
 
-// ------------------------------------------------------------------
 // Stream-through helper
-// ------------------------------------------------------------------
 
 /// Stream an upstream response through without caching, attaching the given
 /// `X-Cache-Status` header.

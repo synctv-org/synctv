@@ -684,13 +684,11 @@ impl MediaService {
             }
 
             // Check permission: EDIT_MEDIA_SELF if user owns the media, EDIT_MEDIA_ANY otherwise
-            //
             // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
             // This prevents a race condition where:
             // 1. Permission is granted and cached on first attempt
             // 2. Permission is revoked by admin before retry
             // 3. Retry would succeed with stale cached permission
-            //
             // By bypassing cache, we ensure each retry checks current permission state.
             let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
                 PermissionBits::EDIT_MEDIA_SELF
@@ -1801,8 +1799,6 @@ impl MediaService {
 mod tests {
     use super::*;
 
-    // ========== AddMediaRequest Validation ==========
-
     #[test]
     fn test_add_media_request_construction() {
         let request = AddMediaRequest {
@@ -1841,8 +1837,6 @@ mod tests {
             "https://example.com"
         );
     }
-
-    // ========== EditMediaRequest Validation ==========
 
     #[test]
     fn test_edit_media_request_name_only() {
@@ -1886,8 +1880,6 @@ mod tests {
         assert!(request.after_media_id.is_some());
     }
 
-    // ========== Batch Size Validation ==========
-
     #[test]
     fn test_batch_items_construction() {
         let items: Vec<AddMediaRequest> = (0..101)
@@ -1908,8 +1900,6 @@ mod tests {
         let items: Vec<AddMediaRequest> = Vec::new();
         assert!(items.is_empty());
     }
-
-    // ========== Source Config JSON Validation ==========
 
     #[test]
     fn test_source_config_null_value() {
@@ -1949,8 +1939,6 @@ mod tests {
         assert_eq!(request.source_config["options"]["subtitle"]["lang"], "en");
     }
 
-    // ========== Source Config Size Validation ==========
-
     #[test]
     fn test_source_config_size_limit_constant() {
         // MAX_SOURCE_CONFIG_SIZE = 1MB
@@ -1983,8 +1971,6 @@ mod tests {
             "Large config should exceed 1MB"
         );
     }
-
-    // ========== source_config Boundary Tests (Task #72) ==========
 
     #[test]
     fn test_source_config_exactly_1mb_accepted() {
@@ -2084,8 +2070,6 @@ mod tests {
             "Unicode size should be counted in bytes, got {size} bytes"
         );
     }
-
-    // ========== Optimistic Lock Error Messages (Task #51) ==========
 
     #[test]
     fn test_edit_media_error_message_contains_media_id() {

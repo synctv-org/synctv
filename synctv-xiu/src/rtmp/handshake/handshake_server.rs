@@ -423,8 +423,6 @@ mod tests {
         vec![0xAA; define::RTMP_HANDSHAKE_SIZE]
     }
 
-    // ==================== SimpleHandshakeServer Tests ====================
-
     #[test]
     fn test_simple_handshake_server_initial_state() {
         let io = make_io();
@@ -566,8 +564,6 @@ mod tests {
         assert!(matches!(server.state, ServerHandshakeState::Finish));
     }
 
-    // ==================== ComplexHandshakeServer Tests ====================
-
     #[test]
     fn test_complex_handshake_server_initial_state() {
         let io = make_io();
@@ -592,8 +588,6 @@ mod tests {
         let result = server.read_c0();
         assert!(result.is_err());
     }
-
-    // ==================== HandshakeServer (Composite) Tests ====================
 
     #[test]
     fn test_handshake_server_defaults_to_complex() {
@@ -643,8 +637,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ==================== Define Constants ====================
-
     #[test]
     fn test_rtmp_version() {
         assert_eq!(define::RTMP_VERSION, 3);
@@ -670,16 +662,12 @@ mod tests {
         );
     }
 
-    // ==================== Utils ====================
-
     #[test]
     fn test_current_time_returns_nonzero() {
         let t = utils::current_time();
         // Should be non-zero (unless UNIX epoch is now, which won't happen)
         assert_ne!(t, 0);
     }
-
-    // ==================== ServerHandshakeState ====================
 
     #[test]
     fn test_server_handshake_state_is_copy() {

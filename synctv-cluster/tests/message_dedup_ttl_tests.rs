@@ -40,7 +40,6 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
         "Immediate second call should return false"
     );
 
-    // Wait for TTL to expire (1s + buffer)
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // Run pending tasks to force moka to evict expired entries
@@ -57,7 +56,6 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
     assert!(dedup2.should_process(&key2));
     assert!(!dedup2.should_process(&key2));
 
-    // Wait for expiry
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // After TTL expires, the key should be reprocessable
@@ -83,7 +81,6 @@ async fn test_dedup_short_ttl_vs_long_ttl() {
     assert!(!short_dedup.should_process(&key));
     assert!(!long_dedup.should_process(&key));
 
-    // Wait past the short TTL
     tokio::time::sleep(Duration::from_millis(700)).await;
 
     // Short TTL should allow reprocessing
@@ -113,7 +110,6 @@ async fn test_mark_processed_respects_ttl() {
         "Should reject after mark_processed"
     );
 
-    // Wait for TTL
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     assert!(
@@ -159,7 +155,6 @@ async fn test_concurrent_should_process_per_ttl_window() {
         "Exactly 1 should succeed in window 1"
     );
 
-    // Wait for TTL to expire
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // Window 2: should allow exactly one again
@@ -208,7 +203,6 @@ async fn test_len_reflects_ttl_expiry() {
     assert_eq!(dedup.len(), 2);
     assert!(!dedup.is_empty());
 
-    // Wait for TTL
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // After TTL, len should eventually drop to 0

@@ -40,7 +40,6 @@ async fn test_active_publisher_streams_parses_keys() {
     // Simulate publish events by directly using handle_publish via the manager's
     // active_publisher_streams method. Since handle_publish is private, we test
     // through the public API.
-    //
     // active_publisher_streams() returns parsed (room_id, media_id) pairs from
     // the internal DashMap keys formatted as "room_id:media_id".
     let streams = manager.active_publisher_streams();
@@ -99,9 +98,7 @@ async fn test_with_api_address() {
     assert_eq!(manager.lag_event_count(), 0);
 }
 
-// ============================================================================
 // LS2: Silent publisher timeout detection
-// ============================================================================
 
 #[tokio::test]
 async fn test_silent_publisher_detection_via_activity() {
@@ -127,9 +124,7 @@ async fn test_silent_publisher_detection_via_activity() {
     assert!(streams.is_empty() || streams.len() <= 1);
 }
 
-// ============================================================================
 // LS3: Heartbeat failure escalation thresholds
-// ============================================================================
 
 #[tokio::test]
 async fn test_heartbeat_failure_counter_starts_at_zero() {
@@ -139,9 +134,7 @@ async fn test_heartbeat_failure_counter_starts_at_zero() {
     assert_eq!(manager.lag_event_count(), 0);
 }
 
-// ============================================================================
 // LS4: reregister_all_publishers with conflict detection
-// ============================================================================
 
 #[tokio::test]
 async fn test_reregister_all_publishers_with_existing_publishers() {
@@ -182,9 +175,7 @@ async fn test_reregister_all_publishers_different_node() {
     assert_eq!(info.node_id, "other-node");
 }
 
-// ============================================================================
 // LS5: reconcile_missing_from_registry
-// ============================================================================
 
 #[tokio::test]
 async fn test_reconcile_missing_from_registry_no_publishers() {
@@ -195,9 +186,7 @@ async fn test_reconcile_missing_from_registry_no_publishers() {
     // No assertions needed - just verify it doesn't panic
 }
 
-// ============================================================================
 // LS-extra: PublisherManager multiple operations
-// ============================================================================
 
 #[tokio::test]
 async fn test_set_and_clear_restarting_multiple_times() {

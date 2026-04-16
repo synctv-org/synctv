@@ -1,13 +1,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 // synctv-livestream - Live streaming infrastructure for SyncTV
-//
 // Architecture (following xiu's modular design):
 // - protocols/   - Protocol implementations (RTMP, HTTP-FLV, HLS)
 // - libraries/    - Shared components (GOP cache, storage, etc.)
 // - api/         - Public API for synctv-api
 // - relay/       - Multi-node streaming (Publisher/Puller)
 // - src/         - Server orchestration (application layer)
-//
 // All streams are scoped to room_id:media_id (media-level streaming).
 
 /// Encoded file descriptor set for livestream gRPC proto definitions.

@@ -632,8 +632,6 @@ mod tests {
         );
     }
 
-    // === Alist Types Deserialization Tests ===
-
     #[test]
     fn test_alist_resp_deserialize_success() {
         let json = r#"{"code": 200, "message": "success", "data": {"token": "abc123"}}"#;
@@ -720,8 +718,6 @@ mod tests {
         assert_eq!(resp.role, 0);
         assert!(!resp.disabled);
     }
-
-    // === Proto Conversion Tests ===
 
     #[test]
     fn test_fs_list_content_to_proto() {

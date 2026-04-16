@@ -16,9 +16,7 @@ fn proxy_client() -> reqwest::Client {
     synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
 }
 
-// ==================================================================
 // DNS-level SSRF protection tests
-// ==================================================================
 
 /// Verify that the DNS resolver blocks loopback addresses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

@@ -57,9 +57,7 @@ fn full_body_cache_key(url: &str, provider_headers: &HashMap<String, String>) ->
     hex::encode(hasher.finalize())
 }
 
-// ==================================================================
 // SliceCacheConfig tests
-// ==================================================================
 
 #[test]
 fn test_config_disabled() {
@@ -79,9 +77,7 @@ fn test_config_custom_slice_size() {
     assert_eq!(config.slice_size, 4 * 1024 * 1024);
 }
 
-// ==================================================================
 // SliceCache creation tests
-// ==================================================================
 
 #[test]
 fn test_slice_cache_new() {
@@ -103,9 +99,7 @@ fn test_slice_cache_custom_config() {
     assert_eq!(cache.config().max_cache_size, 100 * 1024 * 1024);
 }
 
-// ==================================================================
 // Cache key generation tests
-// ==================================================================
 
 #[test]
 fn test_cache_key_deterministic() {
@@ -167,9 +161,7 @@ fn test_cache_key_different_headers() {
     assert_ne!(key1, key2, "Different headers must produce different keys");
 }
 
-// ==================================================================
 // Range parsing tests
-// ==================================================================
 
 #[test]
 fn test_parse_range_single_range() {
@@ -224,9 +216,7 @@ fn test_parse_range_end_capped_at_total() {
     assert_eq!(end, 9999);
 }
 
-// ==================================================================
 // Slice index calculation tests
-// ==================================================================
 
 #[test]
 fn test_compute_needed_slices_single_slice() {
@@ -267,9 +257,7 @@ fn test_compute_needed_slices_exact_boundary() {
     assert_eq!(slices, vec![1]);
 }
 
-// ==================================================================
 // get_or_fetch_slice integration tests (with wiremock)
-// ==================================================================
 
 #[tokio::test]
 async fn test_get_or_fetch_slice_fetches_from_upstream() {
@@ -353,9 +341,7 @@ async fn test_get_or_fetch_slice_last_slice_partial() {
     assert_eq!(slice.len(), last_slice_size);
 }
 
-// ==================================================================
 // proxy_with_cache integration tests
-// ==================================================================
 
 #[tokio::test]
 async fn test_proxy_with_cache_returns_206_for_range_request() {
@@ -752,9 +738,7 @@ async fn test_proxy_with_cache_multi_range_rejected() {
     assert!(result.is_err(), "Multi-range requests must be rejected");
 }
 
-// ==================================================================
 // Thundering herd prevention tests
-// ==================================================================
 
 #[tokio::test]
 async fn test_concurrent_fetches_same_slice_only_one_upstream_request() {
@@ -815,9 +799,7 @@ async fn test_concurrent_fetches_same_slice_only_one_upstream_request() {
     // wiremock's expect(1) ensures only 1 upstream request was made
 }
 
-// ==================================================================
 // Disabled cache pass-through test
-// ==================================================================
 
 #[tokio::test]
 async fn test_disabled_cache_streams_directly() {
@@ -860,9 +842,7 @@ async fn test_disabled_cache_streams_directly() {
     );
 }
 
-// ==================================================================
 // Slice range alignment tests
-// ==================================================================
 
 #[test]
 fn test_aligned_range_for_slice() {
@@ -903,9 +883,7 @@ fn test_aligned_range_last_slice_partial() {
     assert_eq!(end, 3 * 1024 * 1024 - 1);
 }
 
-// ==================================================================
 // Enhancement 1: Full body caching (non-range / 200 responses)
-// ==================================================================
 
 /// Non-range request caches full body; second request is a HIT.
 #[tokio::test]
@@ -1119,7 +1097,6 @@ async fn test_full_body_cache_expiry_returns_expired() {
     );
     let _ = resp1.into_body().collect().await.unwrap().to_bytes();
 
-    // Wait for the TTL to expire
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // After expiry - should be EXPIRED
@@ -1202,9 +1179,7 @@ async fn test_full_body_non_success_response_is_not_cached() {
     assert_eq!(body2.as_ref(), b"fresh-ok");
 }
 
-// ==================================================================
 // Enhancement 2: ETag consistency validation
-// ==================================================================
 
 /// CachedResourceMeta stores etag, total_size, content_type.
 #[test]
@@ -1353,9 +1328,7 @@ async fn test_etag_consistency_mismatch_triggers_invalidation() {
     );
 }
 
-// ==================================================================
 // Enhancement 3: Cache status refinement
-// ==================================================================
 
 /// Disabled cache returns BYPASS status.
 #[tokio::test]
@@ -1484,7 +1457,6 @@ async fn test_cache_status_expired_for_slice_request() {
         Some("MISS"),
     );
 
-    // Wait for TTL to expire
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request: EXPIRED (was cached, but TTL expired, re-fetched)
@@ -1544,9 +1516,7 @@ async fn test_resource_meta_stored_after_fetch() {
     assert_eq!(meta.content_type.as_deref(), Some("video/mp4"));
 }
 
-// ==================================================================
 // Content-Range response parsing tests (nginx-style)
-// ==================================================================
 
 use synctv_proxy::slice_cache::parse_content_range;
 
@@ -1671,9 +1641,7 @@ fn test_parse_content_range_zero_start() {
     assert_eq!(cr.complete_length, Some(1));
 }
 
-// ==================================================================
 // L2 fix: seen_keys bounded (moka-backed, not unbounded DashSet)
-// ==================================================================
 
 /// After inserting entries, seen_keys should track them.
 #[tokio::test]
@@ -1718,9 +1686,7 @@ async fn test_seen_keys_bounded_tracks_inserted() {
     assert_eq!(cache.seen_keys_count(), 1);
 }
 
-// ==================================================================
 // L3 fix: stale lock cleanup
-// ==================================================================
 
 /// After fetching slices and cleaning up, stale locks should be removed.
 #[tokio::test]
@@ -1774,9 +1740,7 @@ async fn test_stale_locks_cleaned_up() {
     );
 }
 
-// ==================================================================
 // L4 fix: cached metadata avoids HEAD request on range request
-// ==================================================================
 
 /// When resource metadata is cached (from a prior slice fetch), range
 /// requests should not issue a HEAD request to discover total_size.
@@ -1859,13 +1823,9 @@ async fn test_cached_meta_avoids_head_request() {
     );
 }
 
-// ==================================================================
 // Phase 2: Backend trait integration, STALE/UPDATING, conditional
-// ==================================================================
 
-// ------------------------------------------------------------------
 // STALE behavior: expired entry within stale window is served stale
-// ------------------------------------------------------------------
 
 /// When stale_while_revalidate is enabled (default), an expired entry within
 /// the stale_max_age window is served with STALE status for full-body cache.
@@ -1913,7 +1873,6 @@ async fn test_full_body_stale_when_expired_within_window() {
     let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body1.as_ref(), b"stale-body");
 
-    // Wait for TTL to expire, but within stale_max_age.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request - STALE (expired but within stale window)
@@ -2352,7 +2311,6 @@ async fn test_slice_stale_when_expired_within_window() {
         Some("MISS"),
     );
 
-    // Wait for TTL to expire, but within stale_max_age.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request: STALE
@@ -2589,9 +2547,7 @@ async fn test_slice_failed_background_revalidation_does_not_stick_updating_forev
     assert_eq!(refreshed.0, fresh_slice);
 }
 
-// ------------------------------------------------------------------
 // UPDATING behavior: second request while updating returns STALE/UPDATING
-// ------------------------------------------------------------------
 
 /// When a key is marked as updating, the get_or_fetch_slice returns the
 /// stale data with appropriate status.
@@ -2633,7 +2589,6 @@ async fn test_slice_updating_status_on_stale_entry() {
     assert_eq!(status, CacheStatus::Miss);
     assert_eq!(data.len(), 1024);
 
-    // Wait for TTL to expire.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second fetch - should be STALE (first stale request marks as updating)
@@ -2648,9 +2603,7 @@ async fn test_slice_updating_status_on_stale_entry() {
     );
 }
 
-// ------------------------------------------------------------------
 // Conditional requests (304 Not Modified)
-// ------------------------------------------------------------------
 
 /// When upstream returns 304, the cache entry is refreshed and
 /// CacheStatus::Revalidated is returned.
@@ -2706,7 +2659,6 @@ async fn test_conditional_request_304_returns_revalidated() {
         Some("Wed, 01 Jan 2025 00:00:00 GMT")
     );
 
-    // Wait for TTL to expire.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Drop the first mock so it doesn't intercept the conditional request.
@@ -2848,9 +2800,7 @@ async fn test_last_modified_tracked_in_metadata() {
     );
 }
 
-// ------------------------------------------------------------------
 // Backend selection via config
-// ------------------------------------------------------------------
 
 /// File backend config requires try_new (async).
 #[tokio::test]
@@ -3059,9 +3009,7 @@ fn test_new_panics_for_file_backend() {
     let _cache = SliceCache::new(config);
 }
 
-// ------------------------------------------------------------------
 // File backend integration test
-// ------------------------------------------------------------------
 
 /// File backend caches and retrieves data correctly via SliceCache.
 #[tokio::test]
@@ -3172,13 +3120,9 @@ async fn test_get_or_fetch_slice_returns_cache_status() {
     assert_eq!(s2, CacheStatus::Hit);
 }
 
-// ==================================================================
 // Bug fix tests: C1, C2, H1, H2, H3, H4, M2
-// ==================================================================
 
-// ------------------------------------------------------------------
 // C1: updating_keys stale/updating logic correctly distinguishes
-// ------------------------------------------------------------------
 
 /// First stale request gets CacheStatus::Stale, second concurrent stale
 /// request gets CacheStatus::Updating (the first caller "wins" the
@@ -3220,7 +3164,6 @@ async fn test_updating_status_correctly_distinguishes_stale_and_updating() {
         .unwrap();
     assert_eq!(status, CacheStatus::Miss);
 
-    // Wait for TTL to expire but within stale window
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // First stale request should get Stale (it "wins" the update slot
@@ -3250,9 +3193,7 @@ async fn test_updating_status_correctly_distinguishes_stale_and_updating() {
     );
 }
 
-// ------------------------------------------------------------------
 // C2: updating_keys cleaned on fetch failure
-// ------------------------------------------------------------------
 
 /// When upstream fetch fails, updating_keys must be cleaned up to avoid
 /// permanently blocking stale-while-revalidate for that key.
@@ -3295,7 +3236,6 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
         .unwrap();
     assert_eq!(status, CacheStatus::Miss);
 
-    // Wait for TTL to expire
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Drop the first mock and mount a failing one
@@ -3366,9 +3306,7 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
     );
 }
 
-// ------------------------------------------------------------------
 // H1: lock timeout returns stale data instead of hanging forever
-// ------------------------------------------------------------------
 
 /// When the lock cannot be acquired within the timeout (e.g., upstream
 /// hangs), the cache should return stale data or an error instead of
@@ -3426,9 +3364,7 @@ async fn test_lock_timeout_returns_stale_data() {
     assert!(cache2.config().enabled);
 }
 
-// ------------------------------------------------------------------
 // H3: 200 response rejected for slice request
-// ------------------------------------------------------------------
 
 /// When upstream returns 200 OK instead of 206 Partial Content for a
 /// Range request, it should be rejected (upstream doesn't support Range).
@@ -3601,9 +3537,7 @@ async fn test_206_response_accepts_missing_content_range_total_when_slice_matche
     assert_eq!(cached, body);
 }
 
-// ------------------------------------------------------------------
 // H2: OOM protection for chunked responses without Content-Length
-// ------------------------------------------------------------------
 
 /// When upstream returns a chunked response without Content-Length that
 /// exceeds max_cacheable_body, it should be handled without OOM (BYPASS).
@@ -3650,9 +3584,7 @@ async fn test_full_body_oom_protection() {
     );
 }
 
-// ------------------------------------------------------------------
 // H3: Connection reuse after oversized body drain
-// ------------------------------------------------------------------
 
 /// Verify that when a chunked response exceeds max_cacheable_body, the
 /// remaining body is fully consumed (drained) to allow connection reuse.
@@ -3740,7 +3672,6 @@ async fn test_full_body_oversized_large_stream_drain() {
     };
     let cache = slice_cache_for_mock(config, &mock_server);
 
-    // Create a body much larger than max_cacheable_body
     // Using multiple "chunks" worth of data
     let body = Bytes::from(vec![0xBBu8; 2000]);
     Mock::given(method("GET"))
@@ -3781,9 +3712,7 @@ async fn test_full_body_oversized_large_stream_drain() {
     mock_server.verify().await;
 }
 
-// ------------------------------------------------------------------
 // H4: FileBackend header_len bounds check
-// ------------------------------------------------------------------
 
 /// A corrupted cache file with an absurdly large header_len should be
 /// rejected rather than causing OOM.
@@ -3824,9 +3753,7 @@ async fn test_file_backend_rejects_corrupt_header_len() {
     );
 }
 
-// ------------------------------------------------------------------
 // M2: Lock cleanup also called on full-body path
-// ------------------------------------------------------------------
 
 /// After a full-body cache put, lock cleanup should still be triggered.
 /// This test verifies that put_full_body calls maybe_cleanup_locks().
@@ -3837,7 +3764,6 @@ async fn test_full_body_put_triggers_lock_cleanup() {
     let total_size: u64 = 2048;
     let slice_data = Bytes::from(vec![0xFFu8; 1024]);
 
-    // Create some locks by fetching slices first
     Mock::given(method("GET"))
         .and(path("/m2-slice.bin"))
         .and(header("Range", "bytes=0-1023"))
@@ -3858,7 +3784,6 @@ async fn test_full_body_put_triggers_lock_cleanup() {
     let url = mock_public_url(&mock_server, "/m2-slice.bin");
     let headers = HashMap::new();
 
-    // Create a lock by fetching a slice
     let _ = cache
         .get_or_fetch_slice(&url, &headers, 0, total_size)
         .await

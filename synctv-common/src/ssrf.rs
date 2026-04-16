@@ -234,9 +234,7 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    // =======================================================================
     // Default policy tests (migrated from synctv-ssrf)
-    // =======================================================================
 
     #[test]
     fn test_acl_blocks_private_ipv4() {
@@ -422,9 +420,7 @@ mod tests {
             .is_allowed());
     }
 
-    // =======================================================================
     // SsrfGuard struct tests
-    // =======================================================================
 
     #[test]
     fn test_guard_is_ip_blocked() {
@@ -442,9 +438,7 @@ mod tests {
         assert!(!guard.is_host_blocked("example.com"));
     }
 
-    // =======================================================================
     // Builder tests
-    // =======================================================================
 
     #[test]
     fn test_builder_extra_denied_ip_range() {

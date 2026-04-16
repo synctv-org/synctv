@@ -993,8 +993,6 @@ mod tests {
         )
     }
 
-    // ========== Cache Key Tests ==========
-
     #[test]
     fn test_cache_key_generation() {
         let room_id = RoomId("room123".to_string());
@@ -1025,8 +1023,6 @@ mod tests {
         );
     }
 
-    // ========== Role Default Permission Tests ==========
-
     #[test]
     fn test_creator_always_gets_all_permissions() {
         let service = make_service();
@@ -1034,8 +1030,6 @@ mod tests {
         let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
         assert_eq!(perms.0, PermissionBits::ALL);
     }
-
-    // ========== Room-Level Override Tests ==========
 
     #[test]
     fn test_room_level_add_permissions_for_member() {
@@ -1076,8 +1070,6 @@ mod tests {
         let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
         assert_eq!(perms.0, PermissionBits::ALL);
     }
-
-    // ========== Member-Level Override Tests (effective_permissions) ==========
 
     #[test]
     fn test_member_allow_pattern() {
@@ -1132,8 +1124,6 @@ mod tests {
         assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
     }
 
-    // ========== Three-Layer Override Chain Tests ==========
-
     #[test]
     fn test_three_layer_permission_chain() {
         let service = make_service();
@@ -1158,8 +1148,6 @@ mod tests {
         assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
     }
 
-    // ========== Banned/Pending Member Tests ==========
-
     #[test]
     fn test_banned_member_has_no_permissions() {
         let mut member = make_member(RoomRole::Admin);
@@ -1177,8 +1165,6 @@ mod tests {
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
     }
 
-    // ========== Cache Degradation Tests ==========
-
     #[test]
     fn test_cache_degraded_flag_toggling() {
         let degraded = AtomicBool::new(false);
@@ -1187,8 +1173,6 @@ mod tests {
         degraded.store(false, Ordering::Release);
         assert!(!degraded.load(Ordering::Acquire));
     }
-
-    // ========== Flush Rate Limit Tests ==========
 
     #[test]
     fn test_flush_rate_limit_allows_after_interval() {
@@ -1205,8 +1189,6 @@ mod tests {
         assert!(elapsed < Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS));
     }
 
-    // ========== has_all / has_any Tests ==========
-
     #[test]
     fn test_has_all_requires_all_bits() {
         let perms = PermissionBits(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA);
@@ -1220,8 +1202,6 @@ mod tests {
         assert!(perms.has_any(PermissionBits::SEND_CHAT | PermissionBits::BAN_MEMBER));
         assert!(!perms.has_any(PermissionBits::BAN_MEMBER | PermissionBits::DELETE_ROOM));
     }
-
-    // ========== Room-Level Guest Override Tests ==========
 
     #[test]
     fn test_room_adds_send_chat_for_guest() {
@@ -1242,8 +1222,6 @@ mod tests {
         assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
     }
 
-    // ========== Edge Case: Empty Permissions ==========
-
     #[test]
     fn test_empty_permissions_has_nothing() {
         let perms = PermissionBits::empty();
@@ -1251,8 +1229,6 @@ mod tests {
         assert!(!perms.has_any(PermissionBits::ALL));
         assert!(perms.has_all(0)); // vacuously true
     }
-
-    // ========== Full Three-Layer Override Chain: Guest ==========
 
     #[test]
     fn test_three_layer_guest_chain() {
@@ -1274,8 +1250,6 @@ mod tests {
         assert!(!effective.has(PermissionBits::SEND_CHAT));
     }
 
-    // ========== Full Three-Layer Override Chain: Admin ==========
-
     #[test]
     fn test_three_layer_admin_chain() {
         let service = make_service();
@@ -1294,8 +1268,6 @@ mod tests {
         assert!(effective.has(PermissionBits::BAN_MEMBER));
         assert!(effective.has(PermissionBits::KICK_MEMBER));
     }
-
-    // ========== Creator Immunity ==========
 
     #[test]
     fn test_creator_ignores_member_level_deny() {
@@ -1321,8 +1293,6 @@ mod tests {
         let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
         assert_eq!(perms.0, PermissionBits::ALL);
     }
-
-    // ========== Member-Level: Admin Uses admin_* Fields, Member Uses Regular Fields ==========
 
     #[test]
     fn test_admin_ignores_member_level_added_permissions() {
@@ -1360,8 +1330,6 @@ mod tests {
         assert!(effective.has(PermissionBits::SEND_CHAT));
     }
 
-    // ========== Banned Member: Various Roles ==========
-
     #[test]
     fn test_banned_creator_has_no_permissions_via_has_permission() {
         // RoomMember::has_permission checks status first
@@ -1378,8 +1346,6 @@ mod tests {
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
     }
-
-    // ========== Room-Level: Combined Add and Remove ==========
 
     #[test]
     fn test_room_level_add_and_remove_same_permission_for_member() {
@@ -1405,8 +1371,6 @@ mod tests {
         assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
     }
 
-    // ========== Member Leave Behavior ==========
-
     #[test]
     fn test_member_leave_sets_left_at() {
         let mut member = make_member(RoomRole::Member);
@@ -1417,8 +1381,6 @@ mod tests {
         assert!(member.left_at.is_some());
         assert!(!member.is_active());
     }
-
-    // ========== PermissionBits: Grant and Revoke ==========
 
     #[test]
     fn test_permission_bits_grant_revoke() {
@@ -1446,8 +1408,6 @@ mod tests {
         assert!(all.has(PermissionBits::VIEW_PLAYLIST));
         assert!(all.has(PermissionBits::PLAY_CONTROL));
     }
-
-    // ========== Room Settings Repository Configuration Tests ==========
 
     #[test]
     fn test_has_room_settings_repo_returns_true_after_set() {
@@ -1484,8 +1444,6 @@ mod tests {
         let service = PermissionService::without_cache(member_repo, room_repo, None);
         assert!(!service.has_room_settings_repo());
     }
-
-    // ========== warn_if_missing_settings_repo Tests ==========
 
     #[test]
     fn test_set_invalidation_service_propagates_to_clones() {
@@ -1532,8 +1490,6 @@ mod tests {
         assert!(service.has_room_settings_repo());
     }
 
-    // ========== D12: Permission first flush should be allowed immediately ==========
-
     #[test]
     fn test_first_flush_allowed_immediately_after_startup() {
         let service = make_service();
@@ -1563,8 +1519,6 @@ mod tests {
             "Second flush immediately after first should be blocked"
         );
     }
-
-    // ========== Cache Invalidation Broadcast Tests ==========
 
     /// Helper to create a PermissionService with invalidation service for tests
     /// This version creates services without needing a nested runtime.
@@ -1772,7 +1726,6 @@ mod tests {
     fn test_invalidate_cache_local_clear_works() {
         // This test verifies that when a PermissionService has an invalidation_service,
         // calling invalidate_cache clears the local cache.
-        //
         // The key behavior being tested is that invalidate_cache works correctly.
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1803,11 +1756,9 @@ mod tests {
     fn test_invalidate_room_cache_local_clear_works() {
         // This test verifies that invalidate_room_cache correctly invalidates
         // cache entries for all users in a room.
-        //
         // Note: moka's invalidate_entries_if is a background operation that may not
         // be immediate. The broadcast test (test_invalidate_room_cache_receives_broadcast_after_fix)
         // verifies the cross-replica behavior, which is the main fix for this issue.
-        //
         // For local cache, we just verify the method doesn't panic and the broadcast is sent.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {

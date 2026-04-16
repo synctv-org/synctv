@@ -1,5 +1,4 @@
 // Room management HTTP handlers
-//
 // Thin transport layer: delegates all business logic to the impls layer.
 // Request and response types are proto-generated structs.
 
@@ -105,8 +104,6 @@ fn map_validation_error(err: &ValidationError) -> super::AppError {
         }
     }
 }
-
-// ==================== Room Management Endpoints ====================
 
 /// Create a new room
 #[cfg_attr(
@@ -304,8 +301,6 @@ pub async fn delete_room(
     tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Room deleted successfully");
     Ok(Json(response))
 }
-
-// ==================== Media Management Endpoints ====================
 
 /// Add media to playlist
 #[cfg_attr(
@@ -506,8 +501,6 @@ pub async fn list_playlist_items(
     Ok(Json(response))
 }
 
-// ==================== Playback Control Endpoints ====================
-
 /// Play (resume playback)
 /// POST /`api/rooms/{room_id}/playback/start` - Start playback of a specific media
 #[cfg_attr(
@@ -618,8 +611,6 @@ pub async fn get_playback(
     Ok(Json(response))
 }
 
-// ==================== Room Members Endpoints ====================
-
 /// Get room members (E8: with pagination)
 #[cfg_attr(
     feature = "openapi",
@@ -657,8 +648,6 @@ pub async fn get_room_members(
     Ok(Json(response))
 }
 
-// ==================== Room Discovery & Public Endpoints ====================
-
 /// Check if room exists (public endpoint)
 #[cfg_attr(
     feature = "openapi",
@@ -687,8 +676,6 @@ pub async fn check_room(
 
     Ok(Json(response))
 }
-
-// ==================== Room Settings Endpoints ====================
 
 /// Set room password
 #[cfg_attr(
@@ -950,8 +937,6 @@ pub async fn get_playlist(
     Ok(Json(response))
 }
 
-// ==================== New RESTful Endpoints ====================
-
 /// Unified handler for listing rooms (with query params) or getting single room by ID
 /// GET /api/rooms (list) or GET /api/rooms?id=xxx (single)
 #[cfg_attr(
@@ -1147,8 +1132,6 @@ pub async fn update_playback(
     Ok(Json(pb))
 }
 
-// ==================== Room Settings Reset ====================
-
 /// Reset room settings to defaults
 /// POST /`api/rooms/:room_id/settings/reset`
 #[cfg_attr(
@@ -1183,8 +1166,6 @@ pub async fn reset_room_settings(
 
     Ok(Json(response))
 }
-
-// ==================== Chat History ====================
 
 /// Get chat history for a room
 /// GET /`api/rooms/:room_id/chat/history`
@@ -1244,8 +1225,6 @@ fn validate_chat_history_query(raw_query: Option<&str>) -> AppResult<()> {
 
     Ok(())
 }
-
-// ==================== Playlist CRUD ====================
 
 /// Create a playlist
 /// POST /`api/rooms/:room_id/playlists`
@@ -1454,8 +1433,6 @@ pub async fn list_playlists(
 
     Ok(Json(response))
 }
-
-// ==================== Public: Hot Rooms ====================
 
 /// Get hot rooms (sorted by online count)
 /// GET /api/rooms/hot

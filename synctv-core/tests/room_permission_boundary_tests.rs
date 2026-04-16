@@ -34,9 +34,7 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Test container wrapper for Postgres
 pub struct TestPostgres {
@@ -138,10 +136,6 @@ fn make_member_service(pool: PgPool) -> MemberService {
     member_service
 }
 
-// ============================================================================
-// Test: Admin Attempting Creator-Only Operations
-// ============================================================================
-
 /// Test that Admin cannot delete room (Creator-only operation).
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -151,7 +145,6 @@ async fn test_admin_cannot_delete_room() {
 
     let (_owner, room) = setup_test_room(pool, "Delete Room Test").await;
 
-    // Create admin
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let admin_user = user_repo
@@ -194,7 +187,6 @@ async fn test_admin_cannot_transfer_ownership() {
 
     let (_owner, room) = setup_test_room(pool, "Transfer Owner Test").await;
 
-    // Create admin and another member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -241,7 +233,6 @@ async fn test_admin_cannot_demote_creator() {
 
     let (owner, room) = setup_test_room(pool, "Demote Creator Test").await;
 
-    // Create admin
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let admin_user = user_repo
@@ -268,10 +259,6 @@ async fn test_admin_cannot_demote_creator() {
     assert!(result.is_err(), "Admin cannot demote Creator");
 }
 
-// ============================================================================
-// Test: Member Attempting Admin Operations
-// ============================================================================
-
 /// Test that Member cannot kick other members (Admin operation).
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -281,7 +268,6 @@ async fn test_member_cannot_kick() {
 
     let (_owner, room) = setup_test_room(pool, "Kick Test").await;
 
-    // Create two members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -334,7 +320,6 @@ async fn test_member_cannot_ban() {
 
     let (_owner, room) = setup_test_room(pool, "Ban Test").await;
 
-    // Create two members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -381,7 +366,6 @@ async fn test_member_cannot_change_settings() {
 
     let (_owner, room) = setup_test_room(pool, "Settings Test").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -424,7 +408,6 @@ async fn test_member_cannot_promote() {
 
     let (_owner, room) = setup_test_room(pool, "Promote Test").await;
 
-    // Create two members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -462,10 +445,6 @@ async fn test_member_cannot_promote() {
     assert!(result.is_err(), "Member cannot promote other members");
 }
 
-// ============================================================================
-// Test: Cross-Room Permission Isolation
-// ============================================================================
-
 /// Test that room permissions are isolated between rooms.
 ///
 /// Scenario:
@@ -478,7 +457,6 @@ async fn test_cross_room_permission_isolation() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create Room A with user as Admin
     let (_owner_a, room_a) = setup_test_room(pool, "Room A").await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -493,7 +471,6 @@ async fn test_cross_room_permission_isolation() {
         .await
         .expect("Failed to add to Room A");
 
-    // Create Room B with same user as Member
     let (_owner_b, room_b) = setup_test_room(pool, "Room B").await;
     let member_b = RoomMember::new(room_b.id.clone(), cross_user.id.clone(), RoomRole::Member);
     member_repo
@@ -501,7 +478,6 @@ async fn test_cross_room_permission_isolation() {
         .await
         .expect("Failed to add to Room B");
 
-    // Create a target member in Room B
     let target = user_repo
         .create(&make_user("room_b_target"))
         .await
@@ -528,12 +504,10 @@ async fn test_ban_isolated_to_single_room() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create Room A
     let (owner_a, room_a) = setup_test_room(pool, "Ban Room A").await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create user and add to Room A
     let banned_user = user_repo
         .create(&make_user("banned_user"))
         .await
@@ -556,7 +530,6 @@ async fn test_ban_isolated_to_single_room() {
         .await
         .expect("Failed to ban user");
 
-    // Create Room B
     let (_owner_b, room_b) = setup_test_room(pool, "Ban Room B").await;
 
     // User should be able to join Room B (ban is only in Room A)
@@ -579,7 +552,6 @@ async fn test_creator_role_not_global() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create Room A with user as Creator
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -605,7 +577,6 @@ async fn test_creator_role_not_global() {
         room
     };
 
-    // Create Room B with same user as Member
     let (_owner_b, room_b) = setup_test_room(pool, "Other Room").await;
     let member_b = RoomMember::new(room_b.id.clone(), creator_user.id.clone(), RoomRole::Member);
     member_repo
@@ -643,10 +614,6 @@ async fn test_creator_role_not_global() {
     );
 }
 
-// ============================================================================
-// Test: Permission Escalation Prevention
-// ============================================================================
-
 /// Test that users cannot grant themselves higher permissions.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -656,7 +623,6 @@ async fn test_member_cannot_grant_self_permissions() {
 
     let (_owner, room) = setup_test_room(pool, "Self Grant Test").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -696,7 +662,6 @@ async fn test_admin_cannot_create_admin() {
 
     let (_owner, room) = setup_test_room(pool, "Admin Create Admin Test").await;
 
-    // Create admin and member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -743,7 +708,6 @@ async fn test_grant_permission_requires_permission() {
 
     let (_owner, room) = setup_test_room(pool, "Grant Permission Test").await;
 
-    // Create two members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -784,10 +748,6 @@ async fn test_grant_permission_requires_permission() {
     );
 }
 
-// ============================================================================
-// Test: Role Downgrade Protection
-// ============================================================================
-
 /// Test that users cannot downgrade someone with equal or higher role.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -797,7 +757,6 @@ async fn test_cannot_downgrade_equal_role() {
 
     let (_owner, room) = setup_test_room(pool, "Downgrade Equal Test").await;
 
-    // Create two admins
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -844,7 +803,6 @@ async fn test_kick_respects_role_hierarchy() {
 
     let (_owner, room) = setup_test_room(pool, "Kick Hierarchy Test").await;
 
-    // Create admin and member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -898,7 +856,6 @@ async fn test_ban_respects_role_hierarchy() {
 
     let (owner, room) = setup_test_room(pool, "Ban Hierarchy Test").await;
 
-    // Create admin
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -926,10 +883,6 @@ async fn test_ban_respects_role_hierarchy() {
     assert!(result.is_err(), "Admin cannot ban Creator (role hierarchy)");
 }
 
-// ============================================================================
-// Test: Permission Revocation Boundary
-// ============================================================================
-
 /// Test that revoked permissions are actually denied.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -939,7 +892,6 @@ async fn test_revoked_permission_denied() {
 
     let (_owner, room) = setup_test_room(pool, "Revoke Test").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -1006,7 +958,6 @@ async fn test_member_without_send_chat_cannot_send() {
 
     let (_owner, room) = setup_test_room(pool, "No Chat Test").await;
 
-    // Create member with SEND_CHAT revoked
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 

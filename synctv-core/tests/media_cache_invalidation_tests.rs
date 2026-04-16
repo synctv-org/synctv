@@ -47,8 +47,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== Test: Media edit with mock notification service ==========
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
 async fn test_edit_media_sends_notification() {
@@ -58,7 +56,6 @@ async fn test_edit_media_sends_notification() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
 
-    // Create test data
     let owner = user_repo.create(&make_user("test_owner")).await.unwrap();
     let room = room_repo
         .create(&{
@@ -127,7 +124,6 @@ async fn test_edit_media_sends_notification() {
     let notification_service = NotificationService::default();
     let mut rx = notification_service.subscribe();
 
-    // Create media service with notification
     let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
     let permission_service = PermissionService::new(
         member_repo,
@@ -206,7 +202,6 @@ async fn test_edit_media_sends_notification() {
 
     assert_eq!(updated_media.name, "Updated Media");
 
-    // Drain events until we find MediaUpdated (add_media also emits MediaAdded)
     let mut found_update = false;
     for _ in 0..10 {
         let result = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
@@ -235,8 +230,6 @@ async fn test_edit_media_sends_notification() {
     assert!(found_update, "Expected to receive MediaUpdated event");
 }
 
-// ========== Test: Media edit without notification service doesn't panic ==========
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
 async fn test_edit_media_without_notification_service_succeeds() {
@@ -246,7 +239,6 @@ async fn test_edit_media_without_notification_service_succeeds() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
 
-    // Create test data
     let owner = user_repo.create(&make_user("test_owner2")).await.unwrap();
     let room = room_repo
         .create(&{
@@ -312,7 +304,6 @@ async fn test_edit_media_without_notification_service_succeeds() {
         .await
         .unwrap();
 
-    // Create media service WITHOUT notification
     let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
     let permission_service = PermissionService::new(
         member_repo,

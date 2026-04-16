@@ -87,9 +87,7 @@ pub struct AnimeInfo {
     pub cover: String,
 }
 
-// ============================================================================
 // Typed API Response Types (for get_video_info, get_play_url, get_anime_info)
-// ============================================================================
 
 /// Typed response for video_info API (`/x/web-interface/view`)
 #[derive(Debug, Clone, Deserialize)]
@@ -184,9 +182,7 @@ pub struct AnimeEpisodeInfo {
     pub title: String,
 }
 
-// ============================================================================
 // API Response Types
-// ============================================================================
 
 /// QR code login response
 #[derive(Debug, Clone, Deserialize)]
@@ -590,9 +586,7 @@ pub struct WbiImg {
     pub sub_url: String,
 }
 
-// ============================================================================
 // Live Room Play Info (getRoomPlayInfo v2) Response Types
-// ============================================================================
 
 /// Top-level response from `xlive/web-room/v2/index/getRoomPlayInfo`
 #[derive(Debug, Clone, Deserialize)]

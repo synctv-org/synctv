@@ -418,9 +418,8 @@ where
         self.inner.poll_ready(cx)
     }
 
-    // WIRING VERIFICATION (Issue #21):
     // This GrpcRateLimitService is applied at the Server level in grpc/mod.rs via:
-    //   Server::builder().layer(blacklist_layer).layer(distributed_rate_limit_layer)
+    // Server::builder().layer(blacklist_layer).layer(distributed_rate_limit_layer)
     // All registered gRPC services pass through this tower layer before reaching handlers.
     // When the rate limit is exceeded, `tonic::Status::resource_exhausted` is returned
     // immediately without calling `inner.call()`, so the request is fully rejected.
@@ -844,8 +843,6 @@ mod tests {
         assert_eq!(tier_from_path(""), None);
     }
 
-    // ============== Test helper functions ==============
-
     /// Create a default config for tests (no trusted proxies, dev mode off)
     fn test_config() -> Config {
         Config::default()
@@ -883,8 +880,6 @@ mod tests {
         format!("eyJhbGciOiJIUzI1NiJ9.payload.fakesig-{suffix}")
     }
 
-    // ============== Rate limit key tests ==============
-
     #[test]
     fn test_user_rate_limit_key_format() {
         let key = user_rate_limit_key("user123");
@@ -898,8 +893,6 @@ mod tests {
         let key2 = user_rate_limit_key("user456");
         assert_eq!(key1, key2);
     }
-
-    // ============== extract_client_id tests with verified JWT ==============
 
     #[test]
     fn test_extract_client_id_valid_jwt_returns_user_key() {
@@ -1398,13 +1391,10 @@ mod tests {
         );
     }
 
-    // ============== Security-focused tests ==============
-
     #[test]
     fn test_security_multiple_tokens_cannot_bypass_rate_limit() {
         // SECURITY TEST: Verify that the same user with multiple tokens
         // cannot bypass rate limiting by rotating through tokens.
-        //
         // This is the core fix for the "Rate Limit Key 可伪造漏洞" issue.
         // Before the fix, each token had its own rate limit quota.
         // After the fix, all tokens for the same user share one quota.
@@ -1446,7 +1436,6 @@ mod tests {
     fn test_security_cannot_spoof_user_id_in_token() {
         // SECURITY TEST: Verify that an attacker cannot craft a fake token
         // with a spoofed user_id to impersonate another user's rate limit quota.
-        //
         // Since we validate the JWT signature before extracting user_id,
         // a fake token with a spoofed sub claim will fail validation and
         // fall back to IP-based rate limiting.

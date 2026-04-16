@@ -100,9 +100,7 @@ async fn create_top_level_playlist(
         .expect("Top-level playlist should be created")
 }
 
-// ============================================================================
 // Mock Broadcaster for Testing
-// ============================================================================
 
 /// Mock broadcaster that records all broadcast calls
 #[derive(Debug, Default)]
@@ -149,9 +147,7 @@ impl PlaybackBroadcaster for MockBroadcaster {
     }
 }
 
-// ============================================================================
 // WebSocket Push Tests: State Change Notifications
-// ============================================================================
 
 /// Test: Play/pause triggers broadcast
 ///
@@ -452,9 +448,7 @@ async fn test_reset_triggers_broadcast() {
     assert!(broadcast.playing_media_id.is_none(), "Media should be None");
 }
 
-// ============================================================================
 // WebSocket Push Tests: Multi-User Sync
-// ============================================================================
 
 /// Test: Multiple state changes each trigger broadcast
 ///
@@ -575,9 +569,7 @@ async fn test_broadcast_contains_correct_room_id() {
     );
 }
 
-// ============================================================================
 // WebSocket Push Tests: Broadcast Failure Handling
-// ============================================================================
 
 /// Test: Operations succeed even if broadcast fails
 ///
@@ -671,9 +663,7 @@ async fn test_no_broadcaster_configured() {
     assert!(state.is_playing, "State should be updated");
 }
 
-// ============================================================================
 // WebSocket Push Tests: BroadcastResult
-// ============================================================================
 
 /// Test: `BroadcastResult` `is_success` method
 ///
@@ -721,9 +711,7 @@ fn test_broadcast_result_is_success() {
     assert!(!result.is_success());
 }
 
-// ============================================================================
 // WebSocket Push Tests: Version in Broadcasts
-// ============================================================================
 
 /// Test: Broadcast contains correct version
 ///
@@ -778,9 +766,7 @@ async fn test_broadcast_contains_correct_version() {
     );
 }
 
-// ============================================================================
 // WebSocket Push Tests: Concurrent Broadcasts
-// ============================================================================
 
 /// Test: Concurrent operations produce consistent broadcasts
 ///
@@ -854,9 +840,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
     }
 }
 
-// ============================================================================
 // WebSocket Push Tests: Cluster Mode Simulation
-// ============================================================================
 
 /// Test: Simulated cluster broadcast with multiple rooms
 ///
@@ -870,7 +854,6 @@ async fn test_cluster_mode_multiple_rooms() {
 
     let owner = user_repo.create(&make_user("ws_cluster")).await.unwrap();
 
-    // Create two rooms
     let (room1, _) = room_service
         .create_room(
             "WS Cluster Room 1".to_string(),

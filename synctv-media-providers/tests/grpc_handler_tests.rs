@@ -7,8 +7,6 @@ use synctv_media_providers::grpc::validation::{
     validate_host, validate_provider_grpc_host, validate_required,
 };
 
-// === Bilibili gRPC validation ===
-
 #[test]
 fn test_bilibili_grpc_match_empty_url_invalid_argument() {
     // validate_required is used in the gRPC layer to check the URL field
@@ -31,8 +29,6 @@ fn test_validate_required_rejects_whitespace_only() {
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
     assert!(status.message().contains("token"));
 }
-
-// === Alist gRPC validation ===
 
 #[test]
 fn test_alist_grpc_host_url_format_validation() {

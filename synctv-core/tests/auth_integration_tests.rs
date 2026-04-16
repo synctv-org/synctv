@@ -58,16 +58,13 @@ fn create_user_service(pool: PgPool) -> UserService {
     svc
 }
 
-// ============================================================================
 // Test 1: Password Change Invalidates Old Tokens
-// ============================================================================
 
 async fn scenario_password_change_invalidates_old_tokens() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
-    // 1. Register user
     let username = format!("user_{}", synctv_common::snanoid!(8));
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let original_password = "OriginalPassword123!".to_string();
@@ -82,7 +79,6 @@ async fn scenario_password_change_invalidates_old_tokens() {
         .await
         .expect("Failed to register user");
 
-    // 2. Login and get access token
     let (_user, access_token, _refresh_token) = user_service
         .login(username.clone(), original_password.clone(), None)
         .await
@@ -92,7 +88,6 @@ async fn scenario_password_change_invalidates_old_tokens() {
         .verify_access_token(&access_token)
         .expect("Failed to verify old token");
 
-    // 3. Create security pipeline and verify old token works
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let pipeline = SecurityPipeline::new(user_service.clone())
@@ -104,14 +99,12 @@ async fn scenario_password_change_invalidates_old_tokens() {
         "Old token should work before password change"
     );
 
-    // 4. Change password
     let new_password = "NewPassword456!";
     user_service
         .change_password(&user.id, &original_password, new_password)
         .await
         .expect("Failed to change password");
 
-    // 5. Verify old token is rejected (password version mismatch)
     let auth_result = pipeline.check(&old_claims).await;
     assert!(
         auth_result.is_err(),
@@ -124,7 +117,6 @@ async fn scenario_password_change_invalidates_old_tokens() {
         "Error should mention password change, got: {err}"
     );
 
-    // 6. Login again with new password
     let (_user, new_access_token, _new_refresh_token) = user_service
         .login(username, new_password.to_string(), None)
         .await
@@ -134,7 +126,6 @@ async fn scenario_password_change_invalidates_old_tokens() {
         .verify_access_token(&new_access_token)
         .expect("Failed to verify new token");
 
-    // 7. Verify new token works
     let auth_result = pipeline.check(&new_claims).await;
     assert!(
         auth_result.is_ok(),
@@ -142,16 +133,13 @@ async fn scenario_password_change_invalidates_old_tokens() {
     );
 }
 
-// ============================================================================
 // Test 2: User Ban Invalidates Tokens
-// ============================================================================
 
 async fn scenario_ban_user_invalidates_tokens() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool.clone()));
     let jwt_service = create_jwt_service();
 
-    // 1. Register and login user
     let username = format!("banned_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
@@ -169,7 +157,6 @@ async fn scenario_ban_user_invalidates_tokens() {
         .verify_access_token(&access_token)
         .expect("Failed to verify token");
 
-    // 2. Create security pipeline and verify token works
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let pipeline = SecurityPipeline::new(user_service.clone())
@@ -178,7 +165,6 @@ async fn scenario_ban_user_invalidates_tokens() {
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_ok(), "Token should work before ban");
 
-    // 3. Admin bans user (simulate via DB update)
     let user_repo = UserRepository::new(pool);
     let user = user_repo
         .get_by_username(&username)
@@ -190,7 +176,6 @@ async fn scenario_ban_user_invalidates_tokens() {
         .await
         .expect("Failed to ban user");
 
-    // 4. Verify token is rejected
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_err(), "Token should be rejected after ban");
 
@@ -201,16 +186,13 @@ async fn scenario_ban_user_invalidates_tokens() {
     );
 }
 
-// ============================================================================
 // Test 3: Access Token Blacklist
-// ============================================================================
 
 async fn scenario_blacklisted_access_token_rejected() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
-    // 1. Register and login user
     let username = format!("blacklist_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
@@ -228,7 +210,6 @@ async fn scenario_blacklisted_access_token_rejected() {
         .verify_access_token(&access_token)
         .expect("Failed to verify token");
 
-    // 2. Create security pipeline and verify token works
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let pipeline = SecurityPipeline::new(user_service.clone())
@@ -237,14 +218,12 @@ async fn scenario_blacklisted_access_token_rejected() {
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_ok(), "Token should work before blacklisting");
 
-    // 3. Blacklist the access token (simulating logout)
     let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
     token_blacklist
         .blacklist(&blacklist_key, 3600)
         .await
         .expect("Failed to blacklist token");
 
-    // 4. Verify access token is rejected
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_err(), "Blacklisted token should be rejected");
 
@@ -287,16 +266,13 @@ async fn scenario_refresh_token_validation() {
     );
 }
 
-// ============================================================================
 // Test 4: Complete Authentication Flow
-// ============================================================================
 
 async fn scenario_complete_authentication_flow() {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool));
     let jwt_service = create_jwt_service();
 
-    // Step 1: Register new user
     let username = format!("e2e_user_{}", synctv_common::snanoid!(8));
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let password = "SecurePassword123!".to_string();
@@ -309,7 +285,6 @@ async fn scenario_complete_authentication_flow() {
     assert_eq!(user.username, username);
     assert_eq!(user.status, UserStatus::Active);
 
-    // Step 2: Login with credentials
     let (_user, access_token, refresh_token) = user_service
         .login(username.clone(), password.clone(), None)
         .await
@@ -318,7 +293,6 @@ async fn scenario_complete_authentication_flow() {
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
 
-    // Step 3: Verify access token via SecurityPipeline
     let claims = jwt_service
         .verify_access_token(&access_token)
         .expect("Failed to verify access token");
@@ -336,7 +310,6 @@ async fn scenario_complete_authentication_flow() {
         .expect("Security check failed");
     assert_eq!(auth_result.user_id, user.id);
 
-    // Step 4: Refresh access token
     let (new_access_token, _new_refresh_token) = user_service
         .refresh_token(refresh_token.clone())
         .await
@@ -348,7 +321,6 @@ async fn scenario_complete_authentication_flow() {
         .verify_access_token(&new_access_token)
         .expect("Failed to verify refreshed token");
 
-    // Step 5: Verify new token works
     let auth_result = pipeline
         .check(&new_claims)
         .await
@@ -410,7 +382,6 @@ async fn scenario_deleted_user_cannot_authenticate() {
         .await
         .expect("Failed to delete user");
 
-    // Create security pipeline
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let pipeline =

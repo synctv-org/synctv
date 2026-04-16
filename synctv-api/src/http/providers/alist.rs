@@ -33,9 +33,7 @@ pub fn alist_read_routes() -> Router<AppState> {
         .route("/binds", get(binds))
 }
 
-// ------------------------------------------------------------------
 // Provider API handlers
-// ------------------------------------------------------------------
 
 /// Login to Alist (persist credential)
 #[cfg_attr(

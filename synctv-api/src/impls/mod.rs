@@ -904,8 +904,6 @@ mod tests {
         ));
     }
 
-    // ========== Priority / Ordering Edge Cases ==========
-
     #[test]
     fn test_classify_error_not_found_takes_priority_over_invalid() {
         // "not found" contains "not" but should match NotFound, not InvalidArgument
@@ -990,8 +988,6 @@ mod tests {
             ErrorKind::InvalidArgument
         ));
     }
-
-    // ========== Structured prefix classification ==========
 
     #[test]
     fn test_classify_by_prefix_core_error_display() {

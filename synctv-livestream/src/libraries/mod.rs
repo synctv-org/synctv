@@ -1,5 +1,4 @@
 // Libraries - Shared foundational components
-//
 // Provides common components used across different streaming protocols:
 // - Storage abstraction for HLS segments
 

@@ -28,15 +28,12 @@ use synctv_media_providers::{
     CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
 };
 
-// ========== Single Instance Tests (Expected Behavior) ==========
-
 /// Verifies that a single InMemoryCredentialStorage instance works correctly
 /// for basic CRUD operations.
 #[tokio::test]
 async fn test_single_instance_basic_crud_works() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Create
     let cred = storage
         .set("user1", None, CredentialData::bilibili(HashMap::new()))
         .await
@@ -96,8 +93,6 @@ async fn test_single_instance_concurrent_access_works() {
         assert!(found.is_some(), "Expected credential for {user_id}");
     }
 }
-
-// ========== Multi-Instance Tests (Documented Limitation) ==========
 
 /// Demonstrates that multiple InMemoryCredentialStorage instances DO NOT
 /// share state. This is the core limitation in multi-replica deployments.
@@ -287,8 +282,6 @@ async fn test_arc_only_shares_within_same_process() {
     // In Kubernetes/Docker, each replica is a separate process with separate memory.
     // Arc cannot share memory across process boundaries.
 }
-
-// ========== Documentation/Contract Tests ==========
 
 /// This test documents the expected use case for InMemoryCredentialStorage.
 /// It should ONLY be used for testing and single-replica deployments.

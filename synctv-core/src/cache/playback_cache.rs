@@ -19,10 +19,7 @@ use crate::cache::tiered::{TieredCache, Timestamped};
 use crate::models::{RoomId, RoomPlaybackState};
 use crate::Result;
 
-// --- CacheKey implementation for RoomId is in room_cache.rs ---
 // RoomId's CacheKey impl is defined once in room_cache.rs to avoid duplicate impl errors.
-
-// --- Timestamped implementation for RoomPlaybackState ---
 
 impl Timestamped for RoomPlaybackState {
     fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {

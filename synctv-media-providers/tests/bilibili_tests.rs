@@ -7,8 +7,6 @@
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::BilibiliClient;
 
-// === match_url Tests ===
-
 #[test]
 fn test_match_url_bvid_standard() {
     let (media_type, id) =

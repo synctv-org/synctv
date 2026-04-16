@@ -240,8 +240,6 @@ impl ShutdownCoordinator {
     }
 }
 
-// -- Concrete shutdown hooks --------------------------------------------------
-
 /// Flushes the audit service buffer before the database pool is closed.
 pub struct AuditFlushHook {
     pub handle: Arc<Mutex<Option<synctv_core::service::AuditFlushHandle>>>,

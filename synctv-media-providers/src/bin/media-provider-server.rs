@@ -6,8 +6,7 @@
 //! Authentication is required via the `PROVIDER_AUTH_SECRET` environment variable.
 //! Clients must pass the secret in the `x-provider-secret` gRPC metadata header.
 //!
-//! # Circuit Breaker (Issue #34)
-//!
+//! # Circuit Breaker //!
 //! Each provider service is wrapped with a per-service circuit breaker to prevent
 //! a failing backend from consuming all server threads. The circuit breaker tracks
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
@@ -158,7 +157,7 @@ where
 /// Validates that incoming requests carry the correct shared secret
 /// in the `x-provider-secret` metadata header using constant-time comparison.
 ///
-/// Issue #34: Also enforces the per-service circuit breaker so that a
+/// Also enforces the per-service circuit breaker so that a
 /// continuously failing backend cannot consume all server threads.
 #[derive(Clone)]
 struct ProviderAuthInterceptor {
@@ -182,7 +181,7 @@ impl ProviderAuthInterceptor {
 
     #[allow(clippy::result_large_err)]
     fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        // Issue #34: Check circuit breaker before auth to short-circuit quickly
+        // Check circuit breaker before auth to short-circuit quickly
         if !self.circuit_breaker.allow_request() {
             warn!(
                 service = %self.service_name,
@@ -201,7 +200,7 @@ impl ProviderAuthInterceptor {
             .to_str()
             .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
 
-        // Issue #34: Validate that the secret is non-empty at the call site too
+        // Validate that the secret is non-empty at the call site too
         // Note: empty secrets are a client misconfiguration, not a backend failure,
         // so we do NOT record a circuit-breaker failure here.
         if token.is_empty() {
@@ -251,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bilibili_service = BilibiliService::new();
     let emby_service = EmbyService::new();
 
-    // Issue #34: Create one circuit breaker per provider service so that a
+    // Create one circuit breaker per provider service so that a
     // failing Alist backend does not open the circuit for Bilibili/Emby.
     let alist_cb = CircuitBreaker::new();
     let bilibili_cb = CircuitBreaker::new();

@@ -229,9 +229,7 @@ fn create_user_service_with_email_verification(pool: PgPool) -> UserService {
     service
 }
 
-// ============================================================================
 // S1: UserService::refresh_token (Refresh Token Rotation)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -598,9 +596,7 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
     assert!(matches!(result.unwrap_err(), Error::Internal(_)));
 }
 
-// ============================================================================
 // S2: UserService::login status checks
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -889,9 +885,7 @@ async fn test_login_email_identifier_uses_same_brute_force_bucket_for_failures_a
     );
 }
 
-// ============================================================================
 // S2.5: Account enumeration prevention tests (HIGH #13)
-// ============================================================================
 
 /// Test that email-based users and OAuth2-only users receive identical
 /// error messages when email verification is required but not satisfied.
@@ -917,7 +911,6 @@ async fn test_login_email_verification_no_account_enumeration() {
     let mut service = create_user_service(pool.clone());
     service.set_email_verification_required(true);
 
-    // Create user WITH email (unverified but Active)
     let email_user = format!("email_user_{}", synctv_common::snanoid!(6));
     let (user_with_email, _, _) = service
         .register(
@@ -936,7 +929,6 @@ async fn test_login_email_verification_no_account_enumeration() {
         .await
         .expect("Failed to set unverified");
 
-    // Create OAuth2-only user (no email) and set them as Active
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
     let oauth_user = service
         .create_or_load_by_oauth2(&provider, "oauth123", "oauthuser", None)
@@ -986,7 +978,6 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
     let service = create_user_service(pool.clone());
     // email_verification_required is false by default
 
-    // Create user WITH email (unverified)
     let email_user = format!("email_allowed_{}", synctv_common::snanoid!(6));
     let (_user_with_email, _, _) = service
         .register(
@@ -998,7 +989,6 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .await
         .expect("Registration should succeed");
 
-    // Create OAuth2-only user (no email)
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
     let oauth_user = service
         .create_or_load_by_oauth2(&provider, "oauth_allowed", "oauth_allowed", None)
@@ -1038,9 +1028,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
     );
 }
 
-// ============================================================================
 // S3: UserService::delete_user
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1115,9 +1103,7 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
     );
 }
 
-// ============================================================================
 // S7: UserService::change_password / set_password
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1549,9 +1535,7 @@ async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
     assert_eq!(username.as_deref(), Some(user.username.as_str()));
 }
 
-// ============================================================================
 // S13: create_or_load_by_oauth2
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1603,7 +1587,6 @@ async fn test_create_or_load_by_oauth2_collision_retry() {
     let service = create_user_service(pool.clone());
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
 
-    // Create first user with the desired username
     let user1 = service
         .create_or_load_by_oauth2(&provider, "provider1", "oauth_user", None)
         .await
@@ -1611,7 +1594,6 @@ async fn test_create_or_load_by_oauth2_collision_retry() {
 
     assert_eq!(user1.username, "oauth_user");
 
-    // Create second user with same desired username -- should get suffixed
     let user2 = service
         .create_or_load_by_oauth2(&provider, "provider2", "oauth_user", None)
         .await
@@ -1635,7 +1617,6 @@ async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
     let service = create_user_service(pool.clone());
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
 
-    // Create first user with an email
     let _user1 = service
         .create_or_load_by_oauth2(
             &provider,
@@ -1646,7 +1627,6 @@ async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
         .await
         .expect("First user should succeed");
 
-    // Create second user with a DIFFERENT username but SAME email
     // This should propagate the email uniqueness error (not retry with suffix)
     let result = service
         .create_or_load_by_oauth2(
@@ -1826,9 +1806,7 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
     );
 }
 
-// ============================================================================
 // S1 additional: refresh_token with email verification re-check
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1860,7 +1838,6 @@ async fn test_refresh_token_email_verification_recheck() {
         .await
         .expect("Failed to un-verify email");
 
-    // Create a service WITH email verification required
     let service_verify = create_user_service_with_email_verification(pool.clone());
 
     // Now try to refresh -- should fail because email is not verified
@@ -1871,9 +1848,7 @@ async fn test_refresh_token_email_verification_recheck() {
     );
 }
 
-// ============================================================================
 // S1.5: refresh_token rate limiting tests (HIGH #16)
-// ============================================================================
 
 /// Test that `refresh_token` endpoint has rate limiting to prevent abuse.
 ///
@@ -1944,10 +1919,7 @@ async fn test_refresh_token_rate_limiting_per_user() {
     );
 }
 
-// ============================================================================
-// S1.6: refresh_token concurrent refresh race condition tests (P0 #10)
-// ============================================================================
-
+// S1.6: refresh_token concurrent refresh race condition tests
 /// Test that concurrent refresh of the same token triggers family revocation.
 ///
 /// RACE CONDITION VULNERABILITY:
@@ -2028,7 +2000,6 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
         }));
     }
 
-    // Wait for all concurrent requests to complete
     for handle in handles {
         handle.await.expect("Task should complete");
     }
@@ -2036,7 +2007,6 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     let successes = success_count.load(Ordering::SeqCst);
     let failures = failure_count.load(Ordering::SeqCst);
 
-    // CRITICAL: Only ONE request should succeed (the first one to blacklist)
     // All others should fail because the JTI is already blacklisted
     assert_eq!(
         successes, 1,
@@ -2153,7 +2123,6 @@ async fn test_refresh_token_rate_limit_recovers() {
 
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
-    // Should be able to refresh again after the short window resets.
     let result = service.refresh_token(current_token).await;
     assert!(
         result.is_ok(),
@@ -2162,6 +2131,4 @@ async fn test_refresh_token_rate_limit_recovers() {
     );
 }
 
-// ============================================================================
-// S2.6: Password timing attack prevention tests (P1 #24)
-// ============================================================================
+// S2.6: Password timing attack prevention tests

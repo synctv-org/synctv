@@ -606,12 +606,6 @@ mod tests {
         )
     }
 
-    // --- HealthProbeConfig tests ---
-
-    // --- NodeHealth enum tests ---
-
-    // --- HealthMonitor construction ---
-
     #[tokio::test]
     async fn test_health_monitor_new() {
         let registry = make_registry();
@@ -639,16 +633,12 @@ mod tests {
         assert_eq!(monitor.probe_config.success_threshold, 3);
     }
 
-    // --- get_node_status ---
-
     #[tokio::test]
     async fn test_get_node_status_returns_none_for_unknown() {
         let registry = make_registry();
         let monitor = HealthMonitor::new(registry, 10);
         assert_eq!(monitor.get_node_status("nonexistent").await, None);
     }
-
-    // --- process_heartbeats (passive check) ---
 
     #[tokio::test]
     async fn test_process_heartbeats_does_not_mark_fresh_nodes() {
@@ -697,8 +687,6 @@ mod tests {
         );
     }
 
-    // --- probe_node_api ---
-
     #[tokio::test]
     async fn test_probe_node_api_invalid_address() {
         // Invalid address should return false
@@ -720,10 +708,6 @@ mod tests {
     async fn test_probe_node_api_invalid_port() {
         assert!(!HealthMonitor::probe_node_api("localhost:abc", 1, "").await);
     }
-
-    // --- ProbeState ---
-
-    // --- start / shutdown lifecycle ---
 
     #[tokio::test]
     async fn test_health_monitor_start_and_shutdown() {
@@ -757,8 +741,6 @@ mod tests {
         );
     }
 
-    // --- probe_nodes with threshold logic ---
-
     #[tokio::test]
     async fn test_probe_failure_threshold() {
         // Test that probe_states track consecutive failures
@@ -781,8 +763,6 @@ mod tests {
         assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
         assert_eq!(state.success_count.load(Ordering::Relaxed), 1);
     }
-
-    // --- with_cancellation_token ---
 
     #[tokio::test]
     async fn test_with_cancellation_token_parent_cancel_stops_monitor() {

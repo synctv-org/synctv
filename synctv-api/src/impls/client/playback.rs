@@ -515,7 +515,6 @@ impl ClientApiImpl {
         })
     }
 
-    // ==================== WebSocket Command Handlers ====================
     // These methods are called from WebSocket message handler
 
     /// Handle Play command from WebSocket

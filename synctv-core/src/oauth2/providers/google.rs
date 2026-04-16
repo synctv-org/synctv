@@ -148,8 +148,6 @@ pub fn google_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, E
 mod tests {
     use super::*;
 
-    // ==================== Provider Creation ====================
-
     #[test]
     fn test_create_provider_valid_config() {
         let provider = GoogleProvider::create(
@@ -182,8 +180,6 @@ mod tests {
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
 
-    // ==================== Provider Type ====================
-
     #[test]
     fn test_provider_type() {
         let provider = GoogleProvider::create(
@@ -194,8 +190,6 @@ mod tests {
         .unwrap();
         assert_eq!(provider.provider_type(), "google");
     }
-
-    // ==================== Auth URL Generation ====================
 
     #[tokio::test]
     async fn test_new_auth_url_contains_required_params() {
@@ -239,8 +233,6 @@ mod tests {
         assert_ne!(url1, url2);
         assert_ne!(v1, v2);
     }
-
-    // ==================== Factory Function ====================
 
     #[test]
     fn test_factory_valid_config() {
@@ -295,8 +287,6 @@ mod tests {
         });
         assert!(google_factory(&config).is_err());
     }
-
-    // ==================== Config Deserialization ====================
 
     #[test]
     fn test_google_config_deserialize() {

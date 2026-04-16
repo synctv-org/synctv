@@ -17,9 +17,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-// ============================================================================
 // Helper: extract JSON body from response
-// ============================================================================
 
 async fn body_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -86,9 +84,7 @@ mod validated_query_extractor {
     }
 }
 
-// ============================================================================
 // API1: update_playback handler validation
-// ============================================================================
 
 mod update_playback_validation {
     use super::*;
@@ -385,9 +381,7 @@ mod update_playback_validation {
     }
 }
 
-// ============================================================================
 // API2: update_user handler validation
-// ============================================================================
 
 mod update_user_validation {
     use super::*;
@@ -569,9 +563,7 @@ mod update_user_validation {
     }
 }
 
-// ============================================================================
 // API3: create_ticket handler validation
-// ============================================================================
 
 mod create_ticket_validation {
     use super::*;
@@ -672,9 +664,7 @@ mod create_ticket_validation {
     }
 }
 
-// ============================================================================
 // API4: Admin handlers validate_path_id
-// ============================================================================
 
 mod admin_validate_path_id {
     use synctv_api::http::validation::{validate_id, ValidationError};
@@ -832,9 +822,7 @@ mod admin_validate_path_id {
     }
 }
 
-// ============================================================================
 // API5: gRPC service methods - AuthService::register with empty username
-// ============================================================================
 
 mod grpc_service_validation {
     use synctv_api::http::validation::validate_username;
@@ -899,9 +887,7 @@ mod grpc_service_validation {
     }
 }
 
-// ============================================================================
 // API6: message_stream gRPC validation patterns
-// ============================================================================
 
 mod message_stream_validation {
     use synctv_api::http::error::AppError;
@@ -952,9 +938,7 @@ mod message_stream_validation {
     }
 }
 
-// ============================================================================
 // API7: Admin role guard
-// ============================================================================
 
 mod admin_role_guard {
     use synctv_api::http::error::AppError;
@@ -1033,9 +1017,7 @@ mod admin_role_guard {
     }
 }
 
-// ============================================================================
 // API8: Live streaming handlers
-// ============================================================================
 
 mod live_streaming_validation {
     use synctv_api::http::error::AppError;
@@ -1114,9 +1096,7 @@ mod live_streaming_validation {
     }
 }
 
-// ============================================================================
 // API9: WebSocket extract_user_id auth priority
-// ============================================================================
 
 mod websocket_auth_priority {
     use synctv_api::http::websocket::AuthMethod;
@@ -1202,9 +1182,7 @@ mod websocket_auth_priority {
     }
 }
 
-// ============================================================================
 // API10: Optional services absent
-// ============================================================================
 
 mod optional_services_absent {
     use synctv_api::http::error::AppError;
@@ -1316,9 +1294,7 @@ mod optional_services_absent {
     }
 }
 
-// ============================================================================
 // Cross-cutting: Error response format consistency
-// ============================================================================
 
 mod error_response_format {
     use super::*;
@@ -1408,9 +1384,7 @@ mod error_response_format {
     }
 }
 
-// ============================================================================
 // Cross-cutting: Validation function coverage
-// ============================================================================
 
 mod validation_coverage {
     use synctv_api::http::validation::*;
@@ -1508,9 +1482,7 @@ mod validation_coverage {
     }
 }
 
-// ============================================================================
 // Cross-cutting: ApiError type-safe mapping
-// ============================================================================
 
 mod api_error_type_safe_mapping {
     use synctv_api::http::error::{map_api_error, AppError};
@@ -1607,9 +1579,7 @@ mod api_error_type_safe_mapping {
     }
 }
 
-// ============================================================================
 // Cross-cutting: gRPC status code mapping
-// ============================================================================
 
 mod grpc_status_mapping {
     use synctv_api::impls::ApiError;
@@ -1686,9 +1656,7 @@ mod grpc_status_mapping {
     }
 }
 
-// ============================================================================
 // P0-5/6: gRPC API Validation Tests
-// ============================================================================
 
 mod grpc_api_validation {
     use synctv_api::http::validation::{validate_id, ValidationError};
@@ -1769,9 +1737,7 @@ mod grpc_api_validation {
     }
 }
 
-// ============================================================================
 // P0-6: add_media_batch provider_instance_name Tests
-// ============================================================================
 
 mod add_media_batch_provider_instance {
     use synctv_api::proto::client::AddMediaRequest;

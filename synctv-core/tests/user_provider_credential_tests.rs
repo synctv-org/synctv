@@ -80,8 +80,6 @@ fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
     }
 }
 
-// ========== Create Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_create_credential() {
@@ -89,10 +87,8 @@ async fn test_create_credential() {
     let user_repo = UserRepository::new(pool.clone());
     let cred_repo = UserProviderCredentialRepository::new_with_encryption(pool, test_encryption());
 
-    // Create a user first
     let user = user_repo.create(&make_user("cred_user1")).await.unwrap();
 
-    // Create a credential
     let bilibili_server_id = bilibili_server_id();
     let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred).await.unwrap();
@@ -122,7 +118,6 @@ async fn test_create_multiple_providers() {
         .await
         .unwrap();
 
-    // Create credentials for different providers
     let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     let alist = make_credential(user.id.as_str(), "alist", "server1_hash");
     let emby = make_credential(user.id.as_str(), "emby", "server2_hash");
@@ -135,8 +130,6 @@ async fn test_create_multiple_providers() {
     let all = cred_repo.get_by_user(user.id.as_str()).await.unwrap();
     assert_eq!(all.len(), 3);
 }
-
-// ========== Read Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -171,7 +164,6 @@ async fn test_get_by_provider() {
         .await
         .unwrap();
 
-    // Create multiple Alist credentials (different servers)
     let alist1 = make_credential(user.id.as_str(), "alist", "server1");
     let alist2 = make_credential(user.id.as_str(), "alist", "server2");
     let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
@@ -194,8 +186,6 @@ async fn test_get_by_provider() {
         .unwrap();
     assert_eq!(bilibili_creds.len(), 1);
 }
-
-// ========== Update Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -256,8 +246,6 @@ async fn test_update_credential_with_expiration() {
     assert!(found.expires_at.is_some());
 }
 
-// ========== Delete Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_credential() {
@@ -286,7 +274,6 @@ async fn test_delete_by_user_and_provider() {
 
     let user = user_repo.create(&make_user("delprov_user")).await.unwrap();
 
-    // Create multiple Alist credentials
     let alist1 = make_credential(user.id.as_str(), "alist", "server1");
     let alist2 = make_credential(user.id.as_str(), "alist", "server2");
     let bilibili = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
@@ -315,8 +302,6 @@ async fn test_delete_by_user_and_provider() {
     assert_eq!(bilibili.len(), 1);
 }
 
-// ========== Unique Constraint Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_unique_constraint_user_provider_server() {
@@ -326,7 +311,6 @@ async fn test_unique_constraint_user_provider_server() {
 
     let user = user_repo.create(&make_user("unique_user")).await.unwrap();
 
-    // Create first credential
     let bilibili_server_id = bilibili_server_id();
     let cred1 = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id);
     cred_repo.create(&cred1).await.unwrap();
@@ -446,8 +430,6 @@ async fn test_blank_provider_instance_name_is_normalized_to_null() {
     assert_eq!(found.provider_instance_name, None);
 }
 
-// ========== Cascade Delete Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_credentials_deleted_when_user_deleted() {
@@ -457,7 +439,6 @@ async fn test_credentials_deleted_when_user_deleted() {
 
     let user = user_repo.create(&make_user("cascade_user")).await.unwrap();
 
-    // Create credentials
     let cred = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     cred_repo.create(&cred).await.unwrap();
 
@@ -472,8 +453,6 @@ async fn test_credentials_deleted_when_user_deleted() {
     assert!(found.is_some());
 }
 
-// ========== Expiration Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_expired_credentials() {
@@ -486,12 +465,10 @@ async fn test_delete_expired_credentials() {
         .await
         .unwrap();
 
-    // Create expired credential
     let mut expired = make_credential(user.id.as_str(), "alist", "expired_server");
     expired.expires_at = Some(Utc::now() - Duration::hours(1));
     cred_repo.create(&expired).await.unwrap();
 
-    // Create valid credential
     let mut valid = make_credential(user.id.as_str(), "bilibili", &bilibili_server_id());
     valid.expires_at = Some(Utc::now() + Duration::hours(1));
     cred_repo.create(&valid).await.unwrap();

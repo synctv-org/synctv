@@ -95,8 +95,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== Max Members Test ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_add_member_respects_max_members() {
@@ -106,7 +104,6 @@ async fn test_add_member_respects_max_members() {
 
     let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
 
-    // Create room with max_members = 2 (creator counts as 1)
     let settings = synctv_core::models::RoomSettings {
         max_members: MaxMembers(2),
         ..Default::default()
@@ -137,8 +134,6 @@ async fn test_add_member_respects_max_members() {
         .await;
     assert!(result.is_err(), "Second joiner should be rejected");
 }
-
-// ========== Kick Member Role Hierarchy Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -347,8 +342,6 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
         "creator membership must remain Creator to stay consistent with rooms.created_by"
     );
 }
-
-// ========== Ban / Unban Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -711,8 +704,6 @@ async fn test_set_member_status_rejects_specialized_left_and_rejected_transition
     );
 }
 
-// ========== Permission Grant/Revoke Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_grant_permission_bitwise_or() {
@@ -836,8 +827,6 @@ async fn test_revoke_permission() {
         "SEND_CHAT should be denied after revocation"
     );
 }
-
-// ========== Ban Connection Cleanup Tests ==========
 
 /// Mock broadcaster that tracks if kick events were broadcast
 struct MockKickBroadcaster {
@@ -1030,7 +1019,6 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
         .unwrap();
     let target = user_repo.create(&make_user("ban_wb_target")).await.unwrap();
 
-    // Create room using a minimal room service approach
     let room_service = make_room_service(pool.clone());
 
     let (room, _) = room_service
@@ -1056,7 +1044,6 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
         broadcast_time: broadcast_time.clone(),
     });
 
-    // Create a new MemberService with the mock broadcaster
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
     let perm_service = room_service.permission_service().clone();
@@ -1209,8 +1196,6 @@ async fn test_kick_member_also_broadcasts_kick_event() {
         "Kicked member should no longer be an active member"
     );
 }
-
-// ========== Remove Member TOCTOU Race Condition Tests ==========
 
 /// Test that `remove_member` handles the case atomically where a member is removed
 /// concurrently. The operation should return `NotFound` if the member doesn't exist
@@ -1395,7 +1380,6 @@ async fn test_remove_member_concurrent_no_race() {
         }));
     }
 
-    // Wait for all to complete
     for handle in handles {
         handle.await.unwrap();
     }

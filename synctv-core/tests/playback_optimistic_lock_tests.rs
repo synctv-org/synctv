@@ -71,9 +71,7 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ============================================================================
 // Optimistic Lock Tests: Repository Level
-// ============================================================================
 
 /// Test: Update with matching version succeeds
 ///
@@ -101,7 +99,6 @@ async fn test_repo_update_with_matching_version_succeeds() {
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    // Create playback state
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
     assert_eq!(state.version, 0, "Initial version should be 0");
 
@@ -143,7 +140,6 @@ async fn test_repo_update_with_stale_version_fails() {
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    // Create playback state
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
 
     // First update succeeds, version becomes 1
@@ -196,7 +192,6 @@ async fn test_repo_version_increments_sequentially() {
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    // Create playback state
     let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
     assert_eq!(state.version, 0);
 
@@ -213,9 +208,7 @@ async fn test_repo_version_increments_sequentially() {
     }
 }
 
-// ============================================================================
 // Optimistic Lock Tests: Service Level Retry Mechanism
-// ============================================================================
 
 /// Test: Concurrent seek operations with retry
 ///
@@ -414,9 +407,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
     println!("Success: {success_count}, Degraded: {degraded_count}");
 }
 
-// ============================================================================
 // Optimistic Lock Tests: Concurrent Mixed Operations
-// ============================================================================
 
 /// Test: Concurrent mixed operations (seek, play, speed)
 ///
@@ -556,9 +547,7 @@ async fn test_concurrent_mixed_operations() {
     );
 }
 
-// ============================================================================
 // Optimistic Lock Tests: High Contention Correctness
-// ============================================================================
 
 /// Test: high-contention operations still preserve a valid final playback state.
 ///
@@ -650,9 +639,7 @@ async fn test_high_contention_operations_remain_consistent() {
     assert!(state.version > 0, "Version should have advanced");
 }
 
-// ============================================================================
 // Optimistic Lock Tests: Version Number Overflow
-// ============================================================================
 
 /// Test: Version number handles large values
 ///

@@ -250,7 +250,7 @@ impl ChatRepository {
     /// # Returns
     /// Total number of messages deleted across all rooms
     ///
-    /// # Partition Pruning (Task #26)
+    /// # Partition Pruning
     ///
     /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the outer DELETE
     /// ensures `PostgreSQL` can apply partition pruning at the top-level query without

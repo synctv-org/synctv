@@ -11,9 +11,7 @@ fn is_ip_blocked(ip: &IpAddr) -> bool {
     SsrfGuard::shared_default().is_ip_blocked(ip)
 }
 
-// ============================================================================
 // Teredo IPv6 (2001:0000::/32) blocking
-// ============================================================================
 
 #[test]
 fn test_teredo_ipv6_blocked() {
@@ -47,9 +45,7 @@ fn test_teredo_ipv6_various_payloads() {
     }
 }
 
-// ============================================================================
 // 6to4 IPv6 (2002::/16) blocking
-// ============================================================================
 
 #[test]
 fn test_6to4_ipv6_blocked() {
@@ -75,9 +71,7 @@ fn test_6to4_ipv6_encapsulating_public() {
     );
 }
 
-// ============================================================================
 // IPv4-mapped IPv6 addresses
-// ============================================================================
 
 #[test]
 fn test_ipv4_mapped_ipv6_private_blocked() {
@@ -109,7 +103,6 @@ fn test_ipv4_mapped_ipv6_public_blocked() {
     // because the underlying http-acl library doesn't convert them to IPv4
     // before checking. This is intentional security behavior - IPv4-mapped
     // IPv6 addresses can be used to bypass IP-based restrictions.
-    //
     // ::ffff:8.8.8.8
     let mapped_public = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808);
     assert!(
@@ -118,9 +111,7 @@ fn test_ipv4_mapped_ipv6_public_blocked() {
     );
 }
 
-// ============================================================================
 // IPv6 unique-local and link-local
-// ============================================================================
 
 #[test]
 fn test_ipv6_unique_local_blocked() {
@@ -148,9 +139,7 @@ fn test_ipv6_multicast_blocked() {
     assert!(is_ip_blocked(&IpAddr::V6(multicast)));
 }
 
-// ============================================================================
 // IPv6 global unicast (allowed)
-// ============================================================================
 
 #[test]
 fn test_ipv6_global_unicast_allowed() {
@@ -164,9 +153,7 @@ fn test_ipv6_global_unicast_allowed() {
     assert!(!is_ip_blocked(&IpAddr::V6(public)));
 }
 
-// ============================================================================
 // is_ip_blocked dispatch
-// ============================================================================
 
 #[test]
 fn test_is_ip_blocked_v4() {
@@ -182,21 +169,15 @@ fn test_is_ip_blocked_v6() {
     ))));
 }
 
-// ============================================================================
 // IPv4 boundary tests
-// ============================================================================
 
 #[test]
 fn test_ipv4_172_range_boundary() {
-    // 172.15.x.x should be allowed (below the 172.16-31 range)
     assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(
         172, 15, 255, 255
     ))));
-    // 172.16.0.0 should be blocked
     assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
-    // 172.31.255.255 should be blocked
     assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
-    // 172.32.0.0 should be allowed (above the range)
     assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0))));
 }
 

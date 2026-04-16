@@ -18,14 +18,9 @@ use synctv_core::models::RoomId;
 use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 
-// ============================================================================
 // HTTP Middleware Integration Requirement Tests
-// ============================================================================
-//
-// These tests verify the EXPECTED behavior of the HTTP middleware GuestUser
 // extractor. The middleware SHOULD use GuestTokenValidator to check both
 // the blacklist and the room's guest version.
-//
 // The tests below document the security requirements and will be used to
 // verify the fix once implemented.
 
@@ -149,9 +144,7 @@ async fn test_security_requirement_both_checks_must_be_performed() {
     );
 }
 
-// ============================================================================
 // Test Setup Helpers
-// ============================================================================
 
 fn create_test_jwt_service() -> Arc<JwtService> {
     Arc::new(
@@ -172,9 +165,7 @@ fn create_test_validator_without_blacklist() -> GuestTokenValidator {
     GuestTokenValidator::new(create_test_jwt_service())
 }
 
-// ============================================================================
 // Blacklist Validation Tests
-// ============================================================================
 
 /// Test that a valid guest token passes validation when NOT blacklisted.
 ///
@@ -259,9 +250,7 @@ async fn test_validation_without_blacklist_configured() {
     );
 }
 
-// ============================================================================
 // Room Guest Version Tests
-// ============================================================================
 
 /// Test that tokens with outdated guest version are rejected.
 ///
@@ -337,9 +326,7 @@ async fn test_default_version_token_passes_when_room_version_is_zero() {
     );
 }
 
-// ============================================================================
 // Combined Blacklist + Version Tests
-// ============================================================================
 
 /// Test that both blacklist and version checks are performed.
 ///
@@ -380,9 +367,7 @@ async fn test_combined_blacklist_and_version_check() {
     );
 }
 
-// ============================================================================
 // Structural Tests
-// ============================================================================
 
 /// Test that GuestTokenValidator reports blacklist status correctly.
 #[test]

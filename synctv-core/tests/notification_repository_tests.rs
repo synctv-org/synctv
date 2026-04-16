@@ -62,7 +62,6 @@ async fn test_mark_as_read_cross_user_guard() {
     let user_a = create_user(&pool, "notif_user_a").await;
     let user_b = create_user(&pool, "notif_user_b").await;
 
-    // Create notification for user A
     let notif_a = notif_repo
         .create(&make_notif_request(&user_a.id, "For A"))
         .await
@@ -103,7 +102,6 @@ async fn test_mark_all_as_read_before_parameter() {
 
     let user = create_user(&pool, "notif_user_before").await;
 
-    // Create 3 notifications at different times
     let n1 = notif_repo
         .create(&make_notif_request(&user.id, "n1"))
         .await
@@ -172,7 +170,6 @@ async fn test_delete_older_than_boundary() {
 
     let user = create_user(&pool, "notif_user_delete").await;
 
-    // Create a notification with a backdated created_at
     let old_date = Utc::now() - Duration::days(31);
     sqlx::query(
         r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
@@ -184,7 +181,6 @@ async fn test_delete_older_than_boundary() {
     .await
     .unwrap();
 
-    // Create a recent notification
     notif_repo
         .create(&make_notif_request(&user.id, "Recent"))
         .await
@@ -417,7 +413,6 @@ async fn test_mark_as_read_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_mark").await;
 
-    // Create a recent notification and mark as read - should work
     let notif = notif_repo
         .create(&make_notif_request(&user.id, "Recent"))
         .await
@@ -439,7 +434,6 @@ async fn test_delete_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_delete").await;
 
-    // Create and delete a recent notification - should work
     let notif = notif_repo
         .create(&make_notif_request(&user.id, "To Delete"))
         .await
@@ -461,7 +455,6 @@ async fn test_delete_all_read_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_del_read").await;
 
-    // Create a notification and mark as read
     let notif = notif_repo
         .create(&make_notif_request(&user.id, "Read"))
         .await

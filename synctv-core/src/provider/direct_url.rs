@@ -291,7 +291,6 @@ fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult
 }
 
 // ProviderProxy implementation for DirectUrl
-//
 // Supported sub_paths (same pattern as other providers):
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 with URL rewriting

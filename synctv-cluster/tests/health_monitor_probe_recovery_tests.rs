@@ -25,7 +25,6 @@ async fn test_stale_node_overrides_healthy() {
         status.insert("node-1".to_string(), NodeHealth::Healthy);
     }
 
-    // Create a stale node (heartbeat 120 seconds ago)
     let mut stale_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(120);
 
@@ -54,7 +53,6 @@ async fn test_unhealthy_not_overridden_by_fresh_heartbeat() {
         status.insert("node-1".to_string(), NodeHealth::Unhealthy);
     }
 
-    // Create a fresh node (recent heartbeat)
     let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
 
     // Process heartbeats: fresh node with existing status is NOT overridden
@@ -75,7 +73,6 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
     let health_status: Arc<RwLock<HashMap<String, NodeHealth>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // Step 1: Fresh node gets marked Healthy (no prior entry)
     let fresh_node = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
     HealthMonitor::process_heartbeats(&health_status, std::slice::from_ref(&fresh_node), 30).await;
 
@@ -84,7 +81,6 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
         assert_eq!(status.get("node-1"), Some(&NodeHealth::Healthy));
     }
 
-    // Step 2: Node goes stale -> Unhealthy
     let mut stale = fresh_node.clone();
     stale.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
     HealthMonitor::process_heartbeats(&health_status, &[stale], 30).await;
@@ -94,7 +90,6 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
         assert_eq!(status.get("node-1"), Some(&NodeHealth::Unhealthy));
     }
 
-    // Step 3: Node recovers (fresh heartbeat again), but existing Unhealthy
     // status is preserved (NOT overridden by heartbeat)
     let recovered = NodeInfo::new("node-1".to_string(), "localhost:8080".to_string());
     HealthMonitor::process_heartbeats(&health_status, &[recovered], 30).await;

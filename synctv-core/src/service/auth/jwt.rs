@@ -874,8 +874,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========== Token Type Enforcement ==========
-
     #[test]
     fn test_access_token_rejected_as_refresh() {
         let jwt = create_jwt_service();
@@ -912,8 +910,6 @@ mod tests {
         let result = jwt.verify_refresh_token(&token);
         assert!(result.is_err());
     }
-
-    // ========== Claims Inspection ==========
 
     #[test]
     fn test_claims_user_id_extraction() {
@@ -969,8 +965,6 @@ mod tests {
         assert!(guest.is_guest_token());
     }
 
-    // ========== Guest Token Edge Cases ==========
-
     #[test]
     fn test_guest_claims_room_id_extraction() {
         let jwt = create_jwt_service();
@@ -1007,8 +1001,6 @@ mod tests {
         assert!(!claims.is_guest());
     }
 
-    // ========== Different Secrets ==========
-
     #[test]
     fn test_token_from_different_secret_is_rejected() {
         let jwt1 = JwtService::new("secret-KEY-One-LONG-ENOUGH-1234567890!@#$").unwrap();
@@ -1019,8 +1011,6 @@ mod tests {
         let result = jwt2.verify_token(&token);
         assert!(result.is_err());
     }
-
-    // ========== Custom Durations ==========
 
     #[test]
     fn test_custom_token_durations() {
@@ -1178,8 +1168,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========== Issuer and Audience Validation ==========
-
     #[test]
     fn test_token_with_issuer_and_audience() {
         let jwt = JwtService::with_durations_and_claims(
@@ -1316,8 +1304,6 @@ mod tests {
         let result = jwt.verify_guest_token(&token);
         assert!(result.is_ok());
     }
-
-    // ========== Secret Entropy Validation (Task #76) ==========
 
     #[test]
     fn test_weak_secret_too_short_rejected() {

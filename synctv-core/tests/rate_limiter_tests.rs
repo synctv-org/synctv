@@ -11,15 +11,12 @@ use synctv_core::service::{RateLimitError, RateLimiter};
 use synctv_core_testing::{start_redis_with_client, RedisContainer};
 use tokio::sync::RwLock;
 
-// ============================================================================
 // In-memory rate limiter tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_in_memory_rate_limiter_allows_under_limit() {
     let limiter = RateLimiter::local_only("test_allow:".to_string());
 
-    // Send 5 requests with a limit of 10 -- all should pass
     for i in 0..5 {
         limiter
             .check_rate_limit("user:1:chat", 10, 1)
@@ -60,10 +57,8 @@ async fn test_in_memory_rate_limiter_window_expiry() {
     }
     assert!(limiter.check_rate_limit(key, 3, 1).await.is_err());
 
-    // Wait for the window to expire (governor GCRA uses token replenishment)
     tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-    // Should be able to make requests again
     let result = limiter.check_rate_limit(key, 3, 1).await;
     assert!(
         result.is_ok(),
@@ -112,7 +107,6 @@ async fn test_in_memory_distributed_uses_governor() {
             .unwrap_or_else(|_| panic!("Request {i} should succeed via in-memory governor"));
     }
 
-    // Should be blocked after exhausting limit
     let result = limiter.check_rate_limit("key", 5, 1).await;
     assert!(
         matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
@@ -120,9 +114,7 @@ async fn test_in_memory_distributed_uses_governor() {
     );
 }
 
-// ============================================================================
 // Redis rate limiter tests (require Docker)
-// ============================================================================
 
 async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, RedisContainer) {
     let (container, client) = start_redis_with_client().await;
@@ -236,7 +228,6 @@ async fn test_redis_rate_limiter_strict_enforcement() {
             .unwrap_or_else(|_| panic!("Strict request {i} should succeed within limit"));
     }
 
-    // Should be blocked after exhausting limit
     let result = limiter.check_rate_limit_distributed(key, 5, 1).await;
     assert!(
         matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),

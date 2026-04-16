@@ -1,5 +1,4 @@
 // Provider Proxy Trait — Abstract proxy handling for MediaProvider
-//
 // Allows each provider to define its own proxy behavior (URL resolution,
 // subtitle lookups, M3U8 rewriting) without depending on axum or synctv-proxy.
 // The HTTP layer receives a `ProxyAction` and executes it generically.

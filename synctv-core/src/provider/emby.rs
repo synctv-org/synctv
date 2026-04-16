@@ -78,8 +78,6 @@ impl EmbyProvider {
             .await
     }
 
-    // ========== Provider API Methods ==========
-
     /// Login to Emby/Jellyfin (validate API key)
     pub async fn login(
         &self,
@@ -773,7 +771,6 @@ impl MediaProvider for EmbyProvider {
 }
 
 // ProviderProxy implementation for Emby
-//
 // Supported sub_paths:
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
@@ -1410,8 +1407,6 @@ mod tests {
 
         // Memory usage: max 200 items vs 1000 items (80% reduction)
     }
-
-    // ========== B2: Emby token must NOT be exposed in thumbnail URL ==========
 
     #[test]
     fn test_thumbnail_url_must_not_contain_raw_token() {

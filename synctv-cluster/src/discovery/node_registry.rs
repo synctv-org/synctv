@@ -915,7 +915,6 @@ impl NodeRegistry {
             //   -1 if key doesn't exist (need re-registration)
             //   -(1000 + remote_epoch) if epoch mismatch (encodes remote epoch)
             //   current_epoch on success
-            //
             // We use -(1000 + remote_epoch) instead of -remote_epoch to avoid
             // ambiguity when remote_epoch == 0 (which would return 0, colliding
             // with a successful epoch-0 result).
@@ -1728,8 +1727,6 @@ impl NodeRegistry {
     pub fn test_set_last_refreshed_at(&self, unix_secs: u64) {
         self.last_refreshed.store(unix_secs, Ordering::Relaxed);
     }
-
-    // ============ Re-registration backoff methods ============
 
     /// Check if we're currently in a backoff period for re-registration.
     ///

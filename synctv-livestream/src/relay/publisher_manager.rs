@@ -1,14 +1,11 @@
 // Publisher Manager - Maintains heartbeat for RTMP publishers
-//
 // Listens to StreamHub events and manages publisher heartbeat:
 // 1. On Publish event: Track publisher locally (registration happens in auth phase)
 // 2. Maintain heartbeat to keep registration alive
 // 3. On UnPublish event: Remove publisher from Redis and local tracking
-//
 // NOTE: Publisher registration to Redis happens in the authentication phase
 // (SyncTvRtmpAuth::on_publish) before the RTMP session is established.
 // This component only maintains heartbeat for already-registered publishers.
-//
 // Based on design doc 17-数据流设计.md § 11.1
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
@@ -36,13 +33,13 @@ const UNREGISTER_RETRY_DELAYS_MS: [u64; 2] = [2_000, 4_000];
 /// before cleaning up. This prevents killing active streams during transient Redis timeouts
 /// or maintenance windows.
 ///
-/// Issue #57: A Redis timeout (slow response) is NOT the same as the publisher being dead.
+/// A Redis timeout (slow response) is NOT the same as the publisher being dead.
 /// Only count a heartbeat failure if Redis responds AND the publisher TTL actually expired.
 /// If Redis itself is unreachable, use a separate `redis_unreachable` counter (below).
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 3;
 
 /// Number of consecutive heartbeat cycles where Redis is completely unreachable before
-/// triggering publisher cleanup as a last resort (Issue #57).
+/// triggering publisher cleanup as a last resort.
 ///
 /// This threshold is intentionally much higher than `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`
 /// because Redis timeouts should not cause publisher cleanup — they likely indicate a
@@ -57,17 +54,17 @@ const UNPUBLISH_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 /// keep its TCP connection alive but stop sending RTMP frames (e.g., crashed
 /// encoder, frozen camera).
 ///
-/// Issue #48: The silent timeout must be LONGER than the max broadcast channel
+/// The silent timeout must be LONGER than the max broadcast channel
 /// lag window (typically several seconds) to avoid false-positive timeouts when
 /// frames are still being produced but have not yet been delivered through the
-/// broadcast channel.  The activity callback is throttled to 10s intervals
+/// broadcast channel. The activity callback is throttled to 10s intervals
 /// (see `ACTIVITY_RECORD_INTERVAL`), so the effective minimum useful timeout is
-/// ~2× the throttle interval.  Set to 5 minutes to comfortably exceed any
+/// ~2× the throttle interval. Set to 5 minutes to comfortably exceed any
 /// realistic broadcast lag window while still detecting truly frozen encoders.
 /// Reduced from 300s to 60s for faster detection of crashed encoders.
 const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
-/// Interval for periodic registry-local consistency sync (Task #39).
+/// Interval for periodic registry-local consistency sync.
 ///
 /// This sync ensures local tracking state matches the registry, detecting and
 /// repairing inconsistencies caused by:
@@ -96,14 +93,14 @@ struct PublisherEntry {
     /// Reset to 0 on any successful heartbeat. Only triggers cleanup when
     /// this reaches `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`.
     ///
-    /// Issue #57: This counter is NOT incremented when Redis itself is
+    /// This counter is NOT incremented when Redis itself is
     /// unreachable (timeout/connection error). See `redis_unreachable_cycles`.
     consecutive_heartbeat_failures: std::sync::atomic::AtomicU32,
     /// Number of consecutive heartbeat cycles where Redis was completely
     /// unreachable (timeout or connection refused), regardless of publisher status.
     ///
-    /// Issue #57: Separated from `consecutive_heartbeat_failures` to prevent
-    /// slow Redis from triggering false publisher cleanup.  Only triggers
+    /// Separated from `consecutive_heartbeat_failures` to prevent
+    /// slow Redis from triggering false publisher cleanup. Only triggers
     /// cleanup when this reaches `MAX_CONSECUTIVE_REDIS_UNREACHABLE`.
     redis_unreachable_cycles: std::sync::atomic::AtomicU32,
     /// User ID from the publisher registration (L-01: for reverse-index TTL refresh).
@@ -487,7 +484,7 @@ impl PublisherManager {
                 return Ok(());
             }
             Err(e) => {
-                // P1#13: Fail-closed on Redis failure. If we cannot verify the publisher
+                // Fail-closed on Redis failure. If we cannot verify the publisher
                 // in the registry, we must reject the stream rather than allowing it to
                 // continue without heartbeat tracking. An untracked publisher would stay
                 // active indefinitely with an empty user_id, bypassing ownership checks.
@@ -673,7 +670,7 @@ impl PublisherManager {
         }
     }
 
-    /// Task #39: Run periodic synchronization between local tracking and registry.
+    /// Run periodic synchronization between local tracking and registry.
     ///
     /// This is a background task that runs at `PERIODIC_SYNC_INTERVAL_SECS` intervals
     /// to ensure local-registry consistency. It catches inconsistencies that may
@@ -1108,24 +1105,20 @@ impl PublisherManager {
             // L-01: Pass stored user_id to refresh both publisher TTL and user reverse-index TTL
             let user_id = &entry.user_id;
 
-            // Issue #49: Per-cycle heartbeat failure counting semantics:
-            //
+            // Per-cycle heartbeat failure counting semantics:
             // Within a single cycle, we retry up to MAX_HEARTBEAT_RETRIES times
-            // with exponential backoff.  The cycle is considered:
-            //   - SUCCESS: at least one retry returned Ok(())
-            //   - FAILURE: ALL retries returned Err(...)
-            //
+            // with exponential backoff. The cycle is considered:
+            // - SUCCESS: at least one retry returned Ok(())
+            // - FAILURE: ALL retries returned Err(...)
             // `consecutive_heartbeat_failures` counts consecutive *cycles* with
             // a FAILURE outcome, not individual retry attempts within a cycle.
-            //
             // Reset semantics: reset to 0 when a cycle succeeds (even partially).
             // This means a transient Redis error that resolves within the retry
             // window does NOT accumulate toward the cleanup threshold.
-            //
-            // Issue #57: Redis timeout (slow response) counts as a cycle failure.
+            // Redis timeout (slow response) counts as a cycle failure.
             // To prevent false publisher cleanup due to slow Redis, we separate the
             // publisher-dead threshold (MAX_CONSECUTIVE_HEARTBEAT_FAILURES cycles)
-            // from Redis reachability issues.  Slow Redis increments this counter;
+            // from Redis reachability issues. Slow Redis increments this counter;
             // only when it reaches the max do we conclude the publisher is dead.
             let mut cycle_succeeded = false;
             let mut publisher_missing = false;
@@ -1184,14 +1177,13 @@ impl PublisherManager {
                 // Cycle failed: ALL retries exhausted with errors.
                 synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
 
-                // Issue #57: Distinguish Redis-unreachable errors from publisher-missing errors.
+                // Distinguish Redis-unreachable errors from publisher-missing errors.
                 // A slow/unreachable Redis should NOT immediately trigger publisher cleanup.
                 // Only escalate to cleanup if:
-                //   (a) Redis is reachable but publisher TTL refresh actually fails
-                //       (key not found = publisher expired) → uses heartbeat_failures counter
-                //   (b) Redis is completely unreachable for an extended period
-                //       → uses redis_unreachable_cycles counter (higher threshold)
-                //
+                // (a) Redis is reachable but publisher TTL refresh actually fails
+                // (key not found = publisher expired) → uses heartbeat_failures counter
+                // (b) Redis is completely unreachable for an extended period
+                // → uses redis_unreachable_cycles counter (higher threshold)
                 // Use structured redis::ErrorKind matching instead of string comparison
                 // to avoid brittle matching against error message text.
                 let is_redis_unreachable =
@@ -1222,12 +1214,11 @@ impl PublisherManager {
                     } else {
                         warn!(
                             "Redis unreachable for heartbeat room={} media={} ({}/{} consecutive). \
-                             NOT counting toward publisher cleanup threshold (Issue #57).",
+                             NOT counting toward publisher cleanup threshold.",
                             room_id, media_id, redis_failures, MAX_CONSECUTIVE_REDIS_UNREACHABLE
                         );
                     }
                 } else if publisher_missing {
-                    // Redis reachable and explicitly reported that the publisher entry is gone.
                     entry.redis_unreachable_cycles.store(0, Ordering::Release);
                     let failures = entry
                         .consecutive_heartbeat_failures
@@ -1857,7 +1848,7 @@ mod tests {
         assert!(after <= 1); // just touched
     }
 
-    /// P1#13: Verify that handle_publish returns an error when Redis fails,
+    /// Verify that handle_publish returns an error when Redis fails,
     /// ensuring the stream is rejected (fail-closed behavior).
     #[tokio::test]
     async fn test_handle_publish_fails_closed_on_redis_failure() {
@@ -1892,7 +1883,7 @@ mod tests {
         );
     }
 
-    /// P1#13: Verify that the broadcast event handler propagates the error from
+    /// Verify that the broadcast event handler propagates the error from
     /// handle_publish when Redis fails, so the stream hub can reject the connection.
     #[tokio::test]
     async fn test_broadcast_event_propagates_redis_failure() {
@@ -2660,9 +2651,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // Memory leak tests: reregister_all_publishers should clean up zombie entries
-    // ========================================================================
 
     /// Test that `reregister_all_publishers` cleans up stale entries from local `DashMap`
     /// when the registry entry no longer exists.
@@ -2692,7 +2681,7 @@ mod tests {
         assert_eq!(manager.active_publishers.len(), 1);
 
         // 4. Simulate registry entry being removed (TTL expiry, external cleanup)
-        //    but UnPublish event is lost
+        // but UnPublish event is lost
         registry
             .unregister_publisher("room1", "media1")
             .await
@@ -2825,9 +2814,9 @@ mod tests {
             .unwrap();
 
         // 6. reregister should:
-        //    - Keep room1 (we still own it)
-        //    - Remove room2 (not in registry)
-        //    - Remove room3 (owned by other node)
+        // - Keep room1 (we still own it)
+        // - Remove room2 (not in registry)
+        // - Remove room3 (owned by other node)
         manager.reregister_all_publishers().await;
 
         // 7. Only room1 should remain

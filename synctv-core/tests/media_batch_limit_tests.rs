@@ -9,9 +9,7 @@
 /// This value mirrors the constant in synctv-core/src/service/media.rs
 const MAX_BATCH_SIZE: usize = 100;
 
-// ============================================================================
 // Batch size validation helpers (mirror service logic)
-// ============================================================================
 
 fn validate_batch_size(count: usize) -> Result<(), String> {
     if count > MAX_BATCH_SIZE {
@@ -20,9 +18,7 @@ fn validate_batch_size(count: usize) -> Result<(), String> {
     Ok(())
 }
 
-// ============================================================================
 // add_media_batch tests
-// ============================================================================
 
 #[test]
 fn add_media_batch_exceeds_limit_returns_error() {
@@ -59,9 +55,7 @@ fn add_media_batch_empty_succeeds() {
     assert!(result.is_ok(), "Empty batch should be accepted");
 }
 
-// ============================================================================
 // delete_entries tests
-// ============================================================================
 
 #[test]
 fn delete_entries_exceeds_limit_returns_error() {
@@ -83,9 +77,7 @@ fn delete_entries_exactly_100_succeeds() {
     );
 }
 
-// ============================================================================
 // reorder_media_batch tests
-// ============================================================================
 
 #[test]
 fn reorder_media_batch_exceeds_limit_returns_error() {
@@ -107,9 +99,7 @@ fn reorder_media_batch_exactly_100_succeeds() {
     );
 }
 
-// ============================================================================
 // Error message format tests
-// ============================================================================
 
 #[test]
 fn batch_limit_error_message_format() {

@@ -1,5 +1,4 @@
 //! User management HTTP handlers
-//
 // This layer now uses proto types and delegates to the impls layer for business logic
 
 use axum::{extract::State, Json};

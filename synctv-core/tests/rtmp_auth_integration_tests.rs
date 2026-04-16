@@ -36,9 +36,7 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool, start_redis, RedisContainer, TestContainer};
 
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 async fn create_test_infra() -> (
     TestContainer,
@@ -135,7 +133,6 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         .await
         .expect("Failed to create test room");
 
-    // Create default room settings
     let settings_repo = RoomSettingsRepository::new(pool.clone());
     let settings = RoomSettings::default();
     settings_repo
@@ -169,16 +166,13 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
     room
 }
 
-// ============================================================================
 // Test 1: Publish key generation and validation
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_publish_key_generation_and_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
-    // Create test data
     let user = create_test_user(&pool, "streamer1", UserRole::User).await;
     let room = create_test_room(&pool, user.id.clone(), "Stream Room 1").await;
     let media_id = MediaId::new();
@@ -201,9 +195,7 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
     assert!(claims.perm_start_live);
 }
 
-// ============================================================================
 // Test 2: Expired tokens are rejected
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -214,7 +206,6 @@ async fn rtmp_auth_test_expired_token_rejected() {
     let room = create_test_room(&pool, user.id.clone(), "Stream Room 2").await;
     let media_id = MediaId::new();
 
-    // Create a short-lived JWT service (0 TTL for immediate expiration)
     let jwt_service = JwtService::new("test-secret-key-for-expired-token-tests-32chars")
         .expect("Failed to create JWT service");
     let publish_key_service = PublishKeyService::new(jwt_service, 0);
@@ -224,7 +215,6 @@ async fn rtmp_auth_test_expired_token_rejected() {
         .generate_publish_key(&room.id, &media_id, &user.id)
         .expect("Failed to generate publish key");
 
-    // Wait for token to expire
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let result = publish_key_service.validate_publish_key(&key.token).await;
@@ -238,9 +228,7 @@ async fn rtmp_auth_test_expired_token_rejected() {
     );
 }
 
-// ============================================================================
 // Test 3: Banned users cannot use publish keys
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -282,9 +270,7 @@ async fn rtmp_auth_test_banned_user_validation() {
     assert_eq!(updated_user.status, UserStatus::Banned);
 }
 
-// ============================================================================
 // Test 4: Deleted users validation
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -326,9 +312,7 @@ async fn rtmp_auth_test_deleted_user_validation() {
     );
 }
 
-// ============================================================================
 // Test 5: Banned room affects operations
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -368,9 +352,7 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
     );
 }
 
-// ============================================================================
 // Test 6: Pending room affects operations
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -411,9 +393,7 @@ async fn rtmp_auth_test_pending_room_rejects_operations() {
     assert_eq!(loaded_room.status, RoomStatus::Pending);
 }
 
-// ============================================================================
 // Test 7: Cross-replica user→stream mapping (per-user Redis key)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -463,9 +443,7 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
         .expect("Failed to delete user stream mapping");
 }
 
-// ============================================================================
 // Test 8: Room settings rtmp_player affects play authorization
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -507,20 +485,16 @@ async fn rtmp_auth_test_rtmp_player_settings() {
     );
 }
 
-// ============================================================================
 // Test 9: Non-room-member cannot publish
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_non_room_member_rejected() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
-    // Create room and owner
     let owner = create_test_user(&pool, "room_owner", UserRole::User).await;
     let room = create_test_room(&pool, owner.id.clone(), "Private Room").await;
 
-    // Create a user who is NOT a member
     let non_member = create_test_user(&pool, "outsider", UserRole::User).await;
 
     let room_service = create_room_service(pool.clone());

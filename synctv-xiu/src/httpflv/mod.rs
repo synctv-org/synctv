@@ -1,5 +1,4 @@
 // HTTP-FLV session: subscribes to StreamHub and sends FLV data over a bounded channel
-//
 // This is a generic, reusable component. The HTTP routing layer
 // (which may depend on application-specific state like Redis) lives
 // in the downstream crate (e.g., synctv-livestream).
@@ -46,7 +45,7 @@ pub struct HttpFlvSession {
     pub has_audio: bool,
     pub has_video: bool,
     pub has_send_header: bool,
-    /// P2#18: Track consecutive dropped frames for slow client detection.
+    /// Track consecutive dropped frames for slow client detection.
     /// Reset to 0 on each successful send. When this reaches
     /// `MAX_CONSECUTIVE_DROPPED_FRAMES`, the session is disconnected.
     consecutive_dropped_frames: u32,
@@ -210,7 +209,7 @@ impl HttpFlvSession {
         let data = self.muxer.writer.extract_current_bytes();
         let bytes = data.freeze();
 
-        // P2#18: Use try_send to apply backpressure. Track consecutive dropped frames
+        // Use try_send to apply backpressure. Track consecutive dropped frames
         // and disconnect the subscriber after too many drops to prevent a slow client
         // from permanently consuming publisher resources.
         match self.response_producer.try_send(Ok(bytes)) {
@@ -379,7 +378,7 @@ mod tests {
         assert_eq!(session.total_dropped_frames, 0);
     }
 
-    /// P2#18: Test that flush_response_data drops frames when channel is full
+    /// Test that flush_response_data drops frames when channel is full
     /// without blocking the publisher, and tracks the drop count.
     #[test]
     fn test_flush_drops_frames_when_channel_full() {
@@ -421,7 +420,7 @@ mod tests {
         assert_eq!(session.total_dropped_frames, 1);
     }
 
-    /// P2#18: Test that consecutive drops beyond the threshold disconnects the subscriber.
+    /// Test that consecutive drops beyond the threshold disconnects the subscriber.
     #[test]
     fn test_slow_subscriber_disconnected_after_max_drops() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
@@ -474,7 +473,7 @@ mod tests {
         );
     }
 
-    /// P2#18: Test that consecutive drop counter resets on successful send.
+    /// Test that consecutive drop counter resets on successful send.
     #[tokio::test]
     async fn test_drop_counter_resets_on_successful_send() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);

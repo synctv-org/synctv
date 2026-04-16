@@ -15,9 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use synctv_proxy::rewrite_m3u8;
 
-// ------------------------------------------------------------------
 // Helper: plain reqwest client without SSRF restrictions for reaching wiremock
-// ------------------------------------------------------------------
 fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -123,9 +121,7 @@ async fn test_proxy_zstd_encoding_preserved() {
     assert_eq!(ce.unwrap().to_str().unwrap(), "zstd");
 }
 
-// ==================================================================
 // Cache-Control logic (detailed)
-// ==================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cache_control_audio_gets_long_max_age() {
@@ -189,9 +185,7 @@ async fn test_cache_control_unknown_gets_no_cache() {
     );
 }
 
-// ==================================================================
 // M3U8 manifest size limit
-// ==================================================================
 
 #[test]
 fn test_proxy_m3u8_manifest_size_limit() {
@@ -204,9 +198,7 @@ fn test_proxy_m3u8_manifest_size_limit() {
     );
 }
 
-// ==================================================================
 // Redirect with wiremock chains
-// ==================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_redirect_single_hop_via_wiremock() {
@@ -251,9 +243,7 @@ async fn test_redirect_single_hop_via_wiremock() {
     assert_eq!(resp.text().await.unwrap(), "final-content");
 }
 
-// ==================================================================
 // SSRF: DNS-level protection tests
-// ==================================================================
 
 #[test]
 fn test_public_ip_allowed_by_acl() {
@@ -275,14 +265,11 @@ async fn test_link_local_blocked_via_proxy() {
     );
 }
 
-// ==================================================================
 // M3U8 Truncation behavior
-// ==================================================================
 
 /// Test that VOD playlists get #EXT-X-ENDLIST when truncated
 #[test]
 fn test_rewrite_m3u8_truncation_vod_adds_endlist() {
-    // Create a VOD playlist (has #EXT-X-ENDLIST) that exceeds MAX_M3U8_URLS
     // We use a smaller limit for testing by creating exactly MAX+1 segments
     let mut m3u8_content = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
 
@@ -316,7 +303,6 @@ fn test_rewrite_m3u8_truncation_vod_adds_endlist() {
 /// Test that live streams do NOT get #EXT-X-ENDLIST when truncated
 #[test]
 fn test_rewrite_m3u8_truncation_live_no_endlist() {
-    // Create a live playlist (NO #EXT-X-ENDLIST) that exceeds MAX_M3U8_URLS
     let mut m3u8_content = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
 
     // Add MAX_M3U8_URLS + 1 segments (the +1 will trigger truncation)

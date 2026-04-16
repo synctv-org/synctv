@@ -325,9 +325,7 @@ pub fn default_device_profile() -> Value {
     })
 }
 
-// ============================================================================
 // From trait implementations for proto conversion
-// ============================================================================
 
 impl From<MediaStream> for crate::grpc::emby::MediaStreamInfo {
     fn from(stream: MediaStream) -> Self {

@@ -16,9 +16,7 @@ use std::sync::Arc;
 use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped};
 use synctv_core::Result;
 
-// ============================================================================
 // Test types
-// ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TestId(String);
@@ -50,9 +48,7 @@ impl Timestamped for TestValue {
     }
 }
 
-// ============================================================================
 // Mock L2 backend with artificial delay
-// ============================================================================
 
 struct DelayedL2 {
     /// Values stored in the mock L2
@@ -141,7 +137,6 @@ impl CacheL2Backend for DelayedL2 {
 
 #[tokio::test]
 async fn test_epoch_prevents_stale_l1_write() {
-    // Create a mock L2 with a 200ms delay on get()
     let l2 = Arc::new(DelayedL2::new(std::time::Duration::from_millis(200)));
 
     // Pre-populate L2 with a stale value
@@ -152,7 +147,6 @@ async fn test_epoch_prevents_stale_l1_write() {
     let stale_json = serde_json::to_string(&stale_value).unwrap();
     l2.set("test:epoch:k1", &stale_json, 300).await.unwrap();
 
-    // Create cache with this delayed L2 backend
     let cache: TieredCache<TestId, TestValue> = TieredCache::new(
         l2.clone(),
         100,
@@ -165,16 +159,13 @@ async fn test_epoch_prevents_stale_l1_write() {
 
     let key = TestId("k1".to_string());
 
-    // Start a get() that will take ~200ms (due to delayed L2)
     let cache_clone = cache.clone();
     let key_clone = key.clone();
     let get_handle = tokio::spawn(async move { cache_clone.get(&key_clone).await });
 
-    // Wait a bit for the get() to be in-flight, then invalidate
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     cache.invalidate(&key).await.unwrap();
 
-    // Wait for the get() to finish
     let result = get_handle.await.unwrap().unwrap();
 
     // The get() should return the stale value from L2 (it was already in-flight)

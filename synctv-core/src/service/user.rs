@@ -762,7 +762,6 @@ impl UserService {
         // OAuth2 users are exempt: they authenticated via an external provider,
         // so requiring email verification would lock them out if the provider
         // didn't confirm their email.
-        //
         // Returns a specific EmailNotVerified error (not a generic Authentication error)
         // so the client can prompt the user to verify their email. This is safe because
         // the user has already authenticated successfully (correct credentials), so
@@ -871,7 +870,6 @@ impl UserService {
         }
 
         // Fast-path duplicate checks before Argon2 hashing.
-        //
         // We still rely on the database UNIQUE constraints for atomic race-safe
         // enforcement. This pre-check only avoids expensive hashing for requests
         // that are already known to fail with `AlreadyExists`.
@@ -910,7 +908,6 @@ impl UserService {
         // Create user with email signup method.
         // The database UNIQUE constraints on username and email will reject
         // duplicates atomically -- no separate existence check needed.
-        //
         // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
         // as brute-force failures. A legitimate user trying to register with a
         // common username shouldn't be locked out - they just need to pick another.
@@ -1089,7 +1086,7 @@ impl UserService {
     /// Includes per-account and per-IP brute-force protection: after repeated failures,
     /// accounts/IPs are temporarily locked with exponential backoff (1min / 5min / 15min).
     ///
-    /// ## Failure Type Differentiation (Task #74)
+    /// ## Failure Type Differentiation
     ///
     /// To prevent attackers from locking out legitimate users by trying random usernames:
     /// - "User doesn't exist" → Only IP-level tracking (username doesn't exist to attack)
@@ -1113,7 +1110,6 @@ impl UserService {
         // Get user by username or email.
         let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
 
-        // Track whether user existed for differentiated failure recording (Task #74)
         let user_existed = maybe_user.is_some();
 
         // Always perform password verification to prevent timing side-channel.
@@ -1139,9 +1135,9 @@ impl UserService {
         let user = match user {
             Some(u) if is_valid => u,
             _ => {
-                // Differentiate failure types (Task #74):
+                // Differentiate failure types:
                 // - User doesn't exist: Only record IP-level failure to prevent
-                //   attackers from locking out legitimate usernames
+                // attackers from locking out legitimate usernames
                 // - Wrong password for existing user: Record both username and IP
                 let record_result = if user_existed {
                     // User existed but wrong password - record both username and IP
@@ -1212,7 +1208,6 @@ impl UserService {
         // An attacker with a stolen token could otherwise:
         // 1. Rapidly call refresh_token to exhaust server resources
         // 2. Trigger family revocation, locking out the legitimate user
-        //
         // Rate limit key is per-user: "refresh:<user_id>"
         let rate_limit_key = format!("refresh:{}", user_id.as_str());
         self.refresh_rate_limiter
@@ -1734,9 +1729,7 @@ impl UserService {
         Ok(user)
     }
 
-    // ========================
     // Batch Operations
-    // ========================
 
     /// Maximum number of items allowed in a batch operation
     pub const BATCH_SIZE_LIMIT: usize = 100;
@@ -2122,8 +2115,6 @@ mod tests {
         assert!(validate_password(&"a".repeat(129)).is_err()); // Too long
     }
 
-    // ========== Username Validation Edge Cases ==========
-
     #[test]
     fn test_validate_username_empty() {
         assert!(validate_username("").is_err());
@@ -2165,8 +2156,6 @@ mod tests {
         assert!(validate_username("a_b_c").is_ok());
     }
 
-    // ========== Email Validation ==========
-
     #[test]
     fn test_validate_email_valid() {
         assert!(validate_email("user@example.com").is_ok());
@@ -2196,8 +2185,6 @@ mod tests {
     fn test_validate_email_only_whitespace() {
         assert!(validate_email("   ").is_err());
     }
-
-    // ========== Password Validation Edge Cases ==========
 
     #[test]
     fn test_validate_password_empty() {
@@ -2239,8 +2226,6 @@ mod tests {
         assert!(validate_password(&pwd).is_err());
     }
 
-    // ========== Error Type Validation ==========
-
     #[test]
     fn test_validate_username_returns_invalid_input_error() {
         let err = validate_username("ab").unwrap_err();
@@ -2258,10 +2243,6 @@ mod tests {
         let err = validate_password("short").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
-
-    // ========== Integration Tests ==========
-
-    // ========== Refresh Rate Limiter Backend Tests ==========
 
     #[tokio::test]
     async fn test_refresh_token_uses_fail_closed_distributed_rate_limiter() {
@@ -2339,8 +2320,6 @@ mod tests {
             "non-strict mode should allow normal in-memory checks"
         );
     }
-
-    // === OAuth2 Email Verification Bypass Tests (P1#7) ===
 
     /// OAuth2 users should not be blocked by email_verification_required.
     /// This test verifies the logic that exempts OAuth2 signup method users.
@@ -2459,8 +2438,6 @@ mod tests {
             "No one should be blocked when email verification is not required"
         );
     }
-
-    // ========== OAuth2 Login Brute-Force Counter Reset Tests ==========
 
     /// Test that successful OAuth2 login resets the brute-force counter for the provider user ID.
     ///
@@ -2684,8 +2661,6 @@ mod tests {
         let result = brute_force.check_allowed(identifier, client_ip).await;
         assert!(result.is_err(), "same identifier bucket should be checked");
     }
-
-    // ========== register_with_executor signup_need_review Tests ==========
 
     /// Verify that register_with_executor respects signup_need_review for Email signups.
     ///

@@ -64,8 +64,6 @@ fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
     RoomMember::new(room_id, user_id, role)
 }
 
-// ========== add_with_options tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_add_with_options_full_flow() {
@@ -274,8 +272,6 @@ async fn test_add_with_options_max_members_zero_bypass() {
     let count = member_repo.count_by_room(&room.id).await.unwrap();
     assert_eq!(count, 5);
 }
-
-// ========== ban_with_role_check / remove_with_role_check tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -503,8 +499,6 @@ async fn test_remove_with_role_check_creator_kicks_admin() {
     assert!(member.is_none()); // get() filters left_at IS NULL
 }
 
-// ========== grant_permission_atomic / revoke_permission_atomic tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_grant_permission_atomic_bitwise_or() {
@@ -719,8 +713,6 @@ async fn test_role_guarded_admin_permission_updates_fail_when_role_changed() {
     assert_eq!(refreshed.admin_removed_permissions, 0);
 }
 
-// ========== reset_permissions tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reset_permissions_zeroes_all_four_columns() {
@@ -777,8 +769,6 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
     assert_eq!(reset.admin_removed_permissions, 0);
     assert_eq!(reset.version, current.version + 1);
 }
-
-// ========== count_by_rooms_batch tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -857,8 +847,6 @@ async fn test_count_by_rooms_batch_empty_input() {
     assert!(counts.is_empty());
 }
 
-// ========== list_by_user_with_details tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_list_by_user_with_details_pagination() {
@@ -876,7 +864,6 @@ async fn test_list_by_user_with_details_pagination() {
         .await
         .unwrap();
 
-    // Create 5 rooms and add user to each
     for i in 0..5 {
         let room = room_repo
             .create(&make_room(&format!("Room Pag {i}"), &owner.id))
@@ -1118,8 +1105,6 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
     assert_eq!(rows[0].3, 2, "only owner + active viewer should count");
 }
 
-// ========== diagnose_add_conflict tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_diagnose_add_conflict_banned_user() {
@@ -1203,8 +1188,6 @@ async fn test_diagnose_add_conflict_left_user() {
     assert!(rejoined.left_at.is_none());
 }
 
-// ========== banned_by ON DELETE RESTRICT constraint tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_banned_by_restricts_user_delete() {
@@ -1213,7 +1196,6 @@ async fn test_banned_by_restricts_user_delete() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create room owner (cannot delete this user due to rooms.created_by ON DELETE RESTRICT)
     let owner = user_repo
         .create(&make_user("owner_banned_by"))
         .await
@@ -1233,7 +1215,6 @@ async fn test_banned_by_restricts_user_delete() {
         .await
         .unwrap();
 
-    // Create a separate admin who will ban someone (this user can be deleted)
     let admin = user_repo
         .create(&make_user("admin_banned_by"))
         .await
@@ -1247,7 +1228,6 @@ async fn test_banned_by_restricts_user_delete() {
         .await
         .unwrap();
 
-    // Create and add a member who will be banned
     let banned_user = user_repo
         .create(&make_user("banned_by_user"))
         .await
@@ -1295,14 +1275,10 @@ async fn test_banned_by_restricts_user_delete() {
     );
 }
 
-// ========== Task #30: update_permissions left_at validation ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_permissions_after_member_left_should_fail() {
-    // CRITICAL: update_permissions should not allow updating permissions for
     // members who have left the room (left_at IS NOT NULL).
-    //
     // FIXED: update_permissions now checks left_at IS NULL in the WHERE clause,
     // returning OptimisticLockConflict for departed members.
 
@@ -1311,7 +1287,6 @@ async fn test_update_permissions_after_member_left_should_fail() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create owner and member
     let owner = user_repo
         .create(&make_user("owner_permissions_test"))
         .await
@@ -1321,7 +1296,6 @@ async fn test_update_permissions_after_member_left_should_fail() {
         .await
         .unwrap();
 
-    // Create room
     let room = room_repo
         .create(&make_room("Permissions Test Room", &owner.id))
         .await

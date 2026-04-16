@@ -340,8 +340,6 @@ mod tests {
     use crate::models::pagination::PageParams;
     use synctv_core_testing::create_test_pool;
 
-    // ========== Unit Tests (No Database Required) ==========
-
     /// Test CreateNotificationRequest struct creation with minimal fields
     #[test]
     fn test_create_notification_request_minimal() {
@@ -510,7 +508,6 @@ mod tests {
         }
     }
 
-    // ========== Integration Tests (Require Docker) ==========
     // Run with: cargo test -p synctv-core notification -- --ignored
 
     /// Test create() creates a notification in the database

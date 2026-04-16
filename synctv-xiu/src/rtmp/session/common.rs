@@ -38,7 +38,7 @@ use {
     tokio::sync::mpsc,
 };
 
-// Fixed #107: Rate limiting constants for DoS prevention
+// Rate limiting constants for DoS prevention
 const MAX_VIDEO_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS video (generous for 60 FPS + margin)
 const MAX_AUDIO_FRAMES_PER_SECOND: usize = 200; // Max 200 FPS audio (AAC 48kHz ~47fps, with generous margin)
 const MAX_METADATA_FRAMES_PER_SECOND: usize = 10; // Metadata updates are infrequent; 10/s is generous
@@ -94,7 +94,7 @@ pub struct Common {
     /* now used for subscriber session */
     statistic_data_sender: Option<StatisticDataSender>,
 
-    // Fixed #107: Separate per-track rate limiting for DoS prevention (sliding window).
+    // Separate per-track rate limiting for DoS prevention (sliding window).
     // Audio and video use independent rate limiters so that high audio frame rates
     // (e.g. AAC 48kHz) do not exhaust the video budget and vice versa.
     video_timestamps: VecDeque<Instant>,
@@ -129,7 +129,7 @@ impl Common {
         }
     }
 
-    // Fixed #107: Check per-track frame rate limit before accepting new frame.
+    // Check per-track frame rate limit before accepting new frame.
     // Audio and video have independent sliding-window counters so that one track's
     // high frame rate cannot starve the other.
     fn check_rate_limit(&mut self, frame_type: FrameType) -> bool {
@@ -282,7 +282,7 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Fixed #107: Apply per-track frame rate limiting to prevent DoS attacks
+        // Apply per-track frame rate limiting to prevent DoS attacks
         if !self.check_rate_limit(FrameType::Video) {
             tracing::warn!(
                 "Video frame dropped: rate limit exceeded ({} FPS max)",
@@ -326,7 +326,7 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Fixed #107: Apply per-track frame rate limiting to prevent DoS attacks
+        // Apply per-track frame rate limiting to prevent DoS attacks
         if !self.check_rate_limit(FrameType::Audio) {
             tracing::warn!(
                 "Audio frame dropped: rate limit exceeded ({} FPS max)",

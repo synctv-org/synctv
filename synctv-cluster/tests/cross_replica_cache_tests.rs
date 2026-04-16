@@ -36,14 +36,12 @@ async fn test_cross_replica_cache_invalidation() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
-    // Create a CacheInvalidationService for node A (local-only, no Redis stream)
     let cache_svc_a = Arc::new(CacheInvalidationService::new(
         "node_a".to_string(),
         "test:cache:inv".to_string(),
     ));
     let mut local_rx_a = cache_svc_a.subscribe();
 
-    // Create node A with cache invalidation enabled
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let conn_a = client_a
@@ -191,14 +189,12 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
-    // Create a CacheInvalidationService for node A
     let cache_svc_a = Arc::new(CacheInvalidationService::new(
         "node_a".to_string(),
         "test:perm:inv".to_string(),
     ));
     let mut local_rx_a = cache_svc_a.subscribe();
 
-    // Create node A with cache invalidation enabled
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let conn_a = client_a
@@ -271,7 +267,6 @@ async fn test_cluster_permission_cache_consistency() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
-    // Create cache invalidation services for both nodes
     let cache_svc_a = Arc::new(CacheInvalidationService::new(
         "perm_node_a".to_string(),
         format!("{key_prefix}perm:cache"),
@@ -284,7 +279,6 @@ async fn test_cluster_permission_cache_consistency() {
     let mut rx_a = cache_svc_a.subscribe();
     let mut rx_b = cache_svc_b.subscribe();
 
-    // Create nodes with cache invalidation
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client A");
     let conn_a = client_a
@@ -434,7 +428,6 @@ async fn test_concurrent_permission_cache_updates() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
-    // Create three nodes with cache invalidation
     let cache_svc_a = Arc::new(CacheInvalidationService::new(
         "concurrent_node_a".to_string(),
         format!("{key_prefix}concurrent:cache"),
@@ -452,7 +445,6 @@ async fn test_concurrent_permission_cache_updates() {
     let mut rx_b = cache_svc_b.subscribe();
     let mut rx_c = cache_svc_c.subscribe();
 
-    // Create nodes
     let client_a = redis::Client::open(redis.redis_url.clone()).expect("Redis client A");
     let conn_a = client_a
         .get_connection_manager()
@@ -629,12 +621,10 @@ async fn test_concurrent_permission_cache_updates() {
         }
     });
 
-    // Wait for all broadcasts to complete
     node_a_handle.await.expect("Node A broadcasts");
     node_b_handle.await.expect("Node B broadcasts");
     node_c_handle.await.expect("Node C broadcasts");
 
-    // Wait for listeners to finish
     handle_a.await.expect("Listener A");
     handle_b.await.expect("Listener B");
     handle_c.await.expect("Listener C");

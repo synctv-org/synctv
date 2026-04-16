@@ -25,15 +25,12 @@ fn rid(s: &str) -> RoomId {
     RoomId::from_string(s.to_string())
 }
 
-// ============================================================================
 // Test 1: Timeout clears RTC state to prevent race with cleanup
-// ============================================================================
 
 #[tokio::test]
 async fn test_timeout_clears_rtc_state() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -70,7 +67,6 @@ async fn test_timeout_clears_rtc_state() {
     assert!(conn.is_some(), "Connection should exist");
     assert!(conn.unwrap().rtc_joined, "Connection should be RTC-joined");
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this simulates the cleanup task
@@ -100,15 +96,12 @@ async fn test_timeout_clears_rtc_state() {
     mgr.unregister("conn1").await;
 }
 
-// ============================================================================
 // Test 2: Multiple concurrent timeouts
-// ============================================================================
 
 #[tokio::test]
 async fn test_multiple_concurrent_timeouts() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -139,7 +132,6 @@ async fn test_multiple_concurrent_timeouts() {
         "Should have 5 RTC-joined connections"
     );
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should clean up all expired sessions
@@ -168,15 +160,12 @@ async fn test_multiple_concurrent_timeouts() {
     }
 }
 
-// ============================================================================
 // Test 3: Timeout does not affect active sessions
-// ============================================================================
 
 #[tokio::test]
 async fn test_timeout_does_not_affect_active_sessions() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -226,15 +215,12 @@ async fn test_timeout_does_not_affect_active_sessions() {
     );
 }
 
-// ============================================================================
 // Test 4: Explicit leave after timeout is idempotent
-// ============================================================================
 
 #[tokio::test]
 async fn test_explicit_leave_after_timeout_is_idempotent() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -258,7 +244,6 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts
@@ -294,15 +279,12 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
     );
 }
 
-// ============================================================================
 // Test 5: Connection info accurately reflects RTC state after timeout
-// ============================================================================
 
 #[tokio::test]
 async fn test_connection_info_accurate_after_timeout() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -336,7 +318,6 @@ async fn test_connection_info_accurate_after_timeout() {
         "RTC joined timestamp should be set"
     );
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts

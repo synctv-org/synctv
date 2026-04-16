@@ -32,8 +32,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== update with stale version -> OptimisticLockConflict ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_stale_version_returns_optimistic_lock_conflict() {
@@ -64,8 +62,6 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     );
 }
 
-// ========== update on soft-deleted user -> NotFound ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_soft_deleted_user_returns_not_found() {
@@ -90,8 +86,6 @@ async fn test_update_soft_deleted_user_returns_not_found() {
     );
 }
 
-// ========== update_password on deleted user -> NotFound ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_password_deleted_user_returns_not_found() {
@@ -113,8 +107,6 @@ async fn test_update_password_deleted_user_returns_not_found() {
         "Expected NotFound for deleted user password update, got: {err:?}"
     );
 }
-
-// ========== get_by_ids with mixed existing/soft-deleted IDs ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

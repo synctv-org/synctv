@@ -175,7 +175,6 @@ async fn test_cascade_delete_user_deletes_rooms() {
 
     let owner = user_repo.create(&make_user("cascade_owner")).await.unwrap();
 
-    // Create two rooms for this owner
     let room1 = room_repo
         .create(&make_room("Room 1", "", &owner.id))
         .await
@@ -270,7 +269,6 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     };
     member_repo.add(&rm).await.unwrap();
 
-    // Create a top-level playlist for the room
     let root_playlist = Playlist {
         id: PlaylistId::new(),
         room_id: room.id.clone(),
@@ -380,8 +378,6 @@ async fn test_room_ban_status() {
     assert!(room_repo.is_accessible(&room.id).await.unwrap());
 }
 
-// ========== Optimistic Lock Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_stale_version_returns_optimistic_lock_conflict() {
@@ -460,7 +456,6 @@ async fn test_update_nonexistent_room_returns_not_found() {
         .await
         .unwrap();
 
-    // Create a room model but never persist it
     let room = make_room("Nonexistent Room", "", &owner.id);
 
     // Trying to update should return NotFound

@@ -42,9 +42,7 @@ use synctv_core_testing::{
     TestContainer,
 };
 
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Test infrastructure with shared `PostgreSQL` and Redis
 pub struct TestInfra {
@@ -187,9 +185,7 @@ async fn setup_test_room(pool: &PgPool) -> (User, Room) {
     (owner, room)
 }
 
-// ============================================================================
 // Test 1: Permission Change Cross-Replica Sync
-// ============================================================================
 
 /// Test that permission changes are synchronized across replicas via Redis.
 ///
@@ -209,7 +205,6 @@ async fn test_permission_change_cross_replica_sync() {
 
     let (_owner, room) = setup_test_room(pool).await;
 
-    // Create a member user
     let user_repo = UserRepository::new(pool.clone());
     let member_user = user_repo
         .create(&make_user("member_user"))
@@ -224,7 +219,6 @@ async fn test_permission_change_cross_replica_sync() {
         .await
         .expect("Failed to add member");
 
-    // Create two PermissionService instances (simulating two replicas)
     let cache_invalidation_1 = distributed_invalidation_service(
         redis_client.clone(),
         "node_a",
@@ -238,7 +232,6 @@ async fn test_permission_change_cross_replica_sync() {
     )
     .await;
 
-    // Start cache invalidation services so the XREADGROUP listener runs
     cache_invalidation_2
         .start()
         .await
@@ -246,7 +239,6 @@ async fn test_permission_change_cross_replica_sync() {
     // Give subscriber time to connect
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    // Create permission services with cache invalidation using with_invalidation constructor
     let permission_service_a = PermissionService::with_invalidation(
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
@@ -298,7 +290,6 @@ async fn test_permission_change_cross_replica_sync() {
         .invalidate_cache(&room.id, &member_user.id)
         .await;
 
-    // Wait for invalidation to propagate via Redis Pub/Sub
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Node B: Query permissions again (should fetch fresh data from DB)
@@ -341,7 +332,6 @@ async fn test_permission_cache_hit_on_same_node() {
 
     let (_owner, room) = setup_test_room(pool).await;
 
-    // Create a member user
     let user_repo = UserRepository::new(pool.clone());
     let member_user = user_repo
         .create(&make_user("cached_member"))
@@ -356,7 +346,6 @@ async fn test_permission_cache_hit_on_same_node() {
         .await
         .expect("Failed to add member");
 
-    // Create permission service
     let permission_service = PermissionService::new(
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
@@ -381,9 +370,7 @@ async fn test_permission_cache_hit_on_same_node() {
     assert_eq!(perms_1, perms_2, "Cached value should match original");
 }
 
-// ============================================================================
 // Test 2: Playback State Cross-Replica Sync
-// ============================================================================
 
 /// Test that playback state changes are synchronized across replicas.
 ///
@@ -403,7 +390,6 @@ async fn test_playback_state_cross_replica_sync() {
 
     let (_owner, room) = setup_test_room(pool).await;
 
-    // Create cache invalidation services
     let cache_invalidation_1 = distributed_invalidation_service(
         redis_client.clone(),
         "node_a",
@@ -417,14 +403,12 @@ async fn test_playback_state_cross_replica_sync() {
     )
     .await;
 
-    // Start cache invalidation service 2 so node B receives cross-replica messages
     cache_invalidation_2
         .start()
         .await
         .expect("Failed to start cache invalidation service 2");
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    // Create playback services
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -510,7 +494,6 @@ async fn test_playback_state_cross_replica_sync() {
         .await
         .expect("Failed to broadcast invalidation");
 
-    // Wait for invalidation to propagate
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     // Node B: Query playback state (should fetch fresh from DB)
@@ -551,7 +534,6 @@ async fn test_playback_state_invalidation_message_content() {
     )
     .await;
 
-    // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
     // Give the background subscriber time to connect
@@ -579,9 +561,7 @@ async fn test_playback_state_invalidation_message_content() {
     }
 }
 
-// ============================================================================
 // Test 3: Room Settings Cross-Replica Sync
-// ============================================================================
 
 /// Test that room settings changes are synchronized across replicas.
 ///
@@ -601,7 +581,6 @@ async fn test_room_settings_cross_replica_sync() {
 
     let (_owner, room) = setup_test_room(pool).await;
 
-    // Create room settings
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let initial_settings = RoomSettings {
         max_members: MaxMembers(10),
@@ -612,7 +591,6 @@ async fn test_room_settings_cross_replica_sync() {
         .await
         .expect("Failed to create settings");
 
-    // Create cache invalidation services
     let cache_invalidation_1 = distributed_invalidation_service(
         redis_client.clone(),
         "node_a",
@@ -649,7 +627,6 @@ async fn test_room_settings_cross_replica_sync() {
         .await
         .expect("Failed to broadcast invalidation");
 
-    // Wait for invalidation to propagate
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     // Node B: Query settings again
@@ -688,7 +665,6 @@ async fn test_room_settings_invalidation_message_broadcast() {
     )
     .await;
 
-    // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -717,9 +693,7 @@ async fn test_room_settings_invalidation_message_broadcast() {
     }
 }
 
-// ============================================================================
 // Test 4: Multiple Concurrent Invalidations
-// ============================================================================
 
 /// Test that multiple concurrent invalidations are handled correctly.
 #[tokio::test]
@@ -742,12 +716,10 @@ async fn test_concurrent_invalidation_messages() {
     )
     .await;
 
-    // Start the Redis listener on service2 so it picks up XADD messages
     service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    // Send multiple invalidations concurrently
     let room1 = RoomId::new();
     let room2 = RoomId::new();
     let user1 = UserId::new();
@@ -776,7 +748,6 @@ async fn test_concurrent_invalidation_messages() {
             .expect("Failed to invalidate user");
     });
 
-    // Wait for all broadcasts to complete
     h1.await.expect("Task 1 panicked");
     h2.await.expect("Task 2 panicked");
     h3.await.expect("Task 3 panicked");
@@ -810,9 +781,7 @@ async fn test_concurrent_invalidation_messages() {
     assert_eq!(user_count, 1, "Should receive 1 User message");
 }
 
-// ============================================================================
 // Test 5: Cache Consistency After Redis Reconnect
-// ============================================================================
 
 /// Test that cache remains consistent even after Redis disconnects.
 /// Note: This is a simplified test - full disconnect simulation requires more infrastructure.
@@ -824,7 +793,6 @@ async fn test_cache_consistency_without_redis() {
 
     let (_owner, room) = setup_test_room(pool).await;
 
-    // Create permission service WITHOUT Redis
     let permission_service = PermissionService::new(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
@@ -833,7 +801,6 @@ async fn test_cache_consistency_without_redis() {
         300,
     );
 
-    // Create a member user
     let user_repo = UserRepository::new(pool.clone());
     let member_user = user_repo
         .create(&make_user("isolated_member"))
@@ -894,9 +861,7 @@ async fn test_cache_consistency_without_redis() {
     );
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
 async fn start_redis() -> (RedisContainer, String) {
     start_redis_url_with_label("cluster-consistency").await

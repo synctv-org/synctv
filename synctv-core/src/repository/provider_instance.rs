@@ -1,5 +1,4 @@
 // Provider Instance Repository
-//
 // Database access layer for provider instance configuration management.
 
 use crate::models::{

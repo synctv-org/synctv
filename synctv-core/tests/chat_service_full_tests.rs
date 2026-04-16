@@ -136,8 +136,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== send_message: SEND_CHAT permission check ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_message_without_send_chat_permission_denied() {
@@ -191,7 +189,6 @@ async fn test_send_message_without_send_chat_permission_denied() {
         .await
         .unwrap();
 
-    // Attempt to send a message -- should fail
     let result = chat_service
         .send_message(room.id.clone(), member.id.clone(), "Hello".to_string())
         .await;
@@ -205,8 +202,6 @@ async fn test_send_message_without_send_chat_permission_denied() {
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
-
-// ========== send_message: chat_enabled room setting ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -225,7 +220,6 @@ async fn test_send_message_chat_disabled_rejected() {
         .await
         .unwrap();
 
-    // Create room with chat disabled
     let settings = RoomSettings {
         chat_enabled: ChatEnabled(false),
         ..Default::default()
@@ -260,8 +254,6 @@ async fn test_send_message_chat_disabled_rejected() {
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
-
-// ========== send_message: rate limit mapping ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -334,7 +326,6 @@ async fn test_send_message_rate_limit_triggers() {
         },
     );
 
-    // Send messages rapidly -- at least one should hit the rate limit
     let mut rate_limited = false;
     for i in 0..20 {
         let result = chat_service
@@ -348,8 +339,6 @@ async fn test_send_message_rate_limit_triggers() {
 
     assert!(rate_limited, "Should hit rate limit after rapid messages");
 }
-
-// ========== send_danmaku: danmaku_enabled setting ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -368,7 +357,6 @@ async fn test_send_danmaku_disabled_rejected() {
         .await
         .unwrap();
 
-    // Create room with danmaku disabled
     let settings = RoomSettings {
         danmaku_enabled: DanmakuEnabled(false),
         ..Default::default()
@@ -410,8 +398,6 @@ async fn test_send_danmaku_disabled_rejected() {
     }
 }
 
-// ========== delete_message: owner can delete own message ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_message_owner_can_delete_own() {
@@ -437,7 +423,6 @@ async fn test_delete_message_owner_can_delete_own() {
         .await
         .unwrap();
 
-    // Send a message
     let msg = chat_service
         .send_message(room.id.clone(), creator.id.clone(), "Delete me".to_string())
         .await
@@ -451,8 +436,6 @@ async fn test_delete_message_owner_can_delete_own() {
         "Owner should be able to delete their own message"
     );
 }
-
-// ========== delete_message: non-owner requires DELETE_CHAT permission ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -514,8 +497,6 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
-
-// ========== delete_message: non-owner WITH DELETE_CHAT permission succeeds ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -585,8 +566,6 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         "Non-owner with DELETE_CHAT should be able to delete"
     );
 }
-
-// ========== send_message: notification broadcast ==========
 
 /// Mock broadcaster that tracks broadcast calls
 struct NotificationObserver {
@@ -688,7 +667,6 @@ async fn test_send_message_broadcasts_to_room_members() {
         .await
         .unwrap();
 
-    // Create a counting mock broadcaster
     let observer = Arc::new(NotificationObserver::new());
 
     // Build chat service with the counting broadcaster
@@ -716,7 +694,6 @@ async fn test_send_message_broadcasts_to_room_members() {
     );
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
-    // Create NotificationService with the counting broadcaster
     let notification_service = NotificationService::default();
     let mut notification_rx = notification_service.subscribe();
     let room_settings_service = RoomSettingsService::new(
@@ -742,7 +719,6 @@ async fn test_send_message_broadcasts_to_room_members() {
         },
     );
 
-    // Create a room
     let (room, _) = room_service
         .create_room(
             "Broadcast Test Room".to_string(),
@@ -761,7 +737,6 @@ async fn test_send_message_broadcasts_to_room_members() {
         "No broadcasts should have occurred yet"
     );
 
-    // Send a message
     let msg = chat_service
         .send_message(
             room.id.clone(),
@@ -800,8 +775,6 @@ async fn test_send_message_broadcasts_to_room_members() {
     assert_eq!(msg.content, "Hello, world!", "Message content should match");
 }
 
-// ========== get_history: cursor pagination behavior ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_get_history_cursor_pagination_basic() {
@@ -827,7 +800,6 @@ async fn test_get_history_cursor_pagination_basic() {
         .await
         .unwrap();
 
-    // Send 5 messages with slight delays to ensure distinct timestamps
     let mut sent_messages = Vec::new();
     for i in 0..5 {
         let msg = chat_service
@@ -955,7 +927,6 @@ async fn test_get_history_single_page() {
         .await
         .unwrap();
 
-    // Send 3 messages
     for i in 0..3 {
         chat_service
             .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
@@ -1012,7 +983,6 @@ async fn test_get_history_limit_capped_at_100() {
         .await
         .unwrap();
 
-    // Send 105 messages
     for i in 0..105 {
         chat_service
             .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
@@ -1050,7 +1020,6 @@ async fn test_get_history_messages_from_correct_room() {
         .await
         .unwrap();
 
-    // Create two rooms
     let (room1, _) = room_service
         .create_room(
             "Room 1".to_string(),
@@ -1072,7 +1041,6 @@ async fn test_get_history_messages_from_correct_room() {
         .await
         .unwrap();
 
-    // Send messages to each room
     chat_service
         .send_message(
             room1.id.clone(),
@@ -1115,8 +1083,6 @@ async fn test_get_history_messages_from_correct_room() {
     );
 }
 
-// ========== A1: send_danmaku broadcasts to notification service ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_danmaku_broadcasts_to_room_members() {
@@ -1129,7 +1095,6 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         .await
         .unwrap();
 
-    // Create a counting mock broadcaster
     let observer = Arc::new(NotificationObserver::new());
 
     // Build chat service with the counting broadcaster
@@ -1141,7 +1106,6 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         .await
         .unwrap();
 
-    // Create a room
     let (room, _) = room_service
         .create_room(
             "Danmaku Broadcast Room".to_string(),
@@ -1162,7 +1126,6 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
 
     let mut notification_rx = notification_service.subscribe();
 
-    // Send a danmaku
     let request = SendDanmakuRequest {
         room_id: room.id.clone(),
         content: "Test danmaku".to_string(),
@@ -1206,8 +1169,6 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
     assert_eq!(danmaku.color, "#FF0000", "Danmaku color should match");
 }
 
-// ========== A2: ChatMessage.user_id is None for deleted users ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_chat_history_with_deleted_user_returns_none_user_id() {
@@ -1236,7 +1197,6 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
         .await
         .unwrap();
 
-    // Send a message
     let msg = chat_service
         .send_message(
             room.id.clone(),
@@ -1278,8 +1238,6 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
     );
 }
 
-// ========== C4: Oversized message rejected ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_message_oversized_content_rejected() {
@@ -1308,7 +1266,6 @@ async fn test_send_message_oversized_content_rejected() {
         .await
         .unwrap();
 
-    // Send a message that exceeds MAX_CHAT_MESSAGE_CHARS (500 chars)
     let oversized_content: String = "x".repeat(501);
     let result = chat_service
         .send_message(room.id.clone(), creator.id.clone(), oversized_content)
@@ -1325,8 +1282,6 @@ async fn test_send_message_oversized_content_rejected() {
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
-
-// ========== send_message with valid content ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1376,8 +1331,6 @@ async fn test_send_message_valid_content_persisted() {
     assert_eq!(history[0].content, "Hello, valid message!");
 }
 
-// ========== Content filtering (HTML/XSS stripping) ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_message_html_xss_stripped() {
@@ -1406,7 +1359,6 @@ async fn test_send_message_html_xss_stripped() {
         .await
         .unwrap();
 
-    // Send message with HTML/XSS payload
     let msg = chat_service
         .send_message(
             room.id.clone(),
@@ -1428,8 +1380,6 @@ async fn test_send_message_html_xss_stripped() {
         msg.content
     );
 }
-
-// ========== Delete message with None user_id (deleted user) ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

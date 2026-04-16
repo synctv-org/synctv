@@ -9,9 +9,7 @@
 use synctv_core::models::{MediaId, PlaylistId, UserId};
 use synctv_core::service::media::{AddMediaRequest, EditMediaRequest};
 
-// ============================================================================
 // Batch size validation
-// ============================================================================
 
 /// Mirrors the batch size limit from `MediaService::add_media_batch`
 const MAX_BATCH_SIZE: usize = 100;
@@ -44,9 +42,7 @@ fn test_add_media_batch_empty_accepted() {
     assert!(validate_batch_size(0).is_ok());
 }
 
-// ============================================================================
 // Permission logic tests (extracted from MediaService)
-// ============================================================================
 
 /// Determines which permission is needed for `remove_media` based on ownership.
 /// Returns "self" if the user owns the media, "any" otherwise.
@@ -89,7 +85,6 @@ fn test_add_media_permission_denied() {
     // Without a real PermissionService, we verify the logic flow:
     // If a user lacks ADD_MEDIA permission, the service should error before
     // doing any database work.
-    //
     // This test verifies the AddMediaRequest can be constructed properly.
     let request = AddMediaRequest {
         playlist_id: Some(PlaylistId::new()),
@@ -147,9 +142,7 @@ fn test_remove_batch_mixed_permissions() {
     assert!(needs_any, "Should need DELETE_MEDIA_ANY for others' items");
 }
 
-// ============================================================================
 // Request construction tests
-// ============================================================================
 
 #[test]
 fn test_add_media_request_with_null_source_config() {

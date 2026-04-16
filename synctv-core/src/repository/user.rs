@@ -747,8 +747,6 @@ mod tests {
         );
     }
 
-    // ========== Integration Tests (Require DB via testcontainers) ==========
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_user() {

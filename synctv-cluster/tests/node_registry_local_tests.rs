@@ -25,7 +25,6 @@ async fn test_local_only_starts_in_standalone_mode() {
         NodeRegistry::new_local_only("test-node-standalone".to_string(), 30, "standalone:")
             .expect("new_local_only should succeed");
 
-    // Should be in Standalone mode since there's no Redis
     assert_eq!(
         registry.cluster_mode(),
         ClusterMode::Standalone,
@@ -176,7 +175,6 @@ async fn test_local_only_fencing_token() {
         NodeRegistry::new_local_only("test-node-fencing".to_string(), 30, "fencingtest:")
             .expect("new_local_only should succeed");
 
-    // Should be able to get a fencing token
     let token = registry.current_fencing_token();
     assert_eq!(token.node_id, "test-node-fencing");
     assert!(token.epoch >= 1, "Epoch should start at 1 or higher");

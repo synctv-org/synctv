@@ -84,7 +84,6 @@ impl EndpointBreaker {
 
         // The underlying breaker returned `true`.  This happens in both
         // `Closed` and `HalfOpen` states.
-        //
         // Only apply the single-probe guard when the circuit was previously
         // open (`was_open = true`).  In `Closed` state `was_open` is always
         // `false` so all concurrent calls proceed without restriction.

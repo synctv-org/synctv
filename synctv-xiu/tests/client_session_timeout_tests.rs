@@ -47,7 +47,6 @@ async fn create_responsive_server_with_extra_data() -> (u16, tokio::task::JoinHa
             let mut buf = vec![0u8; 4096];
             let _ = stream.read(&mut buf).await;
 
-            // Send complete S0 + S1 + S2 response
             let mut response = vec![3u8]; // S0 - version
             response.extend_from_slice(&[0u8; 1536]); // S1
             response.extend_from_slice(&[0u8; 1536]); // S2
@@ -76,7 +75,6 @@ async fn create_responsive_server_with_extra_data() -> (u16, tokio::task::JoinHa
 async fn test_client_session_handshake_timeout_no_response() {
     let (port, _server_handle) = create_hanging_server_after_accept().await;
 
-    // Connect to the hanging server
     let stream = TcpStream::connect(format!("127.0.0.1:{port}"))
         .await
         .unwrap();
@@ -131,10 +129,6 @@ async fn test_bytesio_timeout_mechanism() {
 #[test]
 fn test_client_session_handshake_uses_timeout_wrapper() {
     // Verify that the implementation uses:
-    // 1. HANDSHAKE_TIMEOUT = 10 seconds (matching ServerSession)
-    // 2. MAX_HANDSHAKE_BUFFER = 8192 bytes (matching ServerSession)
-    // 3. tokio::time::timeout wrapper on each read
-    // 4. Returns SessionErrorValue::Timeout on timeout
 
     // These constants should match ServerSession's implementation
     const HANDSHAKE_TIMEOUT_SECS: u64 = 10;

@@ -7,7 +7,6 @@ use synctv_media_providers::AlistClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// === Path validation tests ===
 // validate_path is a private function, but we test it indirectly through the public API
 // (fs_get, fs_list, etc.) which call validate_path internally.
 
@@ -98,8 +97,6 @@ async fn test_validate_path_dotfiles_accepted() {
         "Dotfile path should be accepted: {result:?}"
     );
 }
-
-// === Wiremock HTTP API tests ===
 
 #[tokio::test]
 async fn test_alist_client_login_success() {
@@ -251,9 +248,7 @@ async fn test_alist_client_5xx_retries() {
     assert_eq!(result.unwrap().name, "video.mp4");
 }
 
-// ============================================================================
 // MP4: AlistClient::fs_other wiremock test
-// ============================================================================
 
 #[tokio::test]
 async fn test_alist_client_fs_other_success() {
@@ -336,9 +331,7 @@ async fn test_alist_client_fs_other_no_preview() {
     assert!(resp.video_preview_play_info.is_none());
 }
 
-// ============================================================================
 // MP4: AlistClient::fs_search wiremock test
-// ============================================================================
 
 #[tokio::test]
 async fn test_alist_client_fs_search_success() {
@@ -425,9 +418,7 @@ async fn test_alist_client_fs_search_traversal_rejected() {
     );
 }
 
-// ============================================================================
 // MP6: AlistClient::me wiremock test
-// ============================================================================
 
 #[tokio::test]
 async fn test_alist_client_me_success() {
@@ -486,9 +477,7 @@ async fn test_alist_client_me_unauthorized() {
     );
 }
 
-// ============================================================================
 // MP7: AlistClient::login with hashed=true
-// ============================================================================
 
 #[tokio::test]
 async fn test_alist_client_login_hashed_success() {

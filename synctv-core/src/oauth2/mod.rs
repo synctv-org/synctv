@@ -18,9 +18,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ============================================================================
 // Provider Trait
-// ============================================================================
 
 /// `OAuth2` provider trait
 ///
@@ -66,9 +64,7 @@ pub struct OAuth2UserInfo {
     pub email_verified: bool,
 }
 
-// ============================================================================
 // Provider Registry
-// ============================================================================
 
 /// Factory function type for creating providers
 ///

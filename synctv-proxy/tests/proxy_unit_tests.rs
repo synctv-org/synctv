@@ -8,9 +8,7 @@ use synctv_proxy::{
     rewrite_uri_attribute_with_count,
 };
 
-// ------------------------------------------------------------------
 // Helper: build a reqwest request and inspect the resulting headers
-// ------------------------------------------------------------------
 
 fn build_and_get_headers(
     url: &str,
@@ -24,9 +22,7 @@ fn build_and_get_headers(
     built.headers().clone()
 }
 
-// ==================================================================
 // apply_provider_headers
-// ==================================================================
 
 #[test]
 fn test_default_user_agent_added_when_absent() {
@@ -121,9 +117,7 @@ fn test_unparseable_url_no_referer_crash() {
     );
 }
 
-// ==================================================================
 // rewrite_m3u8
-// ==================================================================
 
 #[test]
 fn test_rewrite_m3u8_absolute_segment_unchanged() {
@@ -237,9 +231,7 @@ fn test_rewrite_m3u8_max_urls_truncated() {
     );
 }
 
-// ==================================================================
 // percent_encode
-// ==================================================================
 
 #[test]
 fn test_percent_encode_special_chars() {
@@ -269,9 +261,7 @@ fn test_percent_encode_already_safe() {
     assert_eq!(percent_encode("~"), "%7E");
 }
 
-// ==================================================================
 // SSRF ACL IP checks (formerly validate_proxy_url_static)
-// ==================================================================
 
 #[test]
 fn test_ssrf_acl_private_ip_blocked() {
@@ -311,9 +301,7 @@ fn test_ssrf_acl_loopback_blocked() {
     );
 }
 
-// ==================================================================
 // make_absolute (additional coverage)
-// ==================================================================
 
 #[test]
 fn test_make_absolute_no_base_returns_raw() {
@@ -329,9 +317,7 @@ fn test_make_absolute_root_relative() {
     );
 }
 
-// ==================================================================
 // rewrite_uri_attribute_with_count
-// ==================================================================
 
 #[test]
 fn test_rewrite_uri_single_uri() {
@@ -381,9 +367,7 @@ fn test_rewrite_uri_no_uri_attribute() {
     assert_eq!(result, "#EXT-X-VERSION:3");
 }
 
-// ==================================================================
 // percent_encode - unicode
-// ==================================================================
 
 #[test]
 fn test_percent_encode_unicode() {
@@ -396,14 +380,11 @@ fn test_percent_encode_unicode() {
 #[test]
 fn test_percent_encode_cjk() {
     let encoded = percent_encode("\u{4e16}\u{754c}"); // Chinese: "world"
-                                                      // Should be percent-encoded (multi-byte UTF-8)
     assert!(!encoded.contains('\u{4e16}'));
     assert!(encoded.contains('%'));
 }
 
-// ==================================================================
 // SSRF ACL - additional edge cases
-// ==================================================================
 
 #[test]
 fn test_ssrf_acl_link_local_blocked() {
@@ -425,9 +406,7 @@ fn test_ssrf_acl_cgnat_blocked() {
     );
 }
 
-// ==================================================================
 // PX4: M3U8 EXT-X-MAP URI rewriting
-// ==================================================================
 
 #[test]
 fn test_rewrite_m3u8_ext_x_map_uri_rewritten() {
@@ -552,9 +531,7 @@ fn test_rewrite_m3u8_variant_playlist_with_ext_x_map() {
     );
 }
 
-// ==================================================================
 // PX5: Referer query string test
-// ==================================================================
 
 #[test]
 fn test_referer_constructed_from_url_with_query() {
@@ -635,9 +612,7 @@ fn test_provider_headers_forwarded_with_referer() {
     );
 }
 
-// ==================================================================
 // PX3: Body size scan() combinator (unit-level)
-// ==================================================================
 
 #[test]
 fn test_max_proxy_body_size_constant() {
@@ -650,9 +625,7 @@ fn test_max_proxy_body_size_constant() {
     assert!(!synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip));
 }
 
-// ==================================================================
 // Proxy SSRF ACL - additional edge cases
-// ==================================================================
 
 #[test]
 fn test_ssrf_acl_ipv6_loopback_blocked() {
@@ -694,9 +667,7 @@ fn test_ssrf_acl_cloud_metadata_blocked() {
     );
 }
 
-// ==================================================================
 // make_absolute - additional edge cases
-// ==================================================================
 
 #[test]
 fn test_make_absolute_protocol_relative() {
@@ -730,9 +701,7 @@ fn test_make_absolute_deep_relative() {
     );
 }
 
-// ==================================================================
 // M3U8 SSRF Security Tests
-// ==================================================================
 
 /// Test that directory traversal attacks in M3U8 segment URLs are properly
 /// resolved and normalized. A segment like `../../../etc/passwd` should
@@ -980,9 +949,7 @@ fn test_make_absolute_scheme_injection() {
     );
 }
 
-// ==================================================================
 // M3U8 SSRF End-to-End Validation Tests
-// ==================================================================
 
 /// Test that malicious URLs in M3U8 are rewritten through the proxy.
 /// The SSRF-safe DNS resolver will block private IPs at connection time.
@@ -1109,9 +1076,7 @@ fn test_m3u8_ssrf_encoded_traversal() {
     );
 }
 
-// ==================================================================
 // M3U8 Double Encoding Bug Tests
-// ==================================================================
 
 /// Test that already-encoded URLs are NOT double-encoded
 /// This is a regression test for the bug where %20 becomes %2520

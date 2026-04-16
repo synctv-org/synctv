@@ -28,7 +28,6 @@ async fn test_circuit_breaker_failure_below_threshold() {
 async fn test_circuit_breaker_opens_at_threshold() {
     let pool = GrpcConnectionPool::with_defaults();
 
-    // Connect 5 times to a non-existent server (CIRCUIT_BREAKER_THRESHOLD = 5)
     for _ in 0..5 {
         let _ = pool.get_channel("127.0.0.1:65534").await;
     }

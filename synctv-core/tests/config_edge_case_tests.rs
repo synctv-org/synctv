@@ -9,9 +9,7 @@
 use std::net::IpAddr;
 use synctv_core::config::{Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig};
 
-// ============================================================================
 // Trusted proxy matching
-// ============================================================================
 
 fn make_server_config(proxies: Vec<String>) -> ServerConfig {
     ServerConfig {
@@ -79,9 +77,7 @@ fn test_is_trusted_proxy_invalid_entry_ignored() {
     assert!(!config.is_trusted_proxy(&"10.0.0.2".parse().unwrap()));
 }
 
-// ============================================================================
 // Database URL password masking in Debug output
-// ============================================================================
 
 #[test]
 fn test_database_config_debug_masks_password() {
@@ -112,9 +108,7 @@ fn test_database_config_debug_no_password() {
     assert!(debug.contains("localhost:5432"));
 }
 
-// ============================================================================
 // Redis config debug masking
-// ============================================================================
 
 #[test]
 fn test_redis_config_debug_masks_password() {
@@ -133,9 +127,7 @@ fn test_redis_config_debug_masks_password() {
     );
 }
 
-// ============================================================================
 // Redis deployment mode parsing
-// ============================================================================
 
 #[test]
 fn test_redis_deployment_mode_serde_roundtrip() {
@@ -160,9 +152,7 @@ fn test_redis_deployment_mode_rename_all() {
     assert!(serde_json::from_str::<RedisDeploymentMode>("\"cluster\"").is_err());
 }
 
-// ============================================================================
 // Config validation edge cases
-// ============================================================================
 
 #[test]
 fn test_config_api_address() {
@@ -183,9 +173,7 @@ fn test_config_debug_redacts_secrets() {
     );
 }
 
-// ============================================================================
 // BootstrapConfig security tests
-// ============================================================================
 
 #[test]
 fn test_config_validate_rejects_empty_root_password_when_creating_root() {

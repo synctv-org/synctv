@@ -44,9 +44,7 @@ fn redis_brute_force_protection(
     BruteForceProtection::new_with_config(key_prefix, username_tracker, ip_tracker, config)
 }
 
-// ============================================================================
 // InMemoryAttemptTracker tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_in_memory_tracker_record_and_get() {
@@ -86,9 +84,7 @@ async fn test_in_memory_tracker_reset_clears() {
     assert_eq!(count, 0);
 }
 
-// ============================================================================
 // BruteForceProtection tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_brute_force_below_threshold_allowed() {
@@ -116,7 +112,6 @@ async fn test_brute_force_at_tier1_threshold_locked() {
         protection.record_failure("bob", ip).await.unwrap();
     }
 
-    // Should be locked out
     let result = protection.check_allowed("bob", ip).await;
     assert!(result.is_err(), "5 failures should trigger tier1 lockout");
 
@@ -185,22 +180,18 @@ async fn test_brute_force_reset_unlocks() {
         protection.record_failure("dave", None).await.unwrap();
     }
 
-    // Should be locked
     assert!(protection.check_allowed("dave", None).await.is_err());
 
     // Reset
     protection.reset("dave").await.unwrap();
 
-    // Should be unlocked
     assert!(
         protection.check_allowed("dave", None).await.is_ok(),
         "Reset should unlock the account"
     );
 }
 
-// ============================================================================
 // RedisAttemptTracker tests (require testcontainers)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -247,9 +238,7 @@ async fn test_redis_tracker_reset() {
     assert_eq!(count, 0, "Reset should clear the Redis key");
 }
 
-// ============================================================================
 // BruteForceProtection::with_redis E2E tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -264,7 +253,6 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
         protection.record_failure("redis_user", ip).await.unwrap();
     }
 
-    // Should be locked out
     let result = protection.check_allowed("redis_user", ip).await;
     assert!(
         result.is_err(),
@@ -319,9 +307,7 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     assert!(result.is_ok(), "reset_ip should unlock the IP via Redis");
 }
 
-// ============================================================================
 // RedisAttemptTracker degradation tracking tests
-// ============================================================================
 
 /// Test that `RedisAttemptTracker` tracks degradation state correctly
 #[tokio::test]
@@ -468,10 +454,6 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     assert_eq!(tracker.degraded_operation_count(), 0);
 }
 
-// ============================================================================
-// BruteForceConfig tests (Task #64)
-// ============================================================================
-
 use synctv_core::service::auth::brute_force::BruteForceConfig;
 
 /// Test `BruteForceConfig::custom_thresholds()` with custom values
@@ -556,7 +538,6 @@ async fn test_brute_force_with_custom_tier1_threshold() {
             .unwrap();
     }
 
-    // Should be locked out at 3 failures (not 5)
     let result = protection.check_allowed("custom_user", None).await;
     assert!(
         result.is_err(),
@@ -688,10 +669,6 @@ fn test_brute_force_config_from_json() {
     assert_eq!(config.attempts_ttl_secs, 1200);
     assert_eq!(config.ip_attempts_ttl_secs, 900);
 }
-
-// ============================================================================
-// IP-only Failure Tracking Tests (Task #74)
-// ============================================================================
 
 /// Test `record_ip_failure` only increments IP counter, not username counter
 #[tokio::test]

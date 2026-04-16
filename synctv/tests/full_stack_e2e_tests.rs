@@ -7227,7 +7227,6 @@ async fn full_stack_grpc_message_stream_requires_join_room_first() {
     let mut room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
         .expect("connect room gRPC client");
-    // Send stream without x-room-id metadata - should fail before stream establishment
     let outbound = stream::iter(vec![ClientMessage::default()]);
     let mut request = tonic::Request::new(outbound);
     request

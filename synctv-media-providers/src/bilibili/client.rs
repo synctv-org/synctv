@@ -107,9 +107,7 @@ impl BilibiliEndpoints {
     }
 }
 
-// ============================================================================
 // WBI Signing
-// ============================================================================
 
 /// Predefined character-index table for generating the WBI mixin key.
 /// This table is derived from Bilibili's frontend JavaScript and maps
@@ -3050,9 +3048,7 @@ pub struct SegmentBaseData {
     pub initialization_range: String,
 }
 
-// ============================================================================
 // From trait implementations for proto conversion
-// ============================================================================
 
 impl From<&SegmentBaseData> for crate::grpc::bilibili::SegmentBase {
     fn from(data: &SegmentBaseData) -> Self {
@@ -3396,8 +3392,6 @@ mod tests {
         assert_eq!(Quality::P480.as_str(), "480P");
     }
 
-    // === Extended URL Extraction Tests ===
-
     #[test]
     fn test_extract_bvid_various_formats() {
         // Standard video URL
@@ -3475,8 +3469,6 @@ mod tests {
         ));
     }
 
-    // === URL Matching Tests ===
-
     #[test]
     fn test_match_url_video() {
         let (media_type, id) =
@@ -3515,8 +3507,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // === Quality Tests ===
-
     #[test]
     fn test_quality_all_variants() {
         assert_eq!(Quality::P1080.to_qn(), 80);
@@ -3554,8 +3544,6 @@ mod tests {
         }
     }
 
-    // === Client Creation Tests ===
-
     #[test]
     fn test_client_creation_no_cookies() {
         let client = BilibiliClient::new().unwrap();
@@ -3573,8 +3561,6 @@ mod tests {
             Some(&"abc123".to_string())
         );
     }
-
-    // === Type Deserialization Tests ===
 
     #[test]
     fn test_video_page_info_deserialize() {
@@ -3646,8 +3632,6 @@ mod tests {
         assert_eq!(resp.data.qrcode_key, "abc123");
         assert_eq!(resp.ttl, 180);
     }
-
-    // === WBI Signing Tests ===
 
     #[test]
     fn test_extract_key_from_url() {
@@ -3901,8 +3885,6 @@ mod tests {
         assert!(resp.data.wbi_img.is_none());
     }
 
-    // === is_wbi_stale_error Tests ===
-
     #[test]
     fn test_is_wbi_stale_error_minus_352() {
         let err = BilibiliError::Api {
@@ -3941,8 +3923,6 @@ mod tests {
         let err = BilibiliError::Parse("bad json".to_string());
         assert!(!BilibiliClient::is_wbi_stale_error(&err));
     }
-
-    // === build_cookie_header Tests ===
 
     #[test]
     fn test_build_cookie_header_empty_returns_none() {
@@ -4007,8 +3987,6 @@ mod tests {
     // Note: WBI Key Refresh Coordination tests were removed as they referenced
     // a non-existent WbiKeyCache struct. The WBI key caching is handled by
     // instance-scoped `WbiState` shared explicitly by a `BilibiliService`.
-
-    // ========== B5: .expect("REASON") panic prevention ==========
 
     #[test]
     fn test_parse_danmaku_gift_with_huge_count_no_panic() {
@@ -4108,8 +4086,6 @@ mod tests {
             "unexpected error: {err}"
         );
     }
-
-    // ========== parse_danmaku_packet failure case tests ==========
 
     #[test]
     fn test_parse_danmaku_packet_too_short_returns_empty() {

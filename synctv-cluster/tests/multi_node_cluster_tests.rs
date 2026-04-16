@@ -138,7 +138,6 @@ async fn test_node_discovery_three_nodes() {
         .await
         .expect("Failed to register node C");
 
-    // Wait for moka cache to expire (5s TTL) so uncached query hits Redis
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Each registry should see all 3 nodes
@@ -354,7 +353,6 @@ async fn test_leader_election_single_leader() {
     let _handle_b = elector_b.start(cancel_b.clone());
     let _handle_c = elector_c.start(cancel_c.clone());
 
-    // Wait for the election to settle.
     wait_until("initial leader election", Duration::from_secs(5), || {
         let leader_count = [
             elector_a.is_leader(),
@@ -405,7 +403,6 @@ async fn test_leader_election_single_leader() {
         _ => unreachable!(),
     }
 
-    // Wait for lease expiration and failover election to converge.
     wait_until("leader failover", Duration::from_secs(10), || {
         [
             (!cancel_a.is_cancelled(), elector_a.is_leader()),

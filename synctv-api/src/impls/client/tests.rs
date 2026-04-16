@@ -13,8 +13,6 @@ use synctv_core::models::{
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 use synctv_core::RedisConnectionRuntime;
 
-// === Timing Attack Protection Tests ===
-
 /// Minimum delay constant used in password verification during `join_room`.
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
@@ -317,8 +315,6 @@ fn test_timing_protection_simulation() {
     );
 }
 
-// === Password Validation Tests ===
-
 #[test]
 fn test_validate_password_for_set_valid() {
     assert!(validate_password_for_set("abcd").is_ok());
@@ -477,8 +473,6 @@ fn test_livestream_backend_error_finds_nested_stream_error() {
     );
 }
 
-// === Proto Role Conversion Tests ===
-
 #[test]
 fn test_proto_role_to_room_role_all_variants() {
     assert_eq!(
@@ -550,8 +544,6 @@ fn test_user_role_to_proto_roundtrip() {
     }
 }
 
-// === User Proto Conversion Tests ===
-
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
     synctv_core::models::User {
         id: UserId::from_string("test_user_id".to_string()),
@@ -586,8 +578,6 @@ fn test_user_to_proto_basic() {
     );
     assert!(proto.email_verified);
 }
-
-// === Provider Error Mapping Tests ===
 
 #[test]
 fn test_provider_error_not_found_preserves_not_found_semantics() {
@@ -701,8 +691,6 @@ fn test_user_to_proto_no_email() {
     assert_eq!(proto.email, ""); // None -> empty string
 }
 
-// === Room Proto Conversion Tests ===
-
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
     synctv_core::models::Room {
         id: RoomId::from_string("test_room_id".to_string()),
@@ -772,8 +760,6 @@ fn test_hot_room_embedded_room_member_count_uses_online_count_semantics() {
     assert_eq!(proto.total_members, total_members);
     assert_ne!(proto.room.as_ref().unwrap().member_count, total_members);
 }
-
-// === Playback State Conversion Tests ===
 
 #[test]
 fn test_playback_state_to_proto() {
@@ -854,8 +840,6 @@ fn test_playback_state_to_proto_no_media() {
     assert!(!proto.is_playing);
 }
 
-// === Media Proto Conversion Tests ===
-
 fn make_test_media() -> synctv_core::models::Media {
     let now = chrono::Utc::now();
     synctv_core::models::Media {
@@ -905,8 +889,6 @@ fn test_media_to_proto_direct_media_uses_direct_url_instance_binding() {
     let proto = media_to_proto(&media);
     assert_eq!(proto.provider_instance_name, "direct_url");
 }
-
-// === Room Member Conversion Tests ===
 
 fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
     synctv_core::models::RoomMemberWithUser {
@@ -965,8 +947,6 @@ fn test_room_member_to_proto_custom_permissions() {
     assert_eq!(proto.removed_permissions, 0x0F);
 }
 
-// === Playlist Conversion Tests ===
-
 #[test]
 fn test_playlist_to_proto() {
     let playlist = synctv_core::models::Playlist {
@@ -1016,8 +996,6 @@ fn test_playlist_to_proto_dynamic() {
     assert_eq!(proto.parent_id, "pl1");
     assert!(proto.is_dynamic);
 }
-
-// === Pagination Normalization Tests (Issue 2) ===
 
 #[test]
 fn test_pagination_page_zero_treated_as_one() {
@@ -1113,25 +1091,16 @@ fn test_members_to_proto_pattern_preserves_custom_permissions() {
     assert_eq!(result.removed_permissions, 0x0F);
 }
 
-// === P2#23: Playlist total size limit tests ===
-
 const _: () = assert!(
     super::ClientApiImpl::MAX_PLAYLIST_SIZE > 100,
     "MAX_PLAYLIST_SIZE must exceed single batch limit"
 );
 
-// === A6: Permission calculation in list_my_rooms tests ===
-
 #[test]
 fn test_joined_rooms_permission_needs_three_layer_calculation() {
     // This test documents the bug: role.permissions() gives only role-level
     // defaults, missing room-level and member-level overrides.
-    //
     // Correct calculation requires:
-    //   1. Global default for role (from SettingsRegistry)
-    //   2. Room-level overrides (room_added / room_removed)
-    //   3. Member-level overrides (added/removed permissions)
-    //
     // Using role.permissions() directly skips layers 1 (global settings) and 2 (room overrides).
 
     let mut member = make_test_member(RoomRole::Member);
@@ -1177,8 +1146,6 @@ fn test_effective_permissions_applies_member_overrides() {
     );
 }
 
-// === H7: add_media provider instance name resolution ===
-// These tests verify the fix for H7 where add_media was using the provider
 // type name (e.g., "bilibili") instead of the instance ID (e.g., "bilibili_main")
 // for registry lookup.
 
@@ -1187,7 +1154,6 @@ fn test_add_media_batch_uses_provider_instance_name() {
     // add_media_batch correctly uses provider_instance_name from request items.
     // This test documents that the batch path uses item.provider_instance_name
     // directly (not the provider type name), serving as a regression guard.
-    //
     // Single-item add_media is stricter now: non-direct providers must send an
     // explicit provider_instance_name instead of falling back to req.provider.
     // The batch path already used item.provider_instance_name directly.
@@ -1199,8 +1165,6 @@ fn test_add_media_batch_uses_provider_instance_name() {
         "Instance name and type name must be different to catch the bug"
     );
 }
-
-// === M13: Playback version i64 not truncated to i32 ===
 
 #[test]
 fn test_playback_state_version_no_truncation() {
@@ -1243,5 +1207,3 @@ fn test_playback_state_version_i32_range_still_works() {
     let proto = playback_state_to_proto(&state);
     assert_eq!(proto.version, 42);
 }
-
-// === P2#11: update_room_settings empty settings permission bypass ===

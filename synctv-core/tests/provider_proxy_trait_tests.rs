@@ -29,9 +29,7 @@ fn new_store() -> Arc<dyn ProviderStore> {
     Arc::new(InMemoryProviderStore::new(1000))
 }
 
-// ---------------------------------------------------------------------------
 // as_provider_proxy() casting tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bilibili_has_provider_proxy() {
@@ -85,9 +83,7 @@ async fn provider_set_registers_live_providers() {
     assert!(registry.get("live_proxy").is_some());
 }
 
-// ---------------------------------------------------------------------------
 // lookup_versioned edge cases
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_lookup_versioned_store_error_propagates() {

@@ -111,13 +111,11 @@ async fn test_create_nested_playlists() {
         .await
         .unwrap();
 
-    // Create root
     let root = playlist_repo
         .create(&make_playlist(&room.id, "Root", None, 0))
         .await
         .unwrap();
 
-    // Create child under root
     let child = playlist_repo
         .create(&make_playlist(&room.id, "Child 1", Some(&root.id), 0))
         .await
@@ -125,7 +123,6 @@ async fn test_create_nested_playlists() {
     assert_eq!(child.parent_id.as_ref().unwrap(), &root.id);
     assert_eq!(child.name, "Child 1");
 
-    // Create grandchild under child
     let grandchild = playlist_repo
         .create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0))
         .await
@@ -159,7 +156,6 @@ async fn test_position_sorting() {
         .await
         .unwrap();
 
-    // Create children with explicit positions
     let _child_b = playlist_repo
         .create(&make_playlist(&room.id, "B", Some(&root.id), 1))
         .await
@@ -350,20 +346,16 @@ async fn test_next_append_position_uses_sparse_floating_positions() {
     tx.commit().await.unwrap();
 }
 
-// ========== Task #9: Advisory Lock Key Consistency ==========
-//
 // VERIFIED: scope-level advisory locking is centralized in the repository and
 // append-position computation uses the same scope lock.
 // use the SAME hash strategy for computing advisory lock keys. This ensures
 // they acquire the SAME lock for the same (room_id, parent_id) pair.
-//
 // The unified strategy: (room_bits << 31) | parent_bits
 // - room_bits: lower 31 bits of room_id hash
 // - parent_bits: lower 31 bits of parent_id hash (0 if None)
 
 #[test]
 fn test_advisory_lock_key_consistency_between_methods() {
-    // CRITICAL: Both methods MUST use the same hash strategy for the same
     // (room_id, parent_id) pair, otherwise the lock provides no protection.
 
     use std::hash::{Hash, Hasher};
@@ -431,14 +423,10 @@ fn test_advisory_lock_key_consistency_between_methods() {
     );
 }
 
-// ========== Task #56: Advisory lock key collision prevention ==========
-
 #[test]
 fn test_advisory_lock_key_no_collision_between_different_parents() {
-    // CRITICAL: Verify that different (room_id, parent_id) pairs generate
     // distinct advisory lock keys. A collision would cause unrelated playlist
     // operations to block each other unnecessarily.
-    //
     // The old implementation used DefaultHasher which could theoretically
     // produce collisions.
 
@@ -519,21 +507,16 @@ async fn test_duplicate_names_are_allowed_within_same_parent() {
         .await
         .unwrap();
 
-    // Create another child with the same display name under the same parent
     let duplicate = make_playlist(&room.id, "SameName", Some(&root.id), 1);
     let created = playlist_repo.create(&duplicate).await.unwrap();
     assert_eq!(created.name, "SameName");
     assert_ne!(created.id, root.id);
 }
 
-// ========== Task #17: Cross-room parent_id validation ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cross_room_parent_id_rejected() {
-    // CRITICAL: This test verifies that a playlist cannot have a parent_id
     // from a different room. This is a data integrity and security requirement.
-    //
     // BUG: Currently the FK only references playlists(id), not (room_id, id).
     // This allows cross-room parent references, breaking room isolation.
 
@@ -547,7 +530,6 @@ async fn test_cross_room_parent_id_rejected() {
         .await
         .unwrap();
 
-    // Create two separate rooms
     let room_a = room_repo
         .create(&make_room("Room A", &owner.id))
         .await
@@ -557,13 +539,11 @@ async fn test_cross_room_parent_id_rejected() {
         .await
         .unwrap();
 
-    // Create top-level playlist in Room A
     let root_a = playlist_repo
         .create(&make_playlist(&room_a.id, "Room A Top", None, 0))
         .await
         .unwrap();
 
-    // Create top-level playlist in Room B
     let _root_b = playlist_repo
         .create(&make_playlist(&room_b.id, "Room B Top", None, 0))
         .await
@@ -622,13 +602,11 @@ async fn test_same_room_parent_id_allowed() {
         .await
         .unwrap();
 
-    // Create root
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
         .unwrap();
 
-    // Create child in the same room - this should succeed
     let child = make_playlist(&room.id, "Valid Child", Some(&root.id), 0);
     let result = playlist_repo.create(&child).await;
 
@@ -638,8 +616,6 @@ async fn test_same_room_parent_id_allowed() {
     assert_eq!(created.parent_id.as_ref().unwrap(), &root.id);
     assert_eq!(created.room_id, room.id);
 }
-
-// ========== Pagination Tests for get_room_playlists ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -706,7 +682,6 @@ async fn test_get_by_room_paginated_first_page() {
         .await
         .unwrap();
 
-    // Create 5 children
     for i in 0..5 {
         playlist_repo
             .create(&make_playlist(
@@ -750,7 +725,6 @@ async fn test_get_by_room_paginated_second_page() {
         .await
         .unwrap();
 
-    // Create 5 children
     for i in 0..5 {
         playlist_repo
             .create(&make_playlist(
@@ -795,7 +769,6 @@ async fn test_get_by_room_paginated_last_partial_page() {
         .await
         .unwrap();
 
-    // Create 5 children (total 6)
     for i in 0..5 {
         playlist_repo
             .create(&make_playlist(
@@ -840,7 +813,6 @@ async fn test_get_by_room_paginated_large_dataset() {
         .await
         .unwrap();
 
-    // Create 149 children (total 150)
     for i in 0..149 {
         playlist_repo
             .create(&make_playlist(
@@ -933,7 +905,6 @@ async fn test_get_by_room_paginated_respects_page_size_limit() {
         .await
         .unwrap();
 
-    // Create 150 children
     for i in 0..150 {
         playlist_repo
             .create(&make_playlist(

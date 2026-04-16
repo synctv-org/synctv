@@ -91,9 +91,7 @@ fn make_cluster_config_with_prefix(
     }
 }
 
-// ============================================================================
 // Test 1: Cross-node message broadcast via Redis Pub/Sub
-// ============================================================================
 
 /// Test that a message published from one node is received by another node.
 #[tokio::test]
@@ -101,12 +99,10 @@ fn make_cluster_config_with_prefix(
 async fn test_cross_node_broadcast() {
     let (container, redis_client1, conn1) = setup_redis().await;
 
-    // Create a second Redis connection for node2
     let redis_url = container.connection_url();
     let redis_client2 =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
 
-    // Wait for connection 2 (generous timeout for parallel testcontainer startup)
     let conn2 = {
         let mut retries = 0;
         loop {
@@ -121,7 +117,6 @@ async fn test_cross_node_broadcast() {
         }
     };
 
-    // Create two cluster managers (simulating two nodes) with separate Redis clients
     // but the same key prefix so they participate in the same logical cluster.
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(
@@ -171,9 +166,7 @@ async fn test_cross_node_broadcast() {
     manager2.shutdown().await;
 }
 
-// ============================================================================
 // Test 2: Message deduplication across nodes
-// ============================================================================
 
 /// Test that duplicate events are detected correctly.
 #[tokio::test]
@@ -249,7 +242,6 @@ async fn test_dedup_ttl_expiry() {
     assert!(should_process1, "First occurrence should be processable");
     dedup.mark_processed(key.clone());
 
-    // Wait for TTL to expire
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // After expiry, should be processable again
@@ -310,9 +302,7 @@ async fn test_dedup_with_different_events() {
     );
 }
 
-// ============================================================================
 // Test 3: Redis unavailable graceful degradation
-// ============================================================================
 
 /// Test that `ClusterManager` works without Redis (single-node mode).
 #[tokio::test]
@@ -356,9 +346,7 @@ async fn test_single_node_mode_without_redis() {
     manager.shutdown().await;
 }
 
-// ============================================================================
 // Test 4: PubSub subscription management
-// ============================================================================
 
 /// Test that room subscriptions are properly tracked in Redis.
 #[tokio::test]
@@ -440,9 +428,7 @@ async fn test_multiple_subscriptions_same_room() {
     manager.shutdown().await;
 }
 
-// ============================================================================
 // Test 5: Critical event delivery
-// ============================================================================
 
 /// Test that critical events (kick, permission change) are delivered reliably.
 #[tokio::test]
@@ -522,9 +508,7 @@ async fn test_critical_event_delivery() {
     manager2.shutdown().await;
 }
 
-// ============================================================================
 // Test 6: Event type routing
-// ============================================================================
 
 /// Test that events are routed to the correct channels based on type.
 #[tokio::test]
@@ -669,9 +653,7 @@ async fn test_critical_event_classification() {
     .is_critical());
 }
 
-// ============================================================================
 // Test 7: Broadcast result tracking
-// ============================================================================
 
 /// Test that broadcast returns correct recipient count.
 #[tokio::test]
@@ -721,9 +703,7 @@ async fn test_broadcast_recipient_count() {
     manager.shutdown().await;
 }
 
-// ============================================================================
 // Test 8: Cache invalidation event
-// ============================================================================
 
 /// Test cache invalidation event serialization.
 #[tokio::test]
@@ -755,9 +735,7 @@ async fn test_cache_invalidation_event() {
     assert!(decoded.user_id().is_none());
 }
 
-// ============================================================================
 // Test 9: Media removed batch event
-// ============================================================================
 
 /// Test batch media removal event for efficiency.
 #[tokio::test]
@@ -792,9 +770,7 @@ async fn test_media_removed_batch_event() {
     }
 }
 
-// ============================================================================
 // Test 10: User notification event
-// ============================================================================
 
 /// Test user notification event for real-time delivery.
 #[tokio::test]
@@ -821,9 +797,7 @@ async fn test_user_notification_event() {
     assert!(extra.contains("notif-123"));
 }
 
-// ============================================================================
 // Test 11: DedupKey from event
-// ============================================================================
 
 /// Test that `DedupKey` correctly extracts fields from events.
 #[tokio::test]
@@ -851,9 +825,7 @@ async fn test_dedup_key_from_event() {
     assert_eq!(key.extra, event_id);
 }
 
-// ============================================================================
 // Test 12: Room subscribers listing
-// ============================================================================
 
 /// Test getting room subscriber list.
 #[tokio::test]
@@ -886,9 +858,7 @@ async fn test_get_room_subscribers() {
     manager.shutdown().await;
 }
 
-// ============================================================================
 // Test 13: Cluster metrics
-// ============================================================================
 
 /// Test cluster metrics reporting.
 #[tokio::test]

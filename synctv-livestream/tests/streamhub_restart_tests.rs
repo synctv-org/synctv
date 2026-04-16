@@ -44,7 +44,6 @@ async fn test_two_phase_cleanup_normal_completion() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    // Wait for completion with timeout
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
     assert!(result.is_ok(), "Stop should complete within timeout");
     assert!(
@@ -78,14 +77,12 @@ async fn test_two_phase_cleanup_timeout() {
         }
     });
 
-    // Send stop request
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
     stop_started_rx
         .await
         .expect("receiver should observe the stop request");
 
-    // Wait with short timeout (should timeout)
     let result = tokio::time::timeout(TIGHT_STOP_TIMEOUT, stop_done_rx).await;
     assert!(result.is_err(), "Should timeout when stop takes too long");
 
@@ -187,26 +184,21 @@ async fn test_restart_sequence_ordering() {
     });
 
     // Simulate the restart loop sequence:
-    // 1. Set restarting flag FIRST (blocks new stream creation)
     is_restarting.store(true, Ordering::Release);
 
-    // 2. Send stop request and wait for completion
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
     assert!(result.is_ok(), "Stop should complete within timeout");
 
-    // 3. Only AFTER stop completes, notify re-registration
     reregister_notify.notify_one();
 
-    // Wait for re-registration to complete
     tokio::time::timeout(HANDSHAKE_TIMEOUT, reregister_handle)
         .await
         .unwrap()
         .unwrap();
 
-    // 4. Verify restarting flag is cleared
     assert!(
         !is_restarting.load(Ordering::Acquire),
         "Restarting flag should be cleared"
@@ -251,7 +243,6 @@ async fn test_try_send_with_oneshot_response() {
 /// Test that channel full condition is handled gracefully.
 #[tokio::test]
 async fn test_try_send_full_handling() {
-    // Create a channel with capacity 1
     let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
 
     // Don't consume from receiver, so channel will be full
@@ -310,7 +301,6 @@ async fn test_restarting_flag_set_before_stop_request() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    // Wait for completion
     tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx)
         .await
         .unwrap()
@@ -337,9 +327,7 @@ async fn test_restarting_flag_set_before_stop_request() {
     let _ = receiver_handle.await;
 }
 
-// ============================================================================
 // Stop completion timeout behavior
-// ============================================================================
 
 /// Cleanup should complete successfully when it exceeds the tight timeout used
 /// by the timeout-path test but still fits within the normal stop completion
@@ -373,9 +361,7 @@ async fn test_stop_all_completes_with_reasonable_cleanup_delay() {
     let _ = receiver_handle.await;
 }
 
-// ============================================================================
 // Race condition fix: Verify restart mutex and publication blocking
-// ============================================================================
 
 /// Test that concurrent restart attempts are serialized via a mutex.
 ///
@@ -421,7 +407,6 @@ async fn test_restart_mutex_serializes_concurrent_attempts() {
     }
     start_barrier.wait().await;
 
-    // Wait for all restarts to complete
     for handle in handles {
         handle.await.unwrap();
     }
@@ -453,33 +438,25 @@ async fn test_restart_mutex_serializes_concurrent_attempts() {
 #[tokio::test]
 async fn test_restarting_flag_set_before_hub_exit() {
     // This test verifies the ordering: is_restarting = true -> hub exit -> cleanup
-    //
     // In the actual implementation, we need to set is_restarting BEFORE
     // the hub.run() returns. However, since hub exit is unpredictable,
     // the fix is to:
-    // 1. Use a mutex to block new publications during the critical section
-    // 2. Check the mutex in on_publish before allowing registration
 
     let is_restarting = Arc::new(AtomicBool::new(false));
     let publications_allowed = Arc::new(AtomicBool::new(true));
 
     // Simulate the restart flow:
-    // 1. Hub is about to exit - set restarting flag FIRST
     is_restarting.store(true, Ordering::Release);
     publications_allowed.store(false, Ordering::Release);
 
-    // 2. Now publications are blocked
     assert!(
         !publications_allowed.load(Ordering::Acquire),
         "Publications should be blocked as soon as restart begins"
     );
 
-    // 3. Hub exits, cleanup happens
-    // 4. New hub starts, re-registration completes
     publications_allowed.store(true, Ordering::Release);
     is_restarting.store(false, Ordering::Release);
 
-    // 5. Publications are allowed again
     assert!(
         publications_allowed.load(Ordering::Acquire),
         "Publications should be allowed after restart completes"
@@ -643,27 +620,21 @@ async fn test_complete_restart_flow_with_mutex() {
     let tx = stop_streams_tx.clone();
 
     let restart_handle = tokio::spawn(async move {
-        // 1. Acquire restart mutex (blocks concurrent restarts)
         let _guard = mutex.lock().await;
 
-        // 2. Set restarting flag FIRST (blocks new publications)
         restarting.store(true, Ordering::Release);
 
-        // 3. Send stop request and wait for completion
         let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
         tx.send(stop_done_tx).await.unwrap();
 
         let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, stop_done_rx).await;
         assert!(result.is_ok(), "Stop should complete");
 
-        // 4. Notify re-registration
         notify.notify_one();
 
-        // 5. Clear restarting flag
         restarting.store(false, Ordering::Release);
     });
 
-    // Wait for restart to complete
     tokio::time::timeout(Duration::from_secs(1), restart_handle)
         .await
         .unwrap()

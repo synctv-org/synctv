@@ -1,15 +1,12 @@
 // HLS Segment lifecycle manager
-//
 // Responsibilities:
 // - Track active streams and their segments
 // - Periodic cleanup of expired segments
 // - Provide segment metadata for M3U8 generation
-//
 // Storage key format (flat structure):
 // - Format: "app_name-stream_name-ts_name"
 // - Example: "live-room123-a1b2c3d4e5f6"
 // - No prefix, no extension, no directory hierarchy
-//
 // Architecture:
 // - Storage layer: Pure KV storage (FileStorage/MemoryStorage/OssStorage)
 // - SegmentManager: Business logic (retention policy, cleanup scheduling)

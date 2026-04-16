@@ -34,7 +34,6 @@ async fn setup_redis() -> (RedisContainer, redis::Client, String) {
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
-    // Wait for Redis to be ready
     let mut conn = {
         let mut retries = 0;
         loop {
@@ -142,7 +141,6 @@ async fn test_heartbeat_reregistration_has_backoff() {
         "Should be in backoff period"
     );
 
-    // Wait for backoff to expire
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     // Now re-registration should be allowed
@@ -361,7 +359,6 @@ async fn test_backoff_resets_after_recovery() {
     // Backoff should be active
     assert!(registry.is_in_reregister_backoff(), "Should be in backoff");
 
-    // Wait for backoff to expire
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Now re-registration should succeed

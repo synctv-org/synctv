@@ -383,8 +383,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ==================== XSS Protection Tests ====================
-
     #[test]
     fn test_xss_script_tags() {
         let filter = ContentFilter::new();
@@ -740,8 +738,6 @@ mod tests {
         let result = filter.filter_chat("<scr\x00ipt>alert(1)</script>").unwrap();
         assert!(!result.contains("alert") || !result.contains("<script"));
     }
-
-    // ==================== Additional Security Tests ====================
 
     #[test]
     fn test_xss_css_injection() {

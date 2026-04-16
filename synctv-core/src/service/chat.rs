@@ -313,7 +313,6 @@ impl ChatService {
         }
 
         // Validate color format (hex color: #RRGGBB with hex digits only).
-        //
         // We use `chars().count()` instead of `.len()` to correctly reject
         // multi-byte UTF-8 strings that happen to have a byte-length of 7.
         // For a valid ASCII `#RRGGBB` string, chars().count() == len() == 7,

@@ -6,9 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use synctv_cluster::sync::redis_pubsub::is_sentinel_failover_error;
 
-// ============================================================================
 // Test 1: READONLY is detected as failover
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_readonly() {
@@ -19,9 +17,7 @@ fn test_real_is_sentinel_failover_error_readonly() {
     );
 }
 
-// ============================================================================
 // Test 2: LOADING is detected as failover
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_loading() {
@@ -32,9 +28,7 @@ fn test_real_is_sentinel_failover_error_loading() {
     );
 }
 
-// ============================================================================
 // Test 3: Other errors are NOT failover errors
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_other() {
@@ -57,9 +51,7 @@ fn test_real_is_sentinel_failover_error_other() {
     );
 }
 
-// ============================================================================
 // Test 4: Nested anyhow context hides inner error from to_string()
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_nested_context_hides() {
@@ -82,9 +74,7 @@ fn test_real_is_sentinel_failover_error_nested_context_hides() {
     );
 }
 
-// ============================================================================
 // Test 5: Case sensitivity check
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_case_sensitive() {
@@ -105,9 +95,7 @@ fn test_real_is_sentinel_failover_error_case_sensitive() {
     );
 }
 
-// ============================================================================
 // Test 6: Empty error message
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_empty() {
@@ -118,9 +106,7 @@ fn test_real_is_sentinel_failover_error_empty() {
     );
 }
 
-// ============================================================================
 // Test 7: Both patterns in same message
-// ============================================================================
 
 #[test]
 fn test_real_is_sentinel_failover_error_both_patterns() {

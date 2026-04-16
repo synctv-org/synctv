@@ -17,9 +17,7 @@ fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     Arc::new(NodeRegistry::new_local_only(node_id.to_string(), 30, "test:").unwrap())
 }
 
-// =====================================================================
 // NodeInfo tests
-// =====================================================================
 
 #[tokio::test]
 async fn test_node_info_serialization() {
@@ -51,9 +49,7 @@ async fn test_node_info_is_stale() {
     assert!(node.is_stale(30));
 }
 
-// =====================================================================
 // NodeRegistry tests (actual implementation, local mode)
-// =====================================================================
 
 #[tokio::test]
 async fn test_node_registry_register_and_get() {
@@ -133,9 +129,7 @@ async fn test_node_registry_get_nonexistent() {
     assert!(node.is_none());
 }
 
-// =====================================================================
 // HealthMonitor tests (actual implementation)
-// =====================================================================
 
 #[tokio::test]
 async fn test_health_monitor_initial_state() {
@@ -168,9 +162,7 @@ async fn test_health_monitor_start_and_shutdown() {
     monitor.shutdown().await;
 }
 
-// =====================================================================
 // LoadBalancer tests (actual implementation, local mode)
-// =====================================================================
 
 #[tokio::test]
 async fn test_load_balancer_empty_cluster_returns_error() {
@@ -322,9 +314,7 @@ async fn test_load_balancer_select_by_id() {
     assert!(lb.select_node_by_id("nonexistent").await.is_err());
 }
 
-// =====================================================================
 // Quorum logic (algorithmic test, no mock -- pure function)
-// =====================================================================
 
 #[tokio::test]
 async fn test_quorum_validation() {

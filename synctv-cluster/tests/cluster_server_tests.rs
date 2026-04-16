@@ -45,9 +45,7 @@ fn with_cluster_secret<T>(mut request: Request<T>, secret: &str) -> Request<T> {
     request
 }
 
-// ============================================================================
 // validate_node_id tests
-// ============================================================================
 
 /// Empty `node_id` -> `invalid_argument`.
 #[tokio::test]
@@ -155,9 +153,7 @@ async fn test_deregister_node_valid_id_returns_error_when_registry_cleanup_fails
     assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
-// ============================================================================
 // get_user_online_status: MAX_USER_IDS+1 -> invalid_argument
-// ============================================================================
 
 /// Sending more than 1000 user IDs -> `invalid_argument`.
 #[tokio::test]
@@ -208,9 +204,7 @@ async fn test_get_user_online_status_at_limit() {
     );
 }
 
-// ============================================================================
 // connection_manager=None -> empty results
-// ============================================================================
 
 /// `get_user_online_status` with no `ConnectionManager` returns empty.
 #[tokio::test]
@@ -256,9 +250,7 @@ async fn test_get_room_connections_no_connection_manager() {
     );
 }
 
-// ============================================================================
 // deregister_node: epoch-required check
-// ============================================================================
 
 /// `deregister_node` with epoch=0 -> `invalid_argument` (epoch is required).
 #[tokio::test]
@@ -312,9 +304,7 @@ async fn test_deregister_node_valid_epoch_returns_error_when_cleanup_fails() {
     assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
-// ============================================================================
 // With connection runtime: actual user/room queries
-// ============================================================================
 
 #[tokio::test]
 async fn test_get_user_online_status_with_connection_manager() {

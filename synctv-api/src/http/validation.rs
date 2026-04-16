@@ -690,9 +690,7 @@ pub fn validate_playback_speed(speed: f64) -> ValidationResult<f64> {
     Ok(speed)
 }
 
-// ============================================================================
 // Pagination Validation
-// ============================================================================
 
 /// Default page number when not specified
 pub const DEFAULT_PAGE: i32 = 1;
@@ -1250,8 +1248,6 @@ mod tests {
         assert!(validate_playback_speed(5.0).is_err()); // Too fast
     }
 
-    // ========== Pagination Validation Tests ==========
-
     #[test]
     fn test_validate_page_with_none() {
         // None should return default page
@@ -1427,8 +1423,6 @@ mod tests {
         let exact_url =
             "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX - 20);
         assert!(validate_oauth2_redirect_url(Some(&exact_url)).is_ok());
-
-        // ============ Native/Mobile App Custom Schemes ============
 
         // Valid custom scheme for mobile app
         let result = validate_oauth2_redirect_url(Some("mysynctv://oauth2/callback"));

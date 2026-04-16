@@ -55,10 +55,10 @@ fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
 /// Response:
 /// ```json
 /// {
-///   "ticket": "abc123...",
-///   "room_id": "abc123",
-///   "expires_in_secs": 30,
-///   "usage": "Use in WebSocket URL: ws://host/ws/rooms/abc123?ticket=xxx"
+/// "ticket": "abc123...",
+/// "room_id": "abc123",
+/// "expires_in_secs": 30,
+/// "usage": "Use in WebSocket URL: ws://host/ws/rooms/abc123?ticket=xxx"
 /// }
 /// ```
 #[cfg_attr(
@@ -116,8 +116,7 @@ pub async fn create_ticket(
     }
 
     // Check if ticket service is available
-    // Create a new room-bound ticket for this user (Issue #65)
-    // Include password_version so tickets are invalidated on password change
+    // Create a new room-bound ticket for this user  // Include password_version so tickets are invalidated on password change
     let ticket = state
         .ws_ticket_service
         .create_ticket(&auth.user_id, &room_id, auth.password_version)

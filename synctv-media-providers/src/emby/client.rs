@@ -786,8 +786,6 @@ mod tests {
         assert!(client.has_credentials());
     }
 
-    // === Emby Types Deserialization Tests ===
-
     #[test]
     fn test_auth_response_deserialize() {
         let json = r#"{
@@ -909,8 +907,6 @@ mod tests {
         assert!(!direct_play.is_empty());
     }
 
-    // === Proto Conversion Tests ===
-
     #[test]
     fn test_media_stream_to_proto() {
         let stream = crate::emby::types::MediaStream {
@@ -970,8 +966,6 @@ mod tests {
         assert!(proto.enable_all_folders);
     }
 
-    // === Item ID Validation Tests ===
-
     #[test]
     fn test_validate_item_id_normal() {
         assert!(validate_item_id("12345").is_ok());
@@ -996,8 +990,6 @@ mod tests {
     fn test_validate_item_id_rejects_null_bytes() {
         assert!(validate_item_id("abc\0def").is_err());
     }
-
-    // === API Prefix Detection Tests ===
 
     #[test]
     fn test_api_prefix_no_false_positive_on_path() {

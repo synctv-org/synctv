@@ -457,8 +457,6 @@ async fn create_dynamic_sensitive_playlist(
         .expect("Dynamic sensitive playlist should be created")
 }
 
-// ========== Sequential Mode Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_sequential_advance_to_next() {
@@ -550,8 +548,6 @@ async fn test_sequential_end_of_playlist_returns_none() {
     assert!(result.is_none(), "Should return None at end of playlist");
 }
 
-// ========== RepeatOne Mode Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_repeat_one_replays_current() {
@@ -603,8 +599,6 @@ async fn test_repeat_one_replays_current() {
     );
 }
 
-// ========== RepeatAll Mode Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_repeat_all_wraps_around_at_end() {
@@ -630,7 +624,6 @@ async fn test_repeat_all_wraps_around_at_end() {
     let media3 = insert_media(&pool, &playlist.id, &room.id, "third", 2).await;
 
     let playback = room_service.playback_service();
-    // Start at last item
     playback
         .switch(
             room.id.clone(),
@@ -704,8 +697,6 @@ async fn test_repeat_all_middle_advances_to_next() {
         "RepeatAll mid-playlist should advance normally"
     );
 }
-
-// ========== Shuffle Mode Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -806,8 +797,6 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
     );
 }
 
-// ========== Auto-Play Disabled ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_auto_play_disabled_returns_none() {
@@ -860,8 +849,6 @@ async fn test_auto_play_disabled_returns_none() {
     );
 }
 
-// ========== Empty Playlist ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_empty_playlist_returns_none() {
@@ -891,8 +878,6 @@ async fn test_empty_playlist_returns_none() {
 
     assert!(result.is_none(), "Empty playlist should return None");
 }
-
-// ========== No Currently Playing Media ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1108,8 +1093,6 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
 }
-
-// ========== Dynamic Playlist Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

@@ -770,7 +770,6 @@ async fn scenario_channel_creation_from_db_config() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create instance in DB through the validated management path.
     let instance = make_reachable_remote_instance("test-instance-1", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -808,7 +807,6 @@ async fn scenario_channel_cache_hit() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create reachable instance in DB.
     let instance = make_reachable_remote_instance("test-instance-2", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -835,7 +833,6 @@ async fn scenario_channel_cache_ttl_expiration() {
         spawn_authenticated_provider_server("remote-provider-test-secret").await;
     let host = "cache-ttl.test.localhost";
 
-    // Create a manager and back it with a reachable remote instance.
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new_with_address_overrides(
         Arc::new(repo),
@@ -849,7 +846,6 @@ async fn scenario_channel_cache_ttl_expiration() {
     // First get - populates cache
     let _ = manager.get("test-instance-3").await;
 
-    // Wait for cache to expire (default TTL is 300s, but we can't easily test this
     // without modifying the manager or using a custom build)
     // For now, we just verify the cache is being used
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -858,9 +854,6 @@ async fn scenario_channel_cache_ttl_expiration() {
     let _ = manager.get("test-instance-3").await;
 
     // Note: Testing actual TTL expiration would require:
-    // 1. Making cache_ttl configurable via constructor
-    // 2. Setting a very short TTL (e.g., 100ms)
-    // 3. Waiting and verifying cache miss
     // This is left as an exercise for future enhancement
 
     health_handle.abort();
@@ -896,10 +889,8 @@ async fn scenario_redis_invalidation_on_delete() {
         address_overrides,
     );
 
-    // Start invalidation listener
     manager2.start_invalidation_listener().await.unwrap();
 
-    // Create instance via manager1
     let instance = make_reachable_remote_instance("test-instance-5", host, health_addr.port());
     manager1.add(instance.clone()).await.unwrap();
 
@@ -1070,7 +1061,6 @@ async fn scenario_health_check_integration() {
         )]),
     );
 
-    // Create instance in DB
     let mut instance = make_test_instance("test-instance-6");
     instance.endpoint = format!("http://health-check.test.localhost:{}", health_addr.port());
     instance.providers = vec!["alist".to_string()];
@@ -1110,12 +1100,10 @@ async fn scenario_health_check_respects_enabled_flag() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create enabled instance
     let instance_enabled =
         make_reachable_remote_instance("test-instance-7a", host, health_addr.port());
     manager.add(instance_enabled).await.unwrap();
 
-    // Create disabled instance
     let instance_disabled = make_test_instance("test-instance-7b");
     let mut disabled = instance_disabled.clone();
     disabled.enabled = false;
@@ -1418,10 +1406,8 @@ async fn scenario_tls_configuration_secure() {
     flush_provider_instances(&infra).await;
     let _repo = provider_repo(&infra.pool);
 
-    // Create instance with secure TLS (not insecure)
     let instance = make_test_instance_tls("test-instance-8", false);
 
-    // Create the instance directly in the repository without creating a channel
     // This avoids the rustls crypto provider issue in test environment
     let repo_instance = provider_repo(&infra.pool);
     repo_instance.create(&instance).await.unwrap();
@@ -1460,7 +1446,6 @@ async fn scenario_tls_configuration_insecure() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Create instance with insecure TLS. The add() eagerly connects for
     // insecure TLS (connect_with_connector), so use a short timeout to avoid
     // waiting for the remote to respond. The test exercises the TLS code path.
     let instance = {
@@ -1653,7 +1638,6 @@ async fn scenario_fallback_when_channel_creation_fails() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Create instance with invalid endpoint (will fail SSRF validation)
     let mut instance = make_test_instance("test-instance-12");
     instance.endpoint = "http://invalid-host-with-invalid-port:99999".to_string();
     let result = manager.add(instance.clone()).await;
@@ -1681,7 +1665,6 @@ async fn scenario_enable_disable_instance() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create enabled instance
     let instance = make_reachable_remote_instance("test-instance-13", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -1853,7 +1836,6 @@ async fn scenario_reconnect_instance() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create instance
     let instance = make_reachable_remote_instance("test-instance-14", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -1893,7 +1875,6 @@ async fn scenario_add_duplicate_instance_fails() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create instance
     let instance = make_reachable_remote_instance("test-instance-15", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -2304,7 +2285,6 @@ async fn scenario_get_all_instances() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create multiple instances
     for i in 1..=3 {
         let instance = make_reachable_remote_instance(
             &format!("test-instance-18a-{i}"),
@@ -2360,14 +2340,12 @@ async fn scenario_manager_without_redis() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Start invalidation listener - should return Ok without starting
     let result = manager.start_invalidation_listener().await;
     assert!(
         result.is_ok(),
         "Starting invalidation listener without Redis should succeed"
     );
 
-    // Create instance
     let instance = make_reachable_remote_instance("test-instance-19", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
 
@@ -2401,7 +2379,6 @@ async fn scenario_init_pre_warms_cache() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create instances before init
     for i in 1..=3 {
         let instance = make_reachable_remote_instance(
             &format!("test-instance-20-{i}"),
@@ -2527,7 +2504,6 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Create instance with public endpoint (will fail connection, but pass SSRF)
     let mut instance = make_test_instance("test-instance-22");
     instance.endpoint = "http://example.com:50051".to_string();
 
@@ -2602,7 +2578,6 @@ async fn scenario_cache_respects_max_capacity() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    // Create instances (default max is 1000, so this won't test eviction)
     // This is more of a sanity check that the cache doesn't panic
     for i in 1..=10 {
         let instance = make_reachable_remote_instance(
@@ -2772,7 +2747,6 @@ async fn scenario_provider_instance_supports_provider() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
 
-    // Create instance with multiple providers
     let instance = ProviderInstance {
         name: "test-instance-25".to_string(),
         endpoint: "http://localhost:50051".to_string(),

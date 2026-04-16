@@ -95,8 +95,6 @@ fn test_extract_token_partial_match_not_confused() {
     assert!(result.is_none());
 }
 
-// ========== on_play always rejected test ==========
-
 #[tokio::test]
 async fn test_on_play_always_rejected() {
     // Verify the documented behavior: RTMP play is always rejected.
@@ -108,12 +106,7 @@ async fn test_on_play_always_rejected() {
     assert!(rejection_msg.contains("HLS"));
 }
 
-// ========== PublisherGuard rollback tests ==========
-//
-// These tests verify that when RTMP authentication succeeds but StreamHub
 // publish fails, the Redis publisher entry is properly cleaned up.
-//
-// Issue: RTMP 推流认证后 `publish_to_stream_hub()` 失败时 Redis 残留 publisher 条目
 
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -258,38 +251,29 @@ async fn test_full_publish_failure_sequence() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let auth = Arc::new(MockAuthCallback::new(registry.clone()));
 
-    // Step 1: Auth succeeds (register in registry)
     let auth_result = auth.on_publish("room1", "media1", None).await;
     assert!(auth_result.is_ok(), "Auth should succeed");
 
-    // Step 2: Verify registry has the publisher
     let is_active = registry.is_stream_active("room1", "media1").await.unwrap();
     assert!(is_active, "Publisher should be active after auth");
 
-    // Step 3: Simulate StreamHub publish failure
     // (in real code this would be publish_to_stream_hub() returning Err)
     let streamhub_success = false;
 
-    // Step 4: If StreamHub failed, call rollback
     if !streamhub_success {
         auth.on_publish_rollback("room1", "media1", None).await;
     }
 
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-    // Step 5: Verify cleanup
     assert!(
         !registry.is_stream_active("room1", "media1").await.unwrap(),
         "Publisher should be cleaned up after StreamHub failure"
     );
 }
 
-// ========== RTMP Player Settings Tests ==========
-//
-// These tests verify the expected behavior of RTMP play authorization
 // based on room settings. The actual implementation is in SyncTvRtmpAuth
 // (synctv crate) which has access to RoomSettingsService.
-//
 // Default behavior: RTMP play is disabled (rtmp_player = false)
 // Only when room admin explicitly enables rtmp_player should play be allowed.
 
@@ -384,9 +368,6 @@ async fn rtmp_play_default_is_rejected() {
     );
 }
 
-// ========== StreamHub Restart Race Condition Tests ==========
-//
-// These tests verify that publications are rejected during StreamHub restart
 // to prevent race conditions in the cleanup -> re-registration window.
 
 use std::sync::atomic::AtomicBool;
@@ -465,7 +446,6 @@ async fn test_publication_rejected_when_restarting() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
-    // Attempt to publish while restarting
     let result = auth.on_publish("room1", "media1", None).await;
 
     assert!(
@@ -492,7 +472,6 @@ async fn test_publication_allowed_when_not_restarting() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
-    // Attempt to publish when not restarting
     let result = auth.on_publish("room1", "media1", None).await;
 
     assert!(
@@ -514,23 +493,18 @@ async fn test_restarting_flag_toggles_publication_access() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
 
-    // Step 1: Publication allowed when not restarting
     let result = auth.on_publish("room1", "media1", None).await;
     assert!(result.is_ok(), "Should be allowed initially");
     assert!(registry.is_stream_active("room1", "media1").await.unwrap());
 
-    // Step 2: Set restarting flag
     is_restarting.store(true, Ordering::Release);
 
-    // Step 3: Publication rejected during restart
     let result = auth.on_publish("room2", "media2", None).await;
     assert!(result.is_err(), "Should be rejected during restart");
     assert!(!registry.is_stream_active("room2", "media2").await.unwrap());
 
-    // Step 4: Clear restarting flag
     is_restarting.store(false, Ordering::Release);
 
-    // Step 5: Publication allowed again
     let result = auth.on_publish("room3", "media3", None).await;
     assert!(result.is_ok(), "Should be allowed after restart completes");
     assert!(registry.is_stream_active("room3", "media3").await.unwrap());

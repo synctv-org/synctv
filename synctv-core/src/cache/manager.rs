@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-/// Minimum interval between lag-triggered full L1 flushes (Issue #32).
+/// Minimum interval between lag-triggered full L1 flushes.
 ///
 /// When the broadcast channel lags, flushing ALL L1 caches is expensive and
 /// may cascade into a DB stampede. This constant rate-limits the full flush
@@ -64,7 +64,7 @@ impl CacheManager {
         let mut receiver = invalidation_service.subscribe();
 
         crate::spawn::spawn_monitored("cache_invalidation_listener", async move {
-            // Issue #32: Track the last time we performed a lag-triggered full
+            // Track the last time we performed a lag-triggered full
             // L1 flush so we can rate-limit it to at most once per 5 seconds.
             let mut last_lag_flush = std::time::Instant::now()
                 .checked_sub(LAG_FLUSH_MIN_INTERVAL)
@@ -121,7 +121,7 @@ impl CacheManager {
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        // Issue #32: Rate-limit full L1 flushes to at most once per 5s.
+                        // Rate-limit full L1 flushes to at most once per 5s.
                         // Without this, a sustained lag storm (e.g., Redis pubsub burst)
                         // would trigger a continuous cascade of DB re-fetches.
                         let now = std::time::Instant::now();

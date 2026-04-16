@@ -5,9 +5,7 @@
 
 use std::sync::LazyLock;
 
-// ============================================================================
 // Canonical validation limits — single source of truth for the entire codebase
-// ============================================================================
 
 /// Minimum username length
 pub const USERNAME_MIN: usize = 3;
@@ -34,9 +32,7 @@ pub const ROOM_NAME_MAX: usize = 100;
 /// Maximum room description length (must match DB constraint `rooms_description_length_check`)
 pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
-// ============================================================================
 // Reserved usernames — prevent phishing/impersonation attacks
-// ============================================================================
 
 /// Reserved usernames that cannot be used to prevent phishing/impersonation.
 /// Case-insensitive matching is applied.
@@ -498,9 +494,7 @@ impl Default for Validator {
     }
 }
 
-// ============================================================================
 // Path Traversal Validation
-// ============================================================================
 
 /// Validate a path component for directory traversal attacks
 ///
@@ -814,8 +808,6 @@ mod tests {
         }
     }
 
-    // ========== Validation: Password Max Length ==========
-
     #[test]
     fn test_password_exactly_at_max_length() {
         let validator = PasswordValidator::new();
@@ -832,8 +824,6 @@ mod tests {
         assert_eq!(pwd.len(), 129);
         assert!(validator.validate(&pwd).is_err());
     }
-
-    // ========== Validation: Batch Validator Single Error ==========
 
     #[test]
     fn test_batch_validation_single_error_returns_field_not_multiple() {
@@ -857,8 +847,6 @@ mod tests {
         assert!(validator.is_valid());
         assert!(validator.into_result().is_ok());
     }
-
-    // ========== Path Traversal Validation ==========
 
     #[test]
     fn test_validate_path_for_traversal_rejects_literal_double_dot() {

@@ -18,7 +18,7 @@
 //!   buffering and async sync. When the primary (Redis) recovers, pending
 //!   writes can be synced via `sync_pending_writes()`.
 //!
-//! ## Memory Fallback (Task #18)
+//! ## Memory Fallback
 //!
 //! The `RedisSyncableTokenBlacklistStore` provides:
 //! 1. **Memory fallback**: When Redis is unavailable, blacklisted tokens are
@@ -40,17 +40,15 @@ fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> chrono::Duration {
     chrono::Duration::seconds(seconds)
 }
 
-// ============================================================================
 // TokenBlacklistStore trait
-// ============================================================================
 
 /// Storage backend for refresh token blacklist and family revocation.
 ///
 /// Used by `UserService` for Refresh Token Rotation:
 /// 1. **JTI blacklist**: Each used refresh token's JTI is recorded so replays
-///    are detected.
+/// are detected.
 /// 2. **Family revocation**: When a blacklisted JTI is replayed (indicating
-///    token theft), the entire token family for the user is revoked.
+/// token theft), the entire token family for the user is revoked.
 #[async_trait]
 pub trait TokenBlacklistStore: Send + Sync {
     /// Check if a JTI key is blacklisted (already used).
@@ -105,7 +103,7 @@ pub trait TokenBlacklistStore: Send + Sync {
     ///
     /// The default implementation uses `is_blacklisted_checked` + `blacklist`
     /// which is NOT atomic. Implementations should override this with proper atomic
-    /// operations (e.g., Redis SETNX, `PostgreSQL` INSERT ... ON CONFLICT DO NOTHING).
+    /// operations (e.g., Redis SETNX, `PostgreSQL` INSERT... ON CONFLICT DO NOTHING).
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
         // Default: non-atomic check-then-set (has TOCTOU race condition)
         if self.is_blacklisted_checked(key).await? {
@@ -150,9 +148,7 @@ pub fn token_blacklist_store_from_shared_state_profile(
     ))
 }
 
-// ============================================================================
 // InMemoryTokenBlacklistStore
-// ============================================================================
 
 /// In-memory [`TokenBlacklistStore`] using moka caches with per-entry TTL tracking.
 ///
@@ -291,9 +287,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     }
 }
 
-// ============================================================================
 // PgTokenBlacklistStore
-// ============================================================================
 
 /// PostgreSQL-backed [`TokenBlacklistStore`].
 ///
@@ -404,7 +398,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
     /// Atomically blacklist the key if it doesn't already exist.
     ///
-    /// Uses `PostgreSQL`'s `INSERT ... ON CONFLICT DO NOTHING` with `xmax` check
+    /// Uses `PostgreSQL`'s `INSERT... ON CONFLICT DO NOTHING` with `xmax` check
     /// to atomically detect whether the insert was successful or the key existed.
     /// Returns:
     /// - `Ok(true)` if key already existed (replay detected)
@@ -501,9 +495,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 }
 
-// ============================================================================
 // TieredTokenBlacklistStore
-// ============================================================================
 
 /// L1 positive cache TTL (how long a "is blacklisted = true" entry lives in moka).
 const L1_POSITIVE_TTL: Duration = Duration::from_mins(2);
@@ -522,13 +514,13 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 /// ```text
 /// is_blacklisted("jti_xyz"):
 ///
-///   L1 (moka)  ──hit──>  return cached result (positive or negative)
-///       │ miss
-///   L2 (Redis) ──hit──>  populate L1, return result
-///       │ miss
-///   PG (primary)──found──> populate L1+L2 (positive), return true
-///       │ not found
-///   Cache negative sentinel in L1+L2 (short TTL), return false
+/// L1 (moka) ──hit──> return cached result (positive or negative)
+/// │ miss
+/// L2 (Redis) ──hit──> populate L1, return result
+/// │ miss
+/// PG (primary)──found──> populate L1+L2 (positive), return true
+/// │ not found
+/// Cache negative sentinel in L1+L2 (short TTL), return false
 /// ```
 ///
 /// ## Cache Penetration Protection
@@ -546,7 +538,7 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 /// ## Atomicity for `blacklist_if_not_exists`
 ///
 /// PostgreSQL is the authoritative store for atomic replay detection via
-/// `INSERT ... ON CONFLICT DO NOTHING`. Redis is used only as an L2 cache for
+/// `INSERT... ON CONFLICT DO NOTHING`. Redis is used only as an L2 cache for
 /// read acceleration and must never become the only durable record of a
 /// blacklisted token.
 ///
@@ -642,7 +634,6 @@ impl TieredTokenBlacklistStore {
 #[async_trait]
 impl TokenBlacklistStore for TieredTokenBlacklistStore {
     async fn is_blacklisted(&self, key: &str) -> bool {
-        // --- L1 check ---
         if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
             if Instant::now() < expiry {
                 return is_bl;
@@ -650,7 +641,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             // Expired entry; fall through to L2/PG
         }
 
-        // --- L2 check (Redis) ---
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
@@ -676,7 +666,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             }
         }
 
-        // --- PG check (primary) ---
         let found = self.pg.is_blacklisted(key).await;
 
         if found {
@@ -708,7 +697,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
     }
 
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
-        // --- L1 check ---
         if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
             if Instant::now() < expiry {
                 return Ok(is_bl);
@@ -716,7 +704,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             // Expired entry; fall through to L2/PG
         }
 
-        // --- L2 check (Redis) ---
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
@@ -742,7 +729,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             }
         }
 
-        // --- PG check (primary, error-propagating) ---
         let found = self.pg.is_blacklisted_checked(key).await?;
 
         if found {
@@ -856,14 +842,12 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        // --- L1 check ---
         if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
             if Instant::now() < expiry {
                 return cached_val;
             }
         }
 
-        // --- L2 check (Redis) ---
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.fam_key(key);
             let result: redis::RedisResult<Option<String>> = conn.get(&redis_key).await;
@@ -898,7 +882,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             }
         }
 
-        // --- PG check (primary) ---
         let result = self.pg.get_family_revoked_at(key).await;
 
         if let Some(ts) = result {
@@ -1018,9 +1001,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
     }
 }
 
-// ============================================================================
 // FallbackTokenBlacklistStore
-// ============================================================================
 
 /// Fallback [`TokenBlacklistStore`] that wraps a primary store with in-memory fallback.
 ///
@@ -1034,15 +1015,15 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 /// ```text
 /// is_blacklisted("jti_xyz"):
 ///
-///   Primary Store  ──success──>  return result
-///       │ error
-///   InMemory Store ──result──>  return result (with warning logged)
+/// Primary Store ──success──> return result
+/// │ error
+/// InMemory Store ──result──> return result (with warning logged)
 ///
 /// blacklist("jti_xyz", ttl):
 ///
-///   1. Try Primary Store
-///   2. If Primary fails, write to InMemory Store only
-///   3. Return Err only if both fail (fail-closed)
+/// 1. Try Primary Store
+/// 2. If Primary fails, write to InMemory Store only
+/// 3. Return Err only if both fail (fail-closed)
 /// ```
 ///
 /// ## Use Case
@@ -1183,9 +1164,7 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
     }
 }
 
-// ============================================================================
 // RedisSyncableTokenBlacklistStore
-// ============================================================================
 
 /// A pending write entry for sync buffer.
 #[derive(Clone)]
@@ -1230,20 +1209,20 @@ pub struct SyncStats {
 /// ```text
 /// blacklist("jti_xyz", ttl):
 ///
-///   1. Write to in-memory fallback (always succeeds)
-///   2. Try write to primary store
-///   3. If primary fails:
-///      - Add to pending writes buffer
-///      - Log warning
-///   4. Return Ok (fail-open for availability)
+/// 1. Write to in-memory fallback (always succeeds)
+/// 2. Try write to primary store
+/// 3. If primary fails:
+/// - Add to pending writes buffer
+/// - Log warning
+/// 4. Return Ok (fail-open for availability)
 ///
 /// sync_pending_writes():
 ///
-///   1. For each pending write (not expired):
-///      - Try to write to primary
-///      - On success: remove from buffer
-///      - On failure: keep in buffer for retry
-///   2. Return sync statistics
+/// 1. For each pending write (not expired):
+/// - Try to write to primary
+/// - On success: remove from buffer
+/// - On failure: keep in buffer for retry
+/// 2. Return sync statistics
 /// ```
 ///
 /// ## Use Case
@@ -1555,9 +1534,7 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
     }
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1867,8 +1844,6 @@ mod tests {
         assert_eq!(TieredTokenBlacklistStore::l2_positive_ttl(0), 1); // min 1
     }
 
-    // ---- InMemoryTokenBlacklistStore tests (kept for test-only usage) ----
-
     #[tokio::test]
     async fn test_in_memory_blacklist_roundtrip() {
         let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
@@ -1912,8 +1887,6 @@ mod tests {
             .unwrap();
         assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
     }
-
-    // ---- Additional InMemoryTokenBlacklistStore tests ----
 
     #[tokio::test]
     async fn test_in_memory_blacklist_multiple_entries() {
@@ -2009,8 +1982,6 @@ mod tests {
         assert_eq!(row.0, key);
         assert_eq!(row.2, Some(timestamp));
     }
-
-    // ---- FallbackTokenBlacklistStore tests ----
 
     #[tokio::test]
     async fn test_fallback_blacklist_roundtrip() {
@@ -2183,8 +2154,6 @@ mod tests {
         assert_eq!(store.pending_family_count(), 1);
     }
 
-    // ---- Hybrid/Tiered fallback scenario tests ----
-
     #[tokio::test]
     async fn test_tiered_store_without_redis_still_works() {
         // Create a tiered store without Redis (L1 + PG only)
@@ -2222,8 +2191,6 @@ mod tests {
             "Token should be blacklisted via fallback even when tiered store fails"
         );
     }
-
-    // ---- Concurrent blacklist_if_not_exists tests ----
 
     /// Test that concurrent calls to `blacklist_if_not_exists` on the same token
     /// result in exactly one "first use" and all others detecting "replay".

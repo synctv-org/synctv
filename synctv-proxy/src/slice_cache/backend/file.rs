@@ -67,9 +67,7 @@ const MIN_FILE_SIZE: u64 = 8;
 /// than enough for a bincode-serialized header.
 const MAX_HEADER_LEN: usize = 64 * 1024;
 
-// ------------------------------------------------------------------
 // File entry header (serialized into each cache file)
-// ------------------------------------------------------------------
 
 /// On-disk header written at the start of every cache file.
 ///
@@ -89,9 +87,7 @@ struct FileEntryHeader {
     data_size: u64,
 }
 
-// ------------------------------------------------------------------
 // In-memory index
-// ------------------------------------------------------------------
 
 /// A single entry in the in-memory file index.
 ///
@@ -160,9 +156,7 @@ impl FileIndex {
     }
 }
 
-// ------------------------------------------------------------------
 // FileBackend
-// ------------------------------------------------------------------
 
 /// File-based cache backend.
 ///
@@ -229,9 +223,7 @@ impl FileBackend {
         })
     }
 
-    // ---------------------------------------------------------------
     // Path helpers
-    // ---------------------------------------------------------------
 
     /// Map a cache key to its on-disk path using the 2-level directory
     /// hierarchy.
@@ -261,9 +253,7 @@ impl FileBackend {
         format!("tmp_{pid}_{counter:012}")
     }
 
-    // ---------------------------------------------------------------
     // Startup cache loader
-    // ---------------------------------------------------------------
 
     /// Load the on-disk cache index at startup.
     ///
@@ -387,9 +377,7 @@ impl FileBackend {
         })
     }
 
-    // ---------------------------------------------------------------
     // Temp file cleanup
-    // ---------------------------------------------------------------
 
     /// Remove orphaned temp files from the `.tmp` staging directory.
     ///
@@ -430,9 +418,7 @@ impl FileBackend {
         }
     }
 
-    // ---------------------------------------------------------------
     // LRU access-time persistence (M3 fix)
-    // ---------------------------------------------------------------
 
     /// Persist the current in-memory `last_accessed` timestamps to disk so that
     /// LRU ordering survives restarts.
@@ -459,9 +445,7 @@ impl FileBackend {
         }
     }
 
-    // ---------------------------------------------------------------
     // Internal: remove entry from both index and disk
-    // ---------------------------------------------------------------
 
     /// Remove a cached entry by key (both index and disk).
     async fn remove_entry(&self, key: &str) {
@@ -478,9 +462,7 @@ impl FileBackend {
     }
 }
 
-// ------------------------------------------------------------------
 // SliceCacheBackend trait implementation
-// ------------------------------------------------------------------
 
 #[async_trait]
 impl SliceCacheBackend for FileBackend {
@@ -660,9 +642,7 @@ impl SliceCacheBackend for FileBackend {
     }
 }
 
-// ------------------------------------------------------------------
 // File I/O helpers
-// ------------------------------------------------------------------
 
 /// Read a cache file and return the deserialized header + data body.
 async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Bytes)> {
@@ -825,9 +805,7 @@ async fn update_file_last_accessed(
     Ok(())
 }
 
-// ------------------------------------------------------------------
 // Timestamp helpers
-// ------------------------------------------------------------------
 
 /// Return the current time as milliseconds since the Unix epoch.
 fn millis_since_epoch() -> u64 {
@@ -853,9 +831,7 @@ fn millis_to_system_time(millis: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_millis(millis)
 }
 
-// ------------------------------------------------------------------
 // Tests
-// ------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -876,8 +852,6 @@ mod tests {
         let entry = StoredEntry::new(Bytes::from(data.to_vec()), Duration::from_mins(5));
         backend.put(key, entry).await.expect("put entry");
     }
-
-    // --- Basic put/get ---
 
     #[tokio::test]
     async fn test_file_backend_put_get() {
@@ -900,8 +874,6 @@ mod tests {
             .await;
         assert!(result.is_none());
     }
-
-    // --- Remove ---
 
     #[tokio::test]
     async fn test_file_backend_remove() {
@@ -926,8 +898,6 @@ mod tests {
             .await;
     }
 
-    // --- Contains ---
-
     #[tokio::test]
     async fn test_file_backend_contains() {
         let (backend, _tmp) = make_backend().await;
@@ -937,8 +907,6 @@ mod tests {
         put_entry(&backend, key, b"data").await;
         assert!(backend.contains(key).await);
     }
-
-    // --- Directory structure ---
 
     #[tokio::test]
     async fn test_file_backend_directory_structure() {
@@ -955,8 +923,6 @@ mod tests {
             expected_path.display()
         );
     }
-
-    // --- Atomic write ---
 
     #[tokio::test]
     async fn test_file_backend_atomic_write() {
@@ -980,8 +946,6 @@ mod tests {
         }
         assert_eq!(count, 0, "No orphaned temp files should remain");
     }
-
-    // --- Current size ---
 
     #[tokio::test]
     async fn test_file_backend_current_size() {
@@ -1010,8 +974,6 @@ mod tests {
         assert_eq!(backend.current_size(), 200);
     }
 
-    // --- Entry count ---
-
     #[tokio::test]
     async fn test_file_backend_entry_count() {
         let (backend, _tmp) = make_backend().await;
@@ -1031,8 +993,6 @@ mod tests {
         .await;
         assert_eq!(backend.entry_count(), 2);
     }
-
-    // --- Evict expired ---
 
     #[tokio::test]
     async fn test_file_backend_evict_expired() {
@@ -1073,8 +1033,6 @@ mod tests {
                 .await
         );
     }
-
-    // --- Evict to size ---
 
     #[tokio::test]
     async fn test_file_backend_evict_to_size() {
@@ -1145,8 +1103,6 @@ mod tests {
                 .await
         );
     }
-
-    // --- Load index ---
 
     #[tokio::test]
     async fn test_file_backend_load_index() {
@@ -1237,8 +1193,6 @@ mod tests {
         assert_eq!(result.deleted, 1);
     }
 
-    // --- Corrupted file handling ---
-
     #[tokio::test]
     async fn test_file_backend_corrupted_file_handled() {
         let tmp = TempDir::new().expect("create temp dir");
@@ -1276,8 +1230,6 @@ mod tests {
         );
     }
 
-    // --- Keys ---
-
     #[tokio::test]
     async fn test_file_backend_keys() {
         let (backend, _tmp) = make_backend().await;
@@ -1309,8 +1261,6 @@ mod tests {
         );
     }
 
-    // --- Temp file cleanup ---
-
     #[tokio::test]
     async fn test_file_backend_cleanup_temp_files() {
         let (backend, tmp) = make_backend().await;
@@ -1329,8 +1279,6 @@ mod tests {
         // File should still exist because it's brand new.
         assert!(orphan.exists(), "Fresh temp file should not be cleaned up");
     }
-
-    // --- Edge cases ---
 
     #[tokio::test]
     async fn test_file_backend_overwrite_updates_size() {
@@ -1374,8 +1322,6 @@ mod tests {
             "inserted_at should be recent"
         );
     }
-
-    // --- LRU access time persistence (M3) ---
 
     /// Verify that `persist_access_times` writes updated `last_accessed` to
     /// disk, and a fresh backend loading the same cache directory picks up the

@@ -17,8 +17,6 @@ use std::str::FromStr;
 pub struct PermissionBits(pub u64);
 
 impl PermissionBits {
-    // ===== Content Management Permissions (0-9) =====
-
     /// Send chat messages (includes messages with position for danmaku display)
     pub const SEND_CHAT: u64 = 1 << 0;
 
@@ -49,8 +47,6 @@ impl PermissionBits {
     /// Reserved for future content management use (bit 9)
     pub const RESERVED_9: u64 = 1 << 9;
 
-    // ===== Playback Control Permissions (10-19) =====
-
     /// Play control (play/pause/seek)
     pub const PLAY_CONTROL: u64 = 1 << 10;
 
@@ -59,8 +55,6 @@ impl PermissionBits {
 
     /// Change playback rate
     pub const CHANGE_PLAYBACK_RATE: u64 = 1 << 12;
-
-    // ===== Member Management Permissions (20-29) =====
 
     /// Approve or reject pending join requests
     pub const APPROVE_MEMBER: u64 = 1 << 20;
@@ -76,8 +70,6 @@ impl PermissionBits {
 
     /// Explicitly add a member when self-service joining is disabled
     pub const ADD_MEMBER: u64 = 1 << 24;
-
-    // ===== Room Management Permissions (30-39) =====
 
     /// Modify room settings
     pub const SET_ROOM_SETTINGS: u64 = 1 << 30;
@@ -95,8 +87,6 @@ impl PermissionBits {
     /// granted through role overrides or member permission editing.
     pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::DELETE_ROOM;
 
-    // ===== View Permissions (40-49) =====
-
     /// View playlist
     pub const VIEW_PLAYLIST: u64 = 1 << 40;
 
@@ -106,15 +96,10 @@ impl PermissionBits {
     /// View chat history
     pub const VIEW_CHAT_HISTORY: u64 = 1 << 42;
 
-    // ===== Communication Permissions (50-59) =====
-
     /// Use WebRTC (voice/video)
     pub const USE_WEBRTC: u64 = 1 << 50;
 
-    // ===== Reserved (60-63) =====
     // Reserved for future use
-
-    // ===== Permission Combinations =====
 
     /// All permissions (for Creator)
     pub const ALL: u64 = u64::MAX;
@@ -365,8 +350,6 @@ mod tests {
         assert!(perms.has(PermissionBits::ADD_MEDIA));
     }
 
-    // ========== Bitmask Operation Edge Cases ==========
-
     #[test]
     fn test_permission_set_enable_disable() {
         let mut perms = PermissionBits::empty();
@@ -413,8 +396,6 @@ mod tests {
         let perms = PermissionBits(PermissionBits::ALL);
         assert!(!perms.has_any(0)); // 0 & anything == 0
     }
-
-    // ========== Role FromStr / Display ==========
 
     #[test]
     fn test_role_from_str() {

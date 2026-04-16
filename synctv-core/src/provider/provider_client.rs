@@ -5,13 +5,13 @@
 //! Architecture:
 //! ```text
 //! AlistProvider
-//!     ↓
-//! Arc<dyn AlistInterface>  (from synctv-media-providers)
-//!     ↓
+//! ↓
+//! Arc<dyn AlistInterface> (from synctv-media-providers)
+//! ↓
 //! ┌─────────────────┬──────────────────────┐
-//! │                 │                      │
-//! AlistService    GrpcAlistClient
-//! (complete impl)  (thin gRPC wrapper)
+//! │ │ │
+//! AlistService GrpcAlistClient
+//! (complete impl) (thin gRPC wrapper)
 //! ```
 //!
 //! ## Dependency Injection
@@ -60,7 +60,7 @@ impl RemoteProviderConnection {
 
 /// Default per-request timeout for gRPC calls to remote providers.
 ///
-/// Reduced from 30s to 10s (Issue #35): hung requests under load consume threads.
+/// Reduced from 30s to 10s: hung requests under load consume threads.
 /// Providers that genuinely need longer should use explicit deadlines.
 const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -202,9 +202,7 @@ fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::Pr
     }
 }
 
-// ============================================================================
 // ProviderClientManager - Dependency Injection for Local Clients
-// ============================================================================
 
 /// Manager for provider clients that supports dependency injection.
 ///
@@ -386,9 +384,7 @@ impl ProviderClientManager {
     }
 }
 
-// ============================================================================
 // Alist Client
-// ============================================================================
 
 /// Type alias for Alist client
 pub type AlistClientArc = Arc<dyn AlistInterface>;
@@ -477,9 +473,7 @@ impl AlistInterface for GrpcAlistClient {
     }
 }
 
-// ============================================================================
 // Helper Types for MediaProvider
-// ============================================================================
 
 /// Wrapper types to provide cleaner API for `MediaProvider`
 ///
@@ -615,9 +609,7 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
     }
 }
 
-// ============================================================================
 // Bilibili Client
-// ============================================================================
 
 use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
 
@@ -788,9 +780,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
 // A local in-process cache would serve stale data after another node invalidates
 // the cache, leading to subtle inconsistencies.
 
-// ============================================================================
 // Emby Client
-// ============================================================================
 
 use synctv_media_providers::emby::{EmbyError, EmbyInterface};
 
@@ -915,9 +905,7 @@ impl EmbyInterface for GrpcEmbyClient {
     );
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

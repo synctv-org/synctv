@@ -27,9 +27,7 @@ fn email_addr_key(email: &str) -> String {
     format!("email:addr:{email}")
 }
 
-// ============================================================================
 // Per-IP rate limit tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_email_ip_rate_limit_allows_up_to_limit() {
@@ -100,9 +98,7 @@ async fn test_email_ip_rate_limit_different_ips_independent() {
     );
 }
 
-// ============================================================================
 // Per-email rate limit tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_email_addr_rate_limit_allows_up_to_limit() {
@@ -173,9 +169,7 @@ async fn test_email_addr_rate_limit_different_emails_independent() {
     );
 }
 
-// ============================================================================
 // Combined IP + email rate limit tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_email_different_emails_from_same_ip_hit_ip_limit() {
@@ -183,7 +177,6 @@ async fn test_email_different_emails_from_same_ip_hit_ip_limit() {
     let ip = "10.0.0.50";
     let ip_key = email_ip_key(ip);
 
-    // Send emails to different addresses from the same IP
     // Each email address is within its own limit, but the IP hits its limit
     for i in 0..EMAIL_IP_MAX_REQUESTS {
         let email = format!("user{i}@example.com");

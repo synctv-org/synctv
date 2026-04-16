@@ -140,7 +140,6 @@ async fn test_redis_ticket_ttl_expiry() {
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
 
-    // Wait for Redis TTL to expire
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let result = service.validate_and_consume(&ticket, &rid).await;
@@ -254,9 +253,7 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
     );
 }
 
-// ============================================================================
 // Cluster mode Redis dependency tests (TDD)
-// ============================================================================
 
 /// Test: cluster mode with Redis works correctly.
 /// This is the main fix - in cluster mode with Redis, tickets should work

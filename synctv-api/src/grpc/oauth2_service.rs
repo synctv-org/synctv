@@ -189,7 +189,6 @@ impl OAuth2Service for OAuth2GrpcService {
             .get::<synctv_core::service::AuthenticatedToken>()
             .map(|authenticated| authenticated.user_id.clone());
 
-        // Extract client IP for brute-force protection (Issue #24)
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         validate_oauth2_proto_request(&req)?;

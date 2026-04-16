@@ -62,13 +62,11 @@ impl MemoryBackend {
             .time_to_idle(time_to_idle)
             .eviction_listener(move |key: Arc<String>, value, cause| {
                 // Handle ALL eviction causes for accurate size tracking.
-                //
                 // Previously we only handled `was_evicted()` (Expired | Size)
                 // and manually adjusted sizes in `put()` and `remove()`.  This
                 // created a race: between `get(key)` and `insert(key, new)` in
                 // `put()`, moka could fire a Size eviction for the same key,
                 // causing a double-subtract of the old size.
-                //
                 // Now the listener is the single source of truth for size
                 // decrements.  `put()` only adds the new size, and `remove()`
                 // delegates entirely to the listener via `run_pending_tasks`.

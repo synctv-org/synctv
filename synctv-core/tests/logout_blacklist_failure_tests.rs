@@ -115,9 +115,7 @@ impl TokenBlacklistStore for RecordingTtlStore {
     }
 }
 
-// ============================================================================
 // Test 1: Blacklist success should work correctly
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_success_returns_ok() {
@@ -134,9 +132,7 @@ async fn test_blacklist_success_returns_ok() {
     assert!(store.is_blacklisted("jti:test_token").await);
 }
 
-// ============================================================================
 // Test 2: Blacklist failure should return error (fail-closed)
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_failure_returns_error() {
@@ -169,9 +165,7 @@ async fn test_family_revocation_failure_returns_error() {
     );
 }
 
-// ============================================================================
 // Test 3: Fallback store should succeed even when primary fails
-// ============================================================================
 
 #[tokio::test]
 async fn test_fallback_succeeds_when_primary_fails() {
@@ -193,9 +187,7 @@ async fn test_fallback_succeeds_when_primary_fails() {
     );
 }
 
-// ============================================================================
 // Test 4: Verify fail-closed behavior for logout scenario
-// ============================================================================
 
 /// This test demonstrates the expected behavior for logout:
 /// When using a raw failing store (not wrapped in FallbackTokenBlacklistStore),
@@ -205,7 +197,6 @@ async fn test_logout_blacklist_fail_closed_semantics() {
     // Scenario: A service uses a blacklist store that fails
     let store = FailingBlacklistStore;
 
-    // Attempt to blacklist should fail
     let blacklist_result = store.blacklist("jti:user_logout_token", 3600).await;
 
     // The key invariant: caller can detect failure
@@ -226,9 +217,7 @@ async fn test_logout_blacklist_fail_closed_semantics() {
     );
 }
 
-// ============================================================================
 // Test 5: Multiple concurrent blacklist failures should all return errors
-// ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_blacklist_failures_all_return_errors() {
@@ -268,9 +257,7 @@ async fn test_concurrent_blacklist_failures_all_return_errors() {
     );
 }
 
-// ============================================================================
 // Test 6: Verify TTL is passed correctly to blacklist
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_ttl_passed_correctly() {
@@ -288,9 +275,7 @@ async fn test_blacklist_ttl_passed_correctly() {
     );
 }
 
-// ============================================================================
 // Test 7: Empty JTI should be handled gracefully
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_empty_jti() {
@@ -304,9 +289,7 @@ async fn test_blacklist_empty_jti() {
     assert!(store.is_blacklisted("").await);
 }
 
-// ============================================================================
 // Test 8: Blacklist with zero TTL
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_zero_ttl() {

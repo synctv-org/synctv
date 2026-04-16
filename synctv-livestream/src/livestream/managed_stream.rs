@@ -1,10 +1,8 @@
 // Shared lifecycle state and pool utilities for managed streams.
-//
 // Both PullStreamManager and ExternalPublishManager follow the same pattern:
 // - Streams tracked in a DashMap with double-checked locking for creation
 // - Subscriber counting, health checks, last-active tracking
 // - Background cleanup task that stops idle streams
-//
 // This module extracts the common parts.
 
 use anyhow::Result;
@@ -111,7 +109,7 @@ impl StreamLifecycle {
         self.is_running.store(true, Ordering::Release);
     }
 
-    /// P2#19: Atomically attempt to claim the stream for cleanup.
+    /// Atomically attempt to claim the stream for cleanup.
     ///
     /// Returns `true` if cleanup can proceed, `false` if a concurrent subscriber
     /// raced in.
@@ -473,7 +471,7 @@ impl<S: ManagedStream> StreamPool<S> {
                 let idle_secs = stream.lifecycle().last_active_elapsed_secs();
 
                 if idle_secs > idle_timeout.as_secs() {
-                    // P2#19: Use atomic claim to prevent race between subscriber count
+                    // Use atomic claim to prevent race between subscriber count
                     // check and stream removal. try_claim_for_cleanup() atomically marks
                     // stopping and verifies subscriber_count is still 0 via CAS.
                     if !stream.lifecycle().try_claim_for_cleanup() {
@@ -646,7 +644,7 @@ mod tests {
         assert!(pool.streams.is_empty());
     }
 
-    /// P2#19: Test that try_claim_for_cleanup succeeds when subscriber count is 0.
+    /// Test that try_claim_for_cleanup succeeds when subscriber count is 0.
     #[tokio::test]
     async fn test_try_claim_for_cleanup_succeeds_with_zero_subscribers() {
         let lc = StreamLifecycle::new();
@@ -664,7 +662,7 @@ mod tests {
         assert!(!lc.is_healthy().await);
     }
 
-    /// P2#19: Test that try_claim_for_cleanup fails when subscriber count > 0,
+    /// Test that try_claim_for_cleanup fails when subscriber count > 0,
     /// simulating a concurrent subscriber that raced in.
     #[tokio::test]
     async fn test_try_claim_for_cleanup_fails_with_active_subscriber() {
@@ -684,7 +682,7 @@ mod tests {
         assert_eq!(lc.subscriber_count(), 1);
     }
 
-    /// P2#19: Test that concurrent subscribe during cleanup is handled gracefully.
+    /// Test that concurrent subscribe during cleanup is handled gracefully.
     /// Simulates the race: cleanup claims the stream, then a subscriber tries to attach.
     #[tokio::test]
     async fn test_concurrent_subscribe_during_cleanup_handled_gracefully() {
@@ -711,7 +709,7 @@ mod tests {
         );
     }
 
-    /// P2#19: Test that get_existing correctly handles the double-check pattern
+    /// Test that get_existing correctly handles the double-check pattern
     /// when a stream becomes unhealthy between initial check and increment.
     #[tokio::test]
     async fn test_get_existing_double_check_on_concurrent_stop() {

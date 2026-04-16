@@ -28,8 +28,6 @@ impl LeaderCheck for NeverLeader {
     }
 }
 
-// ========== Zero retention skips all tasks ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_zero_retention_skips_all_tasks() {
@@ -81,12 +79,10 @@ async fn test_zero_retention_skips_all_tasks() {
     );
 }
 
-// ========== Non-leader skips cleanup (via start_periodic) ==========
 // Note: start_periodic checks is_leader() inside the loop. We test that NeverLeader
 // causes the service to skip. Since start_periodic is a background task, we verify
 // the concept by calling run_all directly with NeverLeader not being meaningful at
 // that level -- run_all is always called.
-//
 // The actual leader check happens in start_periodic. So we test
 // the config-level skip and verify NeverLeader compiles and works.
 
@@ -98,21 +94,17 @@ async fn test_non_leader_periodic_skips() {
     let config = CleanupConfig::default();
     let service = CleanupService::new(pool, config, Arc::new(NeverLeader));
 
-    // Start periodic with a very short interval, cancel quickly
     let cancel = tokio_util::sync::CancellationToken::new();
     let cancel_clone = cancel.clone();
 
     let handle = service.start_periodic(1, cancel_clone);
 
-    // Wait a brief moment, then cancel
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     cancel.cancel();
 
     // Should complete without errors
     let _ = handle.await;
 }
-
-// ========== run_all with default config on empty database ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -130,8 +122,6 @@ async fn test_run_all_on_empty_database() {
     assert_eq!(result.tokens_deleted, 0);
     assert_eq!(result.notifications_deleted, 0);
 }
-
-// ========== Partial config: only some tasks enabled ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -276,8 +266,6 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     );
 }
 
-// ========== Room TTL enforcement tests ==========
-
 /// Helper to create a test user in the database
 async fn create_test_user(pool: &PgPool) -> User {
     let now = Utc::now();
@@ -344,7 +332,6 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
 async fn test_room_ttl_new_room_not_expired() {
     let (_container, pool) = create_test_pool().await;
 
-    // Create a user and room
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id.clone(), None);
 
@@ -385,7 +372,6 @@ async fn test_room_ttl_new_room_not_expired() {
 async fn test_room_ttl_old_room_is_expired() {
     let (_container, pool) = create_test_pool().await;
 
-    // Create a room with updated_at 2 hours ago (older than 1 hour TTL)
     let two_hours_ago = Utc::now() - Duration::hours(2);
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id.clone(), Some(two_hours_ago));
@@ -428,7 +414,6 @@ async fn test_room_ttl_old_room_is_expired() {
 async fn test_room_ttl_skips_already_soft_deleted() {
     let (_container, pool) = create_test_pool().await;
 
-    // Create a room that's already soft-deleted and very old
     let two_hours_ago = Utc::now() - Duration::hours(2);
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id.clone(), Some(two_hours_ago));
@@ -469,7 +454,6 @@ async fn test_room_ttl_skips_already_soft_deleted() {
 async fn test_room_ttl_zero_disables_expiration() {
     let (_container, pool) = create_test_pool().await;
 
-    // Create a room that's very old
     let two_days_ago = Utc::now() - Duration::days(2);
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id.clone(), Some(two_days_ago));

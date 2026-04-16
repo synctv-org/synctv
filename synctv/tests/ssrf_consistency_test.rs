@@ -8,9 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use synctv_common::ssrf::SsrfGuard;
 
-// ---------------------------------------------------------------------------
 // Test data
-// ---------------------------------------------------------------------------
 
 /// IPv4 addresses that must be blocked.
 const BLOCKED_IPV4: &[(u8, u8, u8, u8)] = &[
@@ -37,9 +35,7 @@ const ALLOWED_IPV4: &[(u8, u8, u8, u8)] = &[
     (100, 128, 0, 0), // just outside CGNAT
 ];
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn ssrf_acl_builds_successfully() {

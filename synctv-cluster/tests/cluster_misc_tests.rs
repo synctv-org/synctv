@@ -32,7 +32,6 @@ async fn test_critical_events_high_priority() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Send a critical event (PermissionChanged is marked as critical)
     let critical_event = ClusterEvent::PermissionChanged {
         event_id: synctv_common::snanoid!(16),
         room_id: room_id.clone(),

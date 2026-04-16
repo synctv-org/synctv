@@ -178,10 +178,6 @@ async fn test_ttl_refresh_idempotent() {
     assert_eq!(total, Some(5));
 }
 
-// ============================================================================
-// TTL Task Shutdown Tests (Task #85)
-// ============================================================================
-
 /// Test that `shutdown()` cancels the TTL refresh task.
 ///
 /// This test verifies:
@@ -312,13 +308,11 @@ async fn test_shutdown_during_active_operations() {
         }
     });
 
-    // Wait a bit for some registrations to complete
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Call shutdown while registrations are in progress
     manager.shutdown().await;
 
-    // Wait for the registration task to complete
     let _ = register_handle.await;
 
     // Manager should be in a consistent state
@@ -351,7 +345,6 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
         .await
         .unwrap();
 
-    // Send a disconnect signal (this uses the disconnect retry mechanism)
     manager.disconnect_user(&user_id);
 
     // Give disconnect retry task time to start processing
@@ -426,13 +419,9 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     assert_eq!(room.unwrap_or_default(), 1);
 }
 
-// ============================================================================
-// TTL Value Verification Tests (Task #16)
-// ============================================================================
-
 /// Test that distributed counter TTL is set to 2x the refresh interval.
 ///
-/// This verifies the fix for Task #16: TTL should be 120s (2x 60s refresh interval)
+/// This verifies the fix for TTL should be 120s (2x 60s refresh interval)
 /// rather than 180s (3x), ensuring faster crash recovery while maintaining safety.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
@@ -508,7 +497,6 @@ async fn test_distributed_counter_expires_after_ttl() {
         .await
         .expect("Failed to reduce TTL");
 
-    // Wait for TTL to expire
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify counter has expired
@@ -549,7 +537,6 @@ async fn test_ttl_multiplier_provides_safety_margin() {
     // With 2x multiplier (120s TTL, 60s refresh):
     // - One missed refresh: TTL goes from 120 to 60, still alive
     // - Two missed refreshes: TTL would expire
-    //
     // This provides a good balance between safety and crash detection speed.
 
     // Verify TTL is at least 1.5x the refresh interval (survive one missed refresh)

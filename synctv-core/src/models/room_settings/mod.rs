@@ -292,7 +292,6 @@ macro_rules! room_setting {
     };
 }
 
-// ==================== Generate Setting Types ====================
 // Each type has its own lazy_static! that auto-registers!
 
 room_setting!(ChatEnabled, bool, "chat_enabled", true);

@@ -61,8 +61,6 @@ fn make_room(name: &str, owner: &UserId) -> Room {
     }
 }
 
-// ========== create_or_get idempotency ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_create_or_get_idempotent() {
@@ -89,8 +87,6 @@ async fn test_create_or_get_idempotent() {
     assert_eq!(state2.version, state1.version);
     assert_eq!(state2.room_id, state1.room_id);
 }
-
-// ========== update optimistic lock ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

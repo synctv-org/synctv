@@ -370,7 +370,6 @@ pub async fn init_services_with_options(
     );
 
     // Extract a plain ConnectionManager snapshot for passing to individual services.
-    //
     // IMPORTANT (Sentinel mode): This snapshot is taken once at init time. In Sentinel
     // mode, the background health check hot-swaps the ConnectionManager inside
     // `redis_handles.conn` (the Arc<RwLock<>>) on failover. However, services that
@@ -380,7 +379,6 @@ pub async fn init_services_with_options(
     // directly via redis_handles.conn, eliminating init-time snapshots that
     // would become stale after Sentinel failover.
     // Create L2 cache backend (Redis or Noop)
-    //
     // In Sentinel mode, use the shared Arc<RwLock<ConnectionManager>> so that
     // the L2 backend automatically follows Sentinel failover without holding a
     // stale snapshot.
@@ -646,7 +644,6 @@ pub async fn init_services_with_options(
     );
 
     // Initialize Publish Key service (for RTMP streaming)
-    //
     // Use Redis-backed JTI dedup when available (shared handle follows Sentinel failover).
     // Falls back to in-memory for standalone mode.
     let publish_key_service =

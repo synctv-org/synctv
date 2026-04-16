@@ -72,7 +72,7 @@ fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
 
 /// Validate a password that is being **set** (create room, set password, update settings).
 pub(crate) fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
-    // Issue #72: Reject passwords that are purely whitespace. A password of e.g. "   "
+    // Reject passwords that are purely whitespace. A password of e.g. " "
     // looks non-empty to a length check but provides no protection and confuses users.
     let trimmed = password.trim();
     if trimmed.is_empty() {

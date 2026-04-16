@@ -1,5 +1,4 @@
 // StreamRegistry trait for abstraction and testing
-//
 // This trait allows mocking StreamRegistry in tests without requiring Redis
 
 use super::registry::{PublisherInfo, StreamRegistry};

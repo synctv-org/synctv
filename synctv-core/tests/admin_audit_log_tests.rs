@@ -15,13 +15,7 @@ use std::time::Duration;
 
 use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
 use synctv_core_testing::create_test_pool;
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
-
-// ============================================================================
-// Test: Audit log integrity
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -176,10 +170,6 @@ async fn test_audit_log_created_at_timestamp() {
     assert!(row.0 <= after, "created_at should be <= after");
 }
 
-// ============================================================================
-// Test: Multiple audit actions
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_audit_log_multiple_actions_same_actor() {
@@ -245,14 +235,9 @@ async fn test_audit_log_multiple_actions_same_actor() {
     );
 }
 
-// ============================================================================
-// Test: Buffer-full behavior
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_buffer_full_drops_events_with_fake_pool() {
-    // Create a buffered service with a very small capacity
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let (service, _handle) = AuditService::with_capacity(pool, 5);
 
@@ -310,10 +295,6 @@ async fn test_dropped_count_starts_at_zero() {
     );
 }
 
-// ============================================================================
-// Test: Graceful degradation
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_unbuffered_service_never_drops() {
@@ -344,10 +325,6 @@ async fn test_unbuffered_service_never_drops() {
     );
 }
 
-// ============================================================================
-// Test: Async write verification
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_buffered_write_eventually_visible() {
@@ -370,7 +347,6 @@ async fn test_buffered_write_eventually_visible() {
         .await
         .expect("Buffered log should succeed");
 
-    // Wait for background flush (default 5 seconds, but we give more time)
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     // Event should be visible in database
@@ -382,10 +358,6 @@ async fn test_buffered_write_eventually_visible() {
 
     assert_eq!(count, 1, "Buffered event should eventually be written");
 }
-
-// ============================================================================
-// Test: Concurrent audit logging
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -436,10 +408,6 @@ async fn test_concurrent_audit_logging() {
 
     assert_eq!(count, 20, "All concurrent events should be stored");
 }
-
-// ============================================================================
-// Test: Audit action types
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -517,10 +485,6 @@ async fn test_all_audit_actions_are_logged() {
     }
 }
 
-// ============================================================================
-// Test: Target type validation
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_all_target_types_are_logged() {
@@ -569,10 +533,6 @@ async fn test_all_target_types_are_logged() {
         );
     }
 }
-
-// ============================================================================
-// Test: Optional fields handling
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -640,10 +600,6 @@ async fn test_audit_log_with_all_optionals() {
     assert_eq!(row.2, Some("TestClient/2.0".to_string()));
     assert_eq!(row.3["key"], "value");
 }
-
-// ============================================================================
-// Test: Stream kick helper method
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -715,10 +671,6 @@ async fn test_log_stream_kicked_without_reason() {
     assert_eq!(row.0["media_id"], "media_xyz");
     assert_eq!(row.0["reason"], "");
 }
-
-// ============================================================================
-// Test: Settings viewed audit logging
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

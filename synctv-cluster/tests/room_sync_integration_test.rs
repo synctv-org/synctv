@@ -32,9 +32,7 @@ async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn Roo
     .expect("shared room runtime should initialize")
 }
 
-// ============================================================================
 // Test 1: Subscription state persisted to Redis is visible from another hub
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -82,9 +80,7 @@ async fn test_cross_replica_subscription_visibility() {
     hub_a.unsubscribe(&conn_id);
 }
 
-// ============================================================================
 // Test 2: Unsubscribe removes state from Redis
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -129,9 +125,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     );
 }
 
-// ============================================================================
 // Test 2b: remove_room also removes distributed Redis subscription state
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -175,9 +169,7 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
     );
 }
 
-// ============================================================================
 // Test 3: Multiple users across replicas see consistent distributed count
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -265,9 +257,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     hub_b.unsubscribe("conn_b1");
 }
 
-// ============================================================================
 // Test 4: Room lifecycle events fire correctly during subscribe/unsubscribe
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -344,9 +334,7 @@ async fn test_room_lifecycle_events_across_replicas() {
     }
 }
 
-// ============================================================================
 // Test 5: audit_redis_subscriptions reports correct counts without populating local
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -415,9 +403,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     hub_a.unsubscribe("rec_conn_3");
 }
 
-// ============================================================================
 // Test 6: Concurrent subscribe/unsubscribe across replicas maintains consistency
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -493,9 +479,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     }
 }
 
-// ============================================================================
 // Test 7: Local stale cleanup must not delete active subscriptions on other replicas
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "requires Docker"]

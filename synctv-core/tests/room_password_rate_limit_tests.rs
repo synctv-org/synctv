@@ -10,7 +10,7 @@
 //! 3. After lockout expires, verification is allowed again
 //! 4. Successful password verification resets failure counter
 //! 5. Rate limiting works without IP (room-only mode)
-//! 6. Reset failure is logged to audit log (Task #91)
+//! 6. Reset failure is logged to audit log
 //!
 //! Run with: cargo test -p synctv-core --test `room_password_rate_limit_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
@@ -87,8 +87,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== Rate Limiting Tests ==========
-
 /// Test 1: Password verification failure should trigger rate limiting
 ///
 /// After multiple failed password attempts, further attempts should be blocked
@@ -100,7 +98,6 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner and a password-protected room
     let owner = user_repo.create(&make_user("room_owner")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
@@ -164,10 +161,8 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner
     let owner = user_repo.create(&make_user("per_ip_owner")).await.unwrap();
 
-    // Create two password-protected rooms
     let (room1, _) = room_service
         .create_room(
             "Room One".to_string(),
@@ -235,7 +230,6 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner and a password-protected room
     let owner = user_repo.create(&make_user("expire_owner")).await.unwrap();
     let (room, _) = room_service
         .create_room(
@@ -298,7 +292,6 @@ async fn test_successful_password_verification_resets_failure_counter() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner and a password-protected room
     let owner = user_repo.create(&make_user("reset_owner")).await.unwrap();
     let (room, _) = room_service
         .create_room(
@@ -361,7 +354,6 @@ async fn test_room_password_rate_limit_without_ip() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner and a password-protected room
     let owner = user_repo.create(&make_user("no_ip_owner")).await.unwrap();
     let (room, _) = room_service
         .create_room(
@@ -405,14 +397,12 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create room service with in-memory brute force (always succeeds)
     let user_service = make_user_service(pool.clone());
     let mut room_service = RoomService::new(pool.clone(), user_service);
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let brute_force = BruteForceProtection::in_memory("test_fallback_mode".to_string());
     room_service.set_brute_force_service(brute_force);
 
-    // Create room owner and a password-protected room
     let owner = user_repo
         .create(&make_user("fallback_owner"))
         .await

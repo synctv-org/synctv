@@ -18,9 +18,7 @@ fn rid(s: &str) -> RoomId {
     RoomId::from_string(s.to_string())
 }
 
-// ============================================================================
 // Test 1: Connection lifecycle - register and unregister
-// ============================================================================
 
 #[tokio::test]
 async fn test_connection_register_unregister() {
@@ -45,9 +43,7 @@ async fn test_connection_register_unregister() {
     assert!(mgr.get_connection("conn1").is_none());
 }
 
-// ============================================================================
 // Test 2: Connection rejoin - reconnect after disconnect
-// ============================================================================
 
 #[tokio::test]
 async fn test_connection_reconnect_after_disconnect() {
@@ -70,15 +66,12 @@ async fn test_connection_reconnect_after_disconnect() {
         .unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
 
-    // Should be in the room
     assert_eq!(mgr.room_connection_count(&room), 1);
     let conn = mgr.get_connection("conn2").unwrap();
     assert_eq!(conn.room_id.unwrap(), room);
 }
 
-// ============================================================================
 // Test 3: Heartbeat timeout detection
-// ============================================================================
 
 #[tokio::test]
 async fn test_heartbeat_timeout() {
@@ -97,7 +90,6 @@ async fn test_heartbeat_timeout() {
     let timeouts = mgr.check_timeouts();
     assert!(timeouts.is_empty(), "Should not timeout immediately");
 
-    // Wait for idle timeout
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let timeouts = mgr.check_timeouts();
@@ -105,9 +97,7 @@ async fn test_heartbeat_timeout() {
     assert_eq!(timeouts[0], "conn1");
 }
 
-// ============================================================================
 // Test 4: Multi-connection management per user
-// ============================================================================
 
 #[tokio::test]
 async fn test_user_with_multiple_connections() {
@@ -142,9 +132,7 @@ async fn test_user_with_multiple_connections() {
     assert_eq!(mgr.connection_count(), 3);
 }
 
-// ============================================================================
 // Test 5: Connection cleanup on room leave
-// ============================================================================
 
 #[tokio::test]
 async fn test_room_leave_cleanup() {
@@ -175,9 +163,7 @@ async fn test_room_leave_cleanup() {
     assert_eq!(mgr.connection_count(), 2);
 }
 
-// ============================================================================
 // Test 6: Disconnect signal propagation
-// ============================================================================
 
 #[tokio::test]
 async fn test_disconnect_signal_to_room() {
@@ -239,9 +225,7 @@ async fn test_disconnect_signal_to_connection() {
     assert!(matches!(signal, DisconnectSignal::Connection(ref id) if id == "conn1"));
 }
 
-// ============================================================================
 // Test 7: Connection duration tracking
-// ============================================================================
 
 #[tokio::test]
 async fn test_connection_duration_tracking() {
@@ -259,9 +243,7 @@ async fn test_connection_duration_tracking() {
     assert!(info.idle_duration() >= Duration::from_millis(50));
 }
 
-// ============================================================================
 // Test 8: Max connection duration enforcement
-// ============================================================================
 
 #[tokio::test]
 async fn test_max_connection_duration() {
@@ -288,9 +270,7 @@ async fn test_max_connection_duration() {
     assert_eq!(timeouts[0], "conn1");
 }
 
-// ============================================================================
 // Test 9: Total connection limit
-// ============================================================================
 
 #[tokio::test]
 async fn test_total_connection_limit() {
@@ -323,9 +303,7 @@ async fn test_total_connection_limit() {
     assert!(result.is_ok(), "Should succeed after freeing slot");
 }
 
-// ============================================================================
 // Test 10: Room connection limit
-// ============================================================================
 
 #[tokio::test]
 async fn test_room_connection_limit() {
@@ -361,9 +339,7 @@ async fn test_room_connection_limit() {
     assert!(result.is_err(), "Should fail when room is full");
 }
 
-// ============================================================================
 // Test 11: RTC state management
-// ============================================================================
 
 #[tokio::test]
 async fn test_rtc_state_management() {
@@ -398,9 +374,7 @@ async fn test_rtc_state_management() {
     assert!(rtc_conns.is_empty());
 }
 
-// ============================================================================
 // Test 12: Activity tracking
-// ============================================================================
 
 #[tokio::test]
 async fn test_activity_tracking() {
@@ -421,9 +395,7 @@ async fn test_activity_tracking() {
     // idle_duration should be reset (less than before)
 }
 
-// ============================================================================
 // Test 13: Duplicate register overwrites
-// ============================================================================
 
 /// Test that registering with the same connection ID is rejected.
 ///
@@ -450,9 +422,7 @@ async fn test_duplicate_register_is_rejected_and_preserves_original_connection()
     assert_eq!(conn.user_id, uid("user1"));
 }
 
-// ============================================================================
 // Test 14: Unregister non-existent is safe
-// ============================================================================
 
 #[tokio::test]
 async fn test_unregister_non_existent_safe() {
@@ -464,9 +434,7 @@ async fn test_unregister_non_existent_safe() {
     assert_eq!(mgr.connection_count(), 0);
 }
 
-// ============================================================================
 // Test 15: User from room disconnect signal
-// ============================================================================
 
 /// Test that `disconnect_user_from_room` sends the correct signal.
 /// Note: This method only sends a signal; it does not directly remove connections.

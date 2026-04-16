@@ -24,9 +24,7 @@ fn make_request_no_secret() -> Request<()> {
     Request::new(())
 }
 
-// ============================================================================
 // Correct secret passes
-// ============================================================================
 
 #[test]
 fn test_correct_secret_passes() {
@@ -37,9 +35,7 @@ fn test_correct_secret_passes() {
     assert!(result.is_ok(), "Correct secret should pass validation");
 }
 
-// ============================================================================
 // Missing header -> unauthenticated
-// ============================================================================
 
 #[test]
 fn test_missing_header_unauthenticated() {
@@ -62,9 +58,7 @@ fn test_missing_header_unauthenticated() {
     );
 }
 
-// ============================================================================
 // Wrong secret -> unauthenticated
-// ============================================================================
 
 #[test]
 fn test_wrong_secret_unauthenticated() {
@@ -87,9 +81,7 @@ fn test_wrong_secret_unauthenticated() {
     );
 }
 
-// ============================================================================
 // constant_time_eq tests
-// ============================================================================
 
 /// We test the `constant_time_eq` behavior through the interceptor by verifying
 /// that the comparison is correct for equal, not-equal same-length, and

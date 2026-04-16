@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
 // Integration tests for live streaming infrastructure
-//
 // Tests the complete flow from API to storage, including:
 // - FLV streaming API
 // - HLS playlist generation
@@ -157,7 +156,6 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
 async fn test_complete_hls_workflow() {
     let infrastructure = create_test_infrastructure();
 
-    // Step 1: Simulate HLS remuxer writing segments
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
     // Write test segments using structured (app, stream, name)
@@ -174,7 +172,6 @@ async fn test_complete_hls_workflow() {
             .unwrap();
     }
 
-    // Step 2: Register stream in HLS registry
     let mut segments = VecDeque::new();
     for i in 0..3 {
         segments.push_back(SegmentInfo {
@@ -200,7 +197,6 @@ async fn test_complete_hls_workflow() {
         registry.insert("test_room/test_media".to_string(), state);
     }
 
-    // Step 3: Generate HLS playlist
     let playlist =
         HlsStreamingApi::generate_playlist(&infrastructure, "test_room", "test_media", |ts_name| {
             format!("/api/providers/proxy/rtmp/version123/segment/{ts_name}.ts")
@@ -215,7 +211,6 @@ async fn test_complete_hls_workflow() {
     assert!(playlist.contains("segment1.ts"));
     assert!(playlist.contains("segment2.ts"));
 
-    // Step 4: Retrieve segments via API
     let segment0 =
         HlsStreamingApi::get_segment(&infrastructure, "test_room", "test_media", "segment0")
             .await
@@ -459,7 +454,6 @@ async fn test_concurrent_segment_access() {
 async fn test_hls_playlist_with_discontinuity() {
     let infrastructure = create_test_infrastructure();
 
-    // Create segments with discontinuity
     let mut segments = VecDeque::new();
     segments.push_back(SegmentInfo {
         sequence: 0,

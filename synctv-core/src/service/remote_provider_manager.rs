@@ -1,15 +1,11 @@
 // Remote Provider Manager
-//
 // Manages remote provider instances (gRPC connections).
 // Supports both local (in-process) and remote (gRPC) provider instances.
-//
 // ## Multi-replica support
-//
 // Instead of maintaining a persistent channel map that is invisible across replicas,
 // channels are created lazily on demand and cached with a TTL. When a provider
 // operation is needed, the manager looks up the instance config from the DB and
 // creates a channel if not already cached.
-//
 // Provider changes (add/update/delete/enable/disable) are broadcast via the
 // shared durable cache invalidation stream so other replicas can invalidate
 // their local channel cache even across restarts and transient disconnects.

@@ -17,9 +17,7 @@ use synctv_core::service::auth::token_blacklist::{
     InMemoryTokenBlacklistStore, TokenBlacklistStore,
 };
 
-// ============================================================================
 // Helper functions
-// ============================================================================
 
 /// Create a test blacklist store
 fn create_blacklist_store() -> Arc<InMemoryTokenBlacklistStore> {
@@ -31,9 +29,7 @@ fn generate_test_jti() -> String {
     format!("jti_{}", uuid::Uuid::new_v4())
 }
 
-// ============================================================================
 // TDD Test 1: Token blacklist prevents replay of force-logged-out token
-// ============================================================================
 
 #[tokio::test]
 async fn test_force_logout_blacklist_prevents_token_reuse() {
@@ -56,9 +52,7 @@ async fn test_force_logout_blacklist_prevents_token_reuse() {
     );
 }
 
-// ============================================================================
 // TDD Test 2: Blacklisted token is rejected even if otherwise valid
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklisted_token_rejected_even_if_valid_signature() {
@@ -80,9 +74,7 @@ async fn test_blacklisted_token_rejected_even_if_valid_signature() {
     );
 }
 
-// ============================================================================
 // TDD Test 3: Force logout blacklists all user's tokens by family
-// ============================================================================
 
 #[tokio::test]
 async fn test_force_logout_revokes_token_family() {
@@ -110,9 +102,7 @@ async fn test_force_logout_revokes_token_family() {
     );
 }
 
-// ============================================================================
 // TDD Test 4: Non-blacklisted token passes check
-// ============================================================================
 
 #[tokio::test]
 async fn test_non_blacklisted_token_passes_check() {
@@ -134,9 +124,7 @@ async fn test_non_blacklisted_token_passes_check() {
     );
 }
 
-// ============================================================================
 // TDD Test 5: Blacklist entry expires after TTL
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_entry_expires_after_ttl() {
@@ -155,7 +143,6 @@ async fn test_blacklist_entry_expires_after_ttl() {
         "Should be blacklisted immediately"
     );
 
-    // Wait for TTL to expire
     tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
 
     // After TTL, should NOT be blacklisted
@@ -163,9 +150,7 @@ async fn test_blacklist_entry_expires_after_ttl() {
     assert!(!is_blacklisted, "Blacklist entry should expire after TTL");
 }
 
-// ============================================================================
 // TDD Test 6: Concurrent blacklist operations are atomic
-// ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_blacklist_operations_atomic() {
@@ -182,7 +167,6 @@ async fn test_concurrent_blacklist_operations_atomic() {
         }));
     }
 
-    // Wait for all to complete
     let results: Vec<_> = futures::future::join_all(handles).await;
 
     // Exactly one should return Ok(false) (first insert)
@@ -203,9 +187,7 @@ async fn test_concurrent_blacklist_operations_atomic() {
     assert_eq!(replay_count, 9, "All other operations should detect replay");
 }
 
-// ============================================================================
 // TDD Test 7: Force logout for multiple tokens (batch blacklist)
-// ============================================================================
 
 #[tokio::test]
 async fn test_batch_blacklist_for_force_logout() {
@@ -236,9 +218,7 @@ async fn test_batch_blacklist_for_force_logout() {
     );
 }
 
-// ============================================================================
 // TDD Test 8: Token issued after family revocation is NOT blacklisted
-// ============================================================================
 
 #[tokio::test]
 async fn test_token_issued_after_family_revocation_not_blacklisted() {
@@ -266,9 +246,7 @@ async fn test_token_issued_after_family_revocation_not_blacklisted() {
     // (this logic is in SecurityPipeline, not tested here)
 }
 
-// ============================================================================
 // TDD Test 9: Blacklist store backend name for observability
-// ============================================================================
 
 #[tokio::test]
 async fn test_blacklist_store_can_be_created() {
@@ -285,9 +263,7 @@ async fn test_blacklist_store_can_be_created() {
     assert!(store.is_blacklisted(&jti).await);
 }
 
-// ============================================================================
 // TDD Test 10: Force logout simulation with JWT claims
-// ============================================================================
 
 #[tokio::test]
 async fn test_force_logout_simulation_with_jwt_claims() {
@@ -296,22 +272,18 @@ async fn test_force_logout_simulation_with_jwt_claims() {
     // Simulate a JWT's JTI claim
     let jti = format!("{:x}", uuid::Uuid::new_v4().to_u128_le());
 
-    // 1. Initially token is NOT blacklisted
     assert!(
         !store.is_blacklisted(&jti).await,
         "Token should not be blacklisted initially"
     );
 
-    // 2. Admin performs force logout - blacklist the token
     store.blacklist(&jti, 3600).await.expect("Should succeed");
 
-    // 3. Now token IS blacklisted
     assert!(
         store.is_blacklisted(&jti).await,
         "Token should be blacklisted after force logout"
     );
 
-    // 4. SecurityPipeline would check this and reject the token
     // (simulated here by direct check)
     let check_result = store.is_blacklisted_checked(&jti).await;
     assert!(

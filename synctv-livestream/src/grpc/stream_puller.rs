@@ -104,15 +104,15 @@ impl GrpcStreamPuller {
 
     /// Run the puller: connect to remote, pull stream, publish to local `StreamHub`.
     ///
-    /// Issue #52: Adds exponential-backoff retry logic so a transient network hiccup
+    /// Adds exponential-backoff retry logic so a transient network hiccup
     /// does not permanently disconnect the stream.
     ///
     /// Retry policy:
-    ///   - Initial delay: 1 second; doubles on each failure up to `MAX_RETRY_DELAY_SECS`.
-    ///   - Maximum attempts: `MAX_RETRY_ATTEMPTS` (configurable default: 10).
-    ///   - Before each retry, the publisher epoch is re-validated.  If the epoch has
-    ///     changed (publisher restarted on a different node) retrying is pointless and
-    ///     the puller stops immediately.
+    /// - Initial delay: 1 second; doubles on each failure up to `MAX_RETRY_DELAY_SECS`.
+    /// - Maximum attempts: `MAX_RETRY_ATTEMPTS` (configurable default: 10).
+    /// - Before each retry, the publisher epoch is re-validated. If the epoch has
+    ///   changed (publisher restarted on a different node) retrying is pointless and
+    ///   the puller stops immediately.
     ///
     /// After exhausting all retries the final error is returned so the caller
     /// (`PullStreamManager`) can clean up state.
@@ -573,12 +573,10 @@ mod tests {
         // Since we can't establish a real connection, we can't directly test
         // the streaming error path. Instead, we test the connection pool's
         // behavior when record_connection_error is called on an existing entry.
-        //
         // In the real scenario:
         // 1. get_channel succeeds -> entry added to pool
         // 2. pull_rtmp_stream fails -> record_connection_error called
         // 3. Error count should be 1
-        //
         // For testing purposes, we verify:
         // - record_connection_error on non-existent entry is a no-op
         // - Multiple calls don't cause issues

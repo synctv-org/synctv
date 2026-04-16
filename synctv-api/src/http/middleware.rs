@@ -28,10 +28,6 @@ tokio::task_local! {
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
 
-// ------------------------------------------------------------------
-// Request ID middleware (Issue #22)
-// ------------------------------------------------------------------
-
 /// HTTP header name for request/trace ID propagation.
 static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("x-request-id"));
@@ -260,7 +256,6 @@ where
         // it was issued for. If the room has been deleted, the token must be rejected so
         // that stale guest tokens cannot be replayed against newly-created rooms that
         // happen to reuse the same ID.
-        //
         // Uses lightweight existence check (SELECT EXISTS) instead of fetching the full
         // room row, since we only need to confirm the room hasn't been deleted.
         let exists = app_state
@@ -321,7 +316,6 @@ pub async fn rate_limit_middleware(
     // We only trust X-Forwarded-For/X-Real-IP headers when:
     // 1. The request comes from a configured trusted proxy, OR
     // 2. Development mode is enabled (for local testing)
-    //
     // This prevents header spoofing attacks that could bypass rate limiting.
     let rate_limit_key = user_id.unwrap_or_else(|| {
         // Try to get the remote/socket address from ConnectInfo extension
@@ -681,10 +675,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    // === RateLimitConfig Tests ===
-
-    // === HSTS Header Tests ===
-
     #[test]
     fn test_hsts_header_basic() {
         let header = hsts_header(31_536_000, false, false);
@@ -714,8 +704,6 @@ mod tests {
         let header = hsts_header(0, false, false);
         assert_eq!(header, "max-age=0");
     }
-
-    // === Security Headers Middleware Tests ===
 
     #[tokio::test]
     async fn test_security_headers_adds_all_headers() {
@@ -856,16 +844,12 @@ mod tests {
         );
     }
 
-    // === Security Parity: HTTP middleware checks ===
-    //
     // The HTTP AuthUser extractor performs security checks in order:
     // 1. JWT verification (validate signature, expiration, and access token type)
     // 2. Password invalidation check (reject tokens issued before password change)
     // 3. Banned/deleted user check (reject banned or soft-deleted users)
-    //
     // These checks mirror the gRPC BlacklistCheckLayer to ensure consistent
     // security enforcement across both transport layers.
-    //
     // Full integration tests require AppState with real services; the tests
     // below verify the structural aspects that can be tested in isolation.
 
@@ -925,8 +909,6 @@ mod tests {
         assert!(cache_control.contains("proxy-revalidate"));
     }
 
-    // === HSTS Edge Cases ===
-
     #[test]
     fn test_hsts_header_large_max_age() {
         // 2 years is a common production value
@@ -943,8 +925,6 @@ mod tests {
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
     }
 
-    // === Provider Routes Security Headers Tests ===
-    //
     // Provider routes are registered with only rate-limit middleware, but the
     // global security_headers_middleware is applied to the entire router in
     // apply_global_layers(). These tests verify that nested routes still

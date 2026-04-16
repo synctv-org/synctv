@@ -13,13 +13,10 @@ use synctv_cluster::discovery::health_monitor::HealthMonitor;
 use synctv_cluster::NodeHealth;
 use synctv_cluster::NodeInfo;
 
-// ============================================================================
 // Test 1: stale nodes are marked unhealthy
-// ============================================================================
 
 #[tokio::test]
 async fn test_process_heartbeats_marks_stale_unhealthy() {
-    // Create a stale node (heartbeat 60 seconds ago) directly
     let mut stale_node = NodeInfo::new("stale-node".to_string(), "localhost:8080".to_string());
     stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
 
@@ -37,9 +34,7 @@ async fn test_process_heartbeats_marks_stale_unhealthy() {
     );
 }
 
-// ============================================================================
 // Test 2: fresh nodes with no existing status are marked healthy (bug fix)
-// ============================================================================
 
 #[tokio::test]
 async fn test_process_heartbeats_marks_fresh_healthy() {
@@ -58,9 +53,7 @@ async fn test_process_heartbeats_marks_fresh_healthy() {
     );
 }
 
-// ============================================================================
 // Test 3: fresh node with existing status is NOT overridden by heartbeat
-// ============================================================================
 
 #[tokio::test]
 async fn test_process_heartbeats_does_not_override_existing() {
@@ -85,9 +78,7 @@ async fn test_process_heartbeats_does_not_override_existing() {
     );
 }
 
-// ============================================================================
 // Test 4: backoff multiplier caps at 8x
-// ============================================================================
 
 #[test]
 fn test_backoff_multiplier_capped() {
@@ -119,9 +110,7 @@ fn test_backoff_multiplier_capped() {
     }
 }
 
-// ============================================================================
 // Test 5: removed nodes are pruned from status map
-// ============================================================================
 
 #[tokio::test]
 async fn test_process_heartbeats_prunes_removed_nodes() {

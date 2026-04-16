@@ -31,9 +31,7 @@ fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("test value should fit in u32")
 }
 
-// ==================================================================
 // Simulated Split Lock Architecture (for performance baseline)
-// ==================================================================
 
 /// Simulated split cache structure for benchmarking
 struct SplitCacheSim {
@@ -161,9 +159,7 @@ fn test_no_deadlock_under_contention() {
     }
 }
 
-// ==================================================================
 // Correctness Tests
-// ==================================================================
 
 /// Test that split cache maintains data integrity
 #[test]
@@ -245,9 +241,7 @@ fn test_rwlock_read_write交替() {
     assert_eq!(ts, 200);
 }
 
-// ==================================================================
 // Real SplitCache Tests
-// ==================================================================
 
 /// Test SplitCache metadata operations
 #[test]
@@ -286,7 +280,6 @@ fn test_split_cache_video_seq() {
     // Initially no video sequence
     assert!(cache.get_video_seq().is_none());
 
-    // Create a simple video sequence header
     // Note: This is a minimal test - real H264 sequence headers are more complex
     let data = BytesMut::new();
     cache.save_video_data(&data, 0).ok(); // Empty data, should be ok
@@ -303,7 +296,6 @@ fn test_split_cache_audio_seq() {
     // Initially no audio sequence
     assert!(cache.get_audio_seq().is_none());
 
-    // Create a simple audio frame
     let data = BytesMut::new();
     cache.save_audio_data(&data, 0).ok(); // Empty data, should be ok
 

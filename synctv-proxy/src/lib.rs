@@ -378,7 +378,6 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // client would try to decompress already-decoded data).
     // For other encodings (e.g. zstd) that reqwest does NOT handle, we must
     // preserve the header so the client knows to decode it.
-    //
     // Additionally, when redirects were followed the body has been fully
     // consumed and re-requested at the final URL; in that case we strip
     // content-encoding unconditionally because the body is already decoded.
@@ -549,9 +548,7 @@ pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
         .map_err(|e| anyhow::anyhow!("Failed to build M3U8 response: {e}"))
 }
 
-// ------------------------------------------------------------------
 // CORS preflight helper functions
-// ------------------------------------------------------------------
 
 /// Standard CORS headers for preflight requests.
 const CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
@@ -657,9 +654,7 @@ fn handle_cors_preflight(origin: Option<&str>, config: &CorsConfig) -> Response 
     build_allowed_cors_response(origin)
 }
 
-// ------------------------------------------------------------------
 // CORS configuration
-// ------------------------------------------------------------------
 
 /// CORS configuration for the proxy.
 ///
@@ -749,9 +744,7 @@ pub async fn proxy_options_preflight_with_cors(
     handle_cors_preflight(origin, &config)
 }
 
-// ------------------------------------------------------------------
 // M3U8 rewriting helpers
-// ------------------------------------------------------------------
 
 /// Default maximum number of URLs that can be rewritten in a single M3U8 playlist.
 /// This prevents abuse via extremely large playlists that could cause memory
@@ -923,9 +916,7 @@ pub fn percent_encode(input: &str) -> String {
     percent_encoding::percent_encode(&decoded, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
-// ------------------------------------------------------------------
 // Manual redirect following with DNS validation
-// ------------------------------------------------------------------
 
 /// Headers that should be preserved across redirect hops.
 ///
@@ -1109,9 +1100,7 @@ mod tests {
             .expect("test proxy client should build")
     }
 
-    // ------------------------------------------------------------------
     // CORS preflight helper function tests
-    // ------------------------------------------------------------------
 
     #[test]
     fn test_build_rate_limit_response() {
@@ -1311,9 +1300,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    // ------------------------------------------------------------------
     // P-06: Redirect header preservation list
-    // ------------------------------------------------------------------
 
     #[test]
     fn test_redirect_preserve_headers_includes_critical_headers() {
@@ -1332,9 +1319,7 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
     // Existing helpers
-    // ------------------------------------------------------------------
 
     #[test]
     fn test_make_absolute_already_absolute() {
@@ -1420,9 +1405,7 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------------------
     // URL scheme validation tests
-    // ------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_proxy_fetch_rejects_file_scheme() {

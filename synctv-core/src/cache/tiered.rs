@@ -42,9 +42,7 @@ pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static 
 /// when many concurrent requests miss L1 for the same key, only one
 /// proceeds to query L2, and the rest wait for its result.
 ///
-/// # Generation Counter (Issue #30)
-///
-/// Each invalidation increments a global `epoch` counter for this cache
+/// # Generation Counter/// Each invalidation increments a global `epoch` counter for this cache
 /// instance. When a `SingleFlight` worker finishes a fetch, it compares the
 /// epoch at the time the fetch started with the current epoch. If they differ,
 /// an invalidation arrived while the fetch was in-flight, which means the
@@ -79,7 +77,7 @@ where
     batch_singleflight: SingleFlight<String, Vec<Option<String>>, String>,
     /// Per-key generation counters. Incremented on single-key invalidation.
     ///
-    /// Issue #30: Before writing a `SingleFlight` result back to L1, we compare
+    /// Before writing a `SingleFlight` result back to L1, we compare
     /// the epoch snapshot taken at fetch-start with the current value. If they
     /// differ, the fetch result is discarded to avoid re-populating L1 with
     /// potentially stale data after an invalidation.
@@ -190,7 +188,7 @@ where
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             let cache_type = self.cache_type.clone();
 
-            // Issue #30: Snapshot per-key epoch + global epoch before the async
+            // Snapshot per-key epoch + global epoch before the async
             // fetch begins. After the fetch completes we re-check; if either
             // changed, an invalidation arrived mid-flight and the result is stale.
             let key_epoch_before = self.key_epochs.get(key).map_or(0, |v| *v);
@@ -237,7 +235,7 @@ where
                     "Cache hit (L2)"
                 );
 
-                // Issue #30: Only populate L1 if no invalidation arrived while
+                // Only populate L1 if no invalidation arrived while
                 // this fetch was in-flight. Check both the per-key epoch and the
                 // global epoch; if either changed, the data may be stale.
                 let key_epoch_after = key_epochs_arc.get(&epoch_key).map_or(0, |v| *v);
@@ -322,12 +320,12 @@ where
     /// stale data, then L2 is cleared so other replicas don't re-populate from
     /// stale L2 data.
     ///
-    /// Also increments the epoch counter (Issue #30) so that any in-flight
+    /// Also increments the epoch counter so that any in-flight
     /// `SingleFlight` fetches know not to write their result to L1 cache.
     pub async fn invalidate(&self, key: &K) -> Result<()> {
         let start = std::time::Instant::now();
 
-        // Issue #30: Increment per-key epoch BEFORE removing from L1. Any
+        // Increment per-key epoch BEFORE removing from L1. Any
         // concurrent SingleFlight fetch for THIS key that started before this
         // point will see the new epoch after completing and skip the L1 write.
         // This does NOT affect in-flight fetches for unrelated keys.
@@ -369,9 +367,9 @@ where
     /// L1 is cleared first so this replica stops serving stale data immediately,
     /// then L2 is cleared so other replicas don't re-populate from stale L2 data.
     ///
-    /// Also increments the epoch counter (Issue #30).
+    /// Also increments the epoch counter.
     pub async fn invalidate_by_id(&self, id: &str) {
-        // Issue #30: Increment per-key epoch before evicting from L1
+        // Increment per-key epoch before evicting from L1
         let key = K::from_id(id);
         self.key_epochs
             .entry(key.clone())
@@ -433,7 +431,7 @@ where
 
         // Check L2 cache for missing keys
         if !missing_keys.is_empty() && self.l2.is_active() {
-            // Issue #30: Snapshot global epoch before the batch fetch begins.
+            // Snapshot global epoch before the batch fetch begins.
             // After the fetch completes we re-check; if the global epoch changed
             // (full cache clear), all results are stale.
             let global_epoch_before = self.global_epoch.load(Ordering::Acquire);
@@ -475,7 +473,7 @@ where
                     super::SingleFlightError::Inner(message) => Error::Internal(message),
                 })?;
 
-            // Issue #30: Check global epoch first. If it changed, all results
+            // Check global epoch first. If it changed, all results
             // are stale — skip all L1 writes.
             let global_epoch_after = global_epoch_arc.load(Ordering::Acquire);
             let global_epoch_changed = global_epoch_after != global_epoch_before;
@@ -565,9 +563,9 @@ where
     ///
     /// The epoch counter is incremented so that any in-flight `SingleFlight`
     /// fetches that started before this call know not to write their result
-    /// back to L1 (Issue #30).
+    /// back to L1.
     pub async fn clear(&self) {
-        // Issue #30: Increment global epoch so ALL in-flight fetches discard
+        // Increment global epoch so ALL in-flight fetches discard
         // their results. Also clear per-key epochs since L1 is being wiped.
         self.global_epoch.fetch_add(1, Ordering::Release);
         self.key_epochs.clear();

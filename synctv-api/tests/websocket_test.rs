@@ -33,10 +33,6 @@ async fn await_server_shutdown(
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
 
-// ============================================================================
-// Module: WsQuery deserialization
-// ============================================================================
-
 mod ws_query {
     use super::*;
 
@@ -82,10 +78,6 @@ mod ws_query {
     }
 }
 
-// ============================================================================
-// Module: AuthMethod enum
-// ============================================================================
-
 mod auth_method {
     use super::*;
 
@@ -106,10 +98,6 @@ mod auth_method {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
     }
 }
-
-// ============================================================================
-// Module: Proto codec (message encoding/decoding)
-// ============================================================================
 
 mod proto_codec {
     use prost::Message;
@@ -156,10 +144,6 @@ mod proto_codec {
         assert_eq!(decoded, client);
     }
 }
-
-// ============================================================================
-// Module: WebSocket ticket request/response types
-// ============================================================================
 
 mod ticket_types {
     use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
@@ -222,10 +206,6 @@ mod ticket_types {
         );
     }
 }
-
-// ============================================================================
-// Module: JWT service integration (token creation/verification)
-// ============================================================================
 
 mod jwt_auth {
     use std::sync::Arc;
@@ -395,17 +375,9 @@ mod jwt_auth {
     }
 }
 
-// ============================================================================
-// Module: Security pipeline (password invalidation, user status)
-// ============================================================================
-//
 // SecurityPipeline enforces password version and user status checks.
 // Token revocation is stateless: clients discard tokens on logout.
 // Full integration tests require a running database instance.
-
-// ============================================================================
-// Module: Rate limiter (in-memory fallback)
-// ============================================================================
 
 mod rate_limiter {
     use synctv_core::service::rate_limit::RateLimiter;
@@ -475,10 +447,6 @@ mod rate_limiter {
     }
 }
 
-// ============================================================================
-// Module: Health response types
-// ============================================================================
-
 mod health_types {
     use synctv_api::http::health::{HealthDetails, HealthResponse};
 
@@ -542,10 +510,6 @@ mod health_types {
     }
 }
 
-// ============================================================================
-// Module: WebSocket connection (simulated auth rejection scenarios)
-// ============================================================================
-
 mod ws_auth_scenarios {
     use axum::http::StatusCode;
     use synctv_api::http::error::AppError;
@@ -586,10 +550,6 @@ mod ws_auth_scenarios {
         assert_eq!(err.message, "Invalid or expired ticket");
     }
 }
-
-// ============================================================================
-// Module: WebSocket E2E tests (requires Docker: Postgres + Redis via TestInfra)
-// ============================================================================
 
 #[cfg(test)]
 mod websocket_e2e {
@@ -819,7 +779,6 @@ mod websocket_e2e {
         let redis_url = infra.redis_url.clone();
         let redis_key_prefix = infra.redis_key_prefix.clone();
 
-        // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
@@ -1350,10 +1309,6 @@ mod websocket_e2e {
             .expect("send client message");
     }
 
-    // ========================================================================
-    // Test: Basic WebSocket handshake and connection establishment
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_handshake_and_initial_user_joined() {
@@ -1389,10 +1344,6 @@ mod websocket_e2e {
         ws.close(None).await.expect("close");
     }
 
-    // ========================================================================
-    // Test: Ping/Pong heartbeat mechanism (client sends heartbeat, gets ack)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_heartbeat_ping_pong() {
@@ -1405,10 +1356,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send a heartbeat ClientMessage
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -1438,10 +1387,6 @@ mod websocket_e2e {
         ws.close(None).await.expect("close");
     }
 
-    // ========================================================================
-    // Test: Graceful disconnect (client sends Close frame)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_graceful_disconnect() {
@@ -1454,10 +1399,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send a Close frame
         ws.close(Some(tungstenite::protocol::CloseFrame {
             code: tungstenite::protocol::frame::coding::CloseCode::Normal,
             reason: "bye".into(),
@@ -1482,17 +1425,12 @@ mod websocket_e2e {
         }
     }
 
-    // ========================================================================
-    // Test: Unauthenticated connection attempt is rejected
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_unauthenticated_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Attempt to connect without any token
         let url = format!("ws://{}/ws/rooms/fake_room", server.addr);
         let result = tokio_tungstenite::connect_async(&url).await;
 
@@ -1502,10 +1440,6 @@ mod websocket_e2e {
             "Connection without auth should be rejected"
         );
     }
-
-    // ========================================================================
-    // Test: Invalid token is rejected
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -1535,26 +1469,19 @@ mod websocket_e2e {
         );
     }
 
-    // ========================================================================
-    // Test: Non-member of room is rejected (valid token, not a room member)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_non_member_rejected() {
         let infra = TestInfra::new().await;
         let mut server = setup_e2e_server(&infra).await;
 
-        // Create owner and room
         let (owner_id, _owner_token) =
             register_test_user(&server.user_service, &server.jwt_service, "owner_nm").await;
         let room_id = create_test_room(&server.room_service, &owner_id, "Private Room").await;
 
-        // Create a different user who is NOT a member of the room
         let (_outsider_id, outsider_token) =
             register_test_user(&server.user_service, &server.jwt_service, "outsider_nm").await;
 
-        // Attempt to connect as the outsider
         let url = format!("ws://{}/ws/rooms/{}", server.addr, room_id);
         let request = tungstenite::http::Request::builder()
             .uri(&url)
@@ -1658,22 +1585,16 @@ mod websocket_e2e {
         );
     }
 
-    // ========================================================================
-    // Test: Multiple clients join the same room and receive each other's events
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_multi_client_room_sync() {
         let infra = TestInfra::new().await;
         let mut server = setup_e2e_server(&infra).await;
 
-        // Create room owner (user1)
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user1_mc").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "Sync Room").await;
 
-        // Create second user and add them to the room
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user2_mc").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
@@ -1683,14 +1604,10 @@ mod websocket_e2e {
             .await
             .expect("user2 join room");
 
-        // Connect user1
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
-        // Drain all initial messages for user1
         drain_until_quiet(&mut ws1, 2000).await;
 
-        // Connect user2
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
-        // Drain user2's initial messages
         drain_until_quiet(&mut ws2, 2000).await;
 
         // user1 should receive a UserJoined event for user2 (via cluster broadcast)
@@ -1725,22 +1642,16 @@ mod websocket_e2e {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // Test: Chat message broadcast between two clients in the same room
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_chat_message_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create room owner (user1) and room
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "sender_cb").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "Chat Room").await;
 
-        // Create second user and join room
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "receiver_cb").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
@@ -1750,11 +1661,9 @@ mod websocket_e2e {
             .await
             .expect("user2 join");
 
-        // Connect both users
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain all initial messages on both connections (parallel)
         tokio::join!(
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
@@ -1797,10 +1706,6 @@ mod websocket_e2e {
         ws2.close(None).await.expect("close ws2");
     }
 
-    // ========================================================================
-    // Test: Multiple heartbeats in sequence
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_multiple_heartbeats() {
@@ -1813,10 +1718,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain all initial messages (UserJoined, PlaybackState, etc.)
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send 3 heartbeats and expect 3 acks
         for i in 0..3 {
             let heartbeat = ClientMessage {
                 message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
@@ -1842,17 +1745,12 @@ mod websocket_e2e {
         ws.close(None).await.expect("close");
     }
 
-    // ========================================================================
-    // Test: UserLeft event is sent when a client disconnects
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_user_left_on_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create room with user1
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "stayer_ul").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "Leave Room").await;
@@ -1867,11 +1765,9 @@ mod websocket_e2e {
             .await
             .expect("join");
 
-        // Connect both
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain all initial messages on both connections (parallel)
         tokio::join!(
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
@@ -1904,32 +1800,23 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
     }
 
-    // ========================================================================
-    // Test: Room isolation (user in a different room does NOT receive messages)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_room_isolation() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create user1 with room A
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user1_iso").await;
         let room_a_id = create_test_room(&server.room_service, &user1_id, "Room A").await;
 
-        // Create user2 with room B (a completely separate room)
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user2_iso").await;
         let room_b_id = create_test_room(&server.room_service, &user2_id, "Room B").await;
 
-        // Connect user1 to Room A
         let mut ws1 = ws_connect(&server.addr, &room_a_id, &user1_token).await;
-        // Connect user2 to Room B
         let mut ws2 = ws_connect(&server.addr, &room_b_id, &user2_token).await;
 
-        // Drain initial UserJoined for both
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             recv_server_message(&mut ws1),
@@ -1983,10 +1870,6 @@ mod websocket_e2e {
         ws2.close(None).await.expect("close ws2");
     }
 
-    // ========================================================================
-    // Test: Reconnection after disconnect (verify new connection works)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_reconnect_after_disconnect() {
@@ -1997,7 +1880,6 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "reconn_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
 
-        // First connection
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
         let initial = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -2011,7 +1893,6 @@ mod websocket_e2e {
             Some(server_message::Message::UserJoined(_))
         ));
 
-        // Graceful disconnect
         ws.close(None).await.expect("close");
         // Small delay to let the server process the disconnect
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2036,7 +1917,6 @@ mod websocket_e2e {
             other => panic!("Expected UserJoined on reconnect, got: {other:?}"),
         }
 
-        // Drain any remaining initial messages before sending heartbeat
         drain_until_quiet(&mut ws2, 500).await;
 
         // Verify heartbeat still works after reconnection
@@ -2062,17 +1942,12 @@ mod websocket_e2e {
         ws2.close(None).await.expect("close ws2");
     }
 
-    // ========================================================================
-    // Test: Forced disconnect via ConnectionManager (simulates kick)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_forced_disconnect_via_kick() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create room owner and a second user
         let (owner_id, _owner_token) =
             register_test_user(&server.user_service, &server.jwt_service, "owner_kick").await;
         let room_id = create_test_room(&server.room_service, &owner_id, "Kick Room").await;
@@ -2088,7 +1963,6 @@ mod websocket_e2e {
 
         // user2 connects
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
-        // Drain initial UserJoined
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             recv_server_message(&mut ws2),
@@ -2116,10 +1990,6 @@ mod websocket_e2e {
             "Connection should be terminated after forced disconnect"
         );
     }
-
-    // ========================================================================
-    // Test: Forced kick disconnect must not emit voluntary UserLeft
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -2191,10 +2061,6 @@ mod websocket_e2e {
 
         let _ = ws1.close(None).await;
     }
-
-    // ========================================================================
-    // Test: Admin KickUserFromRoom must not degrade into UserLeft on cleanup
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -2280,26 +2146,19 @@ mod websocket_e2e {
         let _ = ws1.close(None).await;
     }
 
-    // ========================================================================
-    // Test: Cross-replica messaging via Redis Pub/Sub
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_chat_via_redis() {
         let infra = TestInfra::new().await;
 
-        // Start two server replicas with different node IDs but shared DB + Redis
         let server1 = setup_e2e_server_with_node(&infra, "replica_1").await;
         let server2 = setup_e2e_server_with_node(&infra, "replica_2").await;
 
-        // Create user1 and room via server1's services (shared DB)
         let (user1_id, user1_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "xrep_u1").await;
         let room_id =
             create_test_room(&server1.room_service, &user1_id, "Cross Replica Room").await;
 
-        // Create user2 and join room (uses same DB)
         let (user2_id, user2_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "xrep_u2").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
@@ -2314,7 +2173,6 @@ mod websocket_e2e {
         // user2 connects to replica_2
         let mut ws2 = ws_connect(&server2.addr, &room_id, &user2_token).await;
 
-        // Drain all initial events on both connections (parallel)
         tokio::join!(
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
@@ -2355,10 +2213,6 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
     }
-
-    // ========================================================================
-    // Test: Cross-replica same-user partial disconnect must not emit UserLeft
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -2471,10 +2325,6 @@ mod websocket_e2e {
             .expect("close remaining replica-2 connection");
     }
 
-    // ========================================================================
-    // Test: Cross-replica same-user second connection must not emit duplicate UserJoined
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_cross_replica_same_user_second_connection_does_not_emit_duplicate_user_joined()
@@ -2548,10 +2398,6 @@ mod websocket_e2e {
             .expect("close replica-2 user");
     }
 
-    // ========================================================================
-    // Test: Rate limiter blocks excessive chat messages
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
@@ -2572,10 +2418,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send many chat messages rapidly (default rate limit is 10/sec)
         // We send 15 to exceed the limit
         for i in 0..15 {
             let chat_msg = ClientMessage {
@@ -2629,22 +2473,16 @@ mod websocket_e2e {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // Test: Content filter strips XSS from chat messages
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_content_filter_strips_xss() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create room owner (user1) and room
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "xss_sender").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "XSS Room").await;
 
-        // Create second user and join room
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "xss_receiver").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
@@ -2654,11 +2492,9 @@ mod websocket_e2e {
             .await
             .expect("user2 join");
 
-        // Connect both users
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain all initial messages (parallel)
         tokio::join!(
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
@@ -2708,10 +2544,6 @@ mod websocket_e2e {
         ws2.close(None).await.expect("close ws2");
     }
 
-    // ========================================================================
-    // Test: Connection cleanup after abnormal disconnect (TCP drop)
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_connection_cleanup_on_tcp_drop() {
@@ -2731,14 +2563,11 @@ mod websocket_e2e {
             .await
             .expect("join");
 
-        // Connect user1 (stays connected)
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         drain_until_quiet(&mut ws1, 2000).await;
 
-        // Connect user2 (will be dropped)
         let ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain user1's notification of user2 join
         drain_until_quiet(&mut ws1, 2000).await;
 
         // Abruptly drop user2's WebSocket (simulate TCP disconnect without Close frame)
@@ -2767,10 +2596,6 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
     }
 
-    // ========================================================================
-    // Test: ConnectionManager state is consistent after multiple connect/disconnect cycles
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_connection_manager_state_consistency() {
@@ -2781,14 +2606,11 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "cycle_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Cycle Room").await;
 
-        // Perform 3 connect/disconnect cycles
         for cycle in 0..3 {
             let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-            // Drain all initial/stale messages (UserJoined, UserLeft from previous cycle, etc.)
             drain_until_quiet(&mut ws, 2000).await;
 
-            // Send a heartbeat to verify the connection is fully functional
             let heartbeat = ClientMessage {
                 message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
                     timestamp: chrono::Utc::now().timestamp_millis(),
@@ -2808,12 +2630,10 @@ mod websocket_e2e {
                 "Expected HeartbeatAck in cycle {cycle}"
             );
 
-            // Graceful disconnect
             ws.close(None)
                 .await
                 .unwrap_or_else(|_| panic!("close in cycle {cycle}"));
 
-            // Wait for server to process the disconnect and clean up state
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
@@ -2824,10 +2644,6 @@ mod websocket_e2e {
             "After all disconnect cycles, user should have 0 connections, got {user_conn_count}"
         );
     }
-
-    // ========================================================================
-    // Test: Empty chat message is rejected by the pipeline
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -2841,10 +2657,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send empty chat message
         let empty_msg = ClientMessage {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
@@ -2900,22 +2714,16 @@ mod websocket_e2e {
         ws.close(None).await.expect("close");
     }
 
-    // ========================================================================
-    // Test: Danmaku message with position is broadcast correctly
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_danmaku_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Create room owner (user1) and room
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "danmaku_sender").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "Danmaku Room").await;
 
-        // Create second user and join room
         let (user2_id, user2_token) = register_test_user(
             &server.user_service,
             &server.jwt_service,
@@ -2929,11 +2737,9 @@ mod websocket_e2e {
             .await
             .expect("user2 join");
 
-        // Connect both users
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain all initial messages (parallel)
         tokio::join!(
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
@@ -2985,10 +2791,6 @@ mod websocket_e2e {
         ws2.close(None).await.expect("close ws2");
     }
 
-    // ========================================================================
-    // Test: Concurrent connections from same user to same room
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_concurrent_connections_same_user() {
@@ -2999,7 +2801,6 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "multi_conn_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Multi Conn Room").await;
 
-        // Open two connections from the same user to the same room
         let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
 
@@ -3028,7 +2829,6 @@ mod websocket_e2e {
             "Connection 2 should get UserJoined"
         );
 
-        // Send a heartbeat on connection 1 to verify it's still working
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -3036,7 +2836,6 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &heartbeat).await;
 
-        // Drain any UserJoined cross-notification on ws1 before checking heartbeat ack
         let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await?;
@@ -3057,10 +2856,6 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
     }
-
-    // ========================================================================
-    // Test: Same-user second connection must not emit duplicate UserJoined
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3124,10 +2919,6 @@ mod websocket_e2e {
         ws_user_a.close(None).await.expect("close user a");
         ws_user_b.close(None).await.expect("close user b");
     }
-
-    // ========================================================================
-    // Test: Same-user partial disconnect must not emit UserLeft
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3235,10 +3026,6 @@ mod websocket_e2e {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // Test: WebRTC join uses the current connection ID for same-user multi-conn
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_webrtc_join_marks_current_connection_for_same_user_multi_conn() {
@@ -3315,10 +3102,6 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
     }
-
-    // ========================================================================
-    // Test: WebRTC offer requires explicit target conn_id and returns an error
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3592,39 +3375,27 @@ mod websocket_e2e {
         let _ = ws_peer.close(None).await;
     }
 
-    // ========================================================================
-    // Test (#73): WebSocket connection with invalid ticket is rejected
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_invalid_ticket_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        // Attempt to connect with a ticket value that was never issued
         let url = format!(
             "ws://{}/ws/rooms/fake_room?ticket=totally_invalid_ticket_xyz123",
             server.addr
         );
         let result = tokio_tungstenite::connect_async(&url).await;
 
-        // Should be rejected — invalid ticket cannot be redeemed
         assert!(
             result.is_err(),
             "Connection with invalid ticket should be rejected by the server"
         );
     }
 
-    // ========================================================================
-    // Test (#73): WebSocket connection with expired ticket is rejected
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_expired_ticket_rejected() {
-        // The standalone test setup now wires an in-memory WsTicketService.
-        // A fake/expired ticket must still be rejected after validation against the
         // memory-backed store.
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -3725,14 +3496,9 @@ mod websocket_e2e {
         assert_eq!(validated.user_id, outsider_id);
     }
 
-    // ========================================================================
-    // Test (#73): WebSocket connection with valid JWT succeeds
-    //
-    // NOTE: Full ticket-based auth requires a running WsTicketService (Redis).
     // We test the Authorization header path: a raw JWT passed via Bearer
     // header succeeds, proving the WebSocket upgrade + auth pipeline is
     // working. The ticket path is tested at the unit level in the ticket module.
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3744,7 +3510,6 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "valid_auth_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Auth Test Room").await;
 
-        // Connect using Authorization header with a valid JWT
         // ws_connect already asserts HTTP 101 Switching Protocols
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
@@ -3771,9 +3536,7 @@ mod websocket_e2e {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // Test (#73): Sending invalid message format returns an error response
-    // ========================================================================
+    // Sending invalid message format returns an error response
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3791,18 +3554,16 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        // Send garbage bytes that cannot be decoded as a valid protobuf ClientMessage
         let garbage = vec![0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0x01, 0x02];
         ws.send(tungstenite::Message::Binary(garbage.into()))
             .await
             .expect("send garbage bytes");
 
         // The server should either:
-        //   a) Send an Error ServerMessage back, OR
-        //   b) Close the connection
+        // a) Send an Error ServerMessage back, OR
+        // b) Close the connection
         // In either case the connection should handle the bad input gracefully.
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -3859,14 +3620,11 @@ mod websocket_e2e {
         }
     }
 
-    // ========================================================================
-    // Test (#73): Heartbeat / Ping message receives Pong / Ack response
-    //
+    // Heartbeat / Ping message receives Pong / Ack response
     // This is a dedicated test for the spec requirement; the full heartbeat
     // cycle (including ack timestamp) is already verified in
     // test_ws_heartbeat_ping_pong, but we duplicate the core assertion here
     // so it is clearly labelled for the #73 test-coverage requirement.
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -3880,7 +3638,6 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
         let now_seconds = chrono::Utc::now().timestamp();
@@ -3915,23 +3672,10 @@ mod websocket_e2e {
     }
 }
 
-// ============================================================================
-// Module: WebSocket connection limit check timing tests
-// ============================================================================
-//
-// These tests verify that connection limit checks happen BEFORE the WebSocket
 // upgrade (HTTP 101), so clients receive a proper HTTP 429 error instead of
 // getting a successful upgrade followed by an immediate disconnect.
-//
-// Issue: Previously, the connection limit was checked inside handle_socket()
 // after the WebSocket upgrade completed. This meant:
-// 1. Client receives HTTP 101 Switching Protocols
-// 2. Connection is established
-// 3. Server checks limits and disconnects if exceeded
-//
-// Fix: Move the limit check to websocket_handler() before ws.on_upgrade(),
 // returning HTTP 429 Too Many Requests if limits are exceeded.
-// ============================================================================
 
 #[cfg(test)]
 mod websocket_connection_limit_timing {
@@ -4163,7 +3907,6 @@ mod websocket_connection_limit_timing {
                 .expect("ClusterManager"),
         );
 
-        // CRITICAL: Set max_per_user = 1 to trigger the limit easily
         let connection_limits = ConnectionLimits {
             webrtc_session_timeout: Default::default(),
             max_per_user: 1,
@@ -4481,33 +4224,16 @@ mod websocket_connection_limit_timing {
             .expect("build WS request")
     }
 
-    // ========================================================================
-    // TEST 1: Connection limit exceeded returns HTTP 429 (not 101)
-    // ========================================================================
-    //
-    // This test verifies that when a user exceeds their connection limit,
-    // the server returns HTTP 429 Too Many Requests BEFORE upgrading to WebSocket.
-    //
-    // Expected behavior:
-    // - First connection: HTTP 101 Switching Protocols (success)
-    // - Second connection (same user): HTTP 429 Too Many Requests
-    //
-    // Current bug: Both connections get HTTP 101, then the second one is
-    // disconnected from inside handle_socket().
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_connection_limit_returns_429_before_upgrade() {
         let infra = TestInfra::new().await;
         let mut server = setup_server_with_low_user_limit(&infra).await;
 
-        // Create a user and room
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "limit_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Limit Test Room").await;
 
-        // First connection should succeed (HTTP 101)
         let (ws1, response1) =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
                 .await
@@ -4523,8 +4249,6 @@ mod websocket_connection_limit_timing {
         })
         .await;
 
-        // Second connection (same user) should fail with HTTP 429
-        // This is the KEY assertion - the limit check must happen BEFORE upgrade
         let result =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token)).await;
 
@@ -4541,7 +4265,6 @@ mod websocket_connection_limit_timing {
                 panic!("Expected HTTP error with status 429, got: {e:?}");
             }
             Ok((_ws2, response)) => {
-                // BUG: If we get here, the connection was upgraded when it shouldn't have been
                 panic!(
                     "BUG: Second connection was upgraded with status {} instead of being rejected with 429. \
                      Connection limit check is happening AFTER WebSocket upgrade!",
@@ -4550,19 +4273,10 @@ mod websocket_connection_limit_timing {
             }
         }
 
-        // Clean up first connection
         drop(ws1);
         server.shutdown().await;
         infra.cleanup().await;
     }
-
-    // ========================================================================
-    // TEST 2: Normal connection flow is not affected
-    // ========================================================================
-    //
-    // This test verifies that users within their connection limits can
-    // still connect normally.
-    // ========================================================================
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
@@ -4570,12 +4284,10 @@ mod websocket_connection_limit_timing {
         let infra = TestInfra::new().await;
         let mut server = setup_server_with_low_user_limit(&infra).await;
 
-        // Create a user and room
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "normal_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Normal Flow Room").await;
 
-        // Connection should succeed (HTTP 101)
         let (_ws, response) =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
                 .await
@@ -4595,26 +4307,19 @@ mod websocket_connection_limit_timing {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // TEST 3: Different users can each connect within their limits
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_different_users_can_connect_within_limits() {
         let infra = TestInfra::new().await;
         let mut server = setup_server_with_low_user_limit(&infra).await;
 
-        // Create two different users
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user1").await;
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user2").await;
 
-        // Create a room with user1 as owner
         let room_id = create_test_room(&server.room_service, &user1_id, "Multi User Room").await;
 
-        // Join user2 to the room
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -4622,7 +4327,6 @@ mod websocket_connection_limit_timing {
             .await
             .expect("user2 join room");
 
-        // Both users should be able to connect (HTTP 101)
         let (_ws1, response1) =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &user1_token))
                 .await
@@ -4654,22 +4358,16 @@ mod websocket_connection_limit_timing {
         infra.cleanup().await;
     }
 
-    // ========================================================================
-    // TEST 4: After disconnect, user can reconnect
-    // ========================================================================
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_ws_can_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
         let mut server = setup_server_with_low_user_limit(&infra).await;
 
-        // Create a user and room
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "reconnect_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
 
-        // First connection
         let (ws1, response1) =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
                 .await
@@ -4685,7 +4383,6 @@ mod websocket_connection_limit_timing {
         })
         .await;
 
-        // Disconnect
         drop(ws1);
 
         wait_for_condition(std::time::Duration::from_secs(2), || {
@@ -4693,7 +4390,6 @@ mod websocket_connection_limit_timing {
         })
         .await;
 
-        // Should be able to reconnect (HTTP 101)
         let (ws2, response2) =
             tokio_tungstenite::connect_async(ws_request(&server.addr, &room_id, &token))
                 .await
@@ -4716,12 +4412,6 @@ mod websocket_connection_limit_timing {
     }
 }
 
-// ============================================================================
-// Module: Slow Client Disconnect Tests (Task #82)
-// ============================================================================
-//
-// These tests verify the slow client handling logic in WebSocket connections.
-// Slow clients are those that cannot keep up with message delivery, causing
 // the outbound channel to fill up. When SLOW_CLIENT_DROP_THRESHOLD (10) is
 // exceeded, the client is disconnected.
 
@@ -4736,7 +4426,6 @@ mod slow_client_disconnect_tests {
 
         let counter = AtomicU32::new(0);
 
-        // Simulate 9 drops - should NOT trigger disconnect
         for _i in 0..9 {
             let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
             assert!(
@@ -4745,11 +4434,9 @@ mod slow_client_disconnect_tests {
             );
         }
 
-        // 10th drop - should trigger disconnect
         let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
         assert!(drops >= THRESHOLD, "Drop {drops} should trigger disconnect");
 
-        // Reset counter (successful send)
         counter.store(0, Ordering::Relaxed);
         assert_eq!(
             counter.load(Ordering::Relaxed),
@@ -4757,7 +4444,6 @@ mod slow_client_disconnect_tests {
             "Counter should reset to 0"
         );
 
-        // Verify we can count again after reset
         let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
         assert_eq!(drops, 1, "Counter should start from 1 after reset");
     }
@@ -4769,7 +4455,6 @@ mod slow_client_disconnect_tests {
 
         let counter = AtomicU32::new(5); // Simulate 5 previous drops
 
-        // Successful send resets counter
         counter.store(0, Ordering::Relaxed);
 
         assert_eq!(
@@ -4784,12 +4469,10 @@ mod slow_client_disconnect_tests {
     fn test_channel_capacity_vs_threshold_relationship() {
         // WebSocket channel capacity is typically 32-256 messages.
         // SLOW_CLIENT_DROP_THRESHOLD is 10.
-        //
         // Relationship:
         // - With capacity 32: client has ~32 messages buffered before drops start
         // - After 10 consecutive drops (42 total send attempts): disconnect
         // - This gives ~3-4 seconds of buffer at 10 msgs/sec
-        //
         // If channel is too small (e.g., 8), clients may disconnect too easily.
         // If threshold is too high (e.g., 100), slow clients stay connected too long.
 
@@ -4804,11 +4487,6 @@ mod slow_client_disconnect_tests {
     }
 }
 
-// ============================================================================
-// Module: Slow Client Message Recovery Tests (Task #54)
-// ============================================================================
-//
-// These tests verify the slow client message recovery mechanism.
 // Critical messages (kick/ban) must be delivered even when the client is slow.
 
 mod slow_client_message_recovery {
@@ -4819,7 +4497,6 @@ mod slow_client_message_recovery {
     fn test_kick_ban_are_critical_messages() {
         use synctv_api::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
 
-        // Kick/ban arrives as Error notification
         let kick_message = ServerMessage {
             message: Some(Message::Error(ErrorMessage {
                 message: "You have been kicked from the room".to_string(),
@@ -4828,7 +4505,6 @@ mod slow_client_message_recovery {
             })),
         };
 
-        // This should be identified as critical
         // The is_critical_message function is private, but we verify the behavior
         // by checking the message type
         assert!(matches!(kick_message.message, Some(Message::Error(_))));
@@ -4838,16 +4514,6 @@ mod slow_client_message_recovery {
     /// This verifies the `ConnectionManager` `pending_disconnects` mechanism.
     #[test]
     fn test_pending_disconnects_mechanism_exists() {
-        // The pending_disconnects DashMap stores disconnect signals that
-        // could not be sent due to full channel. A background task retries them.
-        //
-        // This is implemented in synctv-cluster/src/sync/connection_manager.rs
-        // The key design points are:
-        // 1. When disconnect signal fails to send (channel full), it is stored
-        // 2. Background task retries pending signals every 5 seconds
-        // 3. Signals have a TTL of 60 seconds before being dropped
-        //
-        // This ensures kick/ban signals eventually reach their target even
         // during temporary channel congestion.
         const PENDING_DISCONNECT_TTL_SECS: u64 = 60;
         const RETRY_INTERVAL_SECS: u64 = 5;
@@ -4859,12 +4525,6 @@ mod slow_client_message_recovery {
     /// Even if disconnect signal is missed, heartbeat validation catches bans.
     #[test]
     fn test_heartbeat_validates_membership() {
-        // The messaging loop has two mechanisms to catch banned/kicked users:
-        //
-        // 1. Immediate: Disconnect signal via broadcast channel
-        // 2. Fallback: Membership check during heartbeat (every 25-35 seconds)
-        //
-        // Membership cache TTL is 30 seconds, ensuring banned users are
         // disconnected within 30-65 seconds even if signals are missed.
         const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
         const HEARTBEAT_INTERVAL_SECS: u64 = 30;
@@ -4875,30 +4535,18 @@ mod slow_client_message_recovery {
     /// Test the relationship between message channel capacity and recovery.
     #[test]
     fn test_message_channel_recovery_relationship() {
-        // When the outbound WebSocket channel is full:
         // - Non-critical messages are dropped (after threshold, client disconnects)
         // - Critical messages return error, triggering disconnect
-        //
-        // The client is disconnected but the server has processed the action
         // (e.g., user is banned regardless of whether they saw the message).
-        //
-        // On reconnection, the client fetches fresh state including:
         // - Current playback state
         // - Room membership status (will be rejected if banned)
         // - Room settings
 
-        // This is the expected flow for slow client handling
         const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
         const { assert!(SLOW_CLIENT_DROP_THRESHOLD > 0) };
     }
 }
 
-// ============================================================================
-// Module: Membership Cache TTL Tests (Task #55)
-// ============================================================================
-//
-// These tests verify the membership cache TTL optimization.
-// The TTL was reduced from 60 seconds to 30 seconds for faster detection
 // of banned/kicked users when disconnect signals are missed.
 
 mod membership_cache_ttl_tests {

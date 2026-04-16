@@ -1,5 +1,4 @@
 // Provider Configuration Types
-//
 // Each provider has different source_config structure stored in the database
 
 use serde::{Deserialize, Serialize};

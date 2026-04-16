@@ -35,9 +35,7 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
 use tokio::sync::Barrier;
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Test container wrapper for Postgres
 pub struct TestPostgres {
@@ -107,19 +105,16 @@ async fn setup_test_room(
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner
     let owner = user_repo
         .create(&make_user("room_owner"))
         .await
         .expect("Failed to create owner");
 
-    // Create room
     let room = room_repo
         .create(&make_room(room_name, "Test room", &owner.id))
         .await
         .expect("Failed to create room");
 
-    // Create room settings with max_members
     let settings = RoomSettings {
         max_members: MaxMembers(max_members),
         ..Default::default()
@@ -155,10 +150,6 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
         .clone()
 }
 
-// ============================================================================
-// Test: Concurrent Join Operations
-// ============================================================================
-
 /// Test concurrent join operations respect `max_members` limit.
 ///
 /// Scenario:
@@ -178,10 +169,8 @@ async fn test_concurrent_join_respects_max_members() {
     .await;
     let pool = &pool;
 
-    // Create room with max_members = 10
     let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 10).await;
 
-    // Create 30 users who will try to join
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(30);
     for i in 0..30 {
@@ -263,10 +252,6 @@ async fn test_concurrent_join_respects_max_members() {
     assert_eq!(member_count, 10, "Final member count should be 10");
 }
 
-// ============================================================================
-// Test: Concurrent Role Updates
-// ============================================================================
-
 /// Test concurrent role updates with role hierarchy enforcement.
 ///
 /// Scenario:
@@ -282,7 +267,6 @@ async fn test_concurrent_role_update_member_to_admin() {
 
     let (_owner, room, _settings) = setup_test_room(pool, "Role Update Room", 100).await;
 
-    // Create 10 members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let mut member_users = Vec::with_capacity(10);
@@ -380,7 +364,6 @@ async fn test_concurrent_role_update_equal_role_rejected() {
 
     let (_owner, room, _settings) = setup_test_room(pool, "Equal Role Room", 100).await;
 
-    // Create 2 admin users
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -442,10 +425,6 @@ async fn test_concurrent_role_update_equal_role_rejected() {
     assert!(result2.is_err(), "Admin2 cannot demote Admin1 (equal role)");
 }
 
-// ============================================================================
-// Test: Concurrent Permission Changes
-// ============================================================================
-
 /// Test concurrent permission changes with optimistic lock retry.
 ///
 /// Scenario:
@@ -460,7 +439,6 @@ async fn test_concurrent_permission_grant() {
 
     let (_owner, room, _settings) = setup_test_room(pool, "Permission Grant Room", 100).await;
 
-    // Create 5 members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let mut member_users = Vec::with_capacity(5);
@@ -538,10 +516,6 @@ async fn test_concurrent_permission_grant() {
     );
 }
 
-// ============================================================================
-// Test: Optimistic Lock Conflict Retry
-// ============================================================================
-
 /// Test optimistic lock conflict handling and retry for member updates.
 ///
 /// Scenario:
@@ -557,7 +531,6 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
 
     let (_owner, room, _settings) = setup_test_room(pool, "Optimistic Lock Room", 100).await;
 
-    // Create a member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -651,7 +624,6 @@ async fn test_optimistic_lock_conflict_on_role_update() {
 
     let (_owner, room, _settings) = setup_test_room(pool, "Role Lock Room", 100).await;
 
-    // Create a member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -729,10 +701,6 @@ async fn test_optimistic_lock_conflict_on_role_update() {
     }
 }
 
-// ============================================================================
-// Test: Concurrent Leave and Rejoin
-// ============================================================================
-
 /// Test concurrent leave and rejoin operations.
 ///
 /// Scenario:
@@ -748,7 +716,6 @@ async fn test_concurrent_leave_and_rejoin() {
     // Room with capacity 20
     let (_owner, room, _settings) = setup_test_room(pool, "Leave Rejoin Room", 20).await;
 
-    // Create initial members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let mut initial_members = Vec::with_capacity(10);
@@ -779,7 +746,6 @@ async fn test_concurrent_leave_and_rejoin() {
     );
     member_service.set_room_settings_repo(room_settings_repo);
 
-    // Create new users to join
     let mut new_users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo

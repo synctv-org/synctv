@@ -21,9 +21,7 @@ use std::time::Duration;
 use synctv_core::models::UserId;
 use synctv_core::service::{local_oauth_state_store, OAuth2State, OAuthStateStore};
 
-// ============================================================================
 // Helper functions
-// ============================================================================
 
 /// Create a test state store
 fn create_state_store() -> Arc<dyn OAuthStateStore> {
@@ -41,9 +39,7 @@ fn create_test_state(instance_name: &str) -> OAuth2State {
     }
 }
 
-// ============================================================================
 // TDD Test 1: First use of valid state should succeed
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_first_use_succeeds() {
@@ -73,9 +69,7 @@ async fn test_oauth2_state_first_use_succeeds() {
     assert_eq!(retrieved.pkce_verifier, "test_verifier_abc123");
 }
 
-// ============================================================================
 // TDD Test 2: Second use of same state should fail (replay attack prevention)
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_second_use_fails_prevents_replay() {
@@ -109,15 +103,12 @@ async fn test_oauth2_state_second_use_fails_prevents_replay() {
     );
 }
 
-// ============================================================================
 // TDD Test 3: Expired state should fail
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_expired_fails() {
     let state_store = create_state_store();
 
-    // Create a state that's already expired (created 10 minutes ago)
     let expired_time = chrono::Utc::now() - chrono::Duration::seconds(600);
     let state = OAuth2State {
         instance_name: "github".to_string(),
@@ -134,7 +125,6 @@ async fn test_oauth2_state_expired_fails() {
         .await
         .expect("Failed to store state");
 
-    // Wait for TTL to expire
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     // Consuming expired state should return None
@@ -146,9 +136,7 @@ async fn test_oauth2_state_expired_fails() {
     assert!(result.is_none(), "Expired state should return None");
 }
 
-// ============================================================================
 // TDD Test 4: Unknown state token should fail
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_unknown_token_fails() {
@@ -163,9 +151,7 @@ async fn test_oauth2_state_unknown_token_fails() {
     assert!(result.is_none(), "Unknown state token should return None");
 }
 
-// ============================================================================
 // TDD Test 5: Different state tokens are independent
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_different_tokens_independent() {
@@ -217,9 +203,7 @@ async fn test_oauth2_state_different_tokens_independent() {
     assert!(result1_again.is_none(), "Token1 should be consumed");
 }
 
-// ============================================================================
 // TDD Test 6: Concurrent consumption - only one succeeds
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_concurrent_only_one_succeeds() {
@@ -255,7 +239,6 @@ async fn test_oauth2_state_concurrent_only_one_succeeds() {
         }));
     }
 
-    // Wait for all to complete
     for handle in handles {
         handle.await.expect("Task should not panic");
     }
@@ -273,9 +256,7 @@ async fn test_oauth2_state_concurrent_only_one_succeeds() {
     );
 }
 
-// ============================================================================
 // TDD Test 7: State with bind_user_id is consumed correctly
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
@@ -316,9 +297,7 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
     assert!(second.is_none(), "Second use of bind state should fail");
 }
 
-// ============================================================================
 // TDD Test 8: Store capability is correct
-// ============================================================================
 
 #[tokio::test]
 async fn test_in_memory_state_store_reports_single_node_scope() {
@@ -329,9 +308,7 @@ async fn test_in_memory_state_store_reports_single_node_scope() {
     );
 }
 
-// ============================================================================
 // TDD Test 9: TTL sweep removes expired entries on store
-// ============================================================================
 
 #[tokio::test]
 async fn test_state_store_sweeps_expired_entries_on_store() {
@@ -344,7 +321,6 @@ async fn test_state_store_sweeps_expired_entries_on_store() {
         .await
         .expect("Failed to store state");
 
-    // Wait for TTL to expire
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     // Store another state - this should trigger sweep of expired entries
@@ -375,16 +351,13 @@ async fn test_state_store_sweeps_expired_entries_on_store() {
     );
 }
 
-// ============================================================================
 // TDD Test 10: Replay attack scenario simulation
-// ============================================================================
 
 #[tokio::test]
 async fn test_oauth2_replay_attack_prevented() {
     let state_store = create_state_store();
 
     // Simulate the OAuth2 flow:
-    // 1. User initiates OAuth2 login, server stores state
     let state = create_test_state("github");
     let state_token = "user_oauth_state_12345";
 
@@ -393,7 +366,6 @@ async fn test_oauth2_replay_attack_prevented() {
         .await
         .expect("Failed to store state");
 
-    // 2. OAuth2 callback is received, server validates state (first use - SUCCESS)
     let first_validation = state_store
         .consume(state_token)
         .await
@@ -403,14 +375,12 @@ async fn test_oauth2_replay_attack_prevented() {
         "Legitimate OAuth2 callback should succeed"
     );
 
-    // 3. Attacker captures the state token (e.g., from browser history)
     //    and tries to replay it for another login attempt
     let replay_attempt = state_store
         .consume(state_token)
         .await
         .expect("Consume should not error");
 
-    // 4. Replay attack is PREVENTED - the state was already consumed
     assert!(
         replay_attempt.is_none(),
         "REPLAY ATTACK PREVENTED: Attacker should not be able to reuse the state token!"

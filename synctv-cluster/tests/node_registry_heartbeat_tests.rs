@@ -34,7 +34,6 @@ async fn setup_redis() -> (RedisContainer, redis::Client, String) {
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
-    // Wait for Redis to be ready
     let mut conn = {
         let mut retries = 0;
         loop {

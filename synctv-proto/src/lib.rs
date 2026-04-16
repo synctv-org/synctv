@@ -73,7 +73,6 @@ mod tests {
         error.to_string()
     }
 
-    // === Protobuf Serialization Roundtrip Tests ===
     // Verifies encode -> decode produces identical messages for critical types.
 
     #[test]
@@ -270,8 +269,6 @@ mod tests {
         assert_eq!(msg, decoded);
     }
 
-    // === Default Value Tests ===
-
     #[test]
     fn default_values_are_zero() {
         let user = crate::client::User::default();
@@ -289,8 +286,6 @@ mod tests {
         let decoded = crate::client::User::decode(&[] as &[u8]).unwrap();
         assert_eq!(decoded, crate::client::User::default());
     }
-
-    // === Enum Value Tests ===
 
     #[test]
     fn enum_roundtrip_user_role() {
@@ -347,8 +342,6 @@ mod tests {
         }
     }
 
-    // === Unknown Enum Value Behavior ===
-
     #[test]
     fn unknown_enum_value_preserved() {
         // Simulate a future enum value (999) that this version doesn't know about
@@ -360,8 +353,6 @@ mod tests {
         let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.role, 999); // prost preserves unknown enum values as i32
     }
-
-    // === JSON Serialization Tests (serde) ===
 
     #[test]
     fn json_roundtrip_user() {
@@ -412,8 +403,6 @@ mod tests {
         let decoded: crate::client::ClientMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, decoded);
     }
-
-    // === Notification Variant Tests ===
 
     #[test]
     fn roundtrip_user_notification() {
@@ -521,8 +510,6 @@ mod tests {
         }
     }
 
-    // === Timestamp Unit Consistency Tests ===
-
     /// Verify that UserNotification.timestamp uses Unix seconds (not milliseconds).
     /// This test ensures consistency with other timestamp fields in the proto.
     /// A valid Unix timestamp in seconds for year 2024 should be around 1.7 billion,
@@ -556,8 +543,6 @@ mod tests {
             decoded.timestamp
         );
     }
-
-    // === Admin Proto Tests ===
 
     #[test]
     fn roundtrip_admin_user() {
@@ -936,8 +921,6 @@ mod tests {
             serde_json::json!({"allowGuests": true, "maxUsers": 8})
         );
     }
-
-    // === Provider Proto Tests ===
 
     #[test]
     fn roundtrip_bilibili_parse_request() {

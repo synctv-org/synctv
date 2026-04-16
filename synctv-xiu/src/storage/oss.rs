@@ -1,11 +1,9 @@
 // Object Storage Service (OSS) backend for HLS
-//
 // Supports:
 // - AWS S3
 // - Aliyun OSS
 // - Minio
 // - Any S3-compatible storage
-//
 // Uses OpenDAL for unified storage access
 
 #[cfg(feature = "oss")]

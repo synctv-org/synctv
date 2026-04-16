@@ -403,8 +403,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    // ========== Request ID in error responses ==========
-
     #[tokio::test]
     async fn test_error_response_includes_request_id() {
         // Create a simple app that returns an error
@@ -527,8 +525,6 @@ mod tests {
         assert_eq!(json["status"], 400);
     }
 
-    // ========== AppError construction ==========
-
     #[test]
     fn test_bad_request() {
         let err = AppError::bad_request("invalid field");
@@ -634,8 +630,6 @@ mod tests {
         );
     }
 
-    // ========== Common user-facing errors ==========
-
     #[test]
     fn test_invalid_credentials() {
         let err = AppError::invalid_credentials();
@@ -693,8 +687,6 @@ mod tests {
         assert!(err.message.contains("temporarily unavailable"));
     }
 
-    // ========== Display trait ==========
-
     #[test]
     fn test_display() {
         let err = AppError::bad_request("test error");
@@ -702,8 +694,6 @@ mod tests {
         assert!(display.contains("400"));
         assert!(display.contains("test error"));
     }
-
-    // ========== IntoResponse ==========
 
     #[test]
     fn test_into_response_status_code() {
@@ -722,8 +712,6 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
-
-    // ========== From<synctv_core::Error> ==========
 
     #[test]
     fn test_from_core_not_found() {
@@ -877,8 +865,6 @@ mod tests {
         );
     }
 
-    // ========== From<serde_json::Error> ==========
-
     #[test]
     fn test_from_serde_json_error() {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid json {{{").unwrap_err();
@@ -887,8 +873,6 @@ mod tests {
         // Should not leak serde error details
         assert_eq!(app_err.message, "Invalid request data format");
     }
-
-    // ========== From<ApiError> RateLimited ==========
 
     #[test]
     fn test_from_api_error_rate_limited() {

@@ -41,9 +41,7 @@ fn webrtc_event(room: &RoomId) -> ClusterEvent {
     }
 }
 
-// ============================================================================
 // Test 1: broadcast_to_connection delivers only to target
-// ============================================================================
 
 #[tokio::test]
 async fn test_broadcast_to_connection_targeted() {
@@ -469,9 +467,7 @@ async fn test_broadcast_to_connection_unsubscribes_target_when_reliable_delivery
     );
 }
 
-// ============================================================================
 // Test 2: broadcast_to_user delivers to all connections of that user
-// ============================================================================
 
 #[tokio::test]
 async fn test_broadcast_to_user_multi_connection() {
@@ -516,9 +512,7 @@ async fn test_broadcast_to_user_multi_connection() {
     );
 }
 
-// ============================================================================
 // Test 3: remove_room cleans up all state
-// ============================================================================
 
 #[tokio::test]
 async fn test_remove_room_cleans_connections() {
@@ -557,9 +551,7 @@ async fn test_remove_room_cleans_connections() {
     drop(rx2);
 }
 
-// ============================================================================
 // Test 4: unsubscribe unknown connection is safe
-// ============================================================================
 
 #[tokio::test]
 async fn test_unsubscribe_unknown_safe() {
@@ -572,9 +564,7 @@ async fn test_unsubscribe_unknown_safe() {
     assert_eq!(hub.room_count(), 0);
 }
 
-// ============================================================================
 // D2: Lifecycle events are emitted on subscribe/unsubscribe
-// ============================================================================
 
 /// D2 fix verification: lifecycle_tx.send() results are checked (not silently dropped).
 /// This test verifies that lifecycle events are still delivered correctly when
@@ -652,9 +642,7 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
     );
 }
 
-// ============================================================================
 // L9: Atomic unsubscribe prevents missed RoomActivated events
-// ============================================================================
 
 /// When the last subscriber unsubscribes and a new subscriber joins the same
 /// room concurrently, the new subscriber must see a RoomActivated event.

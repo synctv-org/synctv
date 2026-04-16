@@ -47,7 +47,6 @@ fn make_instance(
 async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
     let (_container, pool) = create_test_pool().await;
 
-    // Attempt to insert plaintext jwt_secret (without enc: prefix) should fail
     let result = sqlx::query(
         "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -81,7 +80,6 @@ async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
 async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
     let (_container, pool) = create_test_pool().await;
 
-    // Attempt to insert plaintext custom_ca (without enc: prefix) should fail
     let result = sqlx::query(
         "INSERT INTO media_provider_instances (name, endpoint, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",

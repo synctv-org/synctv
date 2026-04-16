@@ -109,8 +109,6 @@ async fn test_concurrent_operations() {
     assert_eq!(counter.load(Ordering::SeqCst), 10);
 }
 
-// ==================== Publish Key Service Tests ====================
-
 #[tokio::test]
 async fn test_publish_key_generation_and_validation() {
     use synctv_core::models::{MediaId, RoomId};
@@ -195,8 +193,6 @@ async fn test_publish_key_invalid_token() {
     assert!(result.is_err());
 }
 
-// ==================== Permission Bitmask Tests ====================
-
 #[test]
 fn test_permission_bits_operations() {
     use synctv_core::models::PermissionBits;
@@ -216,8 +212,6 @@ fn test_permission_bits_operations() {
     assert!(!perms.has(PermissionBits::SEND_CHAT));
     assert!(perms.has(PermissionBits::ADD_MEDIA));
 }
-
-// ==================== Playlist Model Tests ====================
 
 #[test]
 fn test_playlist_model() {
@@ -278,8 +272,6 @@ fn test_playlist_model() {
     assert!(!dynamic.is_static());
 }
 
-// ==================== ID Model Tests ====================
-
 #[test]
 fn test_id_generation_uniqueness() {
     use synctv_core::models::{MediaId, PlaylistId, RoomId};
@@ -300,7 +292,6 @@ fn test_id_generation_uniqueness() {
     assert_eq!(room_id.as_str(), "test_room_123");
 }
 
-// ==================== JWT Token Tests ====================
 // Note: Role is intentionally NOT stored in JWT claims (security design).
 // Role is fetched from the database on every request to ensure immediate
 // propagation of role changes.
@@ -353,8 +344,6 @@ async fn test_jwt_access_and_refresh_tokens_different() {
     assert!(result.is_err());
 }
 
-// ==================== Error Type Tests ====================
-
 #[test]
 fn test_error_types() {
     use synctv_core::Error;
@@ -381,14 +370,11 @@ fn test_error_types() {
     assert!(matches!(errors[5], Error::Internal(_)));
 }
 
-// ==================== End-to-End Test Suite ====================
-
 #[tokio::test]
 async fn test_e2e_user_auth_flow() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Step 1: User logs in and gets access + refresh tokens
     let access_token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to generate access token");
@@ -397,7 +383,6 @@ async fn test_e2e_user_auth_flow() {
         .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to generate refresh token");
 
-    // Step 2: Verify access token for API requests
     let access_claims = jwt_service
         .verify_access_token(&access_token)
         .expect("Failed to verify access token");
@@ -405,7 +390,6 @@ async fn test_e2e_user_auth_flow() {
     assert_eq!(access_claims.sub, user_id.as_str());
     assert!(access_claims.is_access_token());
 
-    // Step 3: Access token expired (simulated), use refresh token
     let refresh_claims = jwt_service
         .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
@@ -413,7 +397,6 @@ async fn test_e2e_user_auth_flow() {
     assert_eq!(refresh_claims.sub, user_id.as_str());
     assert!(refresh_claims.is_refresh_token());
 
-    // Step 4: Generate new access token using refresh token
     let new_access_token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to generate new access token");
@@ -697,9 +680,7 @@ async fn test_e2e_error_propagation() {
     }
 }
 
-// ============================================================================
 // Permission Cache Invalidation Tests
-// ============================================================================
 
 /// Tests that permission cache invalidation messages are correctly generated
 /// and can be deserialized for cross-replica propagation.
@@ -757,7 +738,6 @@ async fn test_permission_cache_invalidation_message_serialization() {
 async fn test_cache_invalidation_service_local_only() {
     use synctv_core::cache::CacheInvalidationService;
 
-    // Create a local-only cache invalidation service (no Redis)
     let service =
         CacheInvalidationService::new("local_node".to_string(), "test:local:cache".to_string());
 
@@ -794,7 +774,6 @@ async fn test_cache_invalidation_multiple_subscribers() {
     let service =
         CacheInvalidationService::new("multi_sub_node".to_string(), "test:multi:cache".to_string());
 
-    // Create multiple subscribers
     let mut rx1 = service.subscribe();
     let mut rx2 = service.subscribe();
     let mut rx3 = service.subscribe();
@@ -837,9 +816,7 @@ async fn test_cache_invalidation_multiple_subscribers() {
     ));
 }
 
-// ============================================================================
 // Concurrent Permission Check Tests
-// ============================================================================
 
 /// Tests that permission checks can be performed concurrently without
 /// data races or corruption.
@@ -877,7 +854,6 @@ async fn test_concurrent_permission_checks() {
         write_handles.push(handle);
     }
 
-    // Wait for all operations to complete
     for handle in read_handles {
         let _ = handle.await;
     }
@@ -891,9 +867,7 @@ async fn test_concurrent_permission_checks() {
     assert!(final_perms.has(PermissionBits::SEND_CHAT)); // Original permission preserved
 }
 
-// ============================================================================
 // Token Blacklist Tests
-// ============================================================================
 
 /// Tests token blacklist behavior with concurrent modifications.
 #[tokio::test]
@@ -939,9 +913,7 @@ async fn test_token_blacklist_concurrent_operations() {
     assert_eq!(final_blacklist.len(), 100);
 }
 
-// ============================================================================
 // Playback State Concurrency Tests
-// ============================================================================
 
 /// Tests that playback state updates are thread-safe.
 #[tokio::test]
@@ -984,9 +956,7 @@ async fn test_playback_state_concurrent_updates() {
     assert!(final_state.current_time < 50000.0);
 }
 
-// ============================================================================
 // Permission Bits Concurrency Test
-// ============================================================================
 
 /// Concurrent permission bit updates must preserve the base permission set.
 #[test]

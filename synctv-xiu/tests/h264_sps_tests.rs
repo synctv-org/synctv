@@ -9,7 +9,6 @@ use synctv_xiu::h264::sps::SpsParser;
 
 #[test]
 fn test_sps_truncated_data_returns_error() {
-    // Create a BytesReader with only 1 byte (valid SPS requires more)
     let mut data = BytesMut::new();
     data.extend_from_slice(&[0x42]); // Just one byte
 

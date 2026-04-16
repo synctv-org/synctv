@@ -286,9 +286,7 @@ pub fn emby_read_routes() -> Router<AppState> {
         .route("/thumbnail/{item_id}", get(thumbnail))
 }
 
-// ------------------------------------------------------------------
 // Existing provider API handlers
-// ------------------------------------------------------------------
 
 /// Login to Emby/Jellyfin (validate API key and persist credential)
 #[cfg_attr(

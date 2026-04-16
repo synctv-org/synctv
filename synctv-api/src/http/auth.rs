@@ -1,5 +1,4 @@
 // Authentication HTTP handlers
-//
 // This layer now uses proto types and delegates to the impls layer for business logic
 
 use axum::{extract::State, Json};
@@ -237,7 +236,6 @@ pub async fn logout(
 mod tests {
     use super::*;
 
-    // ========== Proto Request Type Tests ==========
     // Verify request types have expected fields and derive traits (Serialize, Deserialize, Clone)
 
     #[test]
@@ -307,7 +305,6 @@ mod tests {
         assert_eq!(deserialized.email, req.email);
     }
 
-    // ========== Error Mapping Tests ==========
     // All three auth handlers (register, login, refresh_token) now use
     // map_api_error for consistent typed error classification.
 
@@ -324,8 +321,6 @@ mod tests {
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "invalid credentials");
     }
-
-    // ========== Request Deserialization Edge Cases ==========
 
     #[test]
     fn test_register_request_empty_fields() {
@@ -368,8 +363,6 @@ mod tests {
         assert_eq!(req.username.chars().count(), 4);
     }
 
-    // ========== Logout Response Tests ==========
-
     #[test]
     fn test_logout_response_serialization() {
         let resp = LogoutResponse {
@@ -402,7 +395,6 @@ mod tests {
         assert!(json.contains(r#""success":false"#));
     }
 
-    // ========== Logout Token Extraction Tests ==========
     // Test the token extraction logic used by logout handler
 
     #[test]
@@ -446,7 +438,6 @@ mod tests {
         }
     }
 
-    // ========== Logout Error Handling Tests ==========
     // Verify that the logout handler returns appropriate errors
 
     #[test]

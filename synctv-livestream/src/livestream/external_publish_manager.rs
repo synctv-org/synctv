@@ -1,10 +1,8 @@
 // External Publish Manager
-//
 // Manages external pull-to-publish streams (RTMP / HTTP-FLV → local StreamHub).
-//
 // From the system's perspective this is a **publisher**: frames are pushed into
 // the local StreamHub and the stream is registered in Redis so other nodes can
-// discover and relay it via gRPC.  The lifecycle mirrors PullStreamManager
+// discover and relay it via gRPC. The lifecycle mirrors PullStreamManager
 // (lazy start on first viewer, idle cleanup after 5 min) but the two concerns
 // are kept separate because external publish owns Redis registration/cleanup.
 
@@ -23,7 +21,7 @@ use tracing::{debug, error, info, warn};
 
 /// Default maximum number of concurrent external pull-to-publish streams.
 ///
-/// Issue #56: Unlimited pull streams would exhaust memory on a heavily-loaded node.
+/// Unlimited pull streams would exhaust memory on a heavily-loaded node.
 /// This default can be overridden via `ExternalPublishManager::with_max_streams()`.
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
 const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
@@ -57,7 +55,7 @@ async fn await_start_confirmation(
 
 /// Manages external pull-to-publish streams.
 ///
-/// Each stream is lazily started on the first viewer request.  The manager
+/// Each stream is lazily started on the first viewer request. The manager
 /// deduplicates concurrent requests (one puller per `room_id:media_id`),
 /// registers the stream as a publisher in Redis, and automatically stops +
 /// unregisters after 5 minutes with no subscribers.
@@ -74,7 +72,7 @@ pub struct ExternalPublishManager {
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
     http_client: reqwest::Client,
     /// Maximum number of concurrent pull streams.
-    /// Issue #56: Prevents memory exhaustion from unlimited stream creation.
+    /// Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
 }
 
@@ -104,7 +102,7 @@ impl ExternalPublishManager {
         self
     }
 
-    /// Set the maximum number of concurrent pull streams (Issue #56).
+    /// Set the maximum number of concurrent pull streams.
     ///
     /// When this limit is reached, `get_or_create` returns an error instead of
     /// creating a new stream, preventing memory exhaustion from unlimited stream creation.
@@ -212,7 +210,7 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
-        // Issue #56: Pre-check max concurrent streams BEFORE acquiring creation lock.
+        // Pre-check max concurrent streams BEFORE acquiring creation lock.
         // This provides fast rejection when the limit is already reached, avoiding
         // unnecessary lock contention. The check is repeated inside the lock for correctness.
         if self.pool.streams.len() >= self.max_concurrent_streams {
@@ -239,7 +237,7 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
-        // Issue #56: Second check inside the lock to prevent race condition.
+        // Second check inside the lock to prevent race condition.
         // Multiple requests for DIFFERENT streams may have passed the pre-check
         // concurrently, but only one can create at a time per-key. Re-check here
         // ensures we don't exceed the limit when multiple creations race.
@@ -288,19 +286,17 @@ impl ExternalPublishManager {
             ));
         }
 
-        // Issue #50: Start the stream BEFORE registering in Redis to eliminate the
-        // register-before-start race condition.  If registration happened first and
+        // Start the stream BEFORE registering in Redis to eliminate the
+        // register-before-start race condition. If registration happened first and
         // the process crashed between registration and stream startup, a stale phantom
         // entry would remain in Redis until TTL expiry, preventing any other node from
         // taking over the stream.
-        //
         // New ordering:
-        //   1. Start the puller (connect to source, begin frame ingestion)
-        //   2. Register in Redis only after startup succeeds
-        //
+        // 1. Start the puller (connect to source, begin frame ingestion)
+        // 2. Register in Redis only after startup succeeds
         // Residual risk: if the process crashes between step 1 and step 2, the stream
         // runs locally but isn't discoverable by other nodes until it re-registers on
-        // the next viewer request.  This is a much smaller window than the reverse order
+        // the next viewer request. This is a much smaller window than the reverse order
         // and self-heals on the next request without manual cleanup.
 
         // Start the puller (pushes frames into local StreamHub)
@@ -373,7 +369,7 @@ impl ExternalPublishManager {
                 let hub_sender = hub_sender.clone();
                 let stream_key = stream_key.to_string();
                 Box::pin(async move {
-                    // Unregister from Redis FIRST so other nodes stop routing
+ // Unregister from Redis FIRST so other nodes stop routing
                     if let Some((room_id, media_id)) = stream_key.split_once(':') {
                         match registry.get_publisher(room_id, media_id).await {
                             Ok(Some(info)) if info.node_id == local_node_id => {
@@ -387,8 +383,8 @@ impl ExternalPublishManager {
                             _ => {}
                         }
 
-                        // Send UnPublish to StreamHub (use send().await to avoid
-                        // silently dropping the event if the channel is momentarily full)
+ // Send UnPublish to StreamHub (use send().await to avoid
+ // silently dropping the event if the channel is momentarily full)
                         let identifier = StreamIdentifier::Rtmp {
                             app_name: room_id.to_string(),
                             stream_name: media_id.to_string(),

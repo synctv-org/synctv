@@ -7,7 +7,6 @@ use synctv_media_providers::EmbyClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// === Item ID validation tests ===
 // validate_item_id is a private function tested indirectly through get_item which calls it.
 // The inline tests in client.rs already cover it, but we verify through the public API here.
 
@@ -52,8 +51,6 @@ async fn test_validate_item_id_empty_rejected() {
     );
 }
 
-// === API prefix detection tests ===
-
 #[test]
 fn test_get_api_prefix_jellyfin_hostname() {
     let client = EmbyClient::new("https://jellyfin.example.com").unwrap();
@@ -77,8 +74,6 @@ fn test_get_api_prefix_invalid_url_fallback() {
     assert_eq!(client.host(), "https://media.example.com");
     // The inline tests verify this defaults to "/emby"
 }
-
-// === Wiremock HTTP API tests ===
 
 #[tokio::test]
 async fn test_emby_client_login_success() {
@@ -189,9 +184,7 @@ async fn test_emby_client_respects_host_path_prefix() {
     assert_eq!(info.server_name, "Reverse Proxy Emby");
 }
 
-// ============================================================================
 // MP5: Emby playback reporting wiremock tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_emby_report_playback_start_success() {
@@ -386,9 +379,7 @@ async fn test_emby_logout_success() {
     assert!(result.is_ok(), "Logout should succeed: {result:?}");
 }
 
-// ============================================================================
 // Thumbnail extraction from ImageTags tests (M-1)
-// ============================================================================
 
 /// Test extracting thumbnail from ImageTags.Primary
 #[tokio::test]
@@ -536,9 +527,7 @@ fn emby_thumbnail_url_construction() {
     );
 }
 
-// ============================================================================
 // Retry mechanism tests for report_playback_* and logout methods
-// ============================================================================
 
 /// Test that report_playback_start retries on 5xx server errors
 #[tokio::test]

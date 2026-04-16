@@ -1,5 +1,4 @@
 // Provider Context
-//
 // Contains all information needed for provider execution
 
 use std::sync::Arc;

@@ -80,8 +80,6 @@ impl BilibiliProvider {
             .await
     }
 
-    // ========== Provider API Methods ==========
-
     /// Match URL to determine type and ID
     pub async fn r#match(
         &self,
@@ -516,7 +514,6 @@ impl MediaProvider for BilibiliProvider {
 }
 
 // ProviderProxy implementation for Bilibili
-//
 // Supported sub_paths:
 // - `{version}/subtitle/{name}` — proxy a specific subtitle track
 // - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode

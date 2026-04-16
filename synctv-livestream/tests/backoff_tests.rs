@@ -37,7 +37,6 @@ async fn test_backoff_attempt_0() {
 async fn test_backoff_exponential_growth() {
     // Verify that attempt 0 and attempt 1 produce different delays
     // (the B10 bug caused both to be identical).
-    //
     // After fix: attempt 0 = initial*1, attempt 1 = initial*2
     let initial_ms = 100;
     let max_ms = 10_000;

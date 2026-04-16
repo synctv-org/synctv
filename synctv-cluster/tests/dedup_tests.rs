@@ -18,9 +18,7 @@ fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> Ded
     }
 }
 
-// ============================================================================
 // Test 1: mark_processed prevents reprocessing
-// ============================================================================
 
 #[tokio::test]
 async fn test_mark_processed_prevents_reprocessing() {
@@ -46,9 +44,7 @@ async fn test_mark_processed_prevents_reprocessing() {
     );
 }
 
-// ============================================================================
 // Test 2: len and is_empty tracking
-// ============================================================================
 
 #[tokio::test]
 async fn test_dedup_len_and_is_empty() {
@@ -76,9 +72,7 @@ async fn test_dedup_len_and_is_empty() {
     assert_eq!(dedup.len(), 0);
 }
 
-// ============================================================================
 // Test 3: Different events at same timestamp with different keys
-// ============================================================================
 
 #[tokio::test]
 async fn test_different_events_same_timestamp_different_keys() {

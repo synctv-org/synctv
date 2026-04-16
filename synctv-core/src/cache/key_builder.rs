@@ -56,8 +56,6 @@ impl KeyBuilder {
         &self.prefix
     }
 
-    // ==================== Cluster Management ====================
-
     /// Node registration information
     ///
     /// Type: String + TTL (60s)
@@ -76,8 +74,6 @@ impl KeyBuilder {
     pub fn cluster_nodes_active(&self) -> String {
         format!("{}:cluster:nodes:active", self.prefix)
     }
-
-    // ==================== Live Streaming Management ====================
 
     /// Stream publisher information
     ///
@@ -105,8 +101,6 @@ impl KeyBuilder {
     pub fn stream_stats(&self, stream_key: &str) -> String {
         format!("{}:stream:stats:{}", self.prefix, stream_key)
     }
-
-    // ==================== Room State ====================
 
     /// Room current state
     ///
@@ -145,8 +139,6 @@ impl KeyBuilder {
         format!("{}:room:{}:viewers", self.prefix, room_id)
     }
 
-    // ==================== Playback Cache ====================
-
     /// Playback information cache
     ///
     /// Type: String + TTL (dynamic)
@@ -156,8 +148,6 @@ impl KeyBuilder {
         format!("{}:playback:{}", self.prefix, cache_key)
     }
 
-    // ==================== Session Management ====================
-
     /// User session
     ///
     /// Type: String + TTL (dynamic)
@@ -166,8 +156,6 @@ impl KeyBuilder {
     pub fn user_session(&self, session_id: &str) -> String {
         format!("{}:session:{}", self.prefix, session_id)
     }
-
-    // ==================== Rate Limiting ====================
 
     /// API rate limiting
     ///
@@ -186,8 +174,6 @@ impl KeyBuilder {
         )
     }
 
-    // ==================== OAuth2 State ====================
-
     /// `OAuth2` state token (for CSRF protection during authorization flow)
     ///
     /// Type: String + TTL (300s)
@@ -196,8 +182,6 @@ impl KeyBuilder {
     pub fn oauth2_state(&self, state_token: &str) -> String {
         format!("{}:oauth2:state:{}", self.prefix, state_token)
     }
-
-    // ==================== Email Verification ====================
 
     /// Email verification code
     ///
@@ -211,8 +195,6 @@ impl KeyBuilder {
             Self::sanitize_key_segment(email)
         )
     }
-
-    // ==================== Brute-Force Protection ====================
 
     /// Failed login attempt counter per username
     ///
@@ -249,8 +231,6 @@ impl KeyBuilder {
         format!("{}:room:pwd_attempts:{}:{}", self.prefix, room_id, ip)
     }
 
-    // ==================== Refresh Token Blacklist ====================
-
     /// Blacklisted refresh token JTI (used for refresh token rotation)
     ///
     /// Type: String + TTL (remaining token lifetime)
@@ -278,8 +258,6 @@ impl KeyBuilder {
         format!("{}:auth:rt_family_revoked:{}", self.prefix, user_id)
     }
 
-    // ==================== Guest Token Blacklist ====================
-
     /// Blacklisted guest token JTI (for revoking guest access)
     ///
     /// Type: String + TTL (remaining token lifetime)
@@ -298,8 +276,6 @@ impl KeyBuilder {
         format!("{}:room:{}:guest_version", self.prefix, room_id)
     }
 
-    // ==================== WebSocket Ticket ====================
-
     /// WebSocket ticket (one-time use)
     ///
     /// Type: String + TTL (30s)
@@ -309,8 +285,6 @@ impl KeyBuilder {
         format!("{}:ws_ticket:{}", self.prefix, ticket)
     }
 
-    // ==================== Cache Invalidation ====================
-
     /// Cache invalidation stream key
     ///
     /// Used for cross-node cache invalidation via Redis Streams
@@ -318,8 +292,6 @@ impl KeyBuilder {
     pub fn cache_invalidation_stream(&self) -> String {
         format!("{}:cache:invalidate:stream", self.prefix)
     }
-
-    // ==================== Cluster Events ====================
 
     /// Cluster events pub/sub channel
     ///

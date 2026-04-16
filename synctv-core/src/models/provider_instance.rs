@@ -1,5 +1,4 @@
 // Media Provider Instance Models
-//
 // Core data structures for media provider instance management system.
 // Supports both local (in-process) and remote (gRPC) provider instances.
 

@@ -1,5 +1,4 @@
-//! JWT token generation/validation integration tests (Task #82)
-//!
+//! JWT token generation/validation integration tests //!
 //! These tests verify JWT security properties including tampering detection,
 //! expiry enforcement, and type confusion prevention.
 //!
@@ -97,7 +96,6 @@ async fn test_jwt_expiry_enforcement() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create an expired token (expired 1 hour ago)
     let now = Utc::now().timestamp();
     let claims = ExpiredClaims {
         sub: user_id.as_str().to_string(),
@@ -239,7 +237,6 @@ async fn test_jwt_wrong_algorithm_rejection() {
         exp: now + 3600,
     };
 
-    // Create token with HS512 instead of HS256
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
     let wrong_alg_token = encode(&Header::new(Algorithm::HS512), &claims, &encoding_key)
@@ -269,7 +266,6 @@ async fn test_jwt_future_issued_at_rejection() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Create token with future iat (issued 1 hour from now)
     let now = chrono::Utc::now().timestamp();
     let claims = FutureClaims {
         sub: user_id.as_str().to_string(),
@@ -413,9 +409,7 @@ async fn test_jwt_concurrent_token_generation() {
     assert_eq!(jtis.len(), unique_jtis.len(), "All JTIs should be unique");
 }
 
-// ============================================================================
 // SEC8: JwtValidator edge cases
-// ============================================================================
 
 #[tokio::test]
 async fn test_jwt_validator_non_ascii_grpc_metadata() {
@@ -469,7 +463,7 @@ async fn test_jwt_validator_empty_bearer_token_after_prefix() {
         "'Bearer' without space should be rejected"
     );
 
-    // "Bearer  " (with extra space) -- extracts " " which is invalid JWT
+    // "Bearer " (with extra space) -- extracts " " which is invalid JWT
     let result3 = JwtValidator::extract_bearer_token("Bearer  ");
     // This extracts " " as the token, which is technically 8 chars > 7 so passes extraction
     // but the token " " will fail JWT verification
@@ -509,13 +503,10 @@ async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
     assert_eq!(result2.unwrap_err().code(), tonic::Code::Unauthenticated);
 }
 
-// ============================================================================
 // SEC9: JwtService::verify_custom skips issuer/audience
-// ============================================================================
 
 #[tokio::test]
 async fn test_verify_custom_skips_issuer_validation() {
-    // Create a JWT service that expects issuer and audience
     let jwt_service = JwtService::with_durations_and_claims(
         "test-secret-key-for-integration-tests-minimum-length-32-chars",
         1,
@@ -578,7 +569,6 @@ async fn test_verify_custom_still_validates_expiry() {
     let jwt_service = create_test_jwt_service();
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
 
-    // Create an expired custom token
     let now = chrono::Utc::now().timestamp();
     let expired_claims = serde_json::json!({
         "sub": "expired_custom",
@@ -621,15 +611,12 @@ async fn test_verify_custom_validates_signature() {
     );
 }
 
-// ============================================================================
 // Additional tests from auth_jwt_tests.rs (merged to eliminate duplication)
-// ============================================================================
 
 #[tokio::test]
 async fn test_token_family_rotation_maintains_family_id() {
     // Token family validation is handled by UserService::refresh_token
     // which uses TokenBlacklistStore to track family revocation
-    //
     // This test verifies that JWT service produces tokens with unique JTIs
     // which can be used to track token families
 

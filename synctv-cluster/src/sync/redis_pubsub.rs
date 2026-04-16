@@ -102,20 +102,15 @@ fn u128_to_u64_saturating(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-// ---- Unified Pub/Sub channel naming ----
-//
 // Both admin and room events use the same channel naming scheme and are published
 // via PUBLISH + XADD in `publish_event()`. The subscription strategy differs:
-//
 //   - **Admin events**: Pattern subscription (`PSUBSCRIBE {prefix}admin:*`)
 //     because admin events are global and infrequent. All nodes receive all admin
 //     events regardless of which rooms they serve.
-//
 //   - **Room events**: Per-room subscriptions (`SUBSCRIBE {prefix}room:{room_id}`)
 //     managed dynamically via `RoomLifecycleEvent`s. This avoids receiving traffic
 //     for rooms the node does not serve, which is important in large deployments
 //     with many active rooms.
-//
 // Dispatch for both paths converges in `dispatch_event()`, which handles
 // deduplication, cache invalidation, permission syncing, and local broadcast
 // uniformly.
@@ -257,7 +252,7 @@ enum SelectResult {
 /// 2. Subscribing to Redis channels for events from other nodes
 /// 3. Forwarding received events to the local `RoomMessageHub`
 ///
-/// **Production Enhancement (#31)**: Comprehensive error handling for cluster pub/sub:
+/// Comprehensive error handling for cluster pub/sub:
 /// - Automatic reconnection with exponential backoff (1s → 30s max)
 /// - Failed publish retry logic: saves failed events and retries after reconnection
 /// - Stream-based catch-up mechanism: recovers missed events during disconnection
@@ -1255,14 +1250,12 @@ impl RedisPubSub {
             // First connection: snapshot the current stream tips for active rooms
             // and the admin stream so we can catch up from these points if the
             // connection drops later.
-            //
             // IMPORTANT: This snapshot is taken AFTER PubSub subscription is
             // established (above), which means any events written to the stream
             // after this point will ALSO be delivered via PubSub. On reconnect,
             // catch-up reads from the snapshotted cursor may re-deliver events
             // that were already processed via PubSub. The MessageDeduplicator
             // handles this overlap, filtering out duplicate events.
-            //
             // The alternative (snapshotting before subscription) would create a
             // gap: events written between snapshot and subscription start would
             // be missed by both PubSub (not yet subscribed) and catch-up (cursor
@@ -1379,7 +1372,6 @@ impl RedisPubSub {
         } else {
             // Reconnection: catch up on events missed during disconnection.
             // Only read streams for rooms that currently have local subscribers.
-            //
             // IMPORTANT: The stream cursor is the authoritative dedup boundary
             // for catch-up. XREAD returns only entries with IDs strictly greater
             // than the cursor, so events at or before the cursor are guaranteed
@@ -1440,7 +1432,6 @@ impl RedisPubSub {
                             // already filters by cursor, but as a defense-in-depth
                             // check, skip events whose stream IDs are not strictly
                             // after the last known cursor.
-                            //
                             // Redis Stream IDs are "{timestamp_ms}-{seq}". String
                             // comparison (lexicographic) is INCORRECT for numeric
                             // fields (e.g., "9-0" > "10-0" lexicographically).
@@ -1491,12 +1482,10 @@ impl RedisPubSub {
         }
 
         // Process incoming messages with dynamic room subscription management.
-        //
         // We loop between processing Redis messages and handling lifecycle events.
         // When a lifecycle event arrives, we drop the message stream (releasing the
         // mutable borrow on `pubsub`), perform the subscribe/unsubscribe, then
         // re-create the message stream.
-        //
         // A periodic cursor refresh ensures that stream cursors stay up-to-date
         // during long-lived sessions, so reconnect catch-up only reads truly missed
         // events (avoiding replay of events already delivered via live Pub/Sub).
@@ -2924,8 +2913,6 @@ mod tests {
         );
     }
 
-    // ========== Backpressure Tests ==========
-
     #[test]
     fn test_buffer_pressure_levels() {
         assert!(BufferPressure::Normal.allows_non_critical());
@@ -2980,8 +2967,6 @@ mod tests {
         assert!(!backpressure.can_send_non_critical());
         assert_eq!(backpressure.pressure(), BufferPressure::High);
     }
-
-    // ========== Reconnection Subscription Recovery Tests ==========
 
     /// Test that room subscriptions activated during disconnection are recovered on reconnect.
     ///

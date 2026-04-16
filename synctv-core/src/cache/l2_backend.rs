@@ -88,9 +88,7 @@ pub trait CacheL2Backend: Send + Sync {
     fn is_active(&self) -> bool;
 }
 
-// ============================================================================
 // Redis implementation
-// ============================================================================
 
 /// Redis-backed L2 cache backend.
 ///
@@ -336,9 +334,7 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 }
 
-// ============================================================================
 // No-op implementation (L1-only mode)
-// ============================================================================
 
 /// No-op L2 backend. All reads return `None`, all writes are no-ops.
 ///

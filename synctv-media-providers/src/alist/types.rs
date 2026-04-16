@@ -192,9 +192,7 @@ pub struct HttpVideoMeta {
     pub width: u64,
 }
 
-// ============================================================================
 // From trait implementations for proto conversion
-// ============================================================================
 
 impl From<HttpFsGetRelated> for crate::grpc::alist::fs_get_resp::FsGetRelated {
     fn from(related: HttpFsGetRelated) -> Self {

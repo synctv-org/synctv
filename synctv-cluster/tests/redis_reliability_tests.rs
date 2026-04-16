@@ -87,7 +87,6 @@ async fn test_redis_pubsub_no_message_loss() {
     .await;
     let (mut room_rx, _baseline_conn_id) = baseline_clients.pop().expect("baseline client");
 
-    // Send multiple messages from node B
     let message_count = 20;
     for i in 0..message_count {
         let event = ClusterEvent::ChatMessage {
@@ -160,7 +159,6 @@ async fn test_redis_stream_catchup() {
         .await
         .expect("subscribe should succeed");
 
-    // Create the publisher node separately to write events to Redis streams
     let publisher =
         create_node_with_prefix(&redis.redis_url, "publisher_node", key_prefix.clone()).await;
 
@@ -179,7 +177,6 @@ async fn test_redis_stream_catchup() {
         publisher.broadcast(event);
     }
 
-    // Wait until all historical events are durably written to the room stream.
     wait_for_stream_len(
         &redis.redis_url,
         &format!("{key_prefix}room:{}:events", room_id.as_str()),
@@ -275,7 +272,6 @@ async fn test_redis_failure_and_recovery() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();
 
-    // Create two nodes
     let node_a =
         create_node_with_prefix(&redis.redis_url, "recovery_node_a", key_prefix.clone()).await;
     let node_b = create_node_with_prefix(&redis.redis_url, "recovery_node_b", key_prefix).await;
@@ -388,9 +384,7 @@ async fn test_redis_failure_and_recovery() {
     // Test 3: Verify event ordering is maintained after recovery
     // First, drain any remaining messages from node B's queue (e.g., "Local broadcast test")
     // to ensure we start fresh for the ordering test
-    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
-        // Drain message
-    }
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {}
 
     for i in 0..5 {
         let ordered_event = ClusterEvent::ChatMessage {

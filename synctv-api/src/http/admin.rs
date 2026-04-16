@@ -19,9 +19,7 @@ use super::{
 };
 use crate::proto::admin;
 
-// ------------------------------------------------------------------
 // Auth extractors
-// ------------------------------------------------------------------
 
 /// Extension to hold JWT validator in request extensions (cached)
 #[derive(Clone)]
@@ -137,9 +135,7 @@ where
     }
 }
 
-// ------------------------------------------------------------------
 // Request context extractor (IP + User-Agent for audit logs)
-// ------------------------------------------------------------------
 
 /// Extracts client IP address and User-Agent from HTTP request for audit logging.
 pub(crate) struct ReqCtx(crate::impls::admin::RequestContext);
@@ -171,9 +167,7 @@ where
     }
 }
 
-// ------------------------------------------------------------------
 // Helper to get admin_api or 503
-// ------------------------------------------------------------------
 
 fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl>, AppError> {
     state.admin_api.as_ref().ok_or_else(|| {
@@ -190,9 +184,7 @@ fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
 }
 
-// ------------------------------------------------------------------
 // Path validation helpers
-// ------------------------------------------------------------------
 
 fn validate_admin_proto_path<T>(path: T) -> Result<T, AppError>
 where
@@ -202,9 +194,7 @@ where
     Ok(path)
 }
 
-// ------------------------------------------------------------------
 // Router
-// ------------------------------------------------------------------
 
 pub fn create_admin_router() -> Router<AppState> {
     Router::new()
@@ -261,9 +251,7 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/admins/{user_id}", post(add_admin).delete(remove_admin))
 }
 
-// ------------------------------------------------------------------
 // System Stats
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -290,9 +278,7 @@ pub(crate) async fn get_system_stats(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Settings
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -378,9 +364,7 @@ pub(crate) async fn set_settings(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Email
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -410,9 +394,7 @@ pub(crate) async fn send_test_email(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // User Management
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -740,9 +722,7 @@ pub(crate) async fn get_user_rooms(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Batch User Operations
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -826,9 +806,7 @@ pub(crate) async fn batch_delete_users(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Room Management
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -1144,9 +1122,7 @@ pub(crate) async fn reset_room_settings(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Batch Room Operations
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -1225,9 +1201,7 @@ pub(crate) async fn batch_delete_rooms(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Provider Instances
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -1426,9 +1400,7 @@ pub(crate) async fn disable_provider(
     Ok(Json(resp))
 }
 
-// ------------------------------------------------------------------
 // Stream Management
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -1485,9 +1457,7 @@ pub(crate) async fn kick_stream(
     Ok(Json(admin::KickStreamResponse {}))
 }
 
-// ------------------------------------------------------------------
 // Admin Management (Root Only)
-// ------------------------------------------------------------------
 
 #[cfg_attr(
     feature = "openapi",
@@ -1577,8 +1547,6 @@ mod tests {
     };
     use std::net::SocketAddr;
 
-    // ========== HTTP Proto Request Contract Tests ==========
-
     #[test]
     fn test_update_user_role_request_deserialization() {
         let json = format!(
@@ -1660,8 +1628,6 @@ mod tests {
 
         assert_eq!(req.name, "alist_main");
     }
-
-    // ========== Query Struct Tests ==========
 
     #[test]
     fn test_list_users_query_deserialization() {
@@ -1763,8 +1729,6 @@ mod tests {
         assert_eq!(ctx.0.ip_address.as_deref(), Some("198.51.100.7"));
     }
 
-    // ========== Error Mapping Tests ==========
-
     #[tokio::test]
     async fn test_require_admin_api_error() {
         let mut state = crate::http::tests::test_app_state();
@@ -1846,15 +1810,11 @@ mod tests {
         assert_eq!(query.sort_direction, 0);
     }
 
-    // ========== Router Structure Tests ==========
-
     #[test]
     fn test_admin_router_creation() {
         // Verify the admin router can be created without panicking
         let _router = create_admin_router();
     }
-
-    // ========== Pagination Clamp Tests ==========
 
     #[test]
     fn test_room_members_page_size_clamp() {
@@ -1873,8 +1833,6 @@ mod tests {
         let clamped = validation::validate_page_size(Some(raw_page_size));
         assert_eq!(clamped, 100);
     }
-
-    // ========== Provider Name Validation Tests ==========
 
     #[test]
     fn test_provider_instance_path_request_validation_empty() {
@@ -1939,8 +1897,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ========== Kick Stream Validation Tests ==========
-
     #[test]
     fn test_kick_stream_requires_room_id_and_media_id() {
         // The handler checks: if req.room_id.is_empty() || req.media_id.is_empty()
@@ -1965,8 +1921,6 @@ mod tests {
         };
         assert!(!valid.room_id.is_empty() && !valid.media_id.is_empty());
     }
-
-    // ========== Add Provider Name Validation Tests ==========
 
     #[test]
     fn test_add_provider_name_validation_empty_in_body() {
@@ -2032,8 +1986,6 @@ mod tests {
         }
     }
 
-    // ========== Admin Auth Blacklist Integration Tests ==========
-    //
     #[test]
     fn test_kick_stream_request_uses_body_fields() {
         // L15: kick_stream uses room_id and media_id from body (not path).

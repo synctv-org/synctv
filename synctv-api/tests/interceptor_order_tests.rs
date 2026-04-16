@@ -19,9 +19,7 @@ use synctv_core::service::auth::{JwtService, TokenType};
 
 const TEST_SECRET: &str = "test-secret-key-long-enough-for-entropy-check-1234567890";
 
-// ============================================================================
 // JWT Verification Tests (BlacklistCheckLayer responsibility)
-// ============================================================================
 
 #[test]
 fn test_jwt_verification_happens_first() {
@@ -68,9 +66,7 @@ fn test_invalid_jwt_rejected_before_interceptor() {
     );
 }
 
-// ============================================================================
 // Token Type Validation Tests
-// ============================================================================
 
 #[test]
 fn test_refresh_token_rejected_as_access_token() {
@@ -78,7 +74,6 @@ fn test_refresh_token_rejected_as_access_token() {
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
     let user_id = UserId::new();
 
-    // Create refresh token
     let refresh_token = jwt_service
         .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Should sign refresh token");
@@ -91,13 +86,9 @@ fn test_refresh_token_rejected_as_access_token() {
     );
 }
 
-// ============================================================================
 // Security Pipeline Tests (BlacklistCheckLayer responsibility)
-// ============================================================================
 
-// ============================================================================
 // AuthInterceptor Tests
-// ============================================================================
 
 #[test]
 fn test_auth_interceptor_injects_user_context() {
@@ -145,9 +136,7 @@ fn test_auth_interceptor_injects_user_context() {
     assert!(user_context.is_some(), "UserContext should be injected");
 }
 
-// ============================================================================
 // Rate Limit Layer Tests
-// ============================================================================
 
 #[test]
 fn test_rate_limit_tier_mapping() {
@@ -172,15 +161,12 @@ fn test_rate_limit_tier_mapping() {
     );
 }
 
-// ============================================================================
 // Error Handling Tests
-// ============================================================================
 
 #[test]
 fn test_blacklist_layer_returns_unauthenticated_on_failure() {
     // When BlacklistCheckLayer rejects a request, it returns:
     // Status::unauthenticated("Invalid or expired token")
-    //
     // This is the same error as AuthInterceptor for consistency.
 
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
@@ -192,9 +178,7 @@ fn test_blacklist_layer_returns_unauthenticated_on_failure() {
     // BlacklistCheckLayer would convert this to UNAUTHENTICATED status
 }
 
-// ============================================================================
 // Missing Auth Header Tests
-// ============================================================================
 
 #[test]
 fn test_missing_auth_header_fails_without_security_marker() {
@@ -247,6 +231,4 @@ fn test_missing_auth_header_with_security_marker_fails_unauthenticated() {
     );
 }
 
-// ============================================================================
 // Integration Test Concept
-// ============================================================================

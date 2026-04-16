@@ -1,9 +1,7 @@
 // Livestream server facade
-//
 // Single entry point for starting the entire livestream infrastructure:
 // StreamHub, RTMP server, HLS remuxer, PullStreamManager,
 // ExternalPublishManager, PublisherManager, and LiveStreamingInfrastructure.
-//
 // The synctv binary never touches synctv_xiu directly -- all xiu interaction
 // is encapsulated here.
 
@@ -712,7 +710,6 @@ impl LivestreamServer {
                 // These streams hold channels to the old StreamHub instance and would
                 // become zombies (still running but unable to deliver frames) if not
                 // cleaned up. The receiver task calls stop_all() on both managers.
-                //
                 // Two-phase cleanup: create a oneshot channel to receive confirmation
                 // when stop_all() completes. This ensures we wait for streams to fully
                 // stop before proceeding with Redis cleanup and re-registration.
@@ -922,7 +919,6 @@ impl LivestreamServer {
         // 6b. Spawn listener that stops all managed streams on StreamHub restart.
         // This ensures zombie streams (connected to the old hub) are cleaned up
         // before the new hub starts accepting events.
-        //
         // Two-phase cleanup protocol:
         // 1. Receive stop request with oneshot sender
         // 2. Call stop_all() on both managers
@@ -1417,8 +1413,6 @@ mod tests {
         );
     }
 
-    // ========== RTMP Port Pre-binding Tests ==========
-    //
     // Tests verify that RTMP port conflicts are detected early through pre-binding.
 
     /// Test that pre-binding a port and passing it to LivestreamServer works correctly.

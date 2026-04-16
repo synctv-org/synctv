@@ -1,5 +1,4 @@
-//! Stream lifecycle tests including RTMP publish authorization (Task #89)
-//!
+//! Stream lifecycle tests including RTMP publish authorization //!
 //! Tests verify stream lifecycle from RTMP publish to HLS playback,
 //! including authorization checks.
 //!
@@ -358,8 +357,6 @@ async fn test_stream_bitrate_limits() {
     assert!(validate_bitrate(15000).is_err());
 }
 
-// ========== StreamTracker lifecycle tests ==========
-
 #[tokio::test]
 async fn test_stream_tracker_insert_and_lookup() {
     use synctv_livestream::api::StreamTracker;
@@ -515,8 +512,6 @@ async fn test_stream_subscriber_guard_normal_drop() {
     );
 }
 
-// ========== PublisherInfo validation tests ==========
-
 #[tokio::test]
 async fn test_publisher_info_validate_api_address() {
     use chrono::Utc;
@@ -554,8 +549,6 @@ async fn test_publisher_info_validate_api_address() {
     assert!(whitespace.validate_api_address().is_err());
 }
 
-// ========== PublisherInfo serialization round-trip ==========
-
 #[tokio::test]
 async fn test_publisher_info_serde_round_trip() {
     use chrono::Utc;
@@ -587,8 +580,6 @@ async fn test_publisher_info_serde_round_trip() {
     assert_eq!(info.user_id, deserialized.user_id);
 }
 
-// ========== PublisherInfo default fields ==========
-
 #[tokio::test]
 async fn test_publisher_info_deserializes_api_address_field() {
     use synctv_livestream::relay::PublisherInfo;
@@ -608,14 +599,12 @@ async fn test_publisher_info_deserializes_api_address_field() {
     assert_eq!(info.epoch, 7);
 }
 
-// ========== HLS Cleanup Task Leak Tests ==========
-//
 // Tests verify that HLS cleanup tasks are properly terminated when
 // LivestreamHandle is dropped without calling shutdown().
 
 /// Test that dropping `LivestreamHandle` without calling `shutdown()` terminates the HLS cleanup task.
 ///
-/// This verifies the fix for Task #28: HLS segment cleanup task leak.
+/// This verifies the fix for HLS segment cleanup task leak.
 /// Before the fix, the cleanup task would run forever if `LivestreamHandle`
 /// was dropped without calling `shutdown()`.
 #[tokio::test]
@@ -625,7 +614,6 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
-    // Create a simple test to verify the cleanup task responds to cancellation
     let cancel_token = CancellationToken::new();
     let task_running = Arc::new(AtomicBool::new(false));
     let task_running_clone = task_running.clone();
@@ -636,14 +624,14 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
         task_running_clone.store(true, Ordering::SeqCst);
         loop {
             tokio::select! {
-                () = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Simulate cleanup work
-                }
-                () = cancel_token_clone.cancelled() => {
-                    // Task exits when cancelled
-                    break;
-                }
-            }
+                           () = tokio::time::sleep(Duration::from_millis(100)) => {
+            // Simulate cleanup work
+                           }
+                           () = cancel_token_clone.cancelled() => {
+            // Task exits when cancelled
+                               break;
+                           }
+                       }
         }
         task_running_clone.store(false, Ordering::SeqCst);
     });
@@ -659,7 +647,6 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
     cancel_token.cancel();
     drop(handle);
 
-    // Wait for task to finish
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify task has stopped
@@ -683,7 +670,6 @@ async fn test_livestream_handle_tracks_hls_cleanup() {
     use synctv_xiu::storage::MemoryStorage;
     use tokio_util::sync::CancellationToken;
 
-    // Create a simple segment manager with in-memory storage
     let storage = Arc::new(MemoryStorage::new());
     let config = CleanupConfig {
         interval: Duration::from_millis(100),
@@ -692,7 +678,6 @@ async fn test_livestream_handle_tracks_hls_cleanup() {
     };
     let segment_manager = Arc::new(SegmentManager::new(storage, config));
 
-    // Start the cleanup task and get the handle
     let cancel_token = CancellationToken::new();
     let handle = segment_manager.start_cleanup_task(cancel_token.clone());
 

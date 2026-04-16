@@ -99,8 +99,6 @@ async fn create_top_level_playlist(
         .expect("Top-level playlist should be created")
 }
 
-// ========== Seek Validation Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_seek_negative_rejected() {
@@ -141,8 +139,6 @@ async fn test_seek_negative_rejected() {
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
-
-// ========== Speed Validation Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -225,8 +221,6 @@ async fn test_speed_above_max_rejected() {
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
-
-// ========== Switch Media Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -497,8 +491,6 @@ async fn test_switch_with_empty_target_clears_playback_state() {
     assert!(!state.is_playing);
 }
 
-// ========== Optimistic Lock Concurrent Test ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_playback_optimistic_lock_concurrent() {
@@ -560,10 +552,6 @@ async fn test_playback_optimistic_lock_concurrent() {
         "Final position should be non-negative"
     );
 }
-
-// ============================================================================
-// Test: Rapid Sequential Seek Operations
-// ============================================================================
 
 /// Test rapid sequential seek operations (debounce/throttle behavior).
 ///
@@ -644,10 +632,6 @@ async fn test_rapid_sequential_seek_operations() {
     );
 }
 
-// ============================================================================
-// Test: Play Next With Concurrent Playlist Modification
-// ============================================================================
-
 /// Test `play_next` behavior when playlist is modified concurrently.
 ///
 /// Scenario:
@@ -702,7 +686,6 @@ async fn test_play_next_concurrent_playlist_modification() {
         media_ids.push(media.id.clone());
     }
 
-    // Start playing first media
     let playback_service = room_service.playback_service();
     playback_service
         .switch(
@@ -732,10 +715,6 @@ async fn test_play_next_concurrent_playlist_modification() {
     let new_state = result.unwrap();
     assert_eq!(new_state.playing_media_id, Some(media_ids[1].clone()));
 }
-
-// ============================================================================
-// Test: Play Next At End Of Playlist
-// ============================================================================
 
 /// Test `play_next` behavior at the end of playlist.
 ///
@@ -791,7 +770,6 @@ async fn test_play_next_at_end_of_playlist() {
         media_ids.push(media.id.clone());
     }
 
-    // Start playing last media
     let playback_service = room_service.playback_service();
     playback_service
         .switch(
@@ -875,7 +853,6 @@ async fn test_play_next_with_loop_enabled() {
         media_ids.push(media.id.clone());
     }
 
-    // Start playing last media
     let playback_service = room_service.playback_service();
     playback_service
         .switch(
@@ -910,10 +887,6 @@ async fn test_play_next_with_loop_enabled() {
     let state = result.unwrap();
     assert_eq!(state.playing_media_id, Some(media_ids[0].clone()));
 }
-
-// ============================================================================
-// Test: Empty Playlist Handling
-// ============================================================================
 
 /// Test behavior when playlist is empty.
 #[tokio::test]
@@ -960,10 +933,6 @@ async fn test_empty_playlist_handling() {
         "No media should be playing"
     );
 }
-
-// ============================================================================
-// Test: Concurrent Speed Changes
-// ============================================================================
 
 /// Test concurrent speed changes.
 ///
@@ -1035,10 +1004,6 @@ async fn test_concurrent_speed_changes() {
     assert!(state.speed > 0.0, "Speed should be positive");
     assert!(state.speed <= 4.0, "Speed should be <= max");
 }
-
-// ============================================================================
-// Test: State Consistency After Multiple Operations
-// ============================================================================
 
 /// Test that state remains consistent after multiple mixed operations.
 #[tokio::test]
@@ -1157,10 +1122,6 @@ async fn test_state_consistency_after_mixed_operations() {
 }
 
 use synctv_core::models::{room_settings, RoomSettings};
-
-// ============================================================================
-// Test: Seek Response Feedback (Task #37)
-// ============================================================================
 
 /// Test that seek returns `seek_applied=true` on success.
 ///

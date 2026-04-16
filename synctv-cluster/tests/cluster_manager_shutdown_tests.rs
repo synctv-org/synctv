@@ -52,9 +52,7 @@ async fn make_cluster_manager(node_id: &str) -> ClusterManager {
         .expect("ClusterManager::new should succeed")
 }
 
-// =====================================================================
 // Test 1: shutdown should wait for heartbeat task to complete
-// =====================================================================
 
 /// Test that shutdown waits for the heartbeat task to complete gracefully.
 ///
@@ -75,7 +73,6 @@ async fn test_shutdown_waits_for_heartbeat_task_completion() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -94,9 +91,7 @@ async fn test_shutdown_waits_for_heartbeat_task_completion() {
     // The key assertion is that shutdown() returned at all (didn't hang forever)
 }
 
-// =====================================================================
 // Test 2: shutdown should have timeout for heartbeat task
-// =====================================================================
 
 /// Test that shutdown has a timeout when waiting for the heartbeat task.
 ///
@@ -117,7 +112,6 @@ async fn test_shutdown_has_timeout_for_heartbeat_task() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -137,7 +131,6 @@ async fn test_shutdown_has_timeout_for_heartbeat_task() {
     // The shutdown should complete within a reasonable time.
     // With a 10-second timeout for heartbeat task, shutdown should complete
     // within 15 seconds to account for other shutdown work and system variability.
-    //
     // IMPORTANT: If this test fails because elapsed >= 15 seconds, it means
     // the heartbeat task is not being awaited with a timeout and may be hanging.
     assert!(
@@ -146,9 +139,7 @@ async fn test_shutdown_has_timeout_for_heartbeat_task() {
     );
 }
 
-// =====================================================================
 // Test 3: shutdown handles JoinHandle error gracefully
-// =====================================================================
 
 /// Test that shutdown handles `JoinHandle` errors (like task panic) gracefully.
 ///
@@ -168,7 +159,6 @@ async fn test_shutdown_handles_task_error_gracefully() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -185,9 +175,7 @@ async fn test_shutdown_handles_task_error_gracefully() {
     // If we reach this point, shutdown completed successfully
 }
 
-// =====================================================================
 // Test 4: shutdown without heartbeat task should succeed
-// =====================================================================
 
 /// Test that shutdown works correctly when no heartbeat task was started.
 ///
@@ -211,9 +199,7 @@ async fn test_shutdown_without_heartbeat_task() {
     );
 }
 
-// =====================================================================
 // Test 5: shutdown is idempotent
-// =====================================================================
 
 /// Test that calling shutdown multiple times is safe.
 ///
@@ -232,7 +218,6 @@ async fn test_shutdown_is_idempotent() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -259,9 +244,7 @@ async fn test_shutdown_is_idempotent() {
     );
 }
 
-// =====================================================================
 // Test 6: shutdown completes within expected timeout
-// =====================================================================
 
 /// Test that shutdown completes within the expected timeout.
 ///
@@ -279,7 +262,6 @@ async fn test_shutdown_completes_within_timeout() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -302,7 +284,6 @@ async fn test_shutdown_completes_within_timeout() {
     // We expect:
     // - Normal case: < 1 second (task responds to cancel quickly)
     // - Timeout case: < 15 seconds (10s timeout + margin)
-    //
     // If this test fails, it indicates the heartbeat task wait lacks a timeout.
     assert!(
         elapsed < Duration::from_secs(15),
@@ -310,9 +291,7 @@ async fn test_shutdown_completes_within_timeout() {
     );
 }
 
-// =====================================================================
 // Test 7: verify shutdown timeout matches publisher_task pattern
-// =====================================================================
 
 /// Test that the heartbeat task shutdown follows the same pattern as `publisher_task`.
 ///
@@ -335,7 +314,6 @@ async fn test_shutdown_pattern_matches_publisher_task() {
         ))
         .await;
 
-    // Start the heartbeat loop
     manager
         .start_heartbeat_loop(
             registry,
@@ -364,9 +342,7 @@ async fn test_shutdown_pattern_matches_publisher_task() {
     );
 }
 
-// =====================================================================
 // Test 8: parent cancel token propagation (L11)
-// =====================================================================
 
 /// Test that cancelling a parent token also cancels the ClusterManager's
 /// internal cancel token (child token pattern).
@@ -410,9 +386,7 @@ async fn test_parent_cancel_token_propagates_cancellation() {
     );
 }
 
-// =====================================================================
 // Test 9: without parent cancel token, ClusterManager uses independent token
-// =====================================================================
 
 #[tokio::test]
 async fn test_without_parent_cancel_token_uses_independent_token() {

@@ -17,9 +17,7 @@ use synctv_core::service::{CredentialEncryption, ProxySigningKey};
 use super::ApiError;
 use crate::impls::client::ClientApiImpl;
 
-// ------------------------------------------------------------------
 // Shared playback resolution helpers
-// ------------------------------------------------------------------
 
 /// Optional runtime dependencies required by provider playback helpers.
 #[derive(Default)]

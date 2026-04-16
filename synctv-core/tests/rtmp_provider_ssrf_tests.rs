@@ -15,9 +15,7 @@ fn create_context() -> ProviderContext<'static> {
         .with_room_id("test_room")
 }
 
-// ============================================================================
 // validate_source_config should not accept external URLs
-// ============================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_validate_source_config_rejects_url_field() {

@@ -15,9 +15,7 @@ use async_trait::async_trait;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::{AuthCallback, AuthPublishRewrite};
 
-// ==================================================================
 // Mock Auth Callback for Testing
-// ==================================================================
 
 /// Tracks callback invocations for testing
 #[derive(Debug, Default)]
@@ -186,9 +184,7 @@ impl AuthCallback for MockRtmpAuthCallback {
     }
 }
 
-// ==================================================================
 // JWT Token Validation Tests
-// ==================================================================
 
 /// Test that a valid JWT token is accepted and produces correct rewrite
 #[tokio::test]
@@ -260,9 +256,7 @@ async fn test_jwt_token_from_query_string() {
     assert_eq!(rewrite.stream_name, "media456");
 }
 
-// ==================================================================
 // Room Permission Verification Tests
-// ==================================================================
 
 /// Test that `room_id` mismatch is detected
 #[tokio::test]
@@ -273,7 +267,6 @@ async fn test_room_id_mismatch_rejected() {
         .with_room_id("room_A")
         .with_media_id("media123");
 
-    // Attempt to publish to a different room
     let result = auth.on_publish("room_B", "jwt_token", None).await;
 
     assert!(result.is_err(), "Room ID mismatch should be rejected");
@@ -303,9 +296,7 @@ async fn test_room_id_match_accepted() {
     assert!(result.is_ok(), "Correct room_id should be accepted");
 }
 
-// ==================================================================
 // Authentication Failure Cleanup Tests
-// ==================================================================
 
 /// Test that registry is cleaned up when authentication fails
 #[tokio::test]
@@ -348,9 +339,7 @@ async fn test_rollback_on_streamhub_failure() {
     assert_eq!(tracker.rollback_calls(), 1);
 }
 
-// ==================================================================
 // on_unpublish Callback Tests
-// ==================================================================
 
 /// Test that `on_unpublish` cleans up registry
 #[tokio::test]
@@ -391,9 +380,7 @@ async fn test_on_unpublish_idempotent() {
     assert_eq!(tracker.unpublish_calls(), 2);
 }
 
-// ==================================================================
 // Duplicate Publisher Tests
-// ==================================================================
 
 /// Test that duplicate publisher is rejected
 #[tokio::test]
@@ -418,9 +405,7 @@ async fn test_duplicate_publisher_rejected() {
     );
 }
 
-// ==================================================================
 // on_play Rejection Tests
-// ==================================================================
 
 /// Test that RTMP play is always rejected
 #[tokio::test]
@@ -444,9 +429,7 @@ async fn test_on_play_always_rejected() {
     assert_eq!(tracker.play_calls(), 1);
 }
 
-// ==================================================================
 // Integration Tests (marked with #[ignore])
-// ==================================================================
 
 /// End-to-end test that requires Docker (Redis container)
 #[tokio::test]
@@ -454,13 +437,7 @@ async fn test_on_play_always_rejected() {
 async fn test_e2e_rtmp_auth_with_redis() {
     // This test would use testcontainers to spin up Redis
     // and verify the full RTMP auth flow with real Redis backend
-    //
     // Steps:
-    // 1. Start Redis container
-    // 2. Create real PublishKeyService
-    // 3. Create RtmpAuthCallbackImpl with Redis registry
-    // 4. Test full publish/unpublish cycle
-    // 5. Verify Redis entries are created/cleaned correctly
 }
 
 /// End-to-end test with real `StreamHub`
@@ -468,8 +445,4 @@ async fn test_e2e_rtmp_auth_with_redis() {
 #[ignore = "Requires Docker"]
 async fn test_e2e_rtmp_with_streamhub() {
     // This test would verify the complete flow:
-    // 1. Auth callback registers in Redis
-    // 2. StreamHub publish succeeds
-    // 3. No rollback needed
-    // 4. StreamHub unpublish triggers cleanup
 }

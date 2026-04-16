@@ -458,8 +458,6 @@ mod tests {
         );
     }
 
-    // ========== EmailNotVerified Error Tests (M8) ==========
-
     #[test]
     fn test_email_not_verified_display() {
         assert_eq!(Error::EmailNotVerified.to_string(), "Email not verified");
@@ -491,8 +489,6 @@ mod tests {
         // Different gRPC codes: Unauthenticated vs PermissionDenied
         assert_ne!(auth_status.code(), email_status.code());
     }
-
-    // ========== ProviderError Conversion Tests (#34) ==========
 
     #[test]
     fn test_provider_error_network_converts_to_timeout() {

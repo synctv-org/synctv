@@ -93,7 +93,6 @@ async fn test_optimistic_lock_version_mismatch() {
         .await
         .unwrap();
 
-    // Create root and child playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
@@ -150,7 +149,6 @@ async fn test_optimistic_lock_version_match_succeeds() {
         .await
         .unwrap();
 
-    // Create root and child playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
@@ -212,7 +210,6 @@ async fn test_optimistic_lock_sequential_updates() {
         .await
         .unwrap();
 
-    // Create root and child playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
@@ -270,7 +267,6 @@ async fn test_optimistic_lock_concurrent_conflict() {
         .await
         .unwrap();
 
-    // Create root and child playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await
@@ -334,7 +330,6 @@ async fn test_optimistic_lock_new_playlist_version_zero() {
         .await
         .unwrap();
 
-    // Create top-level and child playlist
     let root = playlist_repo
         .create(&make_playlist(&room.id, "", None, 0))
         .await

@@ -58,8 +58,6 @@ fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
     RoomMember::new(room_id, user_id, role)
 }
 
-// ========== Database-level pagination tests ==========
-
 /// Test that list_by_room_paginated returns the correct page of members
 /// and the total count without loading all members into memory.
 #[tokio::test]
@@ -70,7 +68,6 @@ async fn test_list_by_room_paginated_first_page() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create room owner
     let owner = user_repo.create(&make_user("owner_page1")).await.unwrap();
     let room = room_repo
         .create(&make_room("Room Pagination", &owner.id))
@@ -612,7 +609,6 @@ async fn test_list_by_room_paginated_empty_room() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create room but don't add any members (not even creator)
     let owner = user_repo
         .create(&make_user("owner_empty_room"))
         .await
@@ -630,8 +626,6 @@ async fn test_list_by_room_paginated_empty_room() {
     assert_eq!(total, 0);
     assert!(members.is_empty());
 }
-
-// ========== MemberService pagination tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

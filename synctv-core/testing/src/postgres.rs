@@ -39,7 +39,6 @@ const TEST_DATABASE_PREFIX: &str = "synctv_test";
 const MAX_DATABASE_IDENTIFIER_LEN: usize = 63;
 const DATABASE_NAME_RANDOM_LEN: usize = 10;
 const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
-    // --- Durability / WAL (safe for ephemeral test data) ---
     "-c",
     "fsync=off",
     "-c",
@@ -54,17 +53,14 @@ const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "checkpoint_timeout=1h",
     "-c",
     "max_wal_size=8GB",
-    // --- Background maintenance ---
     "-c",
     "autovacuum=off",
     "-c",
     "max_worker_processes=4",
-    // --- Capacity ---
     "-c",
     "max_connections=1024",
     "-c",
     "superuser_reserved_connections=0",
-    // --- Memory ---
     "-c",
     "shared_buffers=512MB",
     "-c",
@@ -75,7 +71,6 @@ const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "maintenance_work_mem=256MB",
     "-c",
     "effective_cache_size=1GB",
-    // --- Planner / executor ---
     "-c",
     "jit=off",
     "-c",
@@ -84,7 +79,6 @@ const POSTGRES_EPHEMERAL_TUNING_ARGS: &[&str] = &[
     "max_parallel_workers=0",
     "-c",
     "random_page_cost=1.0",
-    // --- Logging / observability overhead ---
     "-c",
     "log_statement=none",
     "-c",

@@ -34,9 +34,7 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
 use tokio::sync::Barrier;
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Test container wrapper for Postgres
 pub struct TestPostgres {
@@ -106,19 +104,16 @@ async fn setup_test_room(
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner
     let owner = user_repo
         .create(&make_user("room_owner"))
         .await
         .expect("Failed to create owner");
 
-    // Create room
     let room = room_repo
         .create(&make_room(room_name, "Test room", &owner.id))
         .await
         .expect("Failed to create room");
 
-    // Create room settings with max_members
     let settings = RoomSettings {
         max_members: MaxMembers(max_members),
         ..Default::default()
@@ -139,10 +134,6 @@ async fn setup_test_room(
     (owner, room, settings)
 }
 
-// ============================================================================
-// Test: Multi-user Concurrent Join with max_members Limit
-// ============================================================================
-
 /// Test that `max_members` limit is enforced under concurrent joins.
 ///
 /// Scenario:
@@ -156,10 +147,8 @@ async fn test_concurrent_join_respects_max_members_limit() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create room with max_members = 5 (total capacity including owner)
     let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 5).await;
 
-    // Create 20 users who will try to join
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(20);
     for i in 0..20 {
@@ -268,7 +257,6 @@ async fn test_concurrent_join_boundary_condition() {
     // Room with 3 member limit
     let (_owner, room, _settings) = setup_test_room(pool, "Boundary Room", 3).await;
 
-    // Create 5 users
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(5);
     for i in 0..5 {
@@ -329,10 +317,6 @@ async fn test_concurrent_join_boundary_condition() {
     assert_eq!(rejected, 3, "3 should be rejected (room full)");
 }
 
-// ============================================================================
-// Test: Concurrent Room Creation with Same Name
-// ============================================================================
-
 /// Test that concurrent room creation with the same name by different users succeeds.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -340,7 +324,6 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create 10 users
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
@@ -401,7 +384,6 @@ async fn test_concurrent_room_creation_same_user_prevented() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
 
-    // Create one user
     let user_repo = UserRepository::new(pool.clone());
     let user = user_repo
         .create(&make_user("single_creator"))
@@ -446,10 +428,6 @@ async fn test_concurrent_room_creation_same_user_prevented() {
         "All other competing creates should fail with AlreadyExists"
     );
 }
-
-// ============================================================================
-// Test: Concurrent Room Settings Updates (Optimistic Lock Retry)
-// ============================================================================
 
 /// Test optimistic lock retry on concurrent settings updates.
 ///
@@ -591,10 +569,6 @@ async fn test_settings_update_stale_version_rejected() {
     );
 }
 
-// ============================================================================
-// Test: Concurrent Join and Leave Operations
-// ============================================================================
-
 /// Test concurrent join and leave operations don't cause race conditions.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -605,7 +579,6 @@ async fn test_concurrent_join_and_leave_operations() {
     // Room with high capacity
     let (_owner, room, _settings) = setup_test_room(pool, "Join Leave Room", 100).await;
 
-    // Create users and add them as members first
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let mut users = Vec::with_capacity(10);
@@ -654,7 +627,6 @@ async fn test_concurrent_join_and_leave_operations() {
         leave_handles.push(handle);
     }
 
-    // Create 5 new users to join
     let mut new_users = Vec::with_capacity(5);
     for i in 0..5 {
         let user = user_repo
@@ -682,7 +654,6 @@ async fn test_concurrent_join_and_leave_operations() {
         join_handles.push(handle);
     }
 
-    // Wait for leave operations
     let mut leave_success = 0;
     for handle in leave_handles {
         match handle.await.expect("Leave task panicked") {
@@ -691,7 +662,6 @@ async fn test_concurrent_join_and_leave_operations() {
         }
     }
 
-    // Wait for join operations
     let mut join_success = 0;
     for handle in join_handles {
         match handle.await.expect("Join task panicked") {
@@ -716,10 +686,6 @@ async fn test_concurrent_join_and_leave_operations() {
     assert_eq!(final_count, 11, "Final member count should be 11");
 }
 
-// ============================================================================
-// Test: Concurrent Capacity Enforcement
-// ============================================================================
-
 /// Concurrent joins must still respect the room capacity limit.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -730,7 +696,6 @@ async fn test_concurrent_joins_respect_room_capacity() {
     // Room with capacity 50
     let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 50).await;
 
-    // Create 100 users
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(100);
     for i in 0..100 {

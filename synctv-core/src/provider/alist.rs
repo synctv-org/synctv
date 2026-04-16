@@ -94,8 +94,6 @@ impl AlistProvider {
         .to_string()
     }
 
-    // ========== Provider API Methods ==========
-
     /// Login to Alist
     ///
     /// Takes grpc-generated `LoginReq` and returns token string
@@ -542,7 +540,6 @@ impl MediaProvider for AlistProvider {
 }
 
 // ProviderProxy implementation for Alist
-//
 // Supported sub_paths:
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
@@ -1208,8 +1205,6 @@ mod tests {
         assert!(parsed.provider_instance_name.is_none());
     }
 
-    // ========== Path Traversal Validation Tests ==========
-
     #[test]
     fn test_path_traversal_validation_rejects_literal_double_dot() {
         // Use the centralized validation function
@@ -1314,8 +1309,6 @@ mod tests {
         // Memory usage: max 200 items vs 1000 items (80% reduction)
     }
 
-    // ========== Credential Ref Tests ==========
-
     #[test]
     fn test_alist_config_with_password() {
         // Alist supports optional per-directory password
@@ -1348,8 +1341,6 @@ mod tests {
             "Different directory passwords must not reuse the same playback cache entry"
         );
     }
-
-    // ========== B6: Alist URL-encoded path traversal ==========
 
     #[test]
     fn test_alist_url_encoded_path_traversal_rejected() {

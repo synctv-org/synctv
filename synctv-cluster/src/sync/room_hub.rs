@@ -614,7 +614,6 @@ impl RoomMessageHub {
             }
 
             // Remove from Redis (best-effort, don't block unsubscribe path).
-            //
             // SAFETY: Fire-and-forget cleanup. If the node crashes before the
             // Redis delete completes, the stale keys will be cleaned up by their
             // TTL (set during subscribe). No manual intervention is needed.

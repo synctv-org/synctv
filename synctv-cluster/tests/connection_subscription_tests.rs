@@ -182,7 +182,6 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
 async fn test_multi_replica_websocket_connections() {
     let redis = TestRedis::start().await;
 
-    // Create three nodes to simulate three replicas
     let node_a = create_node(&redis.redis_url, "ws_node_a").await;
     let node_b = create_node(&redis.redis_url, "ws_node_b").await;
     let node_c = create_node(&redis.redis_url, "ws_node_c").await;

@@ -1,5 +1,4 @@
 // File system storage backend for HLS
-//
 // Default storage backend using local filesystem
 // With structured directory-based paths: base_path/app/stream/name
 

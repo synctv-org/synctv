@@ -574,8 +574,6 @@ mod tests {
         }
     }
 
-    // ========== Retry Constants ==========
-
     #[test]
     fn test_retry_constants() {
         assert_eq!(MAX_PARTITION_RETRIES, 3);

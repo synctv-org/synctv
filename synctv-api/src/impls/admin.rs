@@ -1086,8 +1086,6 @@ impl AdminApiImpl {
         }
     }
 
-    // === Room Management ===
-
     pub async fn list_rooms(
         &self,
         req: crate::proto::admin::ListRoomsRequest,
@@ -2011,8 +2009,6 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::UnbanMemberResponse { success: true })
     }
 
-    // === User Management ===
-
     pub async fn list_users(
         &self,
         req: crate::proto::admin::ListUsersRequest,
@@ -2267,8 +2263,6 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::UpdateUserPasswordResponse { success: true })
     }
 
-    // === Settings Management ===
-
     pub async fn get_settings(
         &self,
         _req: crate::proto::admin::GetSettingsRequest,
@@ -2364,8 +2358,6 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::UpdateSettingsResponse {})
     }
 
-    // === Email Management ===
-
     fn map_send_test_email_result(
         to: &str,
         result: Result<(), CoreError>,
@@ -2394,8 +2386,6 @@ impl AdminApiImpl {
             self.email_service.send_test_email(&req.to).await,
         ))
     }
-
-    // === Provider Instance Management ===
 
     pub async fn list_provider_instances(
         &self,
@@ -2721,8 +2711,6 @@ impl AdminApiImpl {
             instance: Some(provider_instance_to_proto(instance)),
         })
     }
-
-    // === User Management (extended) ===
 
     pub async fn create_user(
         &self,
@@ -3155,8 +3143,6 @@ impl AdminApiImpl {
         })
     }
 
-    // === Room Management (extended) ===
-
     pub async fn ban_room(
         &self,
         req: crate::proto::admin::BanRoomRequest,
@@ -3448,8 +3434,6 @@ impl AdminApiImpl {
         })
     }
 
-    // === Admin Management (root only) ===
-
     pub async fn add_admin(
         &self,
         req: crate::proto::admin::AddAdminRequest,
@@ -3599,8 +3583,6 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::ListAdminsResponse { admins })
     }
 
-    // === System Statistics ===
-
     pub async fn get_system_stats(
         &self,
         _req: crate::proto::admin::GetSystemStatsRequest,
@@ -3679,9 +3661,7 @@ impl AdminApiImpl {
         })
     }
 
-    // =========================
     // Livestream Management
-    // =========================
 
     /// List active streams with filtering, sorting and pagination.
     pub async fn list_active_streams(
@@ -5000,9 +4980,7 @@ impl AdminApiImpl {
         })
     }
 
-    // =========================
     // Batch Operations
-    // =========================
 
     /// Batch ban multiple users.
     ///
@@ -5495,8 +5473,6 @@ async fn invalidate_user_room_permission_caches(
             .await;
     }
 }
-
-// === Helper Functions ===
 
 fn admin_room_to_proto(
     room: &synctv_core::models::Room,
@@ -6461,8 +6437,6 @@ mod tests {
         }
     }
 
-    // === Timeout Parsing Tests ===
-
     #[test]
     fn test_parse_timeout_to_seconds_valid() {
         assert_eq!(parse_timeout_to_seconds("10s"), 10);
@@ -6496,8 +6470,6 @@ mod tests {
             assert_eq!(parse_timeout_to_seconds(&s), secs);
         }
     }
-
-    // === Admin Room Proto Conversion Tests ===
 
     fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         let now = chrono::Utc::now();
@@ -6721,8 +6693,6 @@ mod tests {
         }
     }
 
-    // === Admin User Proto Conversion Tests ===
-
     fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
         synctv_core::models::User {
             id: UserId::from_string("admin_user_1".to_string()),
@@ -6846,8 +6816,6 @@ mod tests {
         );
     }
 
-    // === Admin Room Member Proto Conversion Tests ===
-
     fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         synctv_core::models::RoomMemberWithUser {
             room_id: RoomId::from_string("room1".to_string()),
@@ -6896,8 +6864,6 @@ mod tests {
         assert_eq!(proto.admin_added_permissions, 0xCC);
         assert_eq!(proto.admin_removed_permissions, 0x33);
     }
-
-    // === Provider Instance Conversion Tests ===
 
     #[test]
     fn test_provider_instance_to_proto_enabled() {
@@ -7562,8 +7528,6 @@ mod tests {
         assert_eq!(page2.rooms[0].id, owned_room.id.as_str());
     }
 
-    // === Password Reset Role Hierarchy Tests ===
-    //
     // These verify the role hierarchy rules enforced by update_user_password:
     // - Root can reset anyone's password (root, admin, user)
     // - Admin can only reset regular user passwords
@@ -7602,8 +7566,6 @@ mod tests {
     fn test_admin_can_reset_user_password() {
         assert!(password_reset_allowed(UserRole::Admin, UserRole::User));
     }
-
-    // === URL Credential Masking Tests ===
 
     #[test]
     fn test_mask_url_credentials_with_user_and_password() {
@@ -7676,8 +7638,6 @@ mod tests {
         assert!(masked.contains("key=val"), "Query should remain: {masked}");
     }
 
-    // === Role Hierarchy Check Tests (batch operations) ===
-
     #[test]
     fn test_check_role_hierarchy_root_can_operate_on_all() {
         assert!(check_role_hierarchy(UserRole::Root, UserRole::Root, "ban").is_ok());
@@ -7719,8 +7679,6 @@ mod tests {
     fn test_check_role_hierarchy_admin_can_operate_on_user() {
         assert!(check_role_hierarchy(UserRole::Admin, UserRole::User, "ban").is_ok());
     }
-
-    // === Admin Role Elevation Tests (P0#4) ===
 
     /// Verify that proto_role_to_user_role maps Admin role correctly
     /// (prerequisite for the role elevation check).

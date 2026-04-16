@@ -514,9 +514,7 @@ mod tests {
         },
     };
 
-    // ========================================================================
     // BlacklistEnforcement behavior tests
-    // ========================================================================
 
     #[test]
     fn blacklist_enforcement_default_is_true() {

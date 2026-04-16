@@ -229,7 +229,6 @@ async fn test_full_startup_sequence_pattern() {
         }
     });
 
-    // Wait for startup signal
     let api_result = timeout(Duration::from_secs(5), api_rx).await;
 
     assert!(api_result.is_ok(), "API startup signal should arrive");
@@ -276,7 +275,6 @@ async fn test_startup_failure_aborts_server() {
         }
     });
 
-    // Wait for the error signal
     let result = timeout(Duration::from_secs(5), rx).await;
     assert!(result.is_ok(), "Startup signal should arrive quickly");
 
@@ -311,10 +309,8 @@ async fn test_api_pre_binding_detects_port_conflict() {
     };
 
     // Simulate the server.rs API startup pattern:
-    // 1. Parse address
     let api_addr: SocketAddr = addr.to_string().parse().unwrap();
 
-    // 2. Pre-bind listener (this should FAIL because port is in use)
     let result = TcpListener::bind(api_addr).await;
 
     // The error is detected BEFORE spawning the server task

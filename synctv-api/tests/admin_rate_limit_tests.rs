@@ -27,9 +27,7 @@ fn admin_anon_key(ip: &str) -> String {
     format!("ratelimit:admin:anon:{ip}")
 }
 
-// ============================================================================
 // Basic admin rate limit tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_allows_up_to_limit() {
@@ -100,9 +98,7 @@ async fn test_admin_rate_limit_different_users_independent() {
     );
 }
 
-// ============================================================================
 // Per-IP anonymous admin rate limit tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_anonymous_rate_limit_allows_up_to_limit() {
@@ -173,9 +169,7 @@ async fn test_admin_anonymous_different_ips_independent() {
     );
 }
 
-// ============================================================================
 // Admin rate limit error details tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_error_contains_retry_after() {
@@ -212,9 +206,7 @@ async fn test_admin_rate_limit_error_contains_retry_after() {
     }
 }
 
-// ============================================================================
 // Category-wide admin rate limit tests (all admin endpoints share limit)
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_category_wide() {
@@ -243,9 +235,7 @@ async fn test_admin_rate_limit_category_wide() {
     );
 }
 
-// ============================================================================
 // Admin vs other rate limit categories isolation tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_isolated_from_auth() {
@@ -309,9 +299,7 @@ async fn test_admin_rate_limit_isolated_from_write() {
     );
 }
 
-// ============================================================================
 // Burst protection tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_prevents_burst() {
@@ -340,9 +328,7 @@ async fn test_admin_rate_limit_prevents_burst() {
     assert_eq!(failures, 20, "20 requests should be rate limited");
 }
 
-// ============================================================================
 // 429 Response simulation tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_returns_429_equivalent() {
@@ -394,9 +380,7 @@ async fn test_admin_rate_limit_returns_429_equivalent() {
     }
 }
 
-// ============================================================================
 // Specific endpoint rate limit simulation tests
-// ============================================================================
 
 /// Simulates rate limiting for DELETE /api/admin/rooms/{id}
 #[tokio::test]
@@ -470,9 +454,7 @@ async fn test_admin_settings_rate_limit() {
     );
 }
 
-// ============================================================================
 // DoS protection tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_admin_rate_limit_mitigates_dos_attack() {

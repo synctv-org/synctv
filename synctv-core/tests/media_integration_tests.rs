@@ -231,7 +231,6 @@ async fn test_duplicate_media_names_are_allowed_in_same_playlist() {
         .await
         .unwrap();
 
-    // Create another media with the same display name in the same playlist
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "same_name.mp4", 1);
     let created = media_repo.create(&duplicate).await.unwrap();
     assert_eq!(created.name, "same_name.mp4");
@@ -289,7 +288,6 @@ async fn test_media_get_by_playlist() {
         .await
         .unwrap();
     assert_eq!(items.len(), 3);
-    // Should be ordered by position ASC
     assert_eq!(items[0].name, "a.mp4");
     assert_eq!(items[1].name, "b.mp4");
     assert_eq!(items[2].name, "c.mp4");
@@ -361,7 +359,6 @@ async fn test_media_cascade_delete_with_playlist() {
     let playlist_repo = PlaylistRepository::new(ctx.pool.clone());
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a child playlist under root
     let child_playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
@@ -503,9 +500,7 @@ async fn test_media_batch_delete() {
     assert!(media_repo.get_by_id(&m3.id).await.unwrap().is_some());
 }
 
-// ============================================================================
 // Append-position helper tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -562,9 +557,7 @@ async fn test_get_next_append_position_with_tx_existing_items() {
     assert_f64_eq(next_pos, 5120.0);
 }
 
-// ============================================================================
 // create_batch_chunked test
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -596,9 +589,7 @@ async fn test_create_batch_chunked_inserts_all() {
     }
 }
 
-// ============================================================================
 // count_by_playlists_batch tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -607,7 +598,6 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
     let playlist_repo = PlaylistRepository::new(ctx.pool.clone());
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    // Create a second playlist
     let pl2 = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
@@ -677,9 +667,7 @@ async fn test_count_by_playlists_batch_empty_input() {
     assert!(counts.is_empty(), "Empty input should return empty map");
 }
 
-// ============================================================================
 // get_by_ids test
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -729,9 +717,7 @@ async fn test_get_by_ids_partial_returns_subset() {
     assert!(result_ids.contains(m2.id.as_str()));
 }
 
-// ============================================================================
 // delete_by_playlist test
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -849,9 +835,7 @@ async fn test_delete_room_root_only_removes_target_room_media() {
     assert_eq!(media_repo.count_room_root(&other_room.id).await.unwrap(), 1);
 }
 
-// ============================================================================
 // Concurrent append-position assignment tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -877,7 +861,6 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 .await
                 .expect("Failed to get next position");
 
-            // Create media with the computed position
             let media = Media {
                 id: MediaId::new(),
                 playlist_id: Some(playlist_id.clone()),
@@ -907,7 +890,6 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         handles.push(handle);
     }
 
-    // Wait for all tasks to complete
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()

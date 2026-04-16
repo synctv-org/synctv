@@ -26,9 +26,7 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -79,10 +77,6 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
     }
 }
 
-// ============================================================================
-// Test: UserRole::can_manage() boundary checks
-// ============================================================================
-
 #[test]
 fn test_user_role_can_manage_root_manages_all() {
     assert!(UserRole::Root.can_manage(&UserRole::Root));
@@ -111,23 +105,17 @@ fn test_user_role_is_admin_or_above() {
     assert!(!UserRole::User.is_admin_or_above());
 }
 
-// ============================================================================
-// Test: Admin cannot upgrade to Root role
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_admin_cannot_upgrade_user_to_root() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create an admin
     let admin = user_repo
         .create(&make_user_with_role("admin_upgrade", UserRole::Admin))
         .await
         .unwrap();
 
-    // Create a regular user
     let user = user_repo
         .create(&make_user_with_role("user_to_upgrade", UserRole::User))
         .await
@@ -152,10 +140,6 @@ async fn test_admin_cannot_upgrade_user_to_root() {
     );
 }
 
-// ============================================================================
-// Test: Admin cannot demote Root
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_admin_cannot_demote_root() {
@@ -178,10 +162,6 @@ async fn test_admin_cannot_demote_root() {
         "Admin cannot demote Root users"
     );
 }
-
-// ============================================================================
-// Test: Admin cannot ban Root
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -217,10 +197,6 @@ async fn test_admin_cannot_ban_root_user() {
     );
 }
 
-// ============================================================================
-// Test: Root can ban Admin
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_root_can_ban_admin() {
@@ -253,10 +229,6 @@ async fn test_root_can_ban_admin() {
     assert_eq!(banned.role, UserRole::Admin); // Role unchanged
 }
 
-// ============================================================================
-// Test: Admin can ban User
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_admin_can_ban_user() {
@@ -288,10 +260,6 @@ async fn test_admin_can_ban_user() {
     assert_eq!(banned.status, UserStatus::Banned);
     assert_eq!(banned.role, UserRole::User); // Role unchanged
 }
-
-// ============================================================================
-// Test: Role upgrade/downgrade scenarios
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -381,10 +349,6 @@ async fn test_admin_cannot_upgrade_user_to_admin() {
     // not at the model layer. This test documents model behavior.
 }
 
-// ============================================================================
-// Test: Cross-role operation restrictions
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_creator_permissions_vs_user_role() {
@@ -467,17 +431,12 @@ async fn test_pending_user_cannot_create_room() {
     assert!(!pending.status.can_create_room());
 }
 
-// ============================================================================
-// Test: Status and Role independence
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_status_and_role_are_independent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create Root user
     let root = user_repo
         .create(&make_user_with_role("root_status", UserRole::Root))
         .await
@@ -493,7 +452,6 @@ async fn test_status_and_role_are_independent() {
     assert_eq!(banned_root.status, UserStatus::Banned); // Status changed
     assert!(!banned_root.can_login()); // Cannot login
 
-    // Create Admin user
     let admin = user_repo
         .create(&make_user_with_role("admin_status", UserRole::Admin))
         .await
@@ -509,10 +467,6 @@ async fn test_status_and_role_are_independent() {
     assert_eq!(pending_admin.status, UserStatus::Pending); // Status changed
     assert!(!pending_admin.can_login()); // Cannot login while pending
 }
-
-// ============================================================================
-// Test: Optimistic lock on role update
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -545,17 +499,12 @@ async fn test_role_update_optimistic_lock() {
     );
 }
 
-// ============================================================================
-// Test: Multiple status transitions
-// ============================================================================
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_user_status_transitions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Start as Active
     let user = user_repo
         .create(&make_user_with_role("status_trans", UserRole::User))
         .await
@@ -595,10 +544,6 @@ async fn test_user_status_transitions() {
     assert_eq!(approved.status, UserStatus::Active);
     assert!(approved.can_login());
 }
-
-// ============================================================================
-// Test: Admin operations on room with banned creator
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

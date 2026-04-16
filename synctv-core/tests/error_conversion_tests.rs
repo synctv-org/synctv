@@ -8,9 +8,7 @@
 
 use synctv_core::Error;
 
-// ============================================================================
 // Error -> tonic::Status mapping
-// ============================================================================
 
 #[test]
 fn test_not_found_maps_to_tonic_not_found() {
@@ -86,9 +84,7 @@ fn test_serialization_error_maps_to_internal() {
     assert_eq!(status.code(), tonic::Code::Internal);
 }
 
-// ============================================================================
 // Error Display formatting
-// ============================================================================
 
 #[test]
 fn test_error_display_format() {
@@ -126,9 +122,7 @@ fn test_error_display_format() {
     );
 }
 
-// ============================================================================
 // InternalExt trait
-// ============================================================================
 
 #[test]
 fn test_internal_ext_maps_error() {
@@ -173,9 +167,7 @@ fn test_internal_ext_preserves_ok() {
     assert_eq!(mapped.unwrap(), 42);
 }
 
-// ============================================================================
 // From<anyhow::Error> preserves error chain
-// ============================================================================
 
 #[test]
 fn test_anyhow_error_preserves_chain() {

@@ -298,8 +298,6 @@ mod tests {
         }
     }
 
-    // ---- Per-stream tests (existing behaviour, regression) ----
-
     #[test]
     fn test_gop_basic_save_and_freeze() {
         let mut gop = Gop::new();

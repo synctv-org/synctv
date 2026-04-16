@@ -36,8 +36,6 @@ use synctv_livestream::{
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
-// ========== Helper Functions ==========
-
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -109,8 +107,6 @@ fn make_rtmp_auth(
         None,
     )
 }
-
-// ========== Mock Stream Registry ==========
 
 /// Mock implementation of StreamRegistryTrait for testing
 struct MockStreamRegistry;
@@ -205,8 +201,6 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 }
 
-// ========== Test Cases ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
@@ -216,7 +210,6 @@ async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
     let user_repo = UserRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner and room
     let owner = user_repo.create(&make_user("play_owner")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
@@ -237,7 +230,6 @@ async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
         .await
         .unwrap();
 
-    // Create RTMP auth and validate
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
@@ -259,7 +251,6 @@ async fn test_on_play_rejects_banned_room() {
     let room_repo = RoomRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner and room
     let owner = user_repo.create(&make_user("banned_owner")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
@@ -283,7 +274,6 @@ async fn test_on_play_rejects_banned_room() {
     // Ban the room
     room_repo.update_ban_status(&room.id, true).await.unwrap();
 
-    // Create RTMP auth and validate
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
@@ -310,7 +300,6 @@ async fn test_on_play_rejects_pending_room() {
     let room_repo = RoomRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner and room
     let owner = user_repo.create(&make_user("pending_owner")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
@@ -337,7 +326,6 @@ async fn test_on_play_rejects_pending_room() {
         .await
         .unwrap();
 
-    // Create RTMP auth and validate
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
@@ -417,7 +405,6 @@ async fn test_on_play_rejects_closed_room() {
     let room_repo = RoomRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner and room
     let owner = user_repo.create(&make_user("closed_owner")).await.unwrap();
     let (room, _member) = room_service
         .create_room(
@@ -444,7 +431,6 @@ async fn test_on_play_rejects_closed_room() {
         .await
         .unwrap();
 
-    // Create RTMP auth and validate
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
@@ -470,7 +456,6 @@ async fn test_on_play_rejects_when_rtmp_player_disabled() {
     let user_repo = UserRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    // Create owner and room
     let owner = user_repo
         .create(&make_user("disabled_owner"))
         .await
@@ -494,7 +479,6 @@ async fn test_on_play_rejects_when_rtmp_player_disabled() {
         .await
         .unwrap();
 
-    // Create RTMP auth and validate
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
@@ -518,7 +502,6 @@ async fn test_on_play_rejects_nonexistent_room() {
     let room_service = Arc::new(make_room_service(pool.clone()));
     let user_service = Arc::new(make_user_service(pool.clone()));
 
-    // Create RTMP auth and validate with a nonexistent room ID
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 

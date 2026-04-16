@@ -40,7 +40,7 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
         return Ok(());
     }
 
-    // Issue #40: If the configured root username is taken by a non-root user,
+    // If the configured root username is taken by a non-root user,
     // fail loudly. Silently skipping root creation would leave the system
     // without a root account, which is a critical operational problem.
     // Operators must either rename the conflicting user or choose a different
@@ -54,12 +54,10 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
         )));
     }
 
-    // Create root user
     info!("Creating root user '{}'...", config.root_username);
 
     let password_hash = hash_password(&config.root_password).await?;
 
-    // Create user with root role and active status
     let mut user = User::new(
         config.root_username.clone(),
         (!config.root_email.is_empty()).then(|| config.root_email.clone()),
@@ -67,7 +65,6 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
         SignupMethod::AdminCreated, // Root user created via bootstrap config
     );
 
-    // Override defaults to set root role and active status
     user.role = UserRole::Root;
     user.status = UserStatus::Active;
 

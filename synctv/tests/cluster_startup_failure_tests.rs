@@ -329,9 +329,7 @@ fn test_standalone_mode_tolerates_missing_redis() {
     );
 }
 
-// ============================================================================
 // P1 fix tests: Cluster initialization failure cleanup
-// ============================================================================
 
 mod p1_cluster_cleanup_tests {
     use std::sync::Arc;
@@ -365,7 +363,6 @@ mod p1_cluster_cleanup_tests {
         use synctv_cluster::sync::ClusterManager;
         use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
 
-        // Create ClusterManager in single-node mode
         let config = ClusterConfig {
             distributed_transport_factory: None,
             message_runtime: Arc::new(RoomMessageHub::new()),
@@ -383,7 +380,6 @@ mod p1_cluster_cleanup_tests {
             .await
             .expect("ClusterManager::new should succeed");
 
-        // Create a local-only registry and start heartbeat loop.
         // This test verifies cancellation semantics, not Redis I/O latency.
         let registry = Arc::new(
             NodeRegistry::new_local_only("cancel-test-node".to_string(), 30, "test:").unwrap(),
@@ -443,7 +439,6 @@ mod p1_cluster_cleanup_tests {
     async fn test_node_registry_unregister_after_register() {
         use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
 
-        // Create registry with local mode
         let client = redis::Client::open("redis://localhost:6379").unwrap();
         let registry = Arc::new(
             NodeRegistry::new(
@@ -488,14 +483,11 @@ mod p1_cluster_cleanup_tests {
         // This test verifies the ordering concept, not actual execution
         let cancel_token = CancellationToken::new();
 
-        // Step 1: Check cancel token works
         assert!(!cancel_token.is_cancelled());
 
-        // Step 2: Cancel first
         cancel_token.cancel();
         assert!(cancel_token.is_cancelled());
 
-        // Step 3: After cancel, would call unregister
         // (Not calling actual unregister here as it requires Redis)
         // The key invariant: cancel happens before unregister
     }
@@ -610,9 +602,7 @@ mod p1_cluster_cleanup_tests {
     }
 }
 
-// ============================================================================
 // Leader election fallback tests: Cluster mode requires Redis for leader election
-// ============================================================================
 
 mod leader_election_fallback_tests {
     use super::*;

@@ -32,7 +32,7 @@ pub mod http {
         });
 
     /// HTTP request duration in seconds, labeled by method and path.
-    /// Buckets optimized for P50/P95/P99 calculation (Task #119).
+    /// Buckets optimized for P50/P95/P99 calculation.
     pub static HTTP_REQUEST_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
             HistogramVec::new(
@@ -334,7 +334,7 @@ pub mod cache {
 
     /// Counter for broadcast-channel-lag-triggered full L1 cache flushes.
     ///
-    /// Issue #32: When the invalidation channel lags, all L1 caches are flushed.
+    /// When the invalidation channel lags, all L1 caches are flushed.
     /// This counter lets operators observe flush frequency and tune channel capacity.
     pub static CACHE_LAG_FLUSH_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
@@ -360,7 +360,7 @@ pub mod database {
         HistogramOpts, Opts,
     };
 
-    /// Query duration histogram with optimized buckets for P50/P95/P99 (Task #119).
+    /// Query duration histogram with optimized buckets for P50/P95/P99.
     pub static DB_QUERY_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
             HistogramVec::new(
@@ -543,8 +543,6 @@ pub mod redis {
         .expect("Failed to register REDIS_ERRORS")
     });
 
-    // --- Task #119: Hot Path Metrics for Redis ---
-
     /// Redis operation duration in seconds, labeled by operation type.
     /// Buckets optimized for P50/P95/P99 calculation.
     pub static REDIS_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> =
@@ -670,8 +668,6 @@ pub mod cluster {
             )
             .expect("Failed to register CLUSTER_HEARTBEAT_FAILURES")
         });
-
-    // --- Task #79: Cluster Health Metrics ---
 
     /// Node health status (1 = healthy, 0 = unhealthy).
     pub static NODE_HEALTH_STATUS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
@@ -1278,7 +1274,7 @@ fn is_dynamic_segment(segment: &str) -> bool {
     false
 }
 
-/// Hot path metrics (Task #119)
+/// Hot path metrics
 pub mod hot_paths {
     use super::{HistogramVec, REGISTRY};
     use prometheus::HistogramOpts;
@@ -1342,66 +1338,8 @@ pub mod hot_paths {
         });
 }
 
-/// Tracing and observability (Task #120)
-///
-/// This module provides utilities for distributed tracing with OpenTelemetry.
-/// Use the #[instrument] macro from tracing crate for automatic span creation.
-///
-/// Example usage:
-/// ```text
-/// use tracing::instrument;
-///
-/// #[instrument(skip(db), fields(room_id = %room_id))]
-/// async fn get_room(db: &Database, room_id: RoomId) -> Result<Room> {
-///     // Span automatically created with function name and fields
-///     // ...
-/// }
-/// ```
-pub mod tracing_spans {
-    // Tracing configuration notes for Task #120:
-    //
-    // 1. Add OpenTelemetry support to Cargo.toml:
-    //    - opentelemetry = { version = "0.27", features = ["trace"] }
-    //    - opentelemetry-otlp = { version = "0.27", features = ["trace"] }
-    //    - tracing-opentelemetry = "0.28"
-    //
-    // 2. Initialize OpenTelemetry tracer in main():
-    //    ```
-    //    use opentelemetry::trace::TracerProvider;
-    //    use opentelemetry_otlp::WithExportConfig;
-    //    use tracing_subscriber::layer::SubscriberExt;
-    //
-    //    let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-    //        .with_tonic()
-    //        .with_endpoint("http://localhost:4317")
-    //        .build()?;
-    //
-    //    let tracer = opentelemetry_otlp::TracerProvider::builder()
-    //        .with_batch_exporter(otlp_exporter, opentelemetry_sdk::runtime::Tokio)
-    //        .build()
-    //        .tracer("synctv");
-    //
-    //    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-    //    let subscriber = tracing_subscriber::registry()
-    //        .with(telemetry)
-    //        .with(tracing_subscriber::fmt::layer());
-    //    tracing::subscriber::set_global_default(subscriber)?;
-    //    ```
-    //
-    // 3. Use #[instrument] attribute on critical functions:
-    //    - API handlers
-    //    - Database queries
-    //    - Redis operations
-    //    - Cross-replica operations
-    //    - Room synchronization
-    //    - WebSocket message handlers
-    //
-    // 4. Add custom span attributes for debugging:
-    //    ```
-    //    use tracing::Span;
-    //    Span::current().record("user_id", user_id.to_string());
-    //    ```
-}
+/// Tracing and observability.
+pub mod tracing_spans {}
 
 /// Expose metrics in Prometheus format
 pub fn gather_metrics() -> String {
@@ -2003,7 +1941,7 @@ mod tests {
 
     #[test]
     fn test_cluster_health_metrics() {
-        // Test Task #79: Cluster health metrics
+        // Test Cluster health metrics
         cluster::NODE_HEALTH_STATUS.set(1);
         assert_eq!(cluster::NODE_HEALTH_STATUS.get(), 1);
 
@@ -2075,7 +2013,7 @@ mod tests {
 
     #[test]
     fn test_redis_hot_path_metrics() {
-        // Test Task #119: Redis hot path metrics
+        // Test Redis hot path metrics
         redis::REDIS_OPERATION_DURATION
             .with_label_values(&["get"])
             .observe(0.002);
@@ -2101,7 +2039,7 @@ mod tests {
 
     #[test]
     fn test_hot_path_metrics() {
-        // Test Task #119: Hot path metrics
+        // Test Hot path metrics
         hot_paths::API_HOT_PATH_LATENCY
             .with_label_values(&["/api/rooms/:id", "GET"])
             .observe(0.015);
@@ -2131,7 +2069,7 @@ mod tests {
 
     #[test]
     fn test_http_error_rate_metrics() {
-        // Test Task #119: HTTP error rate metrics
+        // Test HTTP error rate metrics
         http::HTTP_ERROR_RATE
             .with_label_values(&["GET", "/api/rooms/:id", "timeout"])
             .inc();
@@ -2149,7 +2087,7 @@ mod tests {
 
     #[test]
     fn test_database_operations_total() {
-        // Test Task #119: Database operations total
+        // Test Database operations total
         database::DB_OPERATIONS_TOTAL
             .with_label_values(&["select", "rooms", "success"])
             .inc();

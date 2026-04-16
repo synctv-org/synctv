@@ -15,8 +15,6 @@ use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
 use crate::models::{UserId, UserRole, UserStatus};
 use crate::Result;
 
-// --- CacheKey implementation for UserId ---
-
 impl CacheKey for UserId {
     fn as_str(&self) -> &str {
         self.as_str()

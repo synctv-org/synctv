@@ -217,8 +217,6 @@ where
 mod tests {
     use super::*;
 
-    // ========== extract_bearer_token Tests ==========
-
     #[test]
     fn test_extract_bearer_token_valid() {
         let mut headers = http::HeaderMap::new();
@@ -303,8 +301,6 @@ mod tests {
         assert_eq!(extract_bearer_token(&headers), BearerTokenState::Malformed);
     }
 
-    // ========== BlacklistCheckLayer Construction ==========
-    //
     // Note: UserService now requires a Redis ConnectionManager, so structural
     // tests that just verify clone/Arc counts need a real Redis connection.
     // These tests are covered by integration tests with TestInfra instead.
@@ -342,8 +338,6 @@ mod tests {
             BearerTokenState::Missing
         );
     }
-
-    // ========== SecurityCheckPassed Marker Tests ==========
 
     #[test]
     fn test_security_check_passed_marker_type_available() {

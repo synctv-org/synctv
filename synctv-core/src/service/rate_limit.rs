@@ -73,9 +73,7 @@ impl From<RateLimitError> for crate::Error {
     }
 }
 
-// ============================================================================
 // In-memory governor limiter (always present for sync + fallback)
-// ============================================================================
 
 /// In-memory rate limiter backed by the `governor` crate (GCRA algorithm).
 ///
@@ -136,7 +134,7 @@ impl InMemoryGovernorLimiter {
 
 /// Extract a low-cardinality tier label from a rate-limit key.
 ///
-/// Issue #31: Prometheus metric labels must never include high-cardinality
+/// Prometheus metric labels must never include high-cardinality
 /// values such as user IDs, IP addresses, or room IDs.
 fn extract_rate_limit_tier(key: &str) -> &'static str {
     const KNOWN_TIERS: &[&str] = &[
@@ -167,7 +165,6 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
     "unknown"
 }
 
-/// Get current timestamp in milliseconds
 fn current_timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -190,9 +187,7 @@ fn nonnegative_i64_to_u32_saturating(value: i64) -> u32 {
     }
 }
 
-// ============================================================================
 // RateLimitBackend trait
-// ============================================================================
 
 /// Backend for async rate limiting operations.
 ///
@@ -346,9 +341,7 @@ where
     }
 }
 
-// ============================================================================
 // Redis implementation
-// ============================================================================
 
 /// Redis-backed rate limiter using sorted-set sliding window.
 ///
@@ -585,9 +578,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
     }
 }
 
-// ============================================================================
 // In-memory implementation
-// ============================================================================
 
 /// In-memory rate limiter using `governor` (GCRA algorithm).
 ///
@@ -660,9 +651,7 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
     }
 }
 
-// ============================================================================
 // RateLimiter (public API)
-// ============================================================================
 
 /// Rate limiter with pluggable backend and sync fallback.
 ///

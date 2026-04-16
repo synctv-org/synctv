@@ -21,9 +21,7 @@ use bytes::Bytes;
 use synctv_xiu::rtmp::cache::gop::{Gop, Gops, DEFAULT_MAX_TOTAL_BYTES};
 use synctv_xiu::streamhub::define::FrameData;
 
-// ==================================================================
 // Helper Functions
-// ==================================================================
 
 /// Create a keyframe video frame
 fn make_keyframe(timestamp: u32, size: usize) -> FrameData {
@@ -52,9 +50,7 @@ fn make_audio_frame(timestamp: u32, size: usize) -> FrameData {
     }
 }
 
-// ==================================================================
 // Gop Struct Tests (Public API only)
-// ==================================================================
 
 #[test]
 fn test_gop_new_is_empty() {
@@ -96,9 +92,7 @@ fn test_gop_frame_data_empty() {
 // Note: frame_memory_size is pub(crate) so can't be tested directly from outside.
 // Memory accounting is verified indirectly via current_total_bytes().
 
-// ==================================================================
 // Gops (Multiple GOP) Tests
-// ==================================================================
 
 #[test]
 fn test_gops_new_single_gop() {
@@ -143,9 +137,7 @@ fn test_gops_clone() {
     assert_eq!(gops2.max_total_bytes(), 10000);
 }
 
-// ==================================================================
 // GOP Eviction Tests
-// ==================================================================
 
 /// Test that oldest GOP is evicted when count limit is reached
 /// Note: Implementation creates a new GOP BEFORE adding keyframe,
@@ -227,7 +219,6 @@ fn test_gops_eviction_preserves_active_gop() {
 fn test_gops_many_gops_eviction() {
     let mut gops = Gops::new(5, None);
 
-    // Create many GOPs
     for i in 0..100 {
         gops.save_frame_data(make_keyframe(i * 1000, 100), true);
         gops.save_frame_data(make_inter_frame(i * 1000 + 100, 100), false);
@@ -243,9 +234,7 @@ fn test_gops_many_gops_eviction() {
     );
 }
 
-// ==================================================================
 // Zero-Copy Clone Tests (via public API)
-// ==================================================================
 
 /// Test that cloning Gops is cheap (Arc clones)
 #[test]
@@ -281,9 +270,7 @@ fn test_gops_get_gops_returns_frozen() {
     assert_eq!(gops_ref.len(), 2);
 }
 
-// ==================================================================
 // Frame Saving Tests
-// ==================================================================
 
 /// Test saving keyframe creates new GOP
 /// Implementation detail: keyframe pushes new GOP first, then adds frame
@@ -339,9 +326,7 @@ fn test_gops_mixed_audio_video_frames() {
     assert_eq!(gops.current_total_bytes(), 2300);
 }
 
-// ==================================================================
 // Memory Accounting Tests
-// ==================================================================
 
 /// Test that memory is properly tracked across multiple operations
 #[test]
@@ -402,9 +387,7 @@ fn test_gops_empty_frame_memory() {
     assert_eq!(gops.current_total_bytes(), 0);
 }
 
-// ==================================================================
 // Disabled GOP Cache Tests
-// ==================================================================
 
 #[test]
 fn test_gops_disabled_drops_all_frames() {
@@ -419,9 +402,7 @@ fn test_gops_disabled_drops_all_frames() {
     assert_eq!(gops.current_total_bytes(), 0);
 }
 
-// ==================================================================
 // Default Values Documentation Tests
-// ==================================================================
 
 #[test]
 fn test_default_max_total_bytes() {
@@ -435,9 +416,7 @@ fn test_gops_default_uses_default_max_bytes() {
     assert_eq!(gops.max_total_bytes(), DEFAULT_MAX_TOTAL_BYTES);
 }
 
-// ==================================================================
 // Edge Cases
-// ==================================================================
 
 #[test]
 fn test_gops_current_total_bytes_initial() {

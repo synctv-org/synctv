@@ -14,9 +14,7 @@ fn test_unknown_group_returns_none() {
     assert!(get_default_settings_json("").is_none());
 }
 
-// ============================================================================
 // SettingsGroup model tests
-// ============================================================================
 
 #[test]
 fn test_settings_group_parse_json() {

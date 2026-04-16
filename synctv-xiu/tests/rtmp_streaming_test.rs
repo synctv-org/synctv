@@ -42,8 +42,6 @@ impl TStreamHandler for MockHandler2 {
     }
 }
 
-// === RTMP Chunk Header Tests ===
-
 #[test]
 fn test_chunk_basic_header_creation() {
     use synctv_xiu::rtmp::chunk::ChunkBasicHeader;
@@ -128,8 +126,6 @@ fn test_extended_timestamp_type_equality() {
     assert_ne!(ExtendTimestampType::NONE, ExtendTimestampType::FORMAT0);
 }
 
-// === RTMP Chunk Constants Tests ===
-
 #[test]
 fn test_rtmp_chunk_constants() {
     use synctv_xiu::rtmp::chunk::define;
@@ -145,8 +141,6 @@ fn test_rtmp_chunk_constants() {
     assert_eq!(define::chunk_type::TYPE_2, 2);
     assert_eq!(define::chunk_type::TYPE_3, 3);
 }
-
-// === RTMP Handshake Constants Tests ===
 
 #[test]
 fn test_rtmp_handshake_constants() {
@@ -164,8 +158,6 @@ fn test_rtmp_handshake_constants() {
         "Genuine Adobe Flash Player 001"
     );
 }
-
-// === GOP Cache Tests ===
 
 #[test]
 fn test_gop_new_is_empty() {
@@ -349,7 +341,6 @@ fn test_gops_memory_limit() {
     use synctv_xiu::rtmp::cache::gop::Gops;
     use synctv_xiu::streamhub::define::FrameData;
 
-    // Create with very low memory limit (1 KB)
     let mut gops = Gops::new(10, Some(1024));
     assert_eq!(gops.max_total_bytes(), 1024);
 
@@ -383,8 +374,6 @@ fn test_gops_memory_limit() {
     // Should have evicted old data
     assert!(gops.current_total_bytes() <= 1024 + 500); // Some tolerance for the active GOP
 }
-
-// === StreamIdentifier Tests ===
 
 #[test]
 fn test_stream_identifier_rtmp() {
@@ -473,8 +462,6 @@ fn test_stream_identifier_serialization() {
     assert_eq!(id, deserialized);
 }
 
-// === FLV Define Tests ===
-
 #[test]
 fn test_u8_2_avc_codec_id() {
     use synctv_xiu::flv::define::{u8_2_avc_codec_id, AvcCodecId};
@@ -555,8 +542,6 @@ fn test_avc_packet_type_constants() {
     assert_eq!(avc_packet_type::AVC_EOS, 2);
 }
 
-// === MPEG-TS Define Tests ===
-
 #[test]
 fn test_mpegts_constants() {
     use synctv_xiu::mpegts::define;
@@ -572,8 +557,6 @@ fn test_mpegts_stream_types() {
     assert_eq!(epsi_stream_type::PSI_STREAM_AAC, 0x0f);
     assert_eq!(epsi_stream_type::PSI_STREAM_AUDIO_OPUS, 0x9c);
 }
-
-// === FrameData Tests ===
 
 #[test]
 fn test_frame_data_video_clone() {
@@ -640,8 +623,6 @@ fn test_media_info_heap_size() {
     assert_eq!(info.heap_size(), 0);
 }
 
-// === StreamHub Define Channel Capacities ===
-
 #[test]
 fn test_channel_capacities() {
     use synctv_xiu::streamhub::define;
@@ -651,8 +632,6 @@ fn test_channel_capacities() {
     assert_eq!(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY, 1024);
     assert_eq!(define::STATISTIC_DATA_CHANNEL_CAPACITY, 1024);
 }
-
-// === StreamHub Error Tests ===
 
 #[test]
 fn test_streamhub_error_display() {
@@ -695,8 +674,6 @@ fn test_streamhub_error_from_string() {
     assert!(err.to_string().contains("custom error message"));
 }
 
-// === Subscribe/Publish Type Tests ===
-
 #[test]
 fn test_subscribe_type_serialization() {
     use synctv_xiu::streamhub::define::SubscribeType;
@@ -722,8 +699,6 @@ fn test_publish_type_serialization() {
     }
 }
 
-// === StreamsHub Publish/Subscribe Integration Tests ===
-
 #[tokio::test]
 async fn test_streams_hub_publish_and_subscribe() {
     use synctv_xiu::streamhub::define::*;
@@ -740,7 +715,6 @@ async fn test_streams_hub_publish_and_subscribe() {
 
     let handler: Arc<dyn TStreamHandler> = Arc::new(MockHandler);
 
-    // Create frame data receiver
     let (_frame_sender, frame_receiver) = tokio::sync::mpsc::channel(100);
     let receiver = DataReceiver {
         frame_receiver: Some(frame_receiver),
@@ -874,8 +848,6 @@ async fn test_streams_hub_broadcast_event() {
         panic!("Expected BroadcastEvent::Publish");
     }
 }
-
-// === RTMP Config Constants Tests ===
 
 #[test]
 fn test_rtmp_config_constants() {

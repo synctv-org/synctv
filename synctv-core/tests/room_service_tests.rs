@@ -94,8 +94,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== Room Creation Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_create_room_with_password_stores_hash() {
@@ -250,8 +248,6 @@ async fn test_create_room_does_not_create_root_playlist() {
         "Room creation should not create any playlist rows"
     );
 }
-
-// ========== Room Join Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -553,8 +549,6 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
     assert_eq!(pending_again.status, MemberStatus::Pending);
 }
 
-// ========== Room Leave Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_leave_room_creator_cannot_leave() {
@@ -684,8 +678,6 @@ async fn test_leave_room_non_member_is_rejected() {
     }
 }
 
-// ========== Room Delete Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_room_sets_deleted_at() {
@@ -734,8 +726,6 @@ async fn test_delete_room_sets_deleted_at() {
     assert!(deleted_at.is_some(), "deleted_at should be set");
 }
 
-// ========== CAS Exhaustion Test (B6 fix verification) ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_settings_cas_exhaustion_returns_internal() {
@@ -759,7 +749,6 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     // We do this by updating the version to a very high number after each read.
     // The service reads version N, then we immediately bump it, so the CAS write
     // fails with OptimisticLockConflict.
-    //
     // Spawn a concurrent task that keeps bumping the version.
     let room_id_str = room.id.as_str().to_string();
     let pool_clone = pool.clone();
@@ -807,8 +796,6 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     }
 }
 
-// ========== Banned User Cannot Rejoin (S10) ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_banned_user_cannot_rejoin_room() {
@@ -854,7 +841,6 @@ async fn test_banned_user_cannot_rejoin_room() {
         .await
         .unwrap();
 
-    // Attempt to rejoin -- should fail because user is banned
     let result = room_service
         .join_room(room.id.clone(), target.id.clone(), None)
         .await;
@@ -970,8 +956,6 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
     }
 }
 
-// ========== Room Description Validation Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_description_unicode_500_chars_accepted() {
@@ -1038,14 +1022,7 @@ async fn test_room_description_over_500_rejected() {
     }
 }
 
-// ========== Password Re-verification Race Condition Tests ==========
-//
-// These tests verify that the password is re-verified under the distributed lock
 // to prevent a race condition where:
-// 1. User passes password verification with a valid password
-// 2. While waiting for lock, room password is changed
-// 3. User joins with old (now invalid) password
-//
 // The fix ensures password is re-verified inside the lock with fresh data.
 
 /// Helper to directly update room password in database, simulating an admin change
@@ -1067,11 +1044,6 @@ async fn direct_update_room_password(
 #[ignore = "Requires Docker"]
 async fn test_join_room_password_changed_during_join_with_correct_old_password_fails() {
     // This test simulates the race condition scenario:
-    // 1. User starts join with correct password
-    // 2. Password is changed in DB before lock is acquired (simulated)
-    // 3. Join should fail because password is re-verified under lock with fresh hash
-    //
-    // NOTE: Without a distributed lock configured, this test verifies baseline behavior.
     // With a distributed lock, the re-verification inside the lock catches this.
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1080,7 +1052,6 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
     let owner = user_repo.create(&make_user("race_owner")).await.unwrap();
     let joiner = user_repo.create(&make_user("race_joiner")).await.unwrap();
 
-    // Create room with initial password
     let (room, _) = room_service
         .create_room(
             "Race Test Room".to_string(),
@@ -1144,7 +1115,6 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
         .await
         .unwrap();
 
-    // Create room with initial password
     let (room, _) = room_service
         .create_room(
             "Race New Password Room".to_string(),
@@ -1201,7 +1171,6 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
         .await
         .unwrap();
 
-    // Create room with initial password
     let (room, _) = room_service
         .create_room(
             "Password Cleared Room".to_string(),
@@ -1257,7 +1226,6 @@ async fn test_join_room_password_added_during_join_requires_password() {
         .await
         .unwrap();
 
-    // Create room without password
     let (room, _) = room_service
         .create_room(
             "Password Added Room".to_string(),
@@ -1327,8 +1295,6 @@ async fn test_join_room_password_added_during_join_requires_password() {
         result.err()
     );
 }
-
-// ========== Distributed Lock Tests (Mock-based) ==========
 
 /// Mock distributed lock that tracks acquire/release calls
 /// (Used for testing distributed lock semantics without Redis)
@@ -1539,8 +1505,6 @@ async fn test_same_user_can_create_multiple_rooms_with_distinct_names() {
     );
 }
 
-// ========== Room Password Update Cache Invalidation Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_password_update_invalidates_room_cache() {
@@ -1554,7 +1518,6 @@ async fn test_password_update_invalidates_room_cache() {
         .await
         .unwrap();
 
-    // Create room with password
     let (room, _) = room_service
         .create_room(
             "Password Cache Room".to_string(),
@@ -1606,7 +1569,6 @@ async fn test_password_removal_clears_require_password_flag() {
         .await
         .unwrap();
 
-    // Create room with password
     let (room, _) = room_service
         .create_room(
             "Password Remove Room".to_string(),
@@ -1713,7 +1675,6 @@ async fn test_password_update_allows_join_with_new_password() {
         .await
         .unwrap();
 
-    // Create room with initial password
     let (room, _) = room_service
         .create_room(
             "Password Update Room".to_string(),
@@ -1758,8 +1719,6 @@ async fn test_password_update_allows_join_with_new_password() {
         result.err()
     );
 }
-
-// ========== Ban/Unban Member Synchronization Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1982,8 +1941,6 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
-
-// ========== Room Settings Optimistic Lock Retry Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -2212,8 +2169,6 @@ async fn test_password_update_with_cas_retry() {
     );
 }
 
-// ========== Cache Invalidation Broadcast Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_deletion_invalidates_caches() {
@@ -2266,16 +2221,9 @@ async fn test_room_deletion_invalidates_caches() {
     assert!(fetched.is_none(), "Room should not be found after deletion");
 }
 
-// ========== Password Timing Attack Prevention Tests ==========
-//
-// These tests verify that password verification uses constant-time comparison
 // to prevent timing attacks. The verify_password function uses Argon2id which
 // has built-in constant-time password comparison.
-//
 // Key security properties:
-// 1. Same verification time for correct and incorrect passwords
-// 2. No early-exit on password mismatch
-// 3. Argon2id's verify_password returns Ok(true) or Ok(false), not early errors
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -2348,7 +2296,6 @@ async fn test_room_password_uses_unique_salt_per_room() {
 
     let owner = user_repo.create(&make_user("salt_owner")).await.unwrap();
 
-    // Create two rooms with the same password
     let (room1, _) = room_service
         .create_room(
             "Salt Room 1".to_string(),
@@ -2400,8 +2347,6 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .unwrap());
 }
 
-// ========== Room Limits Enforcement Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_max_members_enforced_on_join() {
@@ -2412,7 +2357,6 @@ async fn test_max_members_enforced_on_join() {
 
     let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
 
-    // Create room with max_members = 3 (owner counts as 1)
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(3),
         ..Default::default()
@@ -2482,7 +2426,6 @@ async fn test_max_members_zero_means_unlimited() {
 
     let owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
 
-    // Create room with max_members = 0 (unlimited)
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(0),
         ..Default::default()
@@ -2529,7 +2472,6 @@ async fn test_max_members_enforced_at_limit_boundary() {
         .await
         .unwrap();
 
-    // Create room with max_members = 1 (owner only)
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(1),
         ..Default::default()
@@ -2569,8 +2511,6 @@ async fn test_max_members_cannot_exceed_10000() {
     let result = RoomSettingsRegistry::validate_setting("max_members", "10000");
     assert!(result.is_ok(), "max_members = 10000 should be accepted");
 }
-
-// ========== Room Settings Comprehensive Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -2635,7 +2575,6 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         .await
         .unwrap();
 
-    // Create room with guest join allowed
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
         ..Default::default()
@@ -3030,7 +2969,6 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
         .await
         .unwrap();
 
-    // Create room without password, guest join allowed
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
         require_password: synctv_core::models::room_settings::RequirePassword(false),
@@ -4536,8 +4474,6 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     assert_f64_eq(state.current_time, 0.0);
 }
 
-// ========== Room Name and Description Edge Cases ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_name_unicode_validation() {
@@ -4620,8 +4556,6 @@ async fn test_room_description_with_newlines() {
 
     assert_eq!(room.description, description);
 }
-
-// ========== Room Status Management Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -4729,8 +4663,6 @@ async fn test_cannot_join_banned_room() {
     }
 }
 
-// ========== Room Creation Transaction Safety Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_creation_creates_all_related_records_atomically() {
@@ -4753,22 +4685,18 @@ async fn test_room_creation_creates_all_related_records_atomically() {
 
     // Verify all related records were created
 
-    // 1. Room exists
     let room_repo = RoomRepository::new(pool.clone());
     assert!(room_repo.exists(&room.id).await.unwrap());
 
-    // 2. Creator is a member with Creator role
     let member_repo = RoomMemberRepository::new(pool.clone());
     let creator_membership = member_repo.get(&room.id, &owner.id).await.unwrap();
     assert!(creator_membership.is_some(), "Creator should be a member");
     assert_eq!(creator_membership.unwrap().role, RoomRole::Creator);
 
-    // 3. Settings exist with defaults
     let settings_repo = RoomSettingsRepository::new(pool.clone());
     let settings = settings_repo.get(&room.id).await.unwrap();
     assert!(settings.chat_enabled.0, "Chat should be enabled by default");
 
-    // 4. No synthetic playlist row is created
     let playlist_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
             .bind(room.id.as_str())
@@ -4780,7 +4708,6 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         "Room creation should not create playlist rows"
     );
 
-    // 5. Playback state exists
     let playback_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
             .bind(room.id.as_str())
@@ -4789,8 +4716,6 @@ async fn test_room_creation_creates_all_related_records_atomically() {
             .unwrap();
     assert_eq!(playback_count, 1, "Playback state should exist");
 }
-
-// ========== Room Deletion Edge Cases ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -4975,7 +4900,6 @@ async fn test_admin_delete_room_requires_admin_role() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create a room with a regular user as owner
     let owner = user_repo.create(&make_user("owner")).await.unwrap();
     let (room, _) = room_service
         .create_room(
@@ -4988,7 +4912,6 @@ async fn test_admin_delete_room_requires_admin_role() {
         .await
         .unwrap();
 
-    // Create another regular user (NOT admin)
     let regular_user = user_repo.create(&make_user("regular_user")).await.unwrap();
 
     // Non-admin user should NOT be able to call admin_delete_room
@@ -5043,7 +4966,6 @@ async fn test_admin_delete_room_requires_root_role() {
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    // Create a room with a regular user as owner
     let owner = user_repo.create(&make_user("owner2")).await.unwrap();
     let (room, _) = room_service
         .create_room(
@@ -5082,7 +5004,6 @@ async fn test_delete_nonexistent_room_returns_error() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create a user and a room, then delete the room
     let owner = user_repo
         .create(&make_user("delete_nonexistent_owner"))
         .await
@@ -5157,8 +5078,6 @@ async fn test_double_delete_room_returns_error() {
     assert!(result.is_err(), "Double delete should fail");
 }
 
-// ========== Room Member Operations ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_get_member_count_batch_efficient_query() {
@@ -5168,7 +5087,6 @@ async fn test_get_member_count_batch_efficient_query() {
 
     let owner = user_repo.create(&make_user("batch_owner")).await.unwrap();
 
-    // Create multiple rooms
     let mut room_ids = Vec::new();
     for i in 0..5 {
         let (room, _) = room_service
@@ -5228,8 +5146,6 @@ async fn test_room_exists_is_efficient() {
     let fake_room_id = synctv_core::models::RoomId::new();
     assert!(!room_service.room_exists(&fake_room_id).await.unwrap());
 }
-
-// ========== Room Listing Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -5435,7 +5351,6 @@ async fn test_list_rooms_pagination() {
 
     let owner = user_repo.create(&make_user("page_owner")).await.unwrap();
 
-    // Create 15 rooms
     for i in 0..15 {
         room_service
             .create_room(
@@ -5476,8 +5391,6 @@ async fn test_list_rooms_pagination() {
     assert_eq!(rooms2.len(), 5, "Second page should have 5 rooms");
 }
 
-// ========== Guest Access Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_guest_cannot_join_password_protected_room() {
@@ -5490,7 +5403,6 @@ async fn test_guest_cannot_join_password_protected_room() {
         .await
         .unwrap();
 
-    // Create room with password and guest join enabled
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
         ..Default::default()
@@ -5561,8 +5473,6 @@ async fn test_check_guest_allowed_when_disabled_globally() {
         "Should deny guests when registry unavailable"
     );
 }
-
-// ========== Room Description Update Tests ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -5643,13 +5553,11 @@ async fn test_update_room_description_permission_denied() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create room owner
     let owner = user_repo
         .create(&make_user("desc_perm_owner"))
         .await
         .unwrap();
 
-    // Create another user who is NOT a member of the room
     let outsider = user_repo
         .create(&make_user("desc_perm_outsider"))
         .await
@@ -5726,8 +5634,6 @@ async fn test_update_room_description_owner_allowed() {
     assert_eq!(updated.unwrap().description, "Owner updated this");
 }
 
-// ========== Idempotent Join Tests ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_join_room_idempotent_same_user() {
@@ -5773,8 +5679,6 @@ async fn test_join_room_idempotent_same_user() {
     );
 }
 
-// ========== Max Members Concurrent Tests ==========
-
 /// Test that `max_members` is correctly read from `RoomSettings` when joining.
 ///
 /// This test verifies that when `max_members=0` is passed to `with_max_members(0)`,
@@ -5793,7 +5697,6 @@ async fn test_max_members_read_from_room_settings_on_join() {
         .await
         .unwrap();
 
-    // Create room with default settings (max_members = 100 by default)
     let (room, _) = room_service
         .create_room(
             "Settings Test Room".to_string(),
@@ -5873,7 +5776,6 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         .await
         .unwrap();
 
-    // Create room with max_members = 5 (owner counts as 1, so 4 more can join)
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(5),
         ..Default::default()
@@ -5890,7 +5792,6 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         .await
         .unwrap();
 
-    // Create 20 users who will try to join concurrently
     let mut users = Vec::new();
     for i in 0..20 {
         let user = user_repo
@@ -5934,7 +5835,6 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         handles.push(handle);
     }
 
-    // Wait for all joins to complete
     for handle in handles {
         handle.await.expect("Join task panicked");
     }
@@ -5986,7 +5886,6 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
         .await
         .unwrap();
 
-    // Create room with max_members = 0 (unlimited)
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(0),
         ..Default::default()
@@ -6028,12 +5927,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
     }
 }
 
-// ========== Soft-Delete Cleanup Tests ==========
-//
-// These tests verify the optimized soft-delete cleanup strategy.
 // Problem: Soft-deleted rooms and related data consume resources for up to 90 days.
-// Fix: Clean up playlists/media immediately on soft-delete, keep only audit data.
-//
 
 /// Test that soft-delete immediately cleans up non-critical data (playlists, media, members).
 ///
@@ -6054,7 +5948,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .await
         .unwrap();
 
-    // Create room
     let (room, _) = room_service
         .create_room(
             "Cleanup Test Room".to_string(),
@@ -6249,7 +6142,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .unwrap();
     assert!(room_exists, "Room row should still exist (soft-deleted)");
 
-    // NOTE: Audit logs are not tested here because the test RoomService
     // does not have an audit service configured. Audit functionality is
     // tested separately in audit service tests.
 }
@@ -6263,13 +6155,11 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    // Create a user who will be the creator
     let creator = user_repo
         .create(&make_user("orphan_creator_1"))
         .await
         .unwrap();
 
-    // Create a room as this creator
     let (room, _) = room_service
         .create_room(
             "Orphaned Room 1".to_string(),
@@ -6281,7 +6171,6 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
         .await
         .unwrap();
 
-    // Create an admin user
     let admin = user_repo
         .create(&make_user("admin_orphan_1"))
         .await
@@ -6377,13 +6266,11 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    // Create a user who will be banned
     let creator = user_repo
         .create(&make_user("banned_creator"))
         .await
         .unwrap();
 
-    // Create a room as this creator
     let (room, _) = room_service
         .create_room(
             "Banned Creator Room".to_string(),
@@ -6395,7 +6282,6 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
         .await
         .unwrap();
 
-    // Create an admin user
     let admin = user_repo.create(&make_user("admin_banned")).await.unwrap();
     let mut admin = admin;
     admin.role = UserRole::Admin;
@@ -6429,13 +6315,11 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create an active creator
     let creator = user_repo
         .create(&make_user("active_creator"))
         .await
         .unwrap();
 
-    // Create a room
     let (room, _) = room_service
         .create_room(
             "Active Creator Room".to_string(),
@@ -6447,7 +6331,6 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
         .await
         .unwrap();
 
-    // Create an admin
     let admin = user_repo.create(&make_user("admin_active")).await.unwrap();
 
     // Trying to use admin_delete_orphaned_room should fail
@@ -6528,7 +6411,6 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
     let _user_service = make_user_service(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    // Create and delete a creator
     let creator = user_repo
         .create(&make_user("orphan_already_del"))
         .await
@@ -6592,8 +6474,6 @@ async fn test_admin_delete_orphaned_room_nonexistent_room() {
     );
 }
 
-// ========== Room Password Policy Tests (H1) ==========
-
 async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
     let settings_repo = SettingsRepository::new(pool.clone());
     let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
@@ -6639,7 +6519,6 @@ async fn test_create_room_rejects_no_password_when_must_need_pwd() {
         .await
         .unwrap();
 
-    // Attempt to create room without password should fail
     let result = room_service
         .create_room(
             "No Pwd Room".to_string(),
@@ -6712,7 +6591,6 @@ async fn test_create_room_rejects_password_when_must_no_need_pwd() {
         .await
         .unwrap();
 
-    // Attempt to create room WITH password should fail
     let result = room_service
         .create_room(
             "Pwd Room Fail".to_string(),
@@ -6929,8 +6807,6 @@ async fn test_create_room_respects_max_rooms_per_user() {
     );
 }
 
-// ========== set_member_role Creator-Only Tests (M1) ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_set_member_role_only_creator_can_change_roles() {
@@ -6942,7 +6818,6 @@ async fn test_set_member_role_only_creator_can_change_roles() {
     let admin_user = user_repo.create(&make_user("role_admin")).await.unwrap();
     let member_user = user_repo.create(&make_user("role_member")).await.unwrap();
 
-    // Create room
     let (room, _) = room_service
         .create_room(
             "Role Test Room".to_string(),
@@ -6997,8 +6872,6 @@ async fn test_set_member_role_only_creator_can_change_roles() {
         "Error should mention creator-only restriction, got: {err:?}"
     );
 }
-
-// ========== ban_member No Sleep Test (M4) ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

@@ -89,9 +89,7 @@ impl StoredEntry {
 mod tests {
     use super::*;
 
-    // ---------------------------------------------------------------
     // CachedResourceMeta tests
-    // ---------------------------------------------------------------
 
     #[test]
     fn cached_resource_meta_has_last_modified_field() {
@@ -108,9 +106,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------
     // StoredEntry tests
-    // ---------------------------------------------------------------
 
     #[test]
     fn new_entry_is_not_expired() {

@@ -7,9 +7,7 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
-// ============================================================================
 // token_rate_limit_key stability tests (Bug B8 fix)
-// ============================================================================
 
 fn short_sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
@@ -41,7 +39,6 @@ fn test_token_rate_limit_key_stable() {
     // existing unit tests. Since the function is pub(crate) we test via the
     // unit test module. Instead, we verify the SHA-256 property: same token
     // produces same hash every time.
-    //
     // We use sha2 directly to verify the expected output format.
     let hex = short_sha256_hex(token);
     let expected_key = format!("token:{hex}");
@@ -73,9 +70,7 @@ fn test_token_rate_limit_key_different_inputs_different_keys() {
     );
 }
 
-// ============================================================================
 // ClusterAuthInterceptor tests
-// ============================================================================
 
 #[test]
 fn test_cluster_auth_interceptor_correct_secret() {
@@ -137,9 +132,7 @@ fn test_logout_blacklist_failure_maps_to_grpc_internal() {
     assert_eq!(proto_err.message, "Internal error");
 }
 
-// ============================================================================
 // AuthInterceptor tests
-// ============================================================================
 
 #[test]
 fn test_auth_interceptor_inject_user_missing_auth() {

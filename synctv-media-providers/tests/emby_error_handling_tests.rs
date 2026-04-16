@@ -12,7 +12,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// the client has no credentials configured.
 #[test]
 fn test_logout_requires_credentials() {
-    // Create a client without credentials
     let client = EmbyClient::new("https://emby.example.com").unwrap();
 
     // The client should indicate it has no credentials
@@ -40,7 +39,6 @@ fn test_delete_active_encodings_rejects_empty_session_id() {
     // We're testing the validate_item_id function is called
     // (which is internal, so we verify via the error type)
 
-    // Create a client with valid credentials
     let client =
         EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
             .unwrap();
@@ -222,9 +220,7 @@ fn test_client_new_accepts_valid_url() {
     assert!(result.is_ok());
 }
 
-// ============================================================================
 // TDD Tests: Verify non-success responses return errors (not silent success)
-// ============================================================================
 
 /// Test that logout returns an error when the server responds with 401 Unauthorized.
 /// Previously this method silently ignored non-success responses.

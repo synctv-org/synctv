@@ -301,18 +301,15 @@ impl StreamRegistry {
         let info_json = serde_json::to_string(&info)?;
 
         // Atomic Lua script to prevent epoch TOCTOU race condition.
-        //
-        // Issue #51: The original script incremented the epoch BEFORE the HSETNX
+        // The original script incremented the epoch BEFORE the HSETNX
         // check, so other nodes could briefly observe a spuriously inflated epoch
         // during the window between INCR and a failed HSETNX (followed by DECR).
-        //
         // Fix: HSETNX first, then increment epoch ONLY if registration succeeded.
         // This ensures the epoch counter only changes when ownership actually changes,
         // eliminating the intermediate-epoch window entirely.
-        //
         // Returns: {registered (1 or 0), epoch}
-        //   - registered=1: new publisher registered; epoch is the new epoch value.
-        //   - registered=0: another publisher already exists; epoch is the current epoch.
+        // - registered=1: new publisher registered; epoch is the new epoch value.
+        // - registered=0: another publisher already exists; epoch is the current epoch.
         let lua_script = r"
             local epoch_key = KEYS[1]
             local hash_key = KEYS[2]
@@ -321,7 +318,7 @@ impl StreamRegistry {
             local user_key = ARGV[3]
             local user_member = ARGV[4]
 
-            -- Issue #51: Check HSETNX FIRST before touching the epoch.
+            -- Check HSETNX FIRST before touching the epoch.
             -- Use a placeholder JSON with epoch=0 for the initial slot reservation.
             -- Try to reserve the publisher slot (HSETNX returns 1 if set, 0 if exists)
             local reserved = redis.call('HSETNX', hash_key, 'publisher', info_json_template)
@@ -365,7 +362,7 @@ impl StreamRegistry {
         };
         let user_member = format!("{room_id}:{media_id}");
 
-        // Fixed #114: Add timeout for Redis Lua script execution (5 seconds)
+        // Add timeout for Redis Lua script execution (5 seconds)
         // Prevents indefinite blocking on Redis server issues or slow Lua execution
         let result: Vec<i64> = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             redis::Script::new(lua_script)
@@ -491,7 +488,7 @@ impl StreamRegistry {
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
 
-            // Atomic Lua script: check epoch (if provided), delete publisher, clean up user index
+ // Atomic Lua script: check epoch (if provided), delete publisher, clean up user index
             let lua_script = r"
                 local hash_key = KEYS[1]
                 local check_epoch = tonumber(ARGV[1])
@@ -535,7 +532,7 @@ impl StreamRegistry {
                 .await
                 .map_err(|e| anyhow!("Unregister Lua script failed: {e}"))?;
 
-            // Parse result: [status, user_id]
+ // Parse result: [status, user_id]
             let status = match &result[0] {
                 redis::Value::Int(v) => *v,
                 _ => 0,
@@ -554,7 +551,7 @@ impl StreamRegistry {
                 return Ok(());
             }
 
-            // Clean up user reverse index if user_id was present
+ // Clean up user reverse index if user_id was present
             if status == 1 && !user_id.is_empty() {
                 let user_key = self.user_publishers_key(&user_id);
                 let member = format!("{room_id}:{media_id}");

@@ -138,7 +138,7 @@ impl SettingsRepository {
         })
     }
 
-    /// Update a setting value by key with optimistic locking (Task #45)
+    /// Update a setting value by key with optimistic locking.
     ///
     /// This method checks the `expected_version` before updating. If the current
     /// version in the database doesn't match, it returns `OptimisticLockConflict`.

@@ -1,5 +1,4 @@
 // Provider Registry
-//
 // Factory-based registry for managing provider instances
 
 use super::{MediaProvider, ProviderError};
@@ -44,7 +43,7 @@ impl ProviderRegistry {
     /// # Example
     /// ```text
     /// registry.register_factory("bilibili", Box::new(|instance_id, config| {
-    ///     Ok(Arc::new(BilibiliProvider::new(instance_id, config)?))
+    /// Ok(Arc::new(BilibiliProvider::new(instance_id, config)?))
     /// }));
     /// ```
     pub fn register_factory(&self, provider_type: &str, factory: ProviderFactory) {
@@ -63,8 +62,8 @@ impl ProviderRegistry {
     /// # Example
     /// ```text
     /// let config = json!({
-    ///     "base_url": "https://api.bilibili.com",
-    ///     "cookies": "..."
+    /// "base_url": "https://api.bilibili.com",
+    /// "cookies": "..."
     /// });
     /// registry.create_instance("bilibili", "bilibili_main", config)?;
     /// ```
@@ -166,8 +165,6 @@ mod tests {
         let provider = registry.get_instance("mock_main").unwrap();
         assert_eq!(provider.name(), "mock");
     }
-
-    // ========== Dynamic Operation Tests (Task #71) ==========
 
     #[test]
     fn test_concurrent_create_same_instance_id() {
@@ -330,8 +327,6 @@ mod tests {
         assert!(instances.contains(&"inst2".to_string()));
         assert!(instances.contains(&"inst3".to_string()));
     }
-
-    // ========== Task #27: Registry Additional Tests ==========
 
     #[test]
     fn test_factory_registration() {

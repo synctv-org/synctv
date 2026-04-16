@@ -134,9 +134,7 @@ fn make_media(
     }
 }
 
-// ============================================================================
 // Integration tests (require Docker)
-// ============================================================================
 
 async fn assert_register_duplicate_username_error(service: &UserService) {
     // Register first user
@@ -213,9 +211,7 @@ async fn assert_login_wrong_password(service: &UserService) {
     assert!(result.is_err(), "Login with wrong password should fail");
 }
 
-// ============================================================================
 // Validation tests (no Docker needed)
-// ============================================================================
 
 #[test]
 fn test_username_validation() {
@@ -237,9 +233,7 @@ fn test_password_validation() {
     assert!(validator.validate("nouppercase1").is_err());
 }
 
-// ============================================================================
 // Delete User Transaction Tests
-// ============================================================================
 
 async fn assert_delete_user_already_deleted_returns_error(service: &UserService) {
     // Register a user
@@ -639,10 +633,6 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     );
 }
 
-// ============================================================================
-// Registration brute-force lockout tests (Task #42)
-// ============================================================================
-
 /// Test that "username taken" errors do NOT count against IP brute-force lockout.
 ///
 /// Scenario: User tries to register with a username that already exists.
@@ -777,7 +767,6 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
     // - 15+ failures: 15 minute lockout
     // We need to trigger at least 5 validation errors
 
-    // Send multiple registrations with invalid usernames (too short)
     let mut validation_error_count = 0;
     for _ in 0..25 {
         let result = service

@@ -304,9 +304,7 @@ impl Media {
     }
 }
 
-// ============================================================================
 // Playback Information Structures (for all media types)
-// ============================================================================
 // PlaybackResult is returned when generating playback info (at playback time)
 // For direct type media, source_config can store either:
 // 1. PlaybackResult (multi-mode, recommended)
@@ -476,9 +474,7 @@ pub struct Danmaku {
     pub headers: std::collections::HashMap<String, String>,
 }
 
-// ============================================================================
 // Helper implementations
-// ============================================================================
 
 impl PlaybackResult {
     /// Create a `PlaybackResult` from Media and single mode `PlaybackInfo`

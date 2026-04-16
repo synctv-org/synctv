@@ -9,9 +9,7 @@
 //! 1. Save this configuration in synctv.yaml under the oauth2 section
 //! 2. Or set environment variables (SYNCTV_OAUTH2_PROVIDERS__<INSTANCE_ID>__*)
 
-// ============================================================
 // Method 1: YAML Configuration File Example (synctv.yaml)
-// ============================================================
 
 /*
 oauth2:
@@ -67,9 +65,7 @@ oauth2:
     client_secret: "custom_client_secret"
 */
 
-// ============================================================
 // Method 2: Environment Variable Configuration Example
-// ============================================================
 
 /*
 # General format: SYNCTV_OAUTH2_<INSTANCE_ID>__<FIELD>
@@ -113,9 +109,7 @@ SYNCTV_OAUTH2_CUSTOM__CLIENT_ID=xxx
 SYNCTV_OAUTH2_CUSTOM__CLIENT_SECRET=yyy
 */
 
-// ============================================================
 // Supported Provider Types
-// ============================================================
 
 /*
 Supported provider types:
@@ -145,9 +139,7 @@ Default scopes:
   - Can override defaults via scopes field
 */
 
-// ============================================================
 // Migration Guide: From Old Single Config to Multi-Instance Config
-// ============================================================
 
 /*
 Old configuration (not recommended):

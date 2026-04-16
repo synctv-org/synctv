@@ -516,7 +516,6 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
         .await
         .expect("Failed to create member");
 
-    // Start a long-running transaction
     let pool1 = pool.clone();
     let room_id1 = room.id.clone();
     let user_id1 = user_id.clone();
@@ -542,7 +541,6 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
         tx.commit().await.expect("Failed to commit");
     });
 
-    // Wait a bit then try to access same row with timeout
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let pool2 = pool.clone();
@@ -570,6 +568,5 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     // Should timeout waiting for lock
     assert!(timeout_result.is_err(), "Should timeout waiting for lock");
 
-    // Wait for first transaction to complete
     tx_handle.await.expect("First transaction failed");
 }

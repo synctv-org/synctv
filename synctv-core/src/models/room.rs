@@ -439,8 +439,6 @@ pub struct RoomSettingsJson {
     pub chat_enabled: bool,
     pub danmaku_enabled: bool,
 
-    // ===== Permission Override Configuration =====
-    //
     // Rooms can override global default permissions from SettingsRegistry
     // Each role has added/removed permissions that modify the global defaults
     // Formula: (global_default | added) & ~removed
@@ -555,8 +553,6 @@ pub struct RoomWithCount {
     pub room: Room,
     pub member_count: i32,
 }
-
-// ==================== Trait Implementations for Settings System ====================
 
 impl Display for PlayMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

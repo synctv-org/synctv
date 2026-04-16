@@ -40,9 +40,7 @@ use std::sync::Arc;
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 
-// ---------------------------------------------------------------------------
 // WebRTC dynamic setting types
-// ---------------------------------------------------------------------------
 
 /// A single TURN server entry.
 ///
@@ -666,8 +664,6 @@ impl SettingsRegistry {
 mod tests {
     use super::*;
 
-    // ========== TurnServerList ==========
-
     #[test]
     fn test_turn_server_list_display_with_servers() {
         let list = TurnServerList(vec![TurnServer {
@@ -733,8 +729,6 @@ mod tests {
         assert_eq!(list.0[0].credential, None);
     }
 
-    // ========== StunServerList ==========
-
     #[test]
     fn test_stun_server_list_display() {
         let list = StunServerList(vec!["stun:example.com:19302".to_string()]);
@@ -774,8 +768,6 @@ mod tests {
         assert_eq!(original, deserialized);
     }
 
-    // ========== PublicSettings ==========
-
     #[test]
     fn test_public_settings_serialization_roundtrip() {
         // Use non-empty custom_publish_host so skip_serializing_if doesn't omit it
@@ -805,8 +797,6 @@ mod tests {
         assert!(json.contains("custom_publish_host"));
         assert!(json.contains("rtmp://live.example.com"));
     }
-
-    // ========== TurnServer serialization ==========
 
     #[test]
     fn test_turn_server_serde_with_all_fields() {
@@ -856,15 +846,11 @@ mod tests {
         assert_eq!(back.0[1].username, Some("u2".to_string()));
     }
 
-    // ========== StunServerList edge cases ==========
-
     #[test]
     fn test_stun_server_list_from_str_empty_array() {
         let list: StunServerList = "[]".parse().unwrap();
         assert!(list.0.is_empty());
     }
-
-    // ========== CorsAllowedOrigins ==========
 
     #[test]
     fn test_cors_allowed_origins_display_with_origins() {

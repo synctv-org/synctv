@@ -10,9 +10,7 @@ use synctv_core::models::room::RoomSettingsJson;
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
 use synctv_core::models::{PermissionBits, RoomRole, RoomStatus};
 
-// ============================================================================
 // UserRole tests
-// ============================================================================
 
 #[test]
 fn test_user_role_can_manage() {
@@ -47,9 +45,7 @@ fn test_user_role_from_str_case_insensitive() {
     assert!("unknown".parse::<UserRole>().is_err());
 }
 
-// ============================================================================
 // UserStatus tests
-// ============================================================================
 
 #[test]
 fn test_user_status_can_login() {
@@ -99,9 +95,7 @@ fn test_user_status_from_str_roundtrip() {
     assert!("invalid".parse::<UserStatus>().is_err());
 }
 
-// ============================================================================
 // SignupMethod tests
-// ============================================================================
 
 #[test]
 fn test_signup_method_from_str_name() {
@@ -129,9 +123,7 @@ fn test_signup_method_from_str_name() {
     assert_eq!(SignupMethod::from_str_name("invalid"), None);
 }
 
-// ============================================================================
 // User model logic tests
-// ============================================================================
 
 fn make_user(role: UserRole, status: UserStatus, signup_method: SignupMethod) -> User {
     let mut user = User::new_with_status(
@@ -216,9 +208,7 @@ fn test_user_role_predicates() {
     assert!(!user.is_admin_or_above());
 }
 
-// ============================================================================
 // RoomStatus tests
-// ============================================================================
 
 #[test]
 fn test_room_status_predicates() {
@@ -242,9 +232,7 @@ fn test_room_status_predicates() {
     assert!(RoomStatus::Closed.is_closed());
 }
 
-// ============================================================================
 // PermissionBits tests
-// ============================================================================
 
 #[test]
 fn test_permission_bits_has_single() {
@@ -300,9 +288,7 @@ fn test_permission_bits_set() {
     assert!(!perms.has(PermissionBits::SEND_CHAT));
 }
 
-// ============================================================================
 // RoomRole tests
-// ============================================================================
 
 #[test]
 fn test_room_role_permissions_hierarchy() {
@@ -336,9 +322,7 @@ fn test_room_role_from_str_roundtrip() {
     assert!("invalid_role".parse::<RoomRole>().is_err());
 }
 
-// ============================================================================
 // Room permission calculation (effective_permissions_for_role)
-// ============================================================================
 
 #[test]
 fn test_effective_permissions_no_overrides() {

@@ -219,8 +219,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ========== B9: LiveProxy metadata must not expose source URL ==========
-
     #[tokio::test]
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
         let provider = LiveProxyProvider::new();

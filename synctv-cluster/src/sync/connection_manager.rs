@@ -1439,12 +1439,10 @@ impl ConnectionManager {
         }
 
         // Enforce per-user connection limit.
-        //
         // When Redis is configured, use the atomic INCR return value as the
         // single source of truth for the cross-replica count. If the new count
         // exceeds the limit we immediately DECR and reject, avoiding any TOCTOU
         // window where two replicas could both pass the check concurrently.
-        //
         // When Redis is not configured, fall back to the local DashMap count.
         // App wiring only enables Redis-backed ConnectionManager in cluster mode,
         // so a Redis error here means distributed state is unavailable and we
@@ -2533,7 +2531,6 @@ impl ConnectionManager {
         // this node's observed minimum contribution. It never decreases the
         // current Redis value because other replicas may have active
         // connections that are not visible from this node's local memory.
-        //
         // Returns `{current_value, 1}` when the counter was raised and
         // `{current_value, 0}` when no change was needed.
         let sync_script = redis::Script::new(
@@ -2737,7 +2734,6 @@ impl ConnectionManager {
 
         // Step 3: Clean up stale Redis user/room index members that point to
         // missing connection metadata.
-        //
         // Important: this must NOT delete `conn_mgr:conn:*` keys globally just
         // because this replica does not know about them. Those keys may belong
         // to healthy connections on other replicas.
@@ -4401,8 +4397,6 @@ mod tests {
         assert_eq!(timeouts[0], "conn1");
     }
 
-    // ========== Redis Reconciliation Tests ==========
-
     #[tokio::test]
     #[ignore = "Requires Docker Redis"]
     async fn test_redis_recovery_reconciles_connection_counts() {
@@ -4927,8 +4921,6 @@ mod tests {
             "cluster connection metadata conversion must not panic on clock rollback"
         );
     }
-
-    // ========== Connection Reservation Tests (P1#6) ==========
 
     #[tokio::test]
     async fn test_reserve_room_slot_enforces_limit() {

@@ -9,13 +9,10 @@ use synctv_media_providers::{
     CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
 };
 
-// ========== InMemoryCredentialStorage Tests ==========
-
 #[tokio::test]
 async fn test_in_memory_storage_basic_crud() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Create
     let cred = storage
         .set("user1", None, CredentialData::bilibili(HashMap::new()))
         .await
@@ -48,7 +45,6 @@ async fn test_in_memory_storage_basic_crud() {
 async fn test_in_memory_storage_multiple_providers() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Create credentials for different providers
     storage
         .set("user1", None, CredentialData::bilibili(HashMap::new()))
         .await
@@ -132,7 +128,6 @@ async fn test_in_memory_storage_concurrent_access() {
         }));
     }
 
-    // Wait for all operations
     for handle in handles {
         handle.await.unwrap();
     }
@@ -141,8 +136,6 @@ async fn test_in_memory_storage_concurrent_access() {
     let all = storage.list_by_user("user0").await.unwrap();
     assert_eq!(all.len(), 1);
 }
-
-// ========== Trait Object Tests ==========
 
 #[tokio::test]
 async fn test_credential_storage_as_trait_object() {
@@ -161,13 +154,8 @@ async fn test_credential_storage_as_trait_object() {
     assert!(found.is_some());
 }
 
-// ========== Provider Integration Pattern Tests ==========
-//
 // These tests demonstrate the recommended pattern for integrating
 // CredentialStorage with provider operations:
-// 1. Login via provider service (returns credentials)
-// 2. Store credentials using CredentialStorage
-// 3. Retrieve credentials for subsequent requests
 
 /// Test the Bilibili credential flow pattern.
 ///
@@ -179,14 +167,12 @@ async fn test_credential_storage_as_trait_object() {
 async fn test_bilibili_credential_flow_pattern() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Step 1: Simulate receiving cookies from Bilibili login
     // (In real code, this comes from BilibiliService::login_with_qr_code or login_with_sms)
     let mut login_cookies = HashMap::new();
     login_cookies.insert("SESSDATA".to_string(), "sess_value_123".to_string());
     login_cookies.insert("bili_jct".to_string(), "csrf_token_456".to_string());
     login_cookies.insert("DedeUserID".to_string(), "user_id_789".to_string());
 
-    // Step 2: Store credentials
     let stored = storage
         .set(
             "user123",
@@ -207,7 +193,6 @@ async fn test_bilibili_credential_flow_pattern() {
         Some("my_bilibili".to_string())
     );
 
-    // Step 3: Retrieve credentials for subsequent requests
     let retrieved = storage
         .get("user123", ProviderType::Bilibili, &stored.server_id)
         .await
@@ -216,7 +201,6 @@ async fn test_bilibili_credential_flow_pattern() {
 
     assert_eq!(retrieved.id, stored.id);
 
-    // Step 4: Extract cookies for API calls
     let cookies = retrieved
         .data
         .as_bilibili()
@@ -234,7 +218,6 @@ async fn test_bilibili_credential_flow_pattern() {
 async fn test_alist_credential_flow_pattern() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Step 1: Store credentials for first Alist server
     let host1 = "https://alist1.example.com";
     let cred1 = storage
         .set(
@@ -249,7 +232,6 @@ async fn test_alist_credential_flow_pattern() {
         .await
         .unwrap();
 
-    // Step 2: Store credentials for second Alist server
     let host2 = "https://alist2.example.com";
     let cred2 = storage
         .set(
@@ -264,14 +246,12 @@ async fn test_alist_credential_flow_pattern() {
         .await
         .unwrap();
 
-    // Step 3: Verify both are stored independently
     let all_alist = storage
         .list_by_provider("user123", ProviderType::Alist)
         .await
         .unwrap();
     assert_eq!(all_alist.len(), 2);
 
-    // Step 4: Retrieve specific server by server_id (SHA-256 of host or host+instance)
     let server1_id = cred1.server_id.clone();
     let retrieved1 = storage
         .get("user123", ProviderType::Alist, &server1_id)
@@ -287,7 +267,6 @@ async fn test_alist_credential_flow_pattern() {
     assert_eq!(username, "admin");
     assert_eq!(password, "hashed_password_1");
 
-    // Step 5: Verify second server
     let server2_id = cred2.server_id.clone();
     let retrieved2 = storage
         .get("user123", ProviderType::Alist, &server2_id)
@@ -382,7 +361,6 @@ async fn test_same_host_different_instance_names_do_not_overwrite_each_other() {
 async fn test_emby_credential_flow_pattern() {
     let storage = InMemoryCredentialStorage::new();
 
-    // Step 1: Store Emby credentials after login
     let host = "https://emby.example.com";
     let cred = storage
         .set(
@@ -397,7 +375,6 @@ async fn test_emby_credential_flow_pattern() {
         .await
         .unwrap();
 
-    // Step 2: Retrieve credentials
     let server_id = cred.server_id.clone();
     let retrieved = storage
         .get("user123", ProviderType::Emby, &server_id)
@@ -405,7 +382,6 @@ async fn test_emby_credential_flow_pattern() {
         .unwrap()
         .expect("emby credential should exist");
 
-    // Step 3: Verify credential data for API calls
     let (h, api_key, emby_user_id) = retrieved
         .data
         .as_emby()

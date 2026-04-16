@@ -566,8 +566,6 @@ mod tests {
         assert!(!validator_called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    // ========== SettingsStorage.validate() with real Setting instances ==========
-
     struct TestStorageHarness {
         _runtime: tokio::runtime::Runtime,
         storage: Arc<SettingsStorage>,

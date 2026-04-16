@@ -26,15 +26,10 @@ fn rid(s: &str) -> RoomId {
     RoomId::from_string(s.to_string())
 }
 
-// ============================================================================
-// Test: WebRTC session timeout after inactivity
-// ============================================================================
-
 #[tokio::test]
 async fn test_webrtc_session_timeout_after_inactivity() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout for testing
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -71,7 +66,6 @@ async fn test_webrtc_session_timeout_after_inactivity() {
         "Connection should be RTC-joined"
     );
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should clean up the WebRTC session
@@ -93,7 +87,6 @@ async fn test_webrtc_session_timeout_after_inactivity() {
 async fn test_active_webrtc_session_not_cleaned_up() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with long timeout
     let timeout = Duration::from_hours(1); // 1 hour timeout
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -117,7 +110,6 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
-    // Wait a short time (less than timeout)
     tokio::time::sleep(ACTIVE_SESSION_CHECK_DELAY).await;
 
     // Check for timeouts - this should NOT clean up active sessions
@@ -142,7 +134,6 @@ async fn test_active_webrtc_session_not_cleaned_up() {
 async fn test_webrtc_leave_clears_timeout_tracking() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -169,7 +160,6 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     // Immediately leave WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", false);
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should NOT find any sessions (already left)
@@ -194,7 +184,6 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
 async fn test_multiple_webrtc_sessions_timeout() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -226,7 +215,6 @@ async fn test_multiple_webrtc_sessions_timeout() {
         "Should have 3 RTC-joined connections"
     );
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts - this should clean up all expired sessions
@@ -248,7 +236,6 @@ async fn test_multiple_webrtc_sessions_timeout() {
 async fn test_webrtc_session_timeout_persists_across_reconnection() {
     use synctv_cluster::sync::ConnectionLimits;
 
-    // Create a ConnectionManager with short timeout
     let timeout = SHORT_WEBRTC_TIMEOUT;
     let limits = ConnectionLimits {
         max_per_user: 10,
@@ -270,7 +257,6 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
-    // Wait for timeout to expire
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
     // Check for timeouts
@@ -297,7 +283,3 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     );
     assert_eq!(rtc_connections[0].connection_id, "conn2");
 }
-
-// ============================================================================
-// Test: WebRTC session timeout respects ConnectionLimits default
-// ============================================================================

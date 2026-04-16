@@ -234,8 +234,6 @@ impl<T> Page<T> {
 mod tests {
     use super::*;
 
-    // ========== PageParams Tests ==========
-
     #[test]
     fn test_page_params_new_with_none() {
         let params = PageParams::new(None, None);
@@ -290,8 +288,6 @@ mod tests {
         let params = PageParams::new(Some(1), Some(50));
         assert_eq!(params.limit(), 50);
     }
-
-    // ========== Page Tests ==========
 
     #[test]
     fn test_page_creation() {

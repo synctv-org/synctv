@@ -171,9 +171,7 @@ impl AdminServiceImpl {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl AdminService for AdminServiceImpl {
-    // =========================
     // System Settings Management
-    // =========================
 
     async fn get_settings(
         &self,
@@ -234,9 +232,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Provider Instance Management
-    // =========================
 
     async fn list_provider_instances(
         &self,
@@ -344,9 +340,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // User Management
-    // =========================
 
     async fn create_user(
         &self,
@@ -525,9 +519,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Batch Operations
-    // =========================
 
     async fn batch_ban_users(
         &self,
@@ -631,9 +623,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Room Management
-    // =========================
 
     async fn list_rooms(
         &self,
@@ -858,9 +848,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Admin Management (Root Only)
-    // =========================
 
     async fn add_admin(
         &self,
@@ -908,9 +896,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // System Statistics
-    // =========================
 
     async fn get_system_stats(
         &self,
@@ -926,9 +912,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Room Settings Management
-    // =========================
 
     async fn get_room_settings(
         &self,
@@ -974,9 +958,7 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(resp))
     }
 
-    // =========================
     // Livestream Management
-    // =========================
 
     async fn list_active_streams(
         &self,
@@ -1012,8 +994,6 @@ impl AdminService for AdminServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== Error Mapping ====================
 
     #[test]
     fn test_api_err_not_found() {
@@ -1072,8 +1052,6 @@ mod tests {
         assert!(!status.message().contains("database"));
     }
 
-    // ==================== Error Mapping Exhaustiveness ====================
-
     #[test]
     fn test_api_err_all_variants_mapped() {
         // Verify every ApiError variant maps to a distinct gRPC code
@@ -1108,8 +1086,6 @@ mod tests {
             assert_eq!(status.code(), expected_code);
         }
     }
-
-    // ==================== Batch Size Limit Validation ====================
 
     #[test]
     fn test_batch_ban_users_request_size_limit() {

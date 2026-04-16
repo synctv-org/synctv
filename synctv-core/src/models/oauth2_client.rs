@@ -157,8 +157,6 @@ pub struct OAuth2CallbackResponse {
 mod tests {
     use super::*;
 
-    // ==================== OAuth2Provider ====================
-
     #[test]
     fn test_provider_from_str_name_all_variants() {
         assert_eq!(
@@ -288,8 +286,6 @@ mod tests {
         }
     }
 
-    // ==================== UserOAuthProviderMapping ====================
-
     #[test]
     fn test_mapping_provider_enum() {
         let mapping = UserOAuthProviderMapping {
@@ -343,8 +339,6 @@ mod tests {
         assert_eq!(deserialized.username, mapping.username);
     }
 
-    // ==================== OAuth2UserInfo ====================
-
     #[test]
     fn test_user_info_serde_roundtrip() {
         let info = OAuth2UserInfo {
@@ -361,8 +355,6 @@ mod tests {
         assert_eq!(deserialized.username, "ghuser");
     }
 
-    // ==================== OAuth2AuthUrlResponse ====================
-
     #[test]
     fn test_auth_url_response_serde() {
         let resp = OAuth2AuthUrlResponse {
@@ -374,8 +366,6 @@ mod tests {
         assert!(json.contains("random_state"));
     }
 
-    // ==================== OAuth2CallbackRequest ====================
-
     #[test]
     fn test_callback_request_deserialize() {
         let json = serde_json::json!({
@@ -386,8 +376,6 @@ mod tests {
         assert_eq!(req.code, "auth_code_123");
         assert_eq!(req.state, "state_456");
     }
-
-    // ==================== OAuth2CallbackResponse ====================
 
     #[test]
     fn test_callback_response_with_token() {

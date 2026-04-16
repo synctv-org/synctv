@@ -169,17 +169,15 @@ impl Provider for GitHubProvider {
             .json()
             .await
             .internal_with_err("Failed to parse user info")?;
-
         // Fetch verified email from the /user/emails endpoint.
         // The /user endpoint may return an email, but does not indicate
         // whether it is verified. We must call /user/emails to get the
         // actual verification status.
-        //
-        // Fallback rules (Issue #33 — conservative email handling):
-        //   • API succeeds, verified email found  → use (email, true)
-        //   • API succeeds, no verified email     → use primary email, verified=false
-        //   • API fails, profile email is None    → error; don't create account
-        //   • API fails, profile email is Some    → use email, verified=false (warn)
+        // Fallback rules:
+        // - API succeeds and a verified email exists: use it as verified.
+        // - API succeeds but no verified email exists: use the primary email as unverified.
+        // - API fails and the profile has no email: return an error.
+        // - API fails and the profile has an email: use it as unverified and warn.
         let (email, email_verified) = match self
             .fetch_verified_email(token.access_token().secret())
             .await
@@ -240,8 +238,6 @@ pub fn github_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, E
 mod tests {
     use super::*;
 
-    // ==================== Provider Creation ====================
-
     #[test]
     fn test_create_provider_valid_config() {
         let provider = GitHubProvider::create(
@@ -274,8 +270,6 @@ mod tests {
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
 
-    // ==================== Provider Type ====================
-
     #[test]
     fn test_provider_type() {
         let provider = GitHubProvider::create(
@@ -286,8 +280,6 @@ mod tests {
         .unwrap();
         assert_eq!(provider.provider_type(), "github");
     }
-
-    // ==================== Auth URL Generation ====================
 
     #[tokio::test]
     async fn test_new_auth_url_contains_required_params() {
@@ -333,8 +325,6 @@ mod tests {
         // Each call generates a new random PKCE verifier
         assert_ne!(verifier1, verifier2);
     }
-
-    // ==================== Factory Function ====================
 
     #[test]
     fn test_factory_valid_config() {
@@ -397,8 +387,6 @@ mod tests {
         let result = github_factory(&config);
         assert!(result.is_err());
     }
-
-    // ==================== Config Deserialization ====================
 
     #[test]
     fn test_github_config_deserialize() {

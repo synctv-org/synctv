@@ -71,8 +71,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ========== set_member_permissions: GRANT_PERMISSION check ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_set_member_permissions_requires_grant_permission() {
@@ -318,8 +316,6 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
     }
 }
 
-// ========== set_member_permissions: optimistic lock retry ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_set_member_permissions_optimistic_lock_retry() {
@@ -398,8 +394,6 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     }
 }
 
-// ========== reset_member_permissions: clears all overrides ==========
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reset_member_permissions_clears_all_overrides() {
@@ -471,8 +465,6 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         "Removed permissions should be 0 after reset"
     );
 }
-
-// ========== reset_member_permissions: requires GRANT_PERMISSION ==========
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

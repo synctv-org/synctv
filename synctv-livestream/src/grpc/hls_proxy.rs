@@ -1,5 +1,4 @@
 // HLS proxy client for cross-node HLS streaming
-//
 // Non-publisher nodes use this client to fetch M3U8 playlists and TS segments
 // from the publisher node via gRPC. TS segments are cached locally since they
 // are immutable once created. M3U8 playlists are NOT cached since they change
@@ -24,7 +23,7 @@ use tracing::debug;
 struct PlaylistCacheExpiry {
     /// TTL for found playlist entries.
     found_ttl: Duration,
-    /// TTL for "not found" (None) entries.  Must be shorter than `found_ttl`.
+    /// TTL for "not found" (None) entries. Must be shorter than `found_ttl`.
     not_found_ttl: Duration,
 }
 
@@ -481,10 +480,6 @@ impl HlsProxyClient {
         });
     }
 
-    // ========================================================================
-    // Synchronous Cache Invalidation (Task #23)
-    // ========================================================================
-
     /// Build a segment cache key with both epoch and cache version.
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{version}:{segment_name}`
@@ -904,9 +899,7 @@ mod tests {
         assert_eq!(cached1, Some(Some("#EXTM3U\nnew playlist".to_string())));
     }
 
-    // ============================================================================
-    // TDD Task #23: Tests for synchronous cache invalidation consistency
-    // ============================================================================
+    // TDD Tests for synchronous cache invalidation consistency
 
     #[tokio::test]
     async fn test_invalidate_stream_cache_sync_increments_version_immediately() {

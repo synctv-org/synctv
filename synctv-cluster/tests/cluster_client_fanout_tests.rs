@@ -11,9 +11,7 @@ use synctv_cluster::discovery::NodeInfo;
 use synctv_cluster::grpc::client::{ClusterClient, ClusterClientConfig, FanOutResult};
 use synctv_cluster::grpc::synctv::cluster::UserOnlineStatus;
 
-// ============================================================================
 // FanOutResult construction and queries
-// ============================================================================
 
 /// Verify `FanOutResult` with partial failure tracks `nodes_failed` correctly.
 #[test]
@@ -115,9 +113,7 @@ fn test_fan_out_result_timeout_failures_include_node_details() {
     );
 }
 
-// ============================================================================
 // merge_user_statuses tests
-// ============================================================================
 
 /// Verify `merge_user_statuses`: `any_online_wins` policy.
 #[test]

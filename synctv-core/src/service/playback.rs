@@ -2388,8 +2388,6 @@ mod tests {
         }
     }
 
-    // ========== Optimistic Lock Retry Boundary Tests ==========
-
     /// Tests for update_state retry mechanism boundary conditions.
     ///
     /// These tests verify the retry logic in PlaybackService::update_state:

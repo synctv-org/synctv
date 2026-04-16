@@ -1,12 +1,9 @@
 // Live streaming API abstractions for synctv-api integration
-//
 // This module provides flexible APIs and abstractions for implementing
 // live streaming HTTP endpoints in synctv-api.
-//
 // Architecture:
 // - synctv-stream provides infrastructure + abstractions (this module)
 // - synctv-api implements HTTP endpoints using these abstractions
-//
 // Features:
 // - Lazy-load FLV streaming (create pull streams on demand)
 // - HLS streaming with M3U8 playlist generation

@@ -75,7 +75,6 @@ async fn test_concurrent_member_role_updates_isolated() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create a test room (need to create user first for FK constraint)
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = Room {
@@ -96,7 +95,6 @@ async fn test_concurrent_member_role_updates_isolated() {
         .await
         .expect("Failed to create room");
 
-    // Create test members (need to create users first for FK constraint)
     let user1 = UserId::new();
     let user2 = UserId::new();
     create_test_user(&pool, &user1).await;
@@ -193,7 +191,6 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
 
     let room_repo = RoomRepository::new(pool.clone());
 
-    // Create test room (need to create user first for FK constraint)
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = Room {
@@ -242,13 +239,11 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         count2
     });
 
-    // Wait a bit then insert a member in a separate transaction
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let pool2 = pool.clone();
     let room_id2 = room.id.clone();
     let user_id = UserId::new();
-    // Create the user first for FK constraint
     create_test_user(&pool, &user_id).await;
     let handle2 = tokio::spawn(async move {
         let member = make_member(room_id2, user_id);

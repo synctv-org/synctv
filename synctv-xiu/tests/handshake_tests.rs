@@ -32,9 +32,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::time::Duration;
 
-// =============================================================================
 // Mock IO Implementation
-// =============================================================================
 
 /// Mock `TNetIO` that captures writes and provides configurable reads
 struct MockNetIO {
@@ -89,9 +87,7 @@ fn make_mock_io() -> Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> {
     Arc::new(Mutex::new(Box::new(MockNetIO::new())))
 }
 
-// =============================================================================
 // Helper Functions for Building Handshake Data
-// =============================================================================
 
 /// Build a valid C0+C1 payload (1 byte C0 version + 1536 bytes C1)
 fn build_c0c1() -> Vec<u8> {
@@ -128,9 +124,7 @@ fn build_c2() -> Vec<u8> {
     vec![0xAA; RTMP_HANDSHAKE_SIZE]
 }
 
-// =============================================================================
 // SimpleHandshakeClient Tests
-// =============================================================================
 
 mod simple_handshake_client_tests {
     use super::*;
@@ -182,9 +176,7 @@ mod simple_handshake_client_tests {
     }
 }
 
-// =============================================================================
 // SimpleHandshakeServer Tests
-// =============================================================================
 
 mod simple_handshake_server_tests {
     use super::*;
@@ -274,9 +266,7 @@ mod simple_handshake_server_tests {
     }
 }
 
-// =============================================================================
 // ComplexHandshakeServer Tests
-// =============================================================================
 
 mod complex_handshake_server_tests {
     use super::*;
@@ -308,9 +298,7 @@ mod complex_handshake_server_tests {
     }
 }
 
-// =============================================================================
 // DigestProcessor Tests
-// =============================================================================
 
 mod digest_processor_tests {
     use super::*;
@@ -379,7 +367,6 @@ mod digest_processor_tests {
 
     #[test]
     fn test_digest_processor_generate_and_fill_digest() {
-        // Create data that's large enough for digest offset calculation
         let mut data = BytesMut::with_capacity(RTMP_HANDSHAKE_SIZE);
         data.extend_from_slice(&[0u8; RTMP_HANDSHAKE_SIZE]);
         let key = BytesMut::from(RTMP_SERVER_KEY_FIRST_HALF.as_bytes());
@@ -407,9 +394,7 @@ mod digest_processor_tests {
     }
 }
 
-// =============================================================================
 // Error Handling Tests
-// =============================================================================
 
 mod error_handling_tests {
     use super::*;
@@ -461,9 +446,7 @@ mod error_handling_tests {
     }
 }
 
-// =============================================================================
 // Constants and Define Tests
-// =============================================================================
 
 mod constants_tests {
     use super::*;
@@ -496,9 +479,7 @@ mod constants_tests {
     }
 }
 
-// =============================================================================
 // Utils Tests
-// =============================================================================
 
 mod utils_tests {
     use super::*;
@@ -512,9 +493,7 @@ mod utils_tests {
     }
 }
 
-// =============================================================================
 // State Transition Tests
-// =============================================================================
 
 mod state_transition_tests {
     use super::*;
@@ -567,9 +546,7 @@ mod state_transition_tests {
     }
 }
 
-// =============================================================================
 // Integration Tests
-// =============================================================================
 
 mod integration_tests {
     use super::*;

@@ -43,7 +43,6 @@ fn test_wrong_key_cannot_decrypt() {
     let original = json!({"secret": "very_secret_data"});
     let encrypted = enc1.encrypt(&original).unwrap();
 
-    // Create a different key
     let wrong_key = vec![0xffu8; 32];
     let enc2 = CredentialEncryption::new(&wrong_key).unwrap();
 

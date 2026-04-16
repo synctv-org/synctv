@@ -85,9 +85,7 @@ fn make_claims(user_id: &UserId, pv: i32) -> Claims {
     }
 }
 
-// ============================================================================
 // SecurityPipeline tests (DB-backed, no cache)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -204,9 +202,7 @@ async fn test_deleted_user_rejected() {
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
-// ============================================================================
 // SecurityPipeline tests with UserCache (fast path)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -307,9 +303,7 @@ async fn test_cache_hit_banned_user_rejected() {
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
-// ============================================================================
 // SEC4: Pending user rejected (DB and cache paths)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -455,9 +449,7 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
     );
 }
 
-// ============================================================================
 // SEC5: Cache population after DB miss
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -545,9 +537,7 @@ async fn test_cache_populated_then_subsequent_check_fails_closed_when_db_unavail
     );
 }
 
-// ============================================================================
 // Access Token Blacklist tests (logout token invalidation)
-// ============================================================================
 
 /// Test that a blacklisted access token is rejected by the security pipeline.
 ///
@@ -766,9 +756,7 @@ fn create_user_service_with_dyn_blacklist(
     )
 }
 
-// ============================================================================
 // Fail-closed blacklist store error handling tests (Issue: storage errors)
-// ============================================================================
 
 /// A blacklist store whose `is_blacklisted_checked` always returns an error,
 /// simulating a database/Redis outage.

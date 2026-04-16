@@ -28,9 +28,7 @@ async fn start_redis() -> (
     start_test_redis().await
 }
 
-// ============================================================================
 // Basic lock acquire/release cycle tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -83,9 +81,7 @@ async fn test_acquire_with_token() {
     lock.release(key, &lock_value).await.unwrap();
 }
 
-// ============================================================================
 // Lock expiration and TTL tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -101,7 +97,6 @@ async fn test_lock_expiration() {
     assert!(lock_value.is_some(), "Should acquire lock");
     let lock_value = lock_value.unwrap();
 
-    // Wait for lock to expire
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Try to release - should fail because lock expired
@@ -113,9 +108,7 @@ async fn test_lock_expiration() {
     assert!(new_lock.is_some(), "Should acquire expired lock");
 }
 
-// ============================================================================
 // Fencing token tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -191,9 +184,7 @@ async fn test_fencing_token_independent_per_key() {
     assert_eq!(token2b, 2, "Key2 second token should be 2");
 }
 
-// ============================================================================
 // Concurrent lock acquisition tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -215,7 +206,6 @@ async fn test_concurrent_acquire_only_one_succeeds() {
         }));
     }
 
-    // Wait for all tasks to complete
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
@@ -277,9 +267,7 @@ async fn test_concurrent_with_fencing_tokens() {
     assert!(*fencing_token > 0, "Fencing token should be positive");
 }
 
-// ============================================================================
 // Lock release by non-owner tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -323,7 +311,6 @@ async fn test_release_expired_lock_returns_false() {
     assert!(lock_value.is_some());
     let lock_value = lock_value.unwrap();
 
-    // Wait for expiration
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Try to release expired lock
@@ -331,9 +318,7 @@ async fn test_release_expired_lock_returns_false() {
     assert!(!released, "Releasing expired lock should return false");
 }
 
-// ============================================================================
 // with_lock and try_with_lock tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -437,9 +422,7 @@ async fn test_with_lock_token_passes_fencing_token() {
     assert!(result > 0, "Result should be based on fencing token");
 }
 
-// ============================================================================
 // MigrationLock trait tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -460,22 +443,16 @@ async fn test_migration_lock_acquire_release() {
     assert!(released, "Trait release should work");
 }
 
-// ============================================================================
 // Sentinel failover simulation (documents vulnerability)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_sentinel_failover_documents_vulnerability() {
     // This test documents the known vulnerability with Redis Sentinel failover.
-    //
     // The problem: When Sentinel promotes a replica to master, any locks held on
     // the old master are LOST because Redis replication is asynchronous.
-    //
     // What this test ACTUALLY does: Simulates the scenario where a lock is "lost"
     // by manually deleting it from Redis (mimicking what happens during failover).
-    //
-    // Expected behavior: The lock service should allow a new lock to be acquired
     // after the "failover" (lock deletion), but the fencing token should continue
     // to increment. This documents that fencing tokens mitigate but don't fully
     // solve the split-brain problem.
@@ -495,11 +472,8 @@ async fn test_sentinel_failover_documents_vulnerability() {
     // (In real failover, the old master's locks simply don't exist on new master)
     // We can't access the private redis field, so we document this scenario
     // In a real Sentinel failover, the lock would simply disappear from the new master
-    //
     // For this test, we simulate the EFFECT of failover by releasing the lock
     // and then immediately acquiring a new one, which demonstrates that:
-    // 1. A new lock can be acquired after failover
-    // 2. The fencing token increases monotonically
     lock.release(key, &client1_value).await.unwrap();
 
     // Client 2 can now acquire the "same" lock (split-brain!)
@@ -510,7 +484,6 @@ async fn test_sentinel_failover_documents_vulnerability() {
     );
     let (client2_value, client2_token) = client2_lock.unwrap();
 
-    // CRITICAL: Fencing token is HIGHER for client 2
     assert!(
         client2_token > client1_token,
         "Client 2 token should be greater than client 1 token"
@@ -529,28 +502,18 @@ async fn test_sentinel_failover_documents_vulnerability() {
     assert!(client2_release, "Client 2 should be able to release");
 
     // DOCUMENTATION: This test simulates the EFFECT of a Sentinel failover:
-    // 1. When a lock is lost (failover), a new client can acquire it
-    // 2. Fencing tokens DO increase monotonically (client2_token > client1_token)
-    // 3. If you use fencing tokens for database writes (CAS), client 1's writes
     //    will fail with optimistic lock conflict, preventing data corruption
-    // 4. But non-idempotent operations (sending emails, billing) CANNOT be fenced
-    //
     // In a REAL Sentinel failover:
     // - Locks held on old master are LOST (asynchronous replication)
     // - Two clients MAY simultaneously believe they hold the same lock (split-brain)
     // - Fencing tokens mitigate this for database writes but not all operations
-    //
     // Conclusion: For production use with Sentinel, implement Redlock algorithm
     // with multiple independent Redis masters.
 }
 
-// ============================================================================
 // Redis connection failure tests
-// ============================================================================
 
-// ============================================================================
 // Lock value uniqueness tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -584,9 +547,7 @@ async fn test_lock_values_are_unique() {
     assert_eq!(unique_count.len(), 10, "All lock values should be unique");
 }
 
-// ============================================================================
 // Edge case tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -622,7 +583,6 @@ async fn test_very_long_ttl() {
     let lock_value = lock.acquire(key, ttl).await.unwrap();
     assert!(lock_value.is_some(), "Long TTL lock should succeed");
 
-    // Should be able to release
     let lock_value = lock_value.unwrap();
     lock.release(key, &lock_value).await.unwrap();
 }
@@ -667,9 +627,7 @@ async fn test_empty_lock_value_in_release() {
     assert!(!released, "Release with empty value should fail");
 }
 
-// ============================================================================
 // Stress tests (marked as ignore as they take longer)
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker and takes time"]
@@ -680,7 +638,6 @@ async fn test_rapid_acquire_release_cycles() {
     let key = "test_rapid_cycles";
     let ttl = 1;
 
-    // Perform 100 rapid acquire/release cycles
     for i in 0..100 {
         let lock_value = lock.acquire(key, ttl).await.unwrap();
         assert!(lock_value.is_some(), "Cycle {i} should acquire lock");
@@ -724,9 +681,7 @@ async fn test_many_concurrent_clients() {
     );
 }
 
-// ============================================================================
 // PostgreSQL advisory lock tests (MigrationLock alternative)
-// ============================================================================
 
 // Note: These would require a PostgreSQL testcontainer, which we're not setting
 // up here since the task focuses on the distributed lock (Redis-based) tests.

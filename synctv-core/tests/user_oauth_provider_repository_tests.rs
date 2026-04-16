@@ -294,7 +294,6 @@ async fn test_delete_all_for_user_with_executor() {
 
     let user = create_user(&pool, "oauth_del_tx_user").await;
 
-    // Create multiple mappings for this user
     let info_gh = OAuth2UserInfo {
         provider: OAuth2Provider::GitHub,
         provider_user_id: "gh_del_001".to_string(),

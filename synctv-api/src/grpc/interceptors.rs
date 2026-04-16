@@ -398,8 +398,6 @@ mod tests {
         assert_eq!(ctx.pv, 3);
     }
 
-    // ========== SecurityCheckPassed Marker Tests ==========
-
     #[test]
     fn test_security_check_passed_marker_exists() {
         // Verify the marker type exists and can be created

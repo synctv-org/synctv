@@ -1,8 +1,6 @@
 // Pull Stream Manager for lazy-load FLV streaming
-//
 // Key feature: Create pull streams only when clients request FLV (not on publisher events)
 // GOP cache is handled by xiu's StreamHub internally.
-//
 // NOTE: This manager handles **gRPC relay** pull streams only.
 // External pull-to-publish streams are managed by `ExternalPublishManager`.
 
@@ -238,19 +236,16 @@ impl PullStreamManager {
         // Start pull stream (connects via gRPC to publisher)
         if let Err(e) = pull_stream.start().await {
             // Only remove the Redis registry entry on permanent/non-retryable failures.
-            //
             // Permanent failures (publisher definitively gone or misconfigured):
             //   - StaleEpoch: publisher changed (split-brain), our record is obsolete
             //   - NoPublisher: no registry entry exists
             //   - InvalidAddress: publisher node has an unresolvable address
             //   - InvalidStreamKey: stream key is malformed/invalid
-            //
             // Transient failures (keep the registry entry, let TTL manage it):
             //   - RegistryError: Redis unavailable or slow; the publisher may still be live
             //   - GrpcError: network hiccup; the publisher node may still be running
             //   - ConnectionFailed: transient connectivity issue
             //   - IoError: OS-level I/O error, typically transient
-            //
             // Deleting the entry on transient errors causes a ~60-second routing outage
             // because all other nodes route to this stream's Redis entry; once deleted,
             // no node knows where the stream is until it re-registers (up to TTL expiry).

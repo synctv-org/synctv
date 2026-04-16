@@ -11,9 +11,7 @@
 #![allow(clippy::unwrap_used)]
 use axum::http;
 
-// ============================================================================
 // Bearer token extraction (used by BlacklistCheckLayer internally)
-// ============================================================================
 
 /// Verify the blacklist layer's bearer extraction follows the same pattern
 /// as the HTTP middleware (case-insensitive "Bearer " prefix).

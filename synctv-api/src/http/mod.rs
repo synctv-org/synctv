@@ -1,4 +1,3 @@
-// Module: http
 // HTTP/JSON REST API
 
 pub mod admin;
@@ -601,7 +600,7 @@ pub fn start_proxy_cache_lifecycle(
     Some(ProxyCacheLifecycleRuntime { cancel, handle })
 }
 
-/// Body size limits for specific endpoint categories (Issue #23).
+/// Body size limits for specific endpoint categories.
 ///
 /// These are applied as `route_layer`s INSIDE the rate-limit route groups so that
 /// the limit is enforced before the handler reads the body, and the global 10 MB
@@ -620,7 +619,7 @@ mod body_limits {
 }
 
 /// Authentication routes (register, login, refresh, `OAuth2` exchange).
-/// Strict rate limiting: 5 req/min. Body limit: 64 KB (Issue #23).
+/// Strict rate limiting: 5 req/min. Body limit: 64 KB.
 fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
@@ -640,7 +639,7 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Media mutation routes (add, delete, reorder, edit, batch operations).
-/// Moderate rate limiting: 20 req/min. Body limit: 512 KB (Issue #23).
+/// Moderate rate limiting: 20 req/min. Body limit: 512 KB.
 fn register_media_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms/{room_id}/media", post(room::add_media))
@@ -670,7 +669,7 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Write routes (room CRUD, membership, playback control, playlists, user updates).
-/// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB (Issue #23).
+/// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB.
 fn register_write_routes(state: &AppState) -> Router<AppState> {
     let mut router = Router::new()
         .route("/api/rooms", post(room::create_room))

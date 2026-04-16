@@ -790,8 +790,6 @@ mod tests {
     use sqlx::PgPool;
     use std::sync::Arc;
 
-    // ========== CreatePlaylistRequest Validation ==========
-
     #[test]
     fn test_create_playlist_request_basic() {
         let room_id = RoomId::new();
@@ -841,8 +839,6 @@ mod tests {
         assert_eq!(request.parent_id, Some(parent_id));
     }
 
-    // ========== SetPlaylistRequest Validation ==========
-
     #[test]
     fn test_set_playlist_request_name_only() {
         let request = SetPlaylistRequest {
@@ -864,8 +860,6 @@ mod tests {
         assert!(request.before_playlist_id.is_some());
         assert!(request.after_playlist_id.is_none());
     }
-
-    // ========== Playlist Name Validation Logic ==========
 
     #[test]
     fn test_playlist_name_trimming() {
@@ -904,8 +898,6 @@ mod tests {
         let name_too_long = "\u{4f60}".repeat(201);
         assert_eq!(name_too_long.chars().count(), 201);
     }
-
-    // ========== Playlist Model Tests ==========
 
     #[test]
     fn test_playlist_is_top_level() {
@@ -1011,8 +1003,6 @@ mod tests {
         assert!(playlist.is_static());
         assert!(!playlist.is_dynamic());
     }
-
-    // ========== Dynamic Folder Validation Logic ==========
 
     #[test]
     fn test_dynamic_folder_requires_source_config() {
@@ -1248,8 +1238,6 @@ mod tests {
         }
     }
 
-    // ========== Nesting Depth Validation ==========
-
     #[test]
     fn test_nesting_depth_limit() {
         let max_ancestors = 9;
@@ -1257,16 +1245,12 @@ mod tests {
         assert!(max_ancestors + 1 + 1 > 10);
     }
 
-    // ========== Position Ordering ==========
-
     #[test]
     fn test_playlist_positions_can_be_ordered() {
         let mut playlists: Vec<i32> = vec![3, 1, 4, 1, 5, 9, 2, 6];
         playlists.sort_unstable();
         assert_eq!(playlists, vec![1, 1, 2, 3, 4, 5, 6, 9]);
     }
-
-    // ========== Optimistic Locking Retry Constants ==========
 
     #[test]
     fn test_set_playlist_retry_constants() {
@@ -1299,6 +1283,4 @@ mod tests {
             "Need {attempts_needed} attempts but MAX_RETRIES is 3"
         );
     }
-
-    // ========== Integration Tests (Require DB) ==========
 }

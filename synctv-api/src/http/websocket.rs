@@ -45,9 +45,7 @@ use synctv_core::service::{ContentFilter, PendingValidatedTicket};
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-// ============================================================================
 // MetricsGuard - RAII guard for WebSocket metrics
-// ============================================================================
 
 /// RAII guard that increments WebSocket metrics on creation and decrements on drop.
 ///
@@ -58,11 +56,11 @@ const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// ```text
 /// async fn handle_socket() {
-///     let _guard = MetricsGuard::new();
+/// let _guard = MetricsGuard::new();
 ///
-///     // Even if this panics, metrics will be decremented
-///     // when _guard is dropped
-///     do_work().await;
+/// // Even if this panics, metrics will be decremented
+/// // when _guard is dropped
+/// do_work().await;
 /// }
 /// ```
 pub struct MetricsGuard {
@@ -135,7 +133,7 @@ struct PreparedWebSocketUpgrade {
 /// 1. Authorization header (most secure)
 /// 2. Ticket query parameter (recommended for browsers)
 ///
-/// The `room_id` parameter is required for ticket validation (Issue #65): tickets are
+/// The `room_id` parameter is required for ticket validation: tickets are
 /// room-scoped and must be checked against the room the connection targets.
 ///
 /// For the header path, the `SecurityPipeline` is invoked after signature verification
@@ -175,9 +173,9 @@ async fn extract_user_id(
     }
 
     // Second, try ticket query parameter (recommended for browsers).
-    // The ticket is validated against the target room to prevent cross-room replay (Issue #65).
+    // The ticket is validated against the target room to prevent cross-room replay.
     // User status and password version are checked atomically with ticket consumption
-    // to prevent TOCTOU race conditions (Issue #17).
+    // to prevent TOCTOU race conditions.
     if !query.ticket.is_empty() {
         let pending = state
             .ws_ticket_service
@@ -1238,8 +1236,6 @@ mod tests {
         RoomService::new(pool.clone(), test_user_service(pool))
     }
 
-    // ========== WsQuery Tests ==========
-
     #[test]
     fn test_ws_query_no_auth() {
         let query = WsQuery {
@@ -1346,7 +1342,6 @@ mod tests {
         assert_eq!(message_type_name(&message), "PlaybackSnapshot");
     }
 
-    // ========== Auth Priority Logic Tests ==========
     // extract_user_id is async and requires AppState, so we test the priority
     // logic via the documented contract:
     // 1. Header > 2. Ticket
@@ -1415,8 +1410,6 @@ mod tests {
         assert!(query.ticket.is_empty());
         // This would produce an Unauthorized error in extract_user_id
     }
-
-    // ========== AppError Construction Tests ==========
 
     #[test]
     fn test_unauthorized_error_for_missing_auth() {
@@ -1925,7 +1918,6 @@ mod tests {
         assert_eq!(err.message, "Failed to establish WebSocket connection");
     }
 
-    // ========== RateLimitConfig Tests ==========
     // These tests verify that the RateLimitConfig used for WebSocket message handling
     // has sensible defaults and can be customized.
 

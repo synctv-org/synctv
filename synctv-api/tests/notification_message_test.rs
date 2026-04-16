@@ -10,7 +10,6 @@ use synctv_api::proto::client::{server_message::Message, ServerMessage};
 /// Test that notification messages can be encoded and decoded
 #[test]
 fn test_notification_message_encode_decode() {
-    // Create a notification message
     let notification = ServerMessage {
         message: Some(Message::Notification(
             synctv_api::proto::client::UserNotification {

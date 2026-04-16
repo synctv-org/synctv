@@ -30,9 +30,7 @@ pub fn bilibili_read_routes() -> Router<AppState> {
         .route("/me", post(user_info))
 }
 
-// ------------------------------------------------------------------
 // Provider API handlers
-// ------------------------------------------------------------------
 
 /// Parse Bilibili URL (uses stored cookies)
 #[cfg_attr(

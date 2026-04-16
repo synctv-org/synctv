@@ -1,5 +1,4 @@
 // Livestream server orchestration
-//
 // Main application layer that coordinates all protocols and libraries.
 // Follows xiu's application/xiu architecture.
 

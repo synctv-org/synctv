@@ -39,10 +39,10 @@
 //!
 //! ```text
 //! let mut tx = self.pool.begin().await?;
-//! // ... perform database operations ...
+//! //... perform database operations...
 //! tx.commit().await?;
-//! self.invalidate_room_caches(&room_id).await;  // AFTER commit
-//! // ... post-commit operations ...
+//! self.invalidate_room_caches(&room_id).await; // AFTER commit
+//! //... post-commit operations...
 //! ```
 //!
 //! ## Non-Transactional Operations
@@ -53,7 +53,7 @@
 //!
 //! ```text
 //! self.room_repo.update_status(&room_id, new_status).await?;
-//! self.notify_room_invalidation(&room_id).await;  // Room cache only
+//! self.notify_room_invalidation(&room_id).await; // Room cache only
 //! ```
 //!
 //! ## Cache Types
@@ -901,8 +901,6 @@ impl RoomService {
         }
     }
 
-    // ========== Core Room Operations ==========
-
     /// Create a new room
     ///
     /// All database operations run inside a single transaction so the room is
@@ -977,18 +975,16 @@ impl RoomService {
         );
 
         // Check global settings: room creation must be allowed.
-        //
         // Setting precedence:
-        //   1. `disable_create_room` (highest priority) — when true, room creation is
-        //      unconditionally blocked. This is the "kill switch" for emergencies or
-        //      maintenance windows.
-        //   2. `allow_room_creation` — when explicitly set to false, room creation is
-        //      blocked. Defaults to true when unset. This is the normal admin toggle
-        //      for controlling whether users can create rooms.
-        //
+        // 1. `disable_create_room` (highest priority) — when true, room creation is
+        // unconditionally blocked. This is the "kill switch" for emergencies or
+        // maintenance windows.
+        // 2. `allow_room_creation` — when explicitly set to false, room creation is
+        // blocked. Defaults to true when unset. This is the normal admin toggle
+        // for controlling whether users can create rooms.
         // Both settings exist to serve different admin workflows:
-        //   - `disable_create_room` = emergency override (takes priority over everything)
-        //   - `allow_room_creation` = standard policy control (opt-out, default-allow)
+        // - `disable_create_room` = emergency override (takes priority over everything)
+        // - `allow_room_creation` = standard policy control (opt-out, default-allow)
         if let Some(ref registry) = self.settings_registry {
             if enforce_creation_policy {
                 // `disable_create_room` takes precedence (explicit disable)
@@ -1388,8 +1384,8 @@ impl RoomService {
                     let user_id = user_id.clone();
                     let password = password.clone();
                     async move {
-                    // Re-validate state under lock to catch changes that occurred
-                    // between the initial check and lock acquisition
+ // Re-validate state under lock to catch changes that occurred
+ // between the initial check and lock acquisition
                     let fresh_ctx = self
                         .room_repo
                         .get_join_context(&room_id, &user_id)
@@ -1406,15 +1402,14 @@ impl RoomService {
                         return Err(Error::Authorization("You are banned from this room".to_string()));
                     }
 
-                    // Re-verify password under lock to prevent race condition where
-                    // the password was changed between the initial verification and
-                    // lock acquisition. This ensures the provided password is still
-                    // valid against the current password hash.
-                    //
-                    // Always re-verify under lock, even if the hash appears unchanged.
-                    // This prevents the A→B→A race condition where the password changes
-                    // and then changes back to the same hash between the initial check
-                    // and lock acquisition.
+ // Re-verify password under lock to prevent race condition where
+ // the password was changed between the initial verification and
+ // lock acquisition. This ensures the provided password is still
+ // valid against the current password hash.
+ // Always re-verify under lock, even if the hash appears unchanged.
+ // This prevents the A→B→A race condition where the password changes
+ // and then changes back to the same hash between the initial check
+ // and lock acquisition.
                     if fresh_ctx.settings.require_password.0 {
                         if let Some(ref hash) = fresh_ctx.password_hash {
                             let provided_password = password.ok_or_else(|| {
@@ -1428,7 +1423,7 @@ impl RoomService {
                             }
                             tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
                         } else {
-                            // Room requires password but none is configured -- reject join
+ // Room requires password but none is configured -- reject join
                             tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
                             return Err(Error::Authorization("Invalid password".to_string()));
                         }
@@ -1456,7 +1451,7 @@ impl RoomService {
     ///
     /// **Idempotent**: if the user is already a member the call succeeds and
     /// returns the existing membership record. This handles the concurrent-join
-    /// race (Issue #60) where two simultaneous requests both pass validation and
+    /// race where two simultaneous requests both pass validation and
     /// then one gets `AlreadyExists` from the repository.
     async fn do_join_room(
         &self,
@@ -2163,11 +2158,11 @@ impl RoomService {
     /// **Soft-delete lifecycle (optimized):**
     /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
     /// 2. IMMEDIATELY deletes non-critical related data to free storage:
-    ///    - playlists and nested media via explicit subtree cleanup
-    ///    - `room_members`
-    ///    - `room_settings`
-    ///    - `room_playback_state`
-    ///    - `chat_messages`
+    /// - playlists and nested media via explicit subtree cleanup
+    /// - `room_members`
+    /// - `room_settings`
+    /// - `room_playback_state`
+    /// - `chat_messages`
     /// 3. Preserves only the room row (for audit) and `audit_logs` entries
     /// 4. `CleanupService::purge_soft_deleted_rooms()` eventually purges the room row
     ///    after `room_soft_delete_retention_days` (default: 90 days)
@@ -2248,8 +2243,6 @@ impl RoomService {
 
         Ok(())
     }
-
-    // ========== Room Review Workflow (Admin Only) ==========
 
     /// Approve a pending room (review workflow), changing its status to Active.
     ///
@@ -2503,8 +2496,6 @@ impl RoomService {
 
         Ok(snapshot)
     }
-
-    // ========== Query Operations ==========
 
     /// Check if a room exists (lightweight existence check, no full row fetch).
     ///
@@ -3193,8 +3184,6 @@ impl RoomService {
             .await
     }
 
-    // ========== Member Operations (delegated) ==========
-
     /// Grant permission to user
     pub async fn grant_permission(
         &self,
@@ -3331,8 +3320,6 @@ impl RoomService {
             ))
         }
     }
-
-    // ========== Media Operations (delegated) ==========
 
     /// Remove a media entry from the room in one transactional operation.
     ///
@@ -3932,8 +3919,6 @@ impl RoomService {
             .await
     }
 
-    // ========== Playback Operations (delegated) ==========
-
     /// Update playback state (play/pause/seek/etc)
     pub async fn update_playback(
         &self,
@@ -3955,8 +3940,6 @@ impl RoomService {
     pub async fn get_playback_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         self.playback_service.get_state(room_id).await
     }
-
-    // ========== Chat Operations ==========
 
     /// Get chat history using keyset (cursor) pagination.
     ///
@@ -4001,8 +3984,6 @@ impl RoomService {
         self.chat_repo.create(&message).await
     }
 
-    // ========== Permission Operations (delegated) ==========
-
     /// Check if user has permission in room
     pub async fn check_permission(
         &self,
@@ -4018,8 +3999,6 @@ impl RoomService {
             .check_permission(room_id, user_id, permission)
             .await
     }
-
-    // ========== Admin Operations ==========
 
     /// Update room status (admin use, bypasses permission checks)
     ///
@@ -4147,9 +4126,9 @@ impl RoomService {
     /// This method verifies that the room is truly orphaned by checking:
     /// 1. The room exists and is not already deleted
     /// 2. The creator's user record either:
-    ///    - Does not exist (hard-deleted), OR
-    ///    - Has `deleted_at` set (soft-deleted), OR
-    ///    - Has `status = 'Banned'`
+    /// - Does not exist (hard-deleted), OR
+    /// - Has `deleted_at` set (soft-deleted), OR
+    /// - Has `status = 'Banned'`
     ///
     /// # Arguments
     ///
@@ -4454,15 +4433,11 @@ impl RoomService {
         Duration::hours(4).num_seconds().cast_unsigned()
     }
 
-    // ========== Service Accessors ==========
-
     /// Get reference to media service
     #[must_use]
     pub const fn media_service(&self) -> &MediaService {
         &self.media_service
     }
-
-    // ========== Room Management ==========
 
     /// Approve a pending room
     ///
@@ -4634,10 +4609,10 @@ impl RoomService {
     ///
     /// ```text
     /// let mut tx = self.pool.begin().await?;
-    /// // ... perform database operations ...
+    /// //... perform database operations...
     /// tx.commit().await?;
     /// self.invalidate_room_caches(&room_id).await;
-    /// // ... post-commit operations ...
+    /// //... post-commit operations...
     /// ```
     ///
     /// Best-effort: logs warnings on failure but does not propagate errors,
@@ -4710,9 +4685,7 @@ impl RoomService {
         }
     }
 
-    // ========================
     // Batch Operations
-    // ========================
 
     /// Maximum number of items allowed in a batch operation
     pub const BATCH_SIZE_LIMIT: usize = 100;
@@ -5309,8 +5282,6 @@ mod tests {
     use sqlx::PgPool;
     use std::sync::Arc;
 
-    // ========== Room Name Validation ==========
-
     /// Replicates the room name validation from `do_create_room`.
     fn validate_room_name(name: &str) -> crate::Result<()> {
         crate::validation::RoomNameValidator::new()
@@ -5460,8 +5431,6 @@ mod tests {
         );
     }
 
-    // ========== Update Room Setting via Registry ==========
-
     #[test]
     fn test_known_setting_keys_are_valid_via_registry() {
         use crate::models::room_settings::RoomSettingsRegistry;
@@ -5527,8 +5496,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========== RoomSettings Permission Validation ==========
-
     #[test]
     fn test_settings_validate_permissions_guest_escalation_is_rejected() {
         let mut settings = RoomSettings::default();
@@ -5570,8 +5537,6 @@ mod tests {
         assert!(settings.validate_permissions().is_ok());
     }
 
-    // ========== RoomSettings Permission Calculation ==========
-
     #[test]
     fn test_admin_permissions_with_added_and_removed() {
         let mut settings = RoomSettings::default();
@@ -5599,8 +5564,6 @@ mod tests {
         assert_eq!(result.0, 0);
     }
 
-    // ========== RoomSettings Serialization ==========
-
     #[test]
     fn test_room_settings_custom_values_roundtrip() {
         let settings = RoomSettings {
@@ -5619,10 +5582,6 @@ mod tests {
         assert!(deserialized.require_password.0);
         assert_eq!(deserialized.max_members.0, 42);
     }
-
-    // ========== Room Model Tests ==========
-
-    // ========== Room Model: Ban / Unban ==========
 
     #[test]
     fn test_room_ban_sets_is_banned_and_preserves_status() {
@@ -5680,8 +5639,6 @@ mod tests {
         closed_room.status = RoomStatus::Closed;
         assert!(!closed_room.is_active());
     }
-
-    // ========== RoomMember: Ban / Unban Mutations ==========
 
     #[test]
     fn test_room_member_ban_sets_status_and_metadata() {
@@ -5744,8 +5701,6 @@ mod tests {
         assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
     }
 
-    // ========== RoomMember: Permission Modification Methods ==========
-
     #[test]
     fn test_room_member_add_and_remove_permissions() {
         use crate::models::{RoomId, RoomMember, RoomRole, UserId};
@@ -5770,8 +5725,6 @@ mod tests {
         assert!(!effective.has(PermissionBits::SEND_CHAT));
     }
 
-    // ========== Join Room Password Verification Race Condition ==========
-
     /// Documents the A→B→A password change race condition.
     ///
     /// SCENARIO: Fast path optimization doesn't detect intermediate password changes.
@@ -5794,27 +5747,23 @@ mod tests {
     #[test]
     fn test_join_room_password_race_condition_documentation() {
         // This is a documentation test explaining the race condition.
-        //
         // The bug occurs when:
         // 1. User provides password "abc123"
         // 2. Initial verification succeeds against hash H1
         // 3. Password changes to "xyz789" (hash H2)
         // 4. Password changes back to "abc123" with hash H1 (same hash!)
         // 5. Under lock, fast path skips re-verification
-        //
         // The fix: Remove the fast path at lines 578-579 and always re-verify.
-        //
         // Before fix:
-        //   if verified_hash.as_ref() == Some(hash) {
-        //       // BUG: Skip re-verification
-        //   }
-        //
+        // if verified_hash.as_ref() == Some(hash) {
+        // // BUG: Skip re-verification
+        // }
         // After fix:
-        //   // Always re-verify, no fast path
-        //   let provided_password = password.ok_or_else(|| ...)?;
-        //   if !verify_password(&provided_password, hash).await? {
-        //       return Err(...);
-        //   }
+        // // Always re-verify, no fast path
+        // let provided_password = password.ok_or_else(||...)?;
+        // if !verify_password(&provided_password, hash).await? {
+        // return Err(...);
+        // }
 
         // Demonstrate that hash comparison alone doesn't detect intermediate changes
         let hash1 = "$argon2id$v=19$m=65536,t=3,p=4$abc123$xyz789";
@@ -5846,8 +5795,6 @@ mod tests {
         // - No change (safe to skip)
         // - A->B->A change (unsafe to skip, but hash comparison can't tell)
     }
-
-    // ========== Room Creation Global Settings Checks ==========
 
     /// Replicates the `allow_room_creation` / `disable_create_room` guard logic
     /// from `do_create_room` for unit testing without a database.
@@ -5907,6 +5854,4 @@ mod tests {
             "disable_create_room=true should take precedence over allow_room_creation=true"
         );
     }
-
-    // ========== Integration Test Placeholders ==========
 }

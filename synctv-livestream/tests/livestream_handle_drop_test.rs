@@ -17,7 +17,6 @@ use tokio::sync::mpsc;
 // Mock StreamRegistryTrait that counts stop_all calls via a shared counter.
 // We can't directly observe stop_all() calls, but we can observe the effect:
 // when stop_all() is called, it removes streams from the pool.
-//
 // This test uses a different approach: we create a mock StreamPool directly,
 // add streams to it, then verify that drop clears the pool.
 struct MockStreamRegistry;
@@ -113,7 +112,6 @@ async fn test_stream_pool_stop_all_clears_streams() {
     use dashmap::DashMap;
     use std::sync::atomic::AtomicBool;
 
-    // Create a simple mock stream that implements the lifecycle traits
     struct MockLifecycle {
         is_stopping: AtomicBool,
         task_aborted: AtomicBool,
@@ -210,15 +208,11 @@ async fn test_external_publish_manager_stop_all_clears_pool() {
 async fn test_livestream_handle_drop_spawns_stop_all_task() {
     // This test verifies the P1 fix: Drop spawns a tokio task for stop_all().
     // Since we can't directly observe the spawned task, we verify by:
-    // 1. Creating a LiveStreamingInfrastructure with managers
-    // 2. Creating a minimal LivestreamHandle (or simulating its drop behavior)
-    // 3. Verifying the stop_all task completes
 
     // The actual test is in the behavior: when LivestreamHandle is dropped,
     // tokio::spawn is called with stop_all(). Since tokio::spawn is fire-and-forget,
     // we need to give the runtime a chance to execute it.
 
-    // Create infrastructure components
     let registry =
         Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
@@ -259,7 +253,6 @@ async fn test_livestream_handle_drop_spawns_stop_all_task() {
 /// We use a counter to track if stop_all was called.
 #[tokio::test]
 async fn test_stop_all_spawned_task_executes() {
-    // Create a counter to track stop_all calls
     struct Counter {
         stop_all_calls: AtomicUsize,
     }
@@ -290,7 +283,6 @@ async fn test_stop_all_spawned_task_executes() {
         counter_clone.record_stop_all();
     });
 
-    // Wait for the spawned task to complete
     tokio::time::timeout(Duration::from_millis(100), handle)
         .await
         .expect("task should complete")
@@ -370,7 +362,6 @@ async fn test_drop_behavior_simulation() {
 async fn test_stop_all_task_completes_after_scope_exit() {
     let stop_all_completed = Arc::new(AtomicUsize::new(0));
 
-    // Create managers in an inner scope
     let handle = {
         let registry =
             Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
@@ -400,7 +391,6 @@ async fn test_stop_all_task_completes_after_scope_exit() {
     };
     // Original Arcs go out of scope here, but cloned Arcs in the task keep managers alive
 
-    // Wait for the task to complete
     tokio::time::timeout(Duration::from_millis(100), handle)
         .await
         .expect("task should complete within timeout")

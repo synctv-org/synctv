@@ -125,19 +125,13 @@ async fn test_get_and_update_round_trip() {
     assert_eq!(re_read.value, "new_value");
 }
 
-// ─── Task #45: Optimistic locking tests ───────────────────────────────
+// ─── Optimistic locking tests ───────────────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_update_without_optimistic_lock_causes_lost_update() {
     // This test demonstrates the "Lost Update" problem when two concurrent
     // updates happen without optimistic locking:
-    //
-    // 1. Transaction A reads setting (version N)
-    // 2. Transaction B reads setting (version N)
-    // 3. Transaction A updates setting
-    // 4. Transaction B updates setting (overwrites A's change - LOST!)
-    //
     // Expected: Transaction B should fail with OptimisticLockConflict
 
     let (_container, pool) = create_test_pool().await;

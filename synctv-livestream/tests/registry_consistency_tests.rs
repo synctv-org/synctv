@@ -1,4 +1,4 @@
-//! Tests for `StreamRegistry` local-Redis consistency mechanisms (Task #39).
+//! Tests for `StreamRegistry` local-Redis consistency mechanisms.
 //!
 //! These tests verify that:
 //! 1. Reconciliation on startup ensures local state matches Redis
@@ -11,9 +11,7 @@
 use std::sync::Arc;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 
-// ============================================================================
 // Test 1: Reconciliation on startup
-// ============================================================================
 
 /// Test that startup reconciliation cleans up stale local entries
 /// that no longer exist in the registry.
@@ -22,7 +20,7 @@ use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 /// 1. Registry has publishers from another node
 /// 2. Local tracking has stale entries from this node
 /// 3. After reconciliation, local tracking should only have entries
-///    that exist in registry AND belong to this node
+/// that exist in registry AND belong to this node
 #[tokio::test]
 async fn test_startup_reconciliation_removes_stale_local_entries() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -207,9 +205,7 @@ async fn test_startup_cleanup_removes_stale_node_registrations() {
     assert!(registry.is_stream_active("room3", "media3").await.unwrap());
 }
 
-// ============================================================================
 // Test 2: Periodic sync mechanism
-// ============================================================================
 
 /// Test that periodic sync detects when registry entries are removed.
 ///
@@ -387,7 +383,6 @@ async fn test_periodic_sync_concurrent_safety() {
 
     // Spawn a task that modifies the registry concurrently
     let handle = tokio::spawn(async move {
-        // Wait a tiny bit then modify
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         registry_clone
             .unregister_publisher("room1", "media1")
@@ -402,7 +397,6 @@ async fn test_periodic_sync_concurrent_safety() {
     // Do a "periodic sync" - list all streams
     let streams = registry.list_active_streams().await.unwrap();
 
-    // Wait for concurrent modification
     handle.await.unwrap();
 
     // List again - might be different now
@@ -413,9 +407,7 @@ async fn test_periodic_sync_concurrent_safety() {
     assert!(streams.len() + streams_after.len() >= 1);
 }
 
-// ============================================================================
 // Test 3: Network partition simulation
-// ============================================================================
 
 /// Simulate a network partition scenario and recovery.
 ///
@@ -464,8 +456,6 @@ async fn test_network_partition_recovery_detects_ownership_loss() {
 
     // Phase 4: Network heals - Node A reconnects and checks ownership
     // Node A should detect:
-    // 1. The publisher exists in registry
-    // 2. But it's owned by nodeB, not nodeA
 
     let current_info = registry
         .get_publisher("room1", "media1")
@@ -540,9 +530,7 @@ async fn test_split_brain_prevention() {
     assert_eq!(info.node_id, "nodeB");
 }
 
-// ============================================================================
 // Test 4: Bidirectional reconciliation
-// ============================================================================
 
 /// Test that reconciliation works in both directions:
 /// - Remove local entries not in registry
@@ -552,30 +540,25 @@ async fn test_bidirectional_reconciliation() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
 
     // Setup: Create entries that exist in both places, only local, and only registry
-    // 1. Exists in both - should remain
     registry
         .try_register_publisher("room1", "media1", "local-node", "user1", "local:50051")
         .await
         .unwrap();
 
-    // 2. Only in registry (local missed the Publish event) - should be added
     registry
         .try_register_publisher("room2", "media2", "local-node", "user2", "local:50051")
         .await
         .unwrap();
 
-    // 3. From another node - should NOT be added to local tracking
     registry
         .try_register_publisher("room3", "media3", "other-node", "user3", "other:50051")
         .await
         .unwrap();
 
     // Simulate reconciliation:
-    // Step 1: List all streams from registry
     let registry_streams = registry.list_active_streams().await.unwrap();
     assert_eq!(registry_streams.len(), 3);
 
-    // Step 2: For each stream in registry, check if it belongs to local-node
     let mut local_node_streams = Vec::new();
     for (room_id, media_id) in &registry_streams {
         let info = registry.get_publisher(room_id, media_id).await.unwrap();
@@ -600,7 +583,6 @@ async fn test_bidirectional_reconciliation() {
 async fn test_reconciliation_partial_stale_entries() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
 
-    // Create multiple entries
     registry
         .try_register_publisher("room1", "media1", "local-node", "user1", "local:50051")
         .await
@@ -651,9 +633,7 @@ async fn test_reconciliation_partial_stale_entries() {
     assert_eq!(info3.node_id, "local-node");
 }
 
-// ============================================================================
 // Test 5: Periodic sync interval tests
-// ============================================================================
 
 /// Test that periodic sync correctly identifies streams that need heartbeats.
 ///
@@ -746,9 +726,7 @@ async fn test_periodic_sync_high_churn() {
     }
 }
 
-// ============================================================================
 // Test 6: Startup reconciliation edge cases
-// ============================================================================
 
 /// Test startup reconciliation when registry has entries from multiple nodes.
 #[tokio::test]
@@ -838,9 +816,7 @@ async fn test_startup_reconciliation_after_state_loss() {
     assert!(registered);
 }
 
-// ============================================================================
 // Test 7: Consistency validation helpers
-// ============================================================================
 
 /// Test helper to validate registry consistency for a node.
 ///

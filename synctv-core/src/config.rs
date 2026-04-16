@@ -1135,12 +1135,12 @@ pub struct MediaProvidersConfig {
     #[serde(default)]
     pub providers: serde_json::Value,
 
-    /// **Production Enhancement (#23)**: Timeout for external provider HTTP requests (seconds)
+    /// Timeout for external provider HTTP requests (seconds)
     /// Prevents indefinite hanging on slow/unresponsive provider APIs (Bilibili, Alist, Emby).
     /// Default: 30 seconds. Set to 0 to disable timeout (not recommended in production).
     pub request_timeout_seconds: u64,
 
-    /// **Production Enhancement (#23)**: Connection timeout for provider API connections (seconds)
+    /// Connection timeout for provider API connections (seconds)
     /// Limits time spent establishing TCP connections to external providers.
     /// Default: 10 seconds.
     pub connect_timeout_seconds: u64,
@@ -1745,13 +1745,10 @@ impl Config {
             }
         };
 
-        // -- Time --
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
 
-        // -- Shared local state root --
         env_override_str("SYNCTV_DATA_DIR", &mut self.management.data_dir);
 
-        // -- Server --
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
         env_override_parse("SYNCTV_SERVER_PORT", &mut self.server.port)?;
         env_override_bool(
@@ -1783,7 +1780,6 @@ impl Config {
             &mut self.server.grpc_max_message_size_bytes,
         )?;
 
-        // -- Metrics --
         env_override_bool("SYNCTV_METRICS_ENABLED", &mut self.metrics.enabled)?;
         env_override_str("SYNCTV_METRICS_HOST", &mut self.metrics.host);
         env_override_parse("SYNCTV_METRICS_PORT", &mut self.metrics.port)?;
@@ -1829,7 +1825,6 @@ impl Config {
             &mut self.metrics.auth.kubernetes.authorization_cache_ttl_seconds,
         )?;
 
-        // -- Management --
         env_override_bool("SYNCTV_MANAGEMENT_ENABLED", &mut self.management.enabled)?;
         env_override_enum("SYNCTV_MANAGEMENT_TRANSPORT", &mut |val| {
             self.management.transport = val.parse()?;
@@ -1849,7 +1844,6 @@ impl Config {
             &mut self.management.enable_reflection,
         )?;
 
-        // -- Database --
         env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);
         env_override_str("SYNCTV_DATABASE_HOST", &mut self.database.host);
         env_override_parse("SYNCTV_DATABASE_PORT", &mut self.database.port)?;
@@ -1877,7 +1871,6 @@ impl Config {
             &mut self.database.max_lifetime_seconds,
         )?;
 
-        // -- Redis --
         env_override_str("SYNCTV_REDIS_URL", &mut self.redis.url);
         env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
         env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
@@ -1910,7 +1903,6 @@ impl Config {
             &mut self.redis.sentinel_addresses,
         );
 
-        // -- JWT --
         env_override_str("SYNCTV_JWT_SECRET", &mut self.jwt.secret);
         env_override_parse(
             "SYNCTV_JWT_ACCESS_TOKEN_DURATION_HOURS",
@@ -1929,14 +1921,12 @@ impl Config {
             &mut self.jwt.clock_skew_leeway_secs,
         )?;
 
-        // -- Logging --
         env_override_str("SYNCTV_LOGGING_LEVEL", &mut self.logging.level);
         env_override_str("SYNCTV_LOGGING_FORMAT", &mut self.logging.format);
         env_override_opt_str("SYNCTV_LOGGING_FILTER", &mut self.logging.filter);
         env_override_bool("SYNCTV_LOGGING_BACKTRACE", &mut self.logging.backtrace)?;
         env_override_opt_str("SYNCTV_LOGGING_FILE_PATH", &mut self.logging.file_path);
 
-        // -- Livestream --
         env_override_parse(
             "SYNCTV_LIVESTREAM_RTMP_PORT",
             &mut self.livestream.rtmp_port,
@@ -1998,7 +1988,6 @@ impl Config {
             &mut self.livestream.flv_write_timeout_seconds,
         )?;
 
-        // -- Email --
         env_override_str("SYNCTV_EMAIL_SMTP_HOST", &mut self.email.smtp_host);
         env_override_parse("SYNCTV_EMAIL_SMTP_PORT", &mut self.email.smtp_port)?;
         env_override_str("SYNCTV_EMAIL_SMTP_USERNAME", &mut self.email.smtp_username);
@@ -2007,13 +1996,11 @@ impl Config {
         env_override_str("SYNCTV_EMAIL_FROM_NAME", &mut self.email.from_name);
         env_override_bool("SYNCTV_EMAIL_USE_TLS", &mut self.email.use_tls)?;
 
-        // -- OAuth2 --
         env_override_str(
             "SYNCTV_OAUTH2_REDIRECT_SCHEME",
             &mut self.oauth2.redirect_scheme,
         );
 
-        // -- Media Providers --
         env_override_parse(
             "SYNCTV_MEDIA_PROVIDERS_REQUEST_TIMEOUT_SECONDS",
             &mut self.media_providers.request_timeout_seconds,
@@ -2023,7 +2010,6 @@ impl Config {
             &mut self.media_providers.connect_timeout_seconds,
         )?;
 
-        // -- WebRTC --
         env_override_enum("SYNCTV_WEBRTC_MODE", &mut |val| {
             match val.to_lowercase().as_str() {
                 "signaling_only" => self.webrtc.mode = WebRTCMode::SignalingOnly,
@@ -2063,7 +2049,6 @@ impl Config {
             &mut self.webrtc.filter_private_ice_candidates,
         )?;
 
-        // -- Connection Limits --
         env_override_parse(
             "SYNCTV_CONNECTION_LIMITS_MAX_PER_USER",
             &mut self.connection_limits.max_per_user,
@@ -2102,7 +2087,6 @@ impl Config {
             &mut self.messaging_rate_limits.window_seconds,
         )?;
 
-        // -- Bootstrap --
         env_override_bool(
             "SYNCTV_BOOTSTRAP_CREATE_ROOT_USER",
             &mut self.bootstrap.create_root_user,
@@ -2120,7 +2104,6 @@ impl Config {
             &mut self.bootstrap.root_password,
         );
 
-        // -- Cluster --
         env_override_bool("SYNCTV_CLUSTER_ENABLED", &mut self.cluster.enabled)?;
         env_override_parse(
             "SYNCTV_CLUSTER_CRITICAL_CHANNEL_CAPACITY",
@@ -2144,7 +2127,6 @@ impl Config {
             &mut self.cluster.catchup_window_secs,
         )?;
 
-        // -- Password Complexity --
         env_override_parse(
             "SYNCTV_PASSWORD_COMPLEXITY_MIN_LENGTH",
             &mut self.password_complexity.min_length,
@@ -2170,7 +2152,6 @@ impl Config {
             &mut self.password_complexity.max_repeated_chars,
         )?;
 
-        // -- Buffer Sizes --
         env_override_parse(
             "SYNCTV_BUFFER_SIZES_WEBSOCKET_OUTBOUND",
             &mut self.buffer_sizes.websocket_outbound,
@@ -2180,7 +2161,6 @@ impl Config {
             &mut self.buffer_sizes.audit_buffer,
         )?;
 
-        // -- Cache --
         env_override_parse("SYNCTV_CACHE_L1_CAPACITY", &mut self.cache.l1_capacity)?;
         env_override_parse(
             "SYNCTV_CACHE_L1_TTL_SECONDS",
@@ -2215,7 +2195,6 @@ impl Config {
             &mut self.cache.proxy_slice_file_cache_dir,
         );
 
-        // -- HTTP Rate Limits --
         env_override_parse(
             "SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS",
             &mut self.http_rate_limits.auth_max_requests,
@@ -2273,7 +2252,6 @@ impl Config {
             &mut self.http_rate_limits.websocket_window_seconds,
         )?;
 
-        // -- gRPC Rate Limits --
         env_override_parse(
             "SYNCTV_GRPC_RATE_LIMITS_AUTH_MAX_REQUESTS",
             &mut self.grpc_rate_limits.auth_max_requests,
@@ -2985,7 +2963,7 @@ impl Config {
             }
         }
 
-        // **Production Enhancement (#23)**: Validate media provider timeouts
+        // Validate media provider timeouts
         if self.media_providers.request_timeout_seconds > 300 {
             errors.push(
                 "media_providers.request_timeout_seconds should not exceed 300 seconds (5 minutes)"
@@ -3189,11 +3167,9 @@ impl Config {
             );
         }
 
-        // Require cluster_secret when cluster mode is enabled (Issue #39).
-        //
+        // Require cluster_secret when cluster mode is enabled.
         // An empty `cluster_secret` means that ANY node claiming to be part of the
         // cluster can call inter-node gRPC endpoints without authentication.
-        //
         // In standalone mode, `cluster_secret` is not required even with Redis
         // configured, because there are no inter-node gRPC endpoints to protect.
         if self.cluster.enabled && self.server.cluster_secret.is_empty() {
@@ -3245,7 +3221,7 @@ impl Config {
             );
         }
 
-        // **WebRTC Issue (#21)**: Validate STUN external address.
+        // Validate STUN external address.
         // In cluster/K8s/NAT environments, an explicit stun_external_addr is
         // preferred, but runtime bootstrap also supports auto-detecting a
         // usable external address from advertise_host / POD_IP / cloud
@@ -3418,7 +3394,7 @@ pub struct ClusterChannelConfig {
     pub peers: Vec<String>,
 
     /// How far back (in seconds) to replay Redis Stream events when a new node
-    /// first connects to the cluster.  Replaying recent history ensures that
+    /// first connects to the cluster. Replaying recent history ensures that
     /// events published just before this node subscribed are not silently missed.
     /// Setting this too large increases startup latency in busy clusters; setting
     /// it too small risks missing events published during a brief delay between

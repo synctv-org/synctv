@@ -33,9 +33,7 @@ use std::sync::Arc;
 use synctv_core_testing::{
     create_test_pool_with_db_and_label, start_redis_url_with_label, RedisContainer, TestContainer,
 };
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Test infrastructure with shared `PostgreSQL` and Redis
 pub struct TestInfra {
@@ -156,10 +154,6 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     (owner, room)
 }
 
-// ============================================================================
-// Test: Multi-Replica Room Creation Synchronization
-// ============================================================================
-
 /// Test that room creation is visible across replicas.
 ///
 /// Scenario:
@@ -172,7 +166,6 @@ async fn test_room_creation_visible_across_replicas() {
     let infra = create_test_infra().await;
     let pool = &infra.pool;
 
-    // Create room via "Node A"
     let (owner, room) = setup_test_room(pool, "Multi-Replica Room").await;
 
     // "Node B" queries for the room (same pool, different repository instance)
@@ -201,7 +194,6 @@ async fn test_room_settings_synchronized_across_replicas() {
     let infra = create_test_infra().await;
     let pool = &infra.pool;
 
-    // Create room with settings on "Node A"
     let (_owner, room) = setup_test_room(pool, "Settings Sync Room").await;
     let room_settings_repo_a = RoomSettingsRepository::new(pool.clone());
     let settings = RoomSettings {
@@ -226,10 +218,6 @@ async fn test_room_settings_synchronized_across_replicas() {
     );
 }
 
-// ============================================================================
-// Test: Multi-Replica Member Change Synchronization
-// ============================================================================
-
 /// Test that member joins are synchronized across replicas via Redis.
 ///
 /// Scenario:
@@ -248,7 +236,6 @@ async fn test_member_join_synchronized_via_redis() {
 
     let (_owner, room) = setup_test_room(pool, "Member Sync Room").await;
 
-    // Create cache invalidation services for two nodes
     let cache_invalidation_a = distributed_invalidation_service(
         redis_client.clone(),
         "node_a",
@@ -271,7 +258,6 @@ async fn test_member_join_synchronized_via_redis() {
         .await
         .expect("Failed to start node_b cache invalidation");
 
-    // Create permission services with cache invalidation
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -301,7 +287,6 @@ async fn test_member_join_synchronized_via_redis() {
         .await
         .expect("Failed to start permission_service_b");
 
-    // Create a new member
     let user_repo = UserRepository::new(pool.clone());
     let new_member = user_repo
         .create(&make_user("sync_member"))
@@ -318,7 +303,6 @@ async fn test_member_join_synchronized_via_redis() {
         .invalidate_cache(&room.id, &new_member.id)
         .await;
 
-    // Wait for invalidation to propagate
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Node B queries permissions (should fetch fresh data)
@@ -346,7 +330,6 @@ async fn test_member_role_change_synchronized() {
 
     let (_owner, room) = setup_test_room(pool, "Role Sync Room").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member_user = user_repo
@@ -359,7 +342,6 @@ async fn test_member_role_change_synchronized() {
         .await
         .expect("Failed to add member");
 
-    // Create cache invalidation services
     let cache_invalidation_a = distributed_invalidation_service(
         redis_client.clone(),
         "node_a",
@@ -434,7 +416,6 @@ async fn test_member_role_change_synchronized() {
         .invalidate_cache(&room.id, &member_user.id)
         .await;
 
-    // Wait for invalidation
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Node B: Query again
@@ -447,10 +428,6 @@ async fn test_member_role_change_synchronized() {
     // Note: The initial permissions might be from Member role, Admin should have >= those
     assert!(perms_after.0 > 0, "Admin should have permissions");
 }
-
-// ============================================================================
-// Test: Network Partition Recovery
-// ============================================================================
 
 /// Test that cache remains consistent after simulated network partition.
 ///
@@ -469,7 +446,6 @@ async fn test_cache_consistency_after_partition_recovery() {
 
     let (_owner, room) = setup_test_room(pool, "Partition Room").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member_user = user_repo
@@ -482,7 +458,6 @@ async fn test_cache_consistency_after_partition_recovery() {
         .await
         .expect("Failed to add member");
 
-    // Create permission service WITHOUT Redis (simulating partition)
     let permission_service = PermissionService::new(
         member_repo.clone(),
         RoomRepository::new(pool.clone()),
@@ -541,7 +516,6 @@ async fn test_operations_work_without_redis() {
 
     let (_owner, room) = setup_test_room(pool, "Degraded Mode Room").await;
 
-    // Create permission service WITHOUT Redis
     let member_repo = RoomMemberRepository::new(pool.clone());
     let permission_service = PermissionService::new(
         member_repo.clone(),
@@ -551,7 +525,6 @@ async fn test_operations_work_without_redis() {
         300,
     );
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_user = user_repo
         .create(&make_user("degraded_member"))
@@ -575,10 +548,6 @@ async fn test_operations_work_without_redis() {
     );
 }
 
-// ============================================================================
-// Test: Redis PubSub Message Delivery
-// ============================================================================
-
 /// Test that room invalidation messages are delivered via Redis `PubSub`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -587,7 +556,6 @@ async fn test_room_invalidation_message_delivery() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_invalidation_key("test:room:invalidate");
 
-    // Create two cache invalidation services
     let service_a =
         distributed_invalidation_service(redis_client.clone(), "node_a", stream_key.clone()).await;
     let service_b = distributed_invalidation_service(redis_client, "node_b", stream_key).await;
@@ -720,7 +688,6 @@ async fn test_concurrent_invalidation_messages_ordered() {
 
     let mut receiver = service_b.subscribe();
 
-    // Send multiple messages concurrently
     let room1 = RoomId::new();
     let room2 = RoomId::new();
     let user1 = UserId::new();
@@ -782,10 +749,6 @@ async fn test_concurrent_invalidation_messages_ordered() {
     assert_eq!(user_count, 1, "Should receive 1 User message");
 }
 
-// ============================================================================
-// Test: Room Member Count Synchronization
-// ============================================================================
-
 /// Test that member count is accurate across replicas after join/leave.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -795,7 +758,6 @@ async fn test_member_count_synchronized_across_replicas() {
 
     let (_owner, room) = setup_test_room(pool, "Count Sync Room").await;
 
-    // Create members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
@@ -846,7 +808,6 @@ async fn test_ban_visible_across_replicas() {
 
     let (owner, room) = setup_test_room(pool, "Ban Sync Room").await;
 
-    // Create member
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member_user = user_repo
@@ -901,9 +862,7 @@ async fn test_ban_visible_across_replicas() {
     );
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
 async fn start_redis() -> (RedisContainer, String) {
     start_redis_url_with_label("room-cluster-sync").await

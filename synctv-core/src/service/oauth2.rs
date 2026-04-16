@@ -4,6 +4,7 @@
 //! Tokens are only used temporarily during login to fetch user info.
 //!
 //! ## State Storage
+//!
 //! `OAuth2` states are persisted via the [`OAuthStateStore`] trait. Two
 //! implementations are provided:
 //! - [`RedisOAuthStateStore`]: shared cross-node storage for multi-replica
@@ -27,9 +28,7 @@ use crate::{
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
-// ============================================================================
 // OAuthStateStore trait
-// ============================================================================
 
 /// Storage backend for `OAuth2` CSRF state tokens.
 ///
@@ -112,9 +111,7 @@ pub fn shared_oauth_state_store(
     Arc::new(RedisOAuthStateStore::from_runtime(runtime, key_prefix))
 }
 
-// ============================================================================
 // RedisOAuthStateStore
-// ============================================================================
 
 /// Redis-backed [`OAuthStateStore`].
 ///
@@ -246,9 +243,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
     }
 }
 
-// ============================================================================
 // InMemoryOAuthStateStore
-// ============================================================================
 
 /// Entry stored in the in-memory OAuth state cache, pairing the state with its TTL.
 #[derive(Clone)]
@@ -347,9 +342,7 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
     }
 }
 
-// ============================================================================
 // Domain types
-// ============================================================================
 
 /// Default TTL for `OAuth2` states (5 minutes)
 const OAUTH2_STATE_TTL_SECONDS: u64 = 300;
@@ -383,15 +376,13 @@ pub struct OAuth2UserInfo {
 ///
 /// The provider is stored as `Arc<dyn>` rather than `Box<dyn>` so that callers
 /// can clone the `Arc` while holding the read lock and then drop the lock before
-/// invoking any async methods on the provider (Issue #74 — TOCTOU race fix).
+/// invoking any async methods on the provider (TOCTOU race fix).
 struct OAuth2ProviderEntry {
     provider: Arc<dyn OAuth2ProviderTrait>,
     provider_type: OAuth2Provider,
 }
 
-// ============================================================================
 // OAuth2Service
-// ============================================================================
 
 /// `OAuth2` authentication service
 ///
@@ -406,14 +397,15 @@ struct OAuth2ProviderEntry {
 #[derive(Clone)]
 pub struct OAuth2Service {
     repository: UserOAuthProviderRepository,
-    /// Map of instance name -> (provider instance, provider enum type)
-    /// M-03: Consolidated from separate providers + `provider_types` maps to prevent lock ordering issues
+    /// Map of instance name -> (provider instance, provider enum type).
+    /// Consolidated from separate providers and `provider_types` maps to
+    /// prevent lock ordering issues.
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
-    /// State storage backend — injected via trait object
+    /// State storage backend injected via trait object.
     state_store: Arc<dyn OAuthStateStore>,
     /// Factory registry used to build providers without relying on global state.
     provider_registry: crate::oauth2::ProviderRegistry,
-    /// Allowlist of permitted redirect domains (empty = relative paths only)
+    /// Allowlist of permitted redirect domains. Empty means relative paths only.
     allowed_redirect_domains: Arc<Vec<String>>,
 }
 
@@ -557,7 +549,6 @@ impl OAuth2Service {
             instance_name,
             provider_type.as_str()
         );
-        // Wrap in Arc so we can clone the reference while holding the read lock (Issue #74)
         providers.insert(
             instance_name,
             OAuth2ProviderEntry {
@@ -590,7 +581,7 @@ impl OAuth2Service {
 
     /// Shared implementation for building an `OAuth2` authorization URL.
     ///
-    /// Issue #74 (TOCTOU fix): The provider `Arc` is cloned while holding the read lock,
+    /// (TOCTOU fix): The provider `Arc` is cloned while holding the read lock,
     /// then the lock is released before any async I/O takes place. This prevents a race
     /// where another thread could call `unlink_provider` between the lookup and the
     /// `new_auth_url()` call.
@@ -709,7 +700,7 @@ impl OAuth2Service {
                 }
                 let domain_matched = allowed_domains.iter().any(|d| {
                     // Reject TLD-only entries (no dots) to prevent overly broad matching.
-                    // e.g. "com" in the allowlist should NOT allow all .com domains.
+                    // e.g. "com" in the allowlist should NOT allow all.com domains.
                     if !d.contains('.') {
                         return false;
                     }
@@ -779,7 +770,7 @@ impl OAuth2Service {
 
     /// Exchange authorization code for user info with PKCE verification
     ///
-    /// Issue #74 (TOCTOU fix): Provider `Arc` and provider type are captured while
+    /// (TOCTOU fix): Provider `Arc` and provider type are captured while
     /// holding the read lock, then the lock is released before any async network I/O.
     /// This prevents a race where the provider could be unregistered between the
     /// `providers.get()` lookup and the `get_user_info()` network call.
@@ -1170,9 +1161,7 @@ mod tests {
     use async_trait::async_trait;
     use sqlx::PgPool;
 
-    // ========================================================================
     // Mock OAuth2 Provider
-    // ========================================================================
 
     #[tokio::test]
     async fn test_redis_oauth_state_store_accepts_trait_object_runtime() {
@@ -1308,9 +1297,7 @@ mod tests {
         }
     }
 
-    // ========================================================================
     // Test service helpers — no Redis required
-    // ========================================================================
 
     fn create_test_service() -> OAuth2Service {
         create_test_service_with_cluster_mode(false)
@@ -1335,9 +1322,7 @@ mod tests {
         svc
     }
 
-    // ========================================================================
     // Tests: Redirect URL Validation (security-critical)
-    // ========================================================================
 
     #[test]
     fn test_redirect_relative_path_allowed() {
@@ -1457,7 +1442,7 @@ mod tests {
 
     #[test]
     fn test_redirect_tld_only_domain_rejected() {
-        // Adding "com" to allowlist should NOT allow all .com domains
+        // Adding "com" to allowlist should NOT allow all.com domains
         let domains = vec!["com".to_string()];
         let result = OAuth2Service::validate_redirect_url_with_allowlist(
             "https://evil.com/callback",
@@ -1510,9 +1495,7 @@ mod tests {
         assert!(hostname.is_ok());
     }
 
-    // ========================================================================
     // Tests: State Management (in-memory, no Redis required)
-    // ========================================================================
 
     #[tokio::test]
     async fn test_store_and_consume_state() {
@@ -1612,9 +1595,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // Tests: Provider Registration and Listing
-    // ========================================================================
 
     #[tokio::test]
     async fn test_register_and_list_providers() {
@@ -1700,9 +1681,7 @@ mod tests {
         assert_eq!(providers[0].1, OAuth2Provider::Oidc);
     }
 
-    // ========================================================================
     // Tests: Authorization URL Generation with PKCE
-    // ========================================================================
 
     #[tokio::test]
     async fn test_get_authorization_url_success() {
@@ -1866,9 +1845,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // Tests: Authorization URL with User Binding (PKCE)
-    // ========================================================================
 
     #[tokio::test]
     async fn test_get_authorization_url_with_user_stores_user_id() {
@@ -1935,9 +1912,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // Tests: Code Exchange for User Info
-    // ========================================================================
 
     #[tokio::test]
     async fn test_exchange_code_for_user_info_success() {
@@ -2005,9 +1980,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // Tests: Full Authorization Flow (URL -> State -> Exchange)
-    // ========================================================================
 
     #[tokio::test]
     async fn test_full_oauth2_login_flow() {
@@ -2073,9 +2046,7 @@ mod tests {
         assert_eq!(state.instance_name, "logto");
     }
 
-    // ========================================================================
     // Tests: Service Configuration
-    // ========================================================================
 
     #[tokio::test]
     async fn test_state_store_is_abstracted() {
@@ -2117,9 +2088,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // Tests: OAuth2State serialization (used for storage path)
-    // ========================================================================
 
     #[test]
     fn test_oauth2_state_serialization_roundtrip() {
@@ -2160,9 +2129,7 @@ mod tests {
         assert!(deserialized.bind_user_id.is_none());
     }
 
-    // ========================================================================
     // Tests: Concurrent State Operations
-    // ========================================================================
 
     #[tokio::test]
     async fn test_multiple_concurrent_states() {
@@ -2197,9 +2164,7 @@ mod tests {
         }
     }
 
-    // ========================================================================
     // Tests: PKCE Verifier Integrity
-    // ========================================================================
 
     #[tokio::test]
     async fn test_pkce_verifier_preserved_through_state_lifecycle() {
@@ -2259,9 +2224,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // Tests: OAuth2 Concurrent State Consumption (only one succeeds)
-    // ========================================================================
 
     #[tokio::test]
     async fn test_concurrent_state_consumption_only_first_succeeds() {
@@ -2348,9 +2311,7 @@ mod tests {
         assert!(replay.is_err(), "State token should be consumed");
     }
 
-    // ========================================================================
     // Tests: State Isolation Between Tokens
-    // ========================================================================
 
     #[tokio::test]
     async fn test_consuming_one_state_does_not_affect_others() {
@@ -2388,9 +2349,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // Tests: CSRF Protection - Defense in Depth
-    // ========================================================================
 
     /// Test that state tokens with expired `created_at` timestamps are rejected
     /// even if they somehow persist in the store (defense-in-depth).
@@ -2542,9 +2501,7 @@ mod tests {
         // This test verifies the state contains the correct instance_name.
     }
 
-    // ========================================================================
     // Cluster mode Redis dependency tests (TDD)
-    // ========================================================================
 
     /// Test: cluster mode with a local-only state store returns a descriptive error.
     /// This is the core issue - in cluster mode, `OAuth2` states created on replica A
@@ -2650,9 +2607,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // Tests: InMemoryOAuthStateStore (moka cache)
-    // ========================================================================
 
     #[tokio::test]
     async fn test_in_memory_store_and_consume() {

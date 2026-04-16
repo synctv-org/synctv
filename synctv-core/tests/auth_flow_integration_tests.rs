@@ -1,5 +1,4 @@
-//! Authentication flow integration tests (Task #90)
-//!
+//! Authentication flow integration tests //!
 //! Tests the complete authentication flow: register → verify → login
 //!
 //! Run with: cargo test --test `auth_flow_integration_tests`
@@ -21,7 +20,6 @@ async fn test_complete_registration_flow() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Step 1: Register user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let email = format!("{username}@test.com");
     let password = "SecurePassword123!";
@@ -54,7 +52,6 @@ async fn test_complete_registration_flow() {
     assert_eq!(created_user.status, UserStatus::Pending);
     assert!(!created_user.email_verified);
 
-    // Step 2: Verify email (simulate)
     let mut verified_user = created_user.clone();
     verified_user.status = UserStatus::Active;
     verified_user.email_verified = true;
@@ -67,7 +64,6 @@ async fn test_complete_registration_flow() {
     assert_eq!(updated_user.status, UserStatus::Active);
     assert!(updated_user.email_verified);
 
-    // Step 3: Login
     let fetched_user = user_repo
         .get_by_username(&username)
         .await
@@ -105,7 +101,6 @@ async fn test_login_with_wrong_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "CorrectPassword123!";
     let password_hash = hash_password(password)
@@ -154,7 +149,6 @@ async fn test_login_unverified_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create unverified user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
@@ -204,7 +198,6 @@ async fn test_token_refresh_flow() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    // Step 1: Initial login - get access and refresh tokens
     let access_token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign access token");
@@ -212,10 +205,8 @@ async fn test_token_refresh_flow() {
         .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
-    // Step 2: Access token expires (simulated by time passing)
     // In real scenario, we would wait or use expired token
 
-    // Step 3: Use refresh token to get new access token
     let refresh_claims = jwt_service
         .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
@@ -224,7 +215,6 @@ async fn test_token_refresh_flow() {
         .sign_token(&refresh_claims.user_id(), TokenType::Access, 0)
         .expect("Failed to sign new access token");
 
-    // Step 4: Verify new access token works
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)
         .expect("Failed to verify new access token");
@@ -241,7 +231,6 @@ async fn test_password_change_invalidates_tokens() {
     let user_repo = UserRepository::new(pool.clone());
     let jwt_service = create_test_jwt_service();
 
-    // Create user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let old_password = "OldPassword123!";
     let password_hash = hash_password(old_password)
@@ -323,7 +312,6 @@ async fn test_concurrent_login_attempts() {
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
     let jwt_service = Arc::new(create_test_jwt_service());
 
-    // Create user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
@@ -395,7 +383,6 @@ async fn test_banned_user_login_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create banned user
     let username = format!("test_user_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)
@@ -444,7 +431,6 @@ async fn test_username_case_insensitive_login() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create user with lowercase username
     let username = format!("testuser_{}", synctv_common::snanoid!(10));
     let password = "Password123!";
     let password_hash = hash_password(password)

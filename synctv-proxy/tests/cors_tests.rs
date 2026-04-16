@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 
-// ==================================================================
 // CORS preflight with allowed origins tests
-// ==================================================================
 
 /// Test that Origin in allowed list returns correct CORS headers
 #[tokio::test]
@@ -227,9 +225,7 @@ async fn test_cors_wildcard_mode_allows_all() {
     );
 }
 
-// ==================================================================
 // Security: Wildcard mode with credentials is forbidden
-// ==================================================================
 
 /// Test that wildcard mode does NOT include credentials header
 /// Per CORS spec, Access-Control-Allow-Credentials cannot be used with wildcard origin

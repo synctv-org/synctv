@@ -5,9 +5,7 @@
 #![allow(clippy::unwrap_used)]
 use synctv_cluster::discovery::node_registry::{FencingToken, NodeInfo};
 
-// ============================================================================
 // Test 1: fencing_token from different node IDs is NOT "newer"
-// ============================================================================
 
 #[test]
 fn test_fencing_token_different_node_ids_not_newer() {
@@ -26,9 +24,7 @@ fn test_fencing_token_different_node_ids_not_newer() {
     );
 }
 
-// ============================================================================
 // Test 2: same node_id, higher epoch IS newer
-// ============================================================================
 
 #[test]
 fn test_fencing_token_same_node_higher_epoch_is_newer() {
@@ -40,9 +36,7 @@ fn test_fencing_token_same_node_higher_epoch_is_newer() {
     assert!(!old.is_newer_than(&old)); // equal is not newer
 }
 
-// ============================================================================
 // Test 3: NodeInfo fencing_token returns correct values
-// ============================================================================
 
 #[test]
 fn test_node_info_fencing_token_values() {
@@ -53,9 +47,7 @@ fn test_node_info_fencing_token_values() {
     assert_eq!(token.epoch, 42);
 }
 
-// ============================================================================
 // Test 4: FencingToken serialization round-trip
-// ============================================================================
 
 #[test]
 fn test_fencing_token_serde_roundtrip() {
@@ -65,9 +57,7 @@ fn test_fencing_token_serde_roundtrip() {
     assert_eq!(deserialized, token);
 }
 
-// ============================================================================
 // Test 6: NodeInfo is_stale behavior
-// ============================================================================
 
 #[test]
 fn test_node_info_is_stale() {

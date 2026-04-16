@@ -795,7 +795,7 @@ impl ServerSession {
 
         self.state = ServerSessionState::Play;
 
-        // Fixed #116: Notify viewer join via callback
+        // Notify viewer join via callback
         if let Some(cb) = &self.callbacks.on_viewer_join {
             cb();
         }
@@ -965,7 +965,7 @@ impl ServerSession {
 
         self.is_publishing = true;
 
-        // Fixed #116: Notify publisher start via callback
+        // Notify publisher start via callback
         if let Some(cb) = &self.callbacks.on_publisher_start {
             cb();
         }

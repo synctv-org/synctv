@@ -5,14 +5,14 @@
 //!
 //! ## HTTP vs gRPC endpoint mapping
 //!
-//! | HTTP endpoint                                          | gRPC RPC                         | Auth required |
+//! | HTTP endpoint | gRPC RPC | Auth required |
 //! |--------------------------------------------------------|----------------------------------|---------------|
-//! | `GET  /api/oauth2/:provider/authorize?redirect_url=`   | `GetAuthorizationUrl`            | No            |
-//! | `GET  /api/oauth2/:provider/bind?redirect_url=`        | `GetAuthorizationUrlForBind`     | Yes           |
-//! | `POST /api/oauth2/:provider/exchange` (JSON body)      | `ExchangeAuthorizationCode`      | No            |
-//! | `GET  /api/oauth2/providers`                           | `ListAvailableProviders`         | No            |
-//! | `DELETE /api/oauth2/type/:provider/unlink?provider_user_id=`| `UnlinkProvider`            | Yes           |
-//! | `GET  /api/oauth2/linked`                              | `GetLinkedProviders`             | Yes           |
+//! | `GET /api/oauth2/:provider/authorize?redirect_url=` | `GetAuthorizationUrl` | No |
+//! | `GET /api/oauth2/:provider/bind?redirect_url=` | `GetAuthorizationUrlForBind` | Yes |
+//! | `POST /api/oauth2/:provider/exchange` (JSON body) | `ExchangeAuthorizationCode` | No |
+//! | `GET /api/oauth2/providers` | `ListAvailableProviders` | No |
+//! | `DELETE /api/oauth2/type/:provider/unlink?provider_user_id=`| `UnlinkProvider` | Yes |
+//! | `GET /api/oauth2/linked` | `GetLinkedProviders` | Yes |
 //!
 //! Both transports share the same `OAuth2ApiImpl` backend. HTTP extracts the
 //! provider name from URL path segments and optional params from query strings;
@@ -159,8 +159,6 @@ pub async fn exchange_authorization_code(
     validate_oauth2_proto_request(&req)?;
 
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
-
-    // Extract client IP for brute-force protection (Issue #24).
     let client_ip = crate::client_ip::extract_client_ip_from_headers(
         &state.config,
         connect_info.0.ip(),

@@ -69,9 +69,7 @@ async fn create_test_users(service: &UserService, count: usize, prefix: &str) ->
     user_ids
 }
 
-// ============================================================================
 // Batch Delete Users Tests
-// ============================================================================
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -79,7 +77,6 @@ async fn batch_delete_users_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool);
 
-    // Create 5 test users
     let user_ids = create_test_users(&service, 5, "batch_del").await;
     let user_id_strs: Vec<String> = user_ids
         .iter()
@@ -107,7 +104,6 @@ async fn batch_delete_users_exceeds_limit_fails() {
         .map(|i| format!("fake_user_{i}"))
         .collect();
 
-    // Attempt to delete more than limit
     let result = service.batch_delete_users(&user_id_strs).await;
     assert!(
         result.is_err(),

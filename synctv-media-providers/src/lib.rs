@@ -1,10 +1,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 // SyncTV Provider Clients
-//
 // This crate contains pure HTTP client implementations and gRPC servers for various media providers.
 // These clients are independent of the MediaProvider trait and can be used standalone
 // or as provider_instances in the SyncTV system.
-//
 // Architecture:
 // - synctv-media-providers: Pure HTTP clients + gRPC servers (Alist, Bilibili, Emby)
 // - synctv-core/provider: MediaProvider trait implementations (adapters calling these clients)

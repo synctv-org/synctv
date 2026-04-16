@@ -12,9 +12,7 @@ use synctv_media_providers::BilibiliClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// ============================================================================
 // match_url additional coverage
-// ============================================================================
 
 #[test]
 fn test_match_url_bvid_with_query_params() {
@@ -57,9 +55,7 @@ fn test_match_url_bangumi_ss_long_id() {
     assert_eq!(id, "ss888888");
 }
 
-// ============================================================================
 // extract_bvid / extract_epid / is_short_link
-// ============================================================================
 
 #[test]
 fn test_extract_bvid_from_url() {
@@ -105,9 +101,7 @@ fn test_is_short_link_false_positives() {
     assert!(!BilibiliClient::is_short_link(""));
 }
 
-// ============================================================================
 // BilibiliClient creation
-// ============================================================================
 
 #[test]
 fn test_client_creation_no_cookies() {
@@ -154,9 +148,7 @@ async fn test_new_qr_code_uses_injected_endpoints() {
     assert_eq!(key, "qr-test-key");
 }
 
-// ============================================================================
 // Quality type tests
-// ============================================================================
 
 #[test]
 fn test_quality_to_qn() {
@@ -188,9 +180,7 @@ fn test_quality_as_str() {
     assert_eq!(Quality::P360.as_str(), "360P");
 }
 
-// ============================================================================
 // VideoId / EpisodeId types
-// ============================================================================
 
 #[test]
 fn test_video_id_bvid() {
@@ -213,9 +203,7 @@ fn test_episode_id() {
     assert_eq!(eid.0, "ep123456");
 }
 
-// ============================================================================
 // Type deserialization tests (verify JSON response shapes)
-// ============================================================================
 
 #[test]
 fn test_video_page_info_resp_deserialize() {
@@ -585,9 +573,7 @@ fn test_live_danmu_info_resp_deserialize() {
     assert_eq!(resp.data.host_list[0].wss_port, 443);
 }
 
-// ============================================================================
 // Error response deserialization
-// ============================================================================
 
 #[test]
 fn test_video_page_info_error_code() {
@@ -657,9 +643,7 @@ fn test_pgc_url_resp_deserialize() {
     assert_eq!(resp.result.durl.len(), 1);
 }
 
-// ============================================================================
 // Danmaku heartbeat packet tests
-// ============================================================================
 
 /// Test that build_heartbeat_packet produces correct binary format
 /// Header format: packet_length (4) + header_length (2) + version (2) + operation (4) + sequence (4)
@@ -717,9 +701,7 @@ fn test_auth_packet_format() {
     assert_eq!(json["key"], "test_token");
 }
 
-// ============================================================================
 // DanmakuMessage tests
-// ============================================================================
 
 #[test]
 fn test_danmaku_message_debug() {
@@ -747,9 +729,7 @@ fn test_danmaku_message_heartbeat() {
     }
 }
 
-// ============================================================================
 // HeartbeatConfig tests
-// ============================================================================
 
 #[test]
 fn test_heartbeat_config_default() {
@@ -771,9 +751,7 @@ fn test_heartbeat_config_custom() {
     assert_eq!(config.interval, Duration::from_secs(10));
 }
 
-// ============================================================================
 // ReconnectConfig tests
-// ============================================================================
 
 #[test]
 fn test_reconnect_config_default() {
@@ -863,9 +841,7 @@ fn test_reconnect_config_delay_never_exceeds_max() {
     }
 }
 
-// ============================================================================
 // ReconnectResult tests
-// ============================================================================
 
 #[test]
 fn test_reconnect_result_messages() {

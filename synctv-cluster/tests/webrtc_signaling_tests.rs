@@ -18,9 +18,7 @@ fn rid(s: &str) -> RoomId {
     RoomId::from_string(s.to_string())
 }
 
-// ============================================================================
 // Test 1: ICE candidate exchange
-// ============================================================================
 
 /// Test ICE candidate event creation and serialization.
 #[test]
@@ -88,7 +86,6 @@ async fn test_ice_candidate_routing() {
         .await
         .expect("subscribe should succeed");
 
-    // Send ICE candidate from user1 to user2
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room.clone(),
@@ -160,9 +157,7 @@ async fn test_ice_candidate_routing_supports_conn_id_only_target() {
     );
 }
 
-// ============================================================================
 // Test 2: SDP offer/answer exchange
-// ============================================================================
 
 /// Test SDP offer event.
 #[test]
@@ -283,9 +278,7 @@ async fn test_sdp_offer_answer_flow() {
     assert!(received.is_ok(), "Caller should receive answer");
 }
 
-// ============================================================================
 // Test 3: WebRTC join/leave events
-// ============================================================================
 
 /// Test WebRTC join event.
 #[test]
@@ -378,9 +371,7 @@ async fn test_webrtc_join_leave_broadcast() {
     assert!(r2.is_ok());
 }
 
-// ============================================================================
 // Test 4: Connection manager RTC state
-// ============================================================================
 
 /// Test RTC connection tracking in `ConnectionManager`.
 #[tokio::test]
@@ -421,9 +412,7 @@ async fn test_rtc_connection_tracking() {
     assert_eq!(rtc[0].connection_id, "conn2");
 }
 
-// ============================================================================
 // Test 5: Signaling message format validation
-// ============================================================================
 
 /// Test from field parsing (`user_id|conn_id` format).
 #[test]
@@ -466,9 +455,7 @@ fn test_signaling_to_field_format() {
     assert!(user_id.is_none());
 }
 
-// ============================================================================
 // Test 6: Multi-user signaling
-// ============================================================================
 
 /// Test signaling between multiple users in same room.
 #[tokio::test]
@@ -513,9 +500,7 @@ async fn test_multi_user_signaling() {
     assert!(r3.is_err(), "user3 should not receive (not targeted)");
 }
 
-// ============================================================================
 // Test 7: Signaling timeout handling (conceptual)
-// ============================================================================
 
 /// Test that signaling events have timestamps for timeout detection.
 #[test]
@@ -541,9 +526,7 @@ fn test_signaling_event_timestamp() {
     assert!(!is_stale, "Fresh event should not be stale");
 }
 
-// ============================================================================
 // Test 8: Connection cleanup on WebRTC leave
-// ============================================================================
 
 /// Test that connection is cleaned up when user leaves WebRTC.
 #[tokio::test]
@@ -570,9 +553,7 @@ async fn test_connection_cleanup_on_webrtc_leave() {
     assert!(rtc.is_empty());
 }
 
-// ============================================================================
 // Test 9: WebRTC signaling not critical
-// ============================================================================
 
 /// Test that WebRTC signaling events are not classified as critical.
 #[test]
@@ -593,9 +574,7 @@ fn test_webrtc_signaling_not_critical() {
     );
 }
 
-// ============================================================================
 // Test 10: Large SDP payload
-// ============================================================================
 
 /// Test that large SDP payloads can be serialized.
 #[test]
@@ -630,9 +609,7 @@ fn test_large_sdp_payload() {
     }
 }
 
-// ============================================================================
 // Test 11: Broadcast to user's all connections
-// ============================================================================
 
 /// Test broadcasting signaling to all connections of a user.
 #[tokio::test]

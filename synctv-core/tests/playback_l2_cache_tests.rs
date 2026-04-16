@@ -26,9 +26,7 @@ use synctv_core::{
 };
 use synctv_core_testing::start_redis as start_test_redis;
 
-// ============================================================================
 // Test Helpers
-// ============================================================================
 
 async fn start_redis() -> (
     synctv_core_testing::RedisContainer,
@@ -86,9 +84,7 @@ fn make_user(username: &str) -> User {
     }
 }
 
-// ============================================================================
 // Test 1: L1 Cache Hit Behavior
-// ============================================================================
 
 /// Test that when L1 cache has the data, it's returned without DB/L2 lookup.
 ///
@@ -128,9 +124,7 @@ async fn test_playback_state_l1_cache_hit() {
     assert_eq!(state2.version, state1.version);
 }
 
-// ============================================================================
 // Test 2: L1 Miss Should Check L2
-// ============================================================================
 
 /// Test that when L1 cache misses, L2 (Redis) is checked.
 ///
@@ -187,9 +181,7 @@ async fn test_playback_state_l1_miss_hits_l2() {
     assert!(from_l2.is_some(), "L2 should have the playback state");
 }
 
-// ============================================================================
 // Test 3: L2 Miss Should Read From PostgreSQL
-// ============================================================================
 
 /// Test that when both L1 and L2 miss, PostgreSQL is queried.
 ///
@@ -296,9 +288,7 @@ async fn test_playback_state_get_state_persists_missing_row() {
     pool.close().await;
 }
 
-// ============================================================================
 // Test 4: Cross-Replica Consistency via L2
-// ============================================================================
 
 /// Test that state updates are visible across "replicas" via L2 cache.
 ///
@@ -366,9 +356,7 @@ async fn test_playback_state_cross_replica_consistency() {
     );
 }
 
-// ============================================================================
 // Test 5: Cache Invalidation on State Update
-// ============================================================================
 
 /// Test that cache is properly invalidated when state is updated.
 ///
@@ -425,9 +413,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
     );
 }
 
-// ============================================================================
 // Test 6: L2 TTL Enforcement
-// ============================================================================
 
 /// Test that L2 cache entries have proper TTL.
 ///
@@ -453,9 +439,7 @@ async fn test_playback_state_l2_has_proper_ttl() {
     assert!(ttl > 0 && ttl <= 60, "TTL should be set and <= 60 seconds");
 }
 
-// ============================================================================
 // Test 7: Version-Based Cache Update (Prevents Stale Overwrites)
-// ============================================================================
 
 /// Test that older versions don't overwrite newer versions in L2.
 ///
@@ -471,7 +455,6 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
     let l2_key = "test:playback:version_test";
 
-    // Create a newer state (version 10)
     let mut newer_state = synctv_core::models::RoomPlaybackState::new(RoomId::from_string(
         "version_room".to_string(),
     ));
@@ -489,7 +472,6 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
         .unwrap();
     assert!(was_set, "Newer state should be set");
 
-    // Create an older state (version 5)
     let mut older_state = synctv_core::models::RoomPlaybackState::new(RoomId::from_string(
         "version_room".to_string(),
     ));
@@ -513,9 +495,7 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     assert_eq!(stored.version, 10, "Version should still be 10");
 }
 
-// ============================================================================
 // Test 8: SingleFlight Prevents Thundering Herd on L2 Miss
-// ============================================================================
 
 /// Test that concurrent requests for the same key don't all hit L2/DB.
 ///
@@ -577,9 +557,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
     assert_eq!(success_count, 10, "All requests should succeed");
 }
 
-// ============================================================================
 // Test 9: PubSub + L2 Fallback for Cross-Replica Sync
-// ============================================================================
 
 /// Test that when PubSub fails, L2 provides fallback consistency.
 ///
@@ -729,9 +707,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     );
 }
 
-// ============================================================================
 // Test 10: PlaybackStateCache Direct Test with L2 (Redis)
-// ============================================================================
 
 /// Test the PlaybackStateCache directly with a real Redis backend.
 ///
@@ -792,9 +768,7 @@ async fn test_playback_state_cache_direct_with_redis() {
     );
 }
 
-// ============================================================================
 // Test 11: PlaybackStateCache set_if_newer with Real Redis
-// ============================================================================
 
 /// Test the set_if_newer functionality with real Redis backend.
 ///
@@ -812,7 +786,6 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
 
     let room_id = RoomId::from_string("newer_test_room".to_string());
 
-    // Create initial state with timestamp now
     let mut state1 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
     state1.version = 5;
     state1.current_time = 50.0;
@@ -821,7 +794,6 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     // Set initial state
     cache.set(&room_id, state1.clone()).await.unwrap();
 
-    // Create newer state
     let mut state2 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
     state2.version = 10;
     state2.current_time = 100.0;
@@ -842,7 +814,6 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
         "Should have position 100"
     );
 
-    // Create older state
     let mut state3 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
     state3.version = 3;
     state3.current_time = 25.0;

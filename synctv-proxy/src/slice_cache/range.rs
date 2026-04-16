@@ -6,9 +6,7 @@
 //!   `ngx_http_slice_parse_content_range`
 //! - Slice-aligned range computation
 
-// ------------------------------------------------------------------
 // Request Range header parsing
-// ------------------------------------------------------------------
 
 /// Parse a single HTTP Range header value.
 ///
@@ -73,9 +71,7 @@ pub fn parse_range_header(range: &str, total_size: u64) -> Result<(u64, u64), an
     Ok((start, end))
 }
 
-// ------------------------------------------------------------------
 // Response Content-Range parsing (modeled after nginx)
-// ------------------------------------------------------------------
 
 /// Parsed Content-Range response header: `bytes START-END/TOTAL`
 ///
@@ -187,9 +183,7 @@ fn parse_u64_prefix(s: &str) -> Option<(u64, &str)> {
     Some((value, &s[i..]))
 }
 
-// ------------------------------------------------------------------
 // Slice alignment helpers
-// ------------------------------------------------------------------
 
 /// Compute which slice indices are needed to serve the given byte range.
 #[must_use]
@@ -221,15 +215,11 @@ pub fn aligned_range_for_slice(
     Ok((start, end))
 }
 
-// ------------------------------------------------------------------
 // Unit tests
-// ------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- parse_content_range tests ---
 
     #[test]
     fn test_parse_content_range_basic() {

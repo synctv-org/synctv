@@ -80,7 +80,6 @@ pub struct ChunkUnpacketizer {
     //                   Each field can inherit the value from the previous chunk.
     // - payload:        If the message's payload size is longger than the max chunk size,
     //                   the whole payload will be splitted into several chunks.
-    //
     pub current_chunk_info: ChunkInfo,
     /// LRU cache of chunk message headers per chunk stream ID.
     /// Bounded to `MAX_CACHED_CHUNK_HEADERS`; least-recently-used entries
@@ -641,7 +640,6 @@ mod tests {
         let mut unpacker = ChunkUnpacketizer::new();
 
         let data: [u8; 16] = [
-            //
             2, //|format+csid|
             00, 00, 00, //timestamp
             00, 00, 4, //msg_length

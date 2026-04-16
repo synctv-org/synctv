@@ -70,9 +70,7 @@ fn cache_ttl_secs(token_ttl_hours: i64) -> u64 {
         .saturating_add(300)
 }
 
-// ============================================================================
 // JtiStore trait
-// ============================================================================
 
 /// Backend for JTI (JWT Token ID) deduplication.
 ///
@@ -100,9 +98,7 @@ pub trait JtiStore: Send + Sync {
     }
 }
 
-// ============================================================================
 // Redis implementation
-// ============================================================================
 
 /// Redis-backed JTI store for cluster-wide deduplication using SETNX.
 ///
@@ -265,9 +261,7 @@ impl JtiStore for RedisJtiStore {
     }
 }
 
-// ============================================================================
 // In-memory implementation
-// ============================================================================
 
 /// In-memory JTI store using moka cache with TTL.
 ///
@@ -327,9 +321,7 @@ impl JtiStore for InMemoryJtiStore {
     }
 }
 
-// ============================================================================
 // PublishKeyService
-// ============================================================================
 
 /// Publish key service for generating RTMP streaming tokens.
 ///
@@ -1143,8 +1135,6 @@ mod tests {
         assert!(!debug.contains("memory"));
     }
 
-    // ========== B4: InMemoryJtiStore concurrent try_claim atomicity ==========
-
     /// Simulate concurrent try_claim calls on the same JTI.
     /// Only one should succeed; all others must return false.
     #[tokio::test]
@@ -1174,8 +1164,6 @@ mod tests {
             "Exactly one concurrent try_claim should succeed, but {success_count} succeeded"
         );
     }
-
-    // ========== B7: validate_publish_key should support user status checking ==========
 
     /// Validate that verify_publish_key_for_stream accepts a user_validator callback
     /// and rejects banned users even when the JWT is valid.
@@ -1232,8 +1220,6 @@ mod tests {
         assert!(result.is_ok(), "Should accept active user");
         assert_eq!(result.unwrap(), user_id);
     }
-
-    // ========== D9: RedisJtiStore fail_closed option ==========
 
     /// Test that RedisJtiStore with fail_closed=true rejects claims when Redis is unavailable.
     /// We simulate this with an AlwaysFailJtiStore that mimics Redis failure behavior.

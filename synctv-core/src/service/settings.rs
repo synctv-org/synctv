@@ -589,8 +589,6 @@ mod tests {
         assert!(get_default_settings_json("foobar").is_none());
     }
 
-    // ========== SettingsGroup Model ==========
-
     #[test]
     fn test_settings_group_new() {
         let group = SettingsGroup::new(
@@ -650,8 +648,6 @@ mod tests {
         assert!(group.as_object().is_err());
     }
 
-    // ========== Settings Serialization Round-Trip ==========
-
     #[test]
     fn test_settings_group_serialization() {
         let group = SettingsGroup::new(
@@ -666,8 +662,6 @@ mod tests {
         assert_eq!(deserialized.key, group.key);
         assert_eq!(deserialized.value, group.value);
     }
-
-    // ========== Settings Value Types ==========
 
     #[test]
     fn test_settings_boolean_values() {
@@ -711,8 +705,6 @@ mod tests {
         assert_eq!(parsed["database"]["port"], 5432);
         assert_eq!(parsed["database"]["pool"]["max"], 10);
     }
-
-    // ========== validate_setting tests ==========
 
     /// A mock `SettingProvider` that rejects any value not equal to "valid".
     struct MockProvider;
@@ -844,8 +836,6 @@ mod tests {
             .expect("existing cache entry must be preserved on transient DB errors");
         assert_eq!(cached.value().value, existing.value);
     }
-
-    // ========== update_batch Cross-Validation Tests ==========
 
     /// Tests for the cross-validation logic in update_batch that prevents
     /// room_must_need_pwd and room_must_no_need_pwd from both being true.

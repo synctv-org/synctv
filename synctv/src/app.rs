@@ -553,8 +553,6 @@ impl Application {
             .await
     }
 
-    // -- Phase 1: Infrastructure ------------------------------------------------
-
     async fn init_infrastructure(
         config: Config,
         shutdown: &mut ShutdownCoordinator,
@@ -600,13 +598,10 @@ impl Application {
         })
     }
 
-    // -- Phase 2: Schema --------------------------------------------------------
-
     async fn init_schema(infra: &Infrastructure) -> Result<()> {
         // Run migrations with appropriate lock strategy:
         // - Standalone Redis: Redis distributed lock
         // - Sentinel / no Redis: PostgreSQL advisory lock
-        //
         // Sentinel failover can drop single-instance Redis locks, so correctness-
         // critical startup migrations must not rely on that path.
         let migration_lock = synctv_core::bootstrap::build_migration_lock(
@@ -669,8 +664,6 @@ impl Application {
         Ok(())
     }
 
-    // -- Phase 3: Core services -------------------------------------------------
-
     async fn init_core_services(
         infra: &Infrastructure,
         shutdown: &mut ShutdownCoordinator,
@@ -695,7 +688,7 @@ impl Application {
             register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
 
         // Start the cache invalidation Redis subscriber BEFORE init_services.
-        // Issue #44: subscriber must be running before any service publishes an
+        // subscriber must be running before any service publishes an
         // invalidation event to avoid dropped messages during initialization.
         if should_start_cache_invalidation_listener(&infra.config, infra.shared_runtime.is_some()) {
             if let Err(e) = cache_invalidation.start().await {
@@ -839,8 +832,6 @@ impl Application {
         })
     }
 
-    // -- Phase 4: Leader election -----------------------------------------------
-
     async fn init_leader_election(
         infra: &Infrastructure,
         _core: &CoreState,
@@ -862,7 +853,6 @@ impl Application {
         // multiple nodes could all believe they are the leader and run
         // singleton tasks (partition management, cleanup) simultaneously,
         // causing database corruption or inconsistent state.
-        //
         // Therefore, we MUST NOT silently fall back to AlwaysLeader here.
         // Instead, we require a working leader elector and fail fast if
         // initialization fails.
@@ -929,8 +919,6 @@ impl Application {
 
         Ok(LeaderState { leader_runtime })
     }
-
-    // -- Phase 5: Singleton background tasks ------------------------------------
 
     fn start_singleton_tasks(
         infra: &Infrastructure,
@@ -1053,8 +1041,6 @@ impl Application {
             );
         }
     }
-
-    // -- Phase 6: Cluster infrastructure ----------------------------------------
 
     async fn init_cluster(
         infra: &Infrastructure,
@@ -1227,8 +1213,6 @@ impl Application {
         })
     }
 
-    // -- Phase 7: Server components ---------------------------------------------
-
     async fn init_servers(
         infra: &Infrastructure,
         core: &CoreState,
@@ -1279,8 +1263,6 @@ impl Application {
             providers,
         })
     }
-
-    // -- Assembly ---------------------------------------------------------------
 
     fn assemble(
         infra: Infrastructure,

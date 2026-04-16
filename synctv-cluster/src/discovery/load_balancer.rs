@@ -128,7 +128,6 @@ impl LoadBalancer {
             LoadBalancingStrategy::LeastConnections => {
                 // Select node with fewest connections based on metadata.
                 // Nodes report connection count in metadata["connections"] via heartbeat.
-                //
                 // For nodes without connection metadata (newly joined), we use a
                 // warmup penalty to avoid immediately routing traffic to them.
                 // The penalty is based on registered_at timestamp - nodes registered
@@ -242,8 +241,6 @@ mod tests {
         }
     }
 
-    // --- Construction ---
-
     #[tokio::test]
     async fn test_load_balancer_new() {
         let registry = make_registry();
@@ -258,8 +255,6 @@ mod tests {
             LoadBalancer::new(registry, LoadBalancingStrategy::Random).with_health_monitor(monitor);
     }
 
-    // --- select_node: empty cluster ---
-
     #[tokio::test]
     async fn test_select_node_empty_cluster() {
         let registry = make_registry();
@@ -267,8 +262,6 @@ mod tests {
         let result = lb.select_node().await;
         assert!(result.is_err(), "Empty cluster should return error");
     }
-
-    // --- select_node: Random strategy ---
 
     #[tokio::test]
     async fn test_select_node_random_single() {
@@ -300,8 +293,6 @@ mod tests {
         );
     }
 
-    // --- select_node: RoundRobin strategy ---
-
     #[tokio::test]
     async fn test_select_node_round_robin() {
         let registry = make_registry();
@@ -329,8 +320,6 @@ mod tests {
         }
         assert_eq!(cycle, second_cycle, "Round-robin should be deterministic");
     }
-
-    // --- select_node: LeastConnections strategy ---
 
     #[tokio::test]
     async fn test_select_node_least_connections() {
@@ -421,8 +410,6 @@ mod tests {
         assert_eq!(node, "self", "Warmup node should be penalized");
     }
 
-    // --- select_node_by_id ---
-
     #[tokio::test]
     async fn test_select_node_by_id_found() {
         let registry = make_registry();
@@ -495,8 +482,6 @@ mod tests {
         );
     }
 
-    // --- get_available_nodes ---
-
     #[tokio::test]
     async fn test_get_available_nodes() {
         let registry = make_registry();
@@ -564,8 +549,6 @@ mod tests {
             "error should explain the fail-closed stale topology guard: {err}"
         );
     }
-
-    // --- Health filtering ---
 
     #[tokio::test]
     async fn test_select_node_filters_unhealthy() {

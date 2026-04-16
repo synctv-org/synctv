@@ -1,7 +1,7 @@
 //! `ChatRepository` integration tests
 //!
 //! Tests: `list_by_room_cursor` pagination, `get_by_id` without time restriction,
-//!        `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
+//! `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
 //!
 //! Run with: cargo test -p synctv-core --test `chat_repository_tests`
 #![allow(clippy::unwrap_used)]
@@ -296,16 +296,14 @@ async fn test_cleanup_all_rooms_keep_count_zero_is_noop() {
     assert_eq!(count, 3);
 }
 
-// ─── Task #18: Index on created_at for partition pruning ────────────
+// ─── Index on created_at for partition pruning ────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_created_at_index_exists_for_partition_pruning() {
-    // CRITICAL: Verify that an index exists on created_at DESC to support
     // time-based queries without room_id (e.g., delete_messages_older_than_retention).
-    //
     // Without this index, queries like:
-    //   DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'
+    // DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'
     // would perform full partition scans instead of efficient partition pruning.
 
     let (_container, pool) = create_test_pool().await;
@@ -342,7 +340,6 @@ async fn test_time_range_query_uses_index() {
 
     let chat_repo = ChatRepository::new(pool.clone());
 
-    // Create a message
     let msg = make_chat_message(&room.id, &user.id, "test message");
     chat_repo.create(&msg).await.unwrap();
 
@@ -370,18 +367,16 @@ async fn test_time_range_query_uses_index() {
     // The key is that the index exists and the query can use it.
 }
 
-// ─── Task #26: Partition pruning verification ─────────────────────
+// ─── Partition pruning verification ─────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
-    // CRITICAL: Verify that cleanup_all_rooms has a top-level created_at
-    // filter for partition pruning (Task #26).
-    //
+    // filter for partition pruning.
     // The query structure should be:
     // DELETE FROM chat_messages
-    // WHERE created_at > NOW() - INTERVAL '90 days'  <- Partition pruning filter
-    //   AND (id, created_at) IN (...)
+    // WHERE created_at > NOW() - INTERVAL '90 days' <- Partition pruning filter
+    // AND (id, created_at) IN (...)
 
     let (_container, pool) = create_test_pool().await;
 
@@ -422,25 +417,20 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
     // cannot prune old partitions at the DELETE level.
 }
 
-// ─── Task #46: Detailed partition pruning verification ───────────────
+// ─── Detailed partition pruning verification ───────────────
 
 /// Verify `cleanup_old_messages` produces a valid query plan with partition pruning support
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_old_messages_partition_pruning_detailed() {
-    // Task #46: Detailed verification of partition pruning for cleanup_old_messages
-    //
+    // Detailed verification of partition pruning for cleanup_old_messages
     // This test verifies:
-    // 1. The query has proper created_at filter for partition pruning
-    // 2. The query plan is valid and uses appropriate scan methods
-    // 3. No full table scans on the default partition
 
     let (_container, pool) = create_test_pool().await;
     let (user, room) = setup_room(&pool, "chat_prune_detail", "chat_prune_detail_room").await;
 
     let chat_repo = ChatRepository::new(pool.clone());
 
-    // Create test messages
     for i in 0..10 {
         let msg = make_chat_message(&room.id, &user.id, &format!("prune_detail_{i}"));
         chat_repo.create(&msg).await.unwrap();
@@ -500,8 +490,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_partition_pruning_detailed() {
-    // Task #46: Detailed verification of partition pruning for cleanup_all_rooms
-    //
+    // Detailed verification of partition pruning for cleanup_all_rooms
     // This test verifies the batch cleanup query has proper partition pruning support
 
     let (_container, pool) = create_test_pool().await;
@@ -509,7 +498,6 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
 
     let chat_repo = ChatRepository::new(pool.clone());
 
-    // Create messages in multiple rooms to test batch operation
     for i in 0..15 {
         let msg = make_chat_message(&room.id, &user.id, &format!("batch_{i}"));
         chat_repo.create(&msg).await.unwrap();
@@ -565,8 +553,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_old_messages_partition_pruning() {
-    // Task #46: Verify the retention cleanup query uses partition pruning
-    //
+    // Verify the retention cleanup query uses partition pruning
     // This query deletes all messages older than 90 days and should
     // only scan old partitions
 
@@ -607,7 +594,7 @@ async fn test_delete_old_messages_partition_pruning() {
     }
 }
 
-// ─── Task #7: list_by_room initial load needs partition lower bound ──
+// ─── list_by_room initial load needs partition lower bound ──
 
 /// Verify that list_by_room (initial load, no cursor) includes a created_at
 /// lower bound so PostgreSQL can prune old partitions. Without this, an initial
@@ -708,7 +695,6 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
 
     let chat_repo = ChatRepository::new(pool.clone());
 
-    // Create test messages
     for i in 0..20 {
         let msg = make_chat_message(&room.id, &user.id, &format!("perf_{i}"));
         chat_repo.create(&msg).await.unwrap();

@@ -289,7 +289,6 @@ impl ClientServiceImpl {
     }
 }
 
-// ==================== AuthService Implementation ====================
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl AuthService for ClientServiceImpl {
@@ -297,7 +296,6 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        // Extract client IP for brute-force protection (Issue #24)
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         let response = self
@@ -372,7 +370,6 @@ impl AuthService for ClientServiceImpl {
     }
 }
 
-// ==================== UserService Implementation ====================
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl UserService for ClientServiceImpl {
@@ -505,7 +502,6 @@ impl UserService for ClientServiceImpl {
     }
 }
 
-// ==================== RoomService Implementation ====================
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl RoomService for ClientServiceImpl {
@@ -741,7 +737,7 @@ impl RoomService for ClientServiceImpl {
         use tokio::sync::mpsc;
 
         // Extract all data from request BEFORE any await points.
-        // Request<Streaming<_>> is !Sync, so holding it across .await makes
+        // Request<Streaming<_>> is !Sync, so holding it across.await makes
         // the future !Send, violating the tonic trait requirement.
         let user_context = request
             .extensions()
@@ -1278,7 +1274,6 @@ impl StreamMessage for GrpcStreamMessage {
     // gRPC uses HTTP/2 PING frames automatically, no application-level ping needed
 }
 
-// ==================== PublicService Implementation ====================
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl PublicService for ClientServiceImpl {
@@ -1333,7 +1328,6 @@ impl PublicService for ClientServiceImpl {
     }
 }
 
-// ==================== EmailService Implementation ====================
 // Delegates to shared EmailApiImpl to avoid duplicating logic with HTTP handlers.
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
@@ -1413,8 +1407,6 @@ impl EmailService for ClientServiceImpl {
 mod tests {
     use super::*;
     use crate::grpc::interceptors::{RoomContext, UserContext};
-
-    // ==================== Error Mapping ====================
 
     #[test]
     fn test_map_api_error_not_found() {
@@ -1575,8 +1567,6 @@ mod tests {
         }
     }
 
-    // ==================== GrpcMessageSender ====================
-
     #[test]
     fn test_grpc_message_sender_send_success() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
@@ -1666,8 +1656,6 @@ mod tests {
             other => panic!("expected received message outcome, got {other:?}"),
         }
     }
-
-    // ==================== Constants ====================
 
     #[test]
     fn test_message_stream_buffer_size_reasonable() {

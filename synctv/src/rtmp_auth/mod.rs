@@ -915,8 +915,7 @@ impl SyncTvRtmpAuth {
         // Write an additional cross-node user→stream index entry.
         // This complements the Set-based `stream:user_publishers:{user_id}` index
         // already written by try_register_publisher_with_user.
-        //
-        // Issue #45: if the shared index write fails after registration succeeded,
+        // if the shared index write fails after registration succeeded,
         // roll back the publisher registration to keep the shared state consistent.
         if let Err(error) = self
             .user_stream_index
@@ -1160,8 +1159,6 @@ mod tests {
         }
     }
 
-    // ========== extract_token_from_query ==========
-
     #[test]
     fn test_extract_token_single_param() {
         let result = extract_token_from_query("token=abc123");
@@ -1243,7 +1240,6 @@ mod tests {
 
     #[test]
     fn test_extract_token_percent_encoded_plus() {
-        // JWT tokens with `+` encoded as `%2B` must round-trip correctly (Issue #44)
         let result = extract_token_from_query("token=foo%2Bbar");
         assert_eq!(result.as_deref(), Some("foo+bar"));
     }
@@ -2051,8 +2047,6 @@ mod tests {
 
         assert!(index.supports_cross_node_lookup());
     }
-
-    // ========== StreamLifecycleEvent ==========
 
     #[test]
     fn test_stream_lifecycle_event_started_fields() {

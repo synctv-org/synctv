@@ -28,26 +28,22 @@ static REDIS_ACTIVE_SERIALIZER: LazyLock<Semaphore> =
 const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 pub const REDIS_VERSION: &str = "8";
 const REDIS_EPHEMERAL_TUNING_ARGS: &[&str] = &[
-    // --- Disable persistence / durability (ephemeral test data) ---
     "--save",
     "",
     "--appendonly",
     "no",
     "--stop-writes-on-bgsave-error",
     "no",
-    // --- Capacity ---
     "--maxclients",
     "100000",
     "--maxmemory",
     "1gb",
     "--maxmemory-policy",
     "noeviction",
-    // --- Threading ---
     "--io-threads",
     "8",
     "--io-threads-do-reads",
     "yes",
-    // --- Disable non-essential background / observability overhead ---
     "--loglevel",
     "warning",
     "--slowlog-log-slower-than",

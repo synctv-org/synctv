@@ -1,5 +1,4 @@
-//! API Security Tests (Task #3)
-//!
+//! API Security Tests //!
 //! Tests for various security fixes:
 //! - B1: GuestUser extractor must use GuestTokenValidator (blacklist check)
 //! - B8: WebSocket Bearer token case-sensitivity
@@ -19,9 +18,7 @@ use synctv_core::service::auth::{
 };
 use synctv_core::Error;
 
-// ============================================================================
 // B1: GuestUser extractor must check blacklist
-// ============================================================================
 
 /// A blacklisted guest token MUST be rejected by validate_async.
 /// This tests the core requirement that the GuestUser extractor must use
@@ -136,9 +133,7 @@ async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
     );
 }
 
-// ============================================================================
 // B8: WebSocket Bearer token case-insensitive
-// ============================================================================
 
 /// "bearer " (lowercase) should be accepted by extract_bearer_token.
 /// The HTTP AuthUser extractor uses JwtValidator::extract_bearer_token which
@@ -195,9 +190,7 @@ fn test_b8_invalid_auth_header_should_error() {
     );
 }
 
-// ============================================================================
 // B10: set_password must validate password strength
-// ============================================================================
 
 /// Weak passwords (too short) should be rejected by the HTTP validation layer.
 /// The register endpoint calls validate_password(); set_password should too.
@@ -241,9 +234,7 @@ fn test_b10_password_min_length_enforced() {
     assert!(result.is_err(), "B10: Empty password should be rejected");
 }
 
-// ============================================================================
 // D13: Logout must require auth token
-// ============================================================================
 
 /// Logout without an Authorization header should return an error.
 /// Currently the handler returns success: true even without a token, which
@@ -271,9 +262,7 @@ fn test_d13_logout_with_valid_header_extracts_token() {
     assert_eq!(token, "valid.jwt.token");
 }
 
-// ============================================================================
 // Input validation: room description
-// ============================================================================
 
 /// Room descriptions exceeding ROOM_DESCRIPTION_MAX should be rejected.
 #[test]
@@ -296,9 +285,7 @@ fn test_room_description_max_length_enforced() {
     );
 }
 
-// ============================================================================
 // Input validation: page value clamping
-// ============================================================================
 
 /// Negative page values (i32) must be clamped to 1, not wrap when cast to u32.
 #[test]
@@ -321,9 +308,7 @@ fn test_page_size_clamped() {
     assert_eq!(validate_page_size(Some(0)), 1);
 }
 
-// ============================================================================
 // Input validation: admin page_size cap
-// ============================================================================
 
 /// Admin endpoints (list_rooms, list_users) must cap page_size.
 /// PageParams::new already clamps to MAX_PAGE_SIZE (100) for u32 values.
@@ -371,9 +356,7 @@ fn test_admin_negative_page_handled() {
     );
 }
 
-// ============================================================================
 // E7: sqlx::Error must not leak DB details in gRPC
-// ============================================================================
 
 /// Internal errors (including sqlx::Error) must be sanitized before
 /// returning to gRPC clients. The map_api_error function should return
@@ -446,9 +429,7 @@ fn test_e7_classify_error_database_errors() {
     ));
 }
 
-// ============================================================================
 // Input validation: i32-to-u32 conversion safety
-// ============================================================================
 
 /// Verify that u32::try_from handles negative i32 values safely.
 /// This is the pattern used in the fixed list endpoints, including `list_my_rooms`.
@@ -492,9 +473,7 @@ fn test_i32_as_u32_is_dangerous() {
     assert_eq!(params.offset(), (u64::from(u32::MAX) - 1) * 20);
 }
 
-// ============================================================================
 // Test helpers
-// ============================================================================
 
 fn create_test_jwt_service() -> Arc<JwtService> {
     Arc::new(

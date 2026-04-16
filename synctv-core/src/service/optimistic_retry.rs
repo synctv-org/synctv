@@ -398,8 +398,6 @@ mod tests {
         assert_eq!(counter2.load(Ordering::SeqCst), 3);
     }
 
-    // ========== Timeout Tests ==========
-
     #[tokio::test]
     async fn test_timeout_succeeds_on_first_try() {
         let result =

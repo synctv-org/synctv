@@ -18,9 +18,7 @@ use synctv_core::service::global_settings::*;
 use synctv_core::service::turn_server::generate_turn_credentials;
 use tokio::time::sleep;
 
-// ============================================================================
 // Type Conversion Tests (string ↔ T)
-// ============================================================================
 
 #[test]
 fn test_bool_setting_conversion() {
@@ -129,9 +127,7 @@ fn test_cors_allowed_origins_conversion() {
     assert_eq!(parsed, deserialized);
 }
 
-// ============================================================================
 // Validation Tests (min/max bounds)
-// ============================================================================
 
 #[test]
 fn test_max_rooms_per_user_validation() {
@@ -306,9 +302,7 @@ fn validate_room_password_settings(
     }
 }
 
-// ============================================================================
 // TURN Credential HMAC-SHA1 Generation Tests
-// ============================================================================
 
 #[test]
 fn test_turn_credential_format() {
@@ -401,7 +395,6 @@ fn test_turn_credential_base64_encoding() {
         .chars()
         .all(|c| { c.is_alphanumeric() || c == '+' || c == '/' || c == '=' }));
 
-    // Should be decodable
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(&cred.password)
         .expect("Should be valid Base64");
@@ -410,13 +403,10 @@ fn test_turn_credential_base64_encoding() {
     assert_eq!(decoded.len(), 20);
 }
 
-// ============================================================================
 // STUN/TURN Server List Update Tests
-// ============================================================================
 
 #[test]
 fn test_turn_server_list_updates() {
-    // Start with empty list
     let list = TurnServerList::new();
     assert!(list.0.is_empty());
 
@@ -451,7 +441,6 @@ fn test_turn_server_list_updates() {
 
 #[test]
 fn test_stun_server_list_updates() {
-    // Start with default list
     let list = StunServerList::new();
     assert_eq!(list.0.len(), 2); // Default has 2 servers
 
@@ -475,7 +464,6 @@ fn test_stun_server_list_updates() {
 
 #[test]
 fn test_cors_allowed_origins_updates() {
-    // Start with empty list (secure default)
     let list = CorsAllowedOrigins::new();
     assert!(list.0.is_empty());
 
@@ -497,9 +485,7 @@ fn test_cors_allowed_origins_updates() {
     assert_eq!(parsed.0.len(), 3);
 }
 
-// ============================================================================
 // PublicSettings Tests
-// ============================================================================
 
 #[test]
 fn test_public_settings_serialization() {
@@ -526,9 +512,7 @@ fn test_public_settings_skips_empty_custom_publish_host() {
     assert!(!json.contains("custom_publish_host"));
 }
 
-// ============================================================================
 // Concurrent Updates Test (Last Write Wins)
-// ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_settings_updates_last_write_wins() {
@@ -586,9 +570,7 @@ async fn test_concurrent_settings_updates_last_write_wins() {
     );
 }
 
-// ============================================================================
 // Cache Invalidation Tests
-// ============================================================================
 
 #[test]
 fn test_turn_server_list_cache_key_uniqueness() {
@@ -682,9 +664,7 @@ fn test_cache_invalidation_on_value_change() {
     );
 }
 
-// ============================================================================
 // Edge Cases and Error Handling Tests
-// ============================================================================
 
 #[test]
 fn test_turn_server_with_empty_urls() {
@@ -785,9 +765,7 @@ fn test_max_chat_messages_zero_means_unlimited() {
     assert!(validate_max_chat_messages_per_room(0).is_ok());
 }
 
-// ============================================================================
 // Settings Persistence Simulation Tests
-// ============================================================================
 
 #[test]
 fn test_setting_value_roundtrip() {
@@ -831,10 +809,6 @@ fn test_setting_value_roundtrip() {
     let cors_parsed: CorsAllowedOrigins = cors_json.parse().unwrap();
     assert_eq!(cors_origins, cors_parsed);
 }
-
-// ============================================================================
-// SettingsService.update() validation tests (Issue #1)
-// ============================================================================
 
 /// Verify that `SettingsRegistry` wires providers to `SettingsService` so that
 /// single-key `update()` calls validate before persisting.
@@ -927,10 +901,6 @@ async fn test_registry_wires_validation_to_settings_service() {
     // Ensure the registry is used (prevent optimizer from dropping it)
     let _ = registry.to_public_settings();
 }
-
-// ============================================================================
-// Cross-validation race condition tests (Issue #2)
-// ============================================================================
 
 #[test]
 fn test_contradictory_settings_update_batch_rejects_both_true() {

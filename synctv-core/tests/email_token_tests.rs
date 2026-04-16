@@ -165,7 +165,6 @@ async fn test_validate_wrong_type_fails() {
     let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
 
-    // Create as EmailVerification
     token_repo
         .create(
             &token_str,
@@ -232,7 +231,6 @@ async fn test_cleanup_expired_tokens() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    // Create expired unused tokens for distinct users so each row respects the
     // "one unused token per user + type" invariant enforced by the DB.
     for i in 0..3 {
         let user = user_repo
@@ -257,7 +255,6 @@ async fn test_cleanup_expired_tokens() {
         .await
         .unwrap();
 
-    // Create one valid token that must survive cleanup
     let valid_token = synctv_common::snanoid!(32);
     let valid_expires = Utc::now() + Duration::hours(24);
     token_repo
@@ -505,10 +502,6 @@ async fn test_invalidating_old_token_does_not_remove_newer_replacement() {
         "the superseded token should stay invalid",
     );
 }
-
-// ============================================================================
-// Token Invalidation Tests (Task #75)
-// ============================================================================
 
 /// Test that generating a new token invalidates previous tokens of the same type
 #[tokio::test]
@@ -772,7 +765,6 @@ async fn test_manual_token_invalidation() {
         .await
         .unwrap();
 
-    // Should be valid
     let result = token_service
         .validate_token(&token, EmailTokenType::EmailVerification)
         .await;

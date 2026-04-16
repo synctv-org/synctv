@@ -265,9 +265,7 @@ impl HeartbeatSchedule {
     }
 }
 
-// ============================================================================
 // MessageConcurrencyConfig - Instance-level concurrency configuration
-// ============================================================================
 
 /// Configuration for message processing concurrency.
 ///
@@ -1577,7 +1575,6 @@ impl StreamMessageHandler {
                 // verifies the user is still a valid (non-banned, non-removed)
                 // member of the room. This catches cases where the disconnect
                 // signal channel lagged and the ban/kick signal was lost.
-                //
                 // Uses the membership cache to reduce database queries: if a
                 // cached entry exists and shows the user as a valid member, the
                 // DB query is skipped. When a KickUser or KickUserFromRoom admin
@@ -1812,7 +1809,6 @@ impl StreamMessageHandler {
         // RT-2: If this connection had an active WebRTC session, decrement the
         // metric and broadcast WebRtcLeave so other peers can clean up.
         // Use Acquire ordering to synchronize with the Release store in handle_webrtc_join/leave.
-        //
         // IMPORTANT: We must check if the connection is STILL marked as RTC-joined
         // in the connection manager before decrementing the metric. This prevents
         // a race condition where:
@@ -1820,7 +1816,6 @@ impl StreamMessageHandler {
         // 2. Connection ungracefully disconnects
         // 3. cleanup() sees has_webrtc_session=true and decrements the metric again
         // Result: Metric underflow (negative value)
-        //
         // By checking the connection manager's state, we ensure idempotency:
         // - If the cleanup task already timed out the session, the connection
         //   manager will have rtc_joined=false, and we skip the decrement
@@ -1967,7 +1962,6 @@ impl StreamMessageHandler {
                 // Critical UserLeft event failed to reach any destination.
                 // This can happen when Redis is temporarily unavailable.
                 // Spawn a background task to retry the broadcast with exponential backoff.
-                //
                 // Use a global semaphore to limit concurrent retry tasks. During mass
                 // disconnects with Redis down, thousands of connections may all try to
                 // spawn retry tasks simultaneously. Without this bound, we'd exhaust
@@ -3299,8 +3293,6 @@ impl StreamMessageHandler {
             );
         }
     }
-
-    // ==================== WebRTC Message Handlers ====================
 
     async fn handle_webrtc_offer(
         &self,
@@ -7840,8 +7832,6 @@ mod tests {
         shutdown_test_runtime_resources(event_service, connection_service).await;
     }
 
-    // ========== cluster_event_to_server_messages Tests ==========
-
     #[test]
     fn test_chat_message_event_conversion() {
         let event = ClusterEvent::ChatMessage {
@@ -8382,8 +8372,6 @@ mod tests {
         );
     }
 
-    // ========== ProtoCodec Tests ==========
-
     #[test]
     fn test_server_message_encode_decode_roundtrip() {
         let msg = ServerMessage {
@@ -8423,8 +8411,6 @@ mod tests {
         let decoded = ProtoCodec::decode_server_message(&encoded).unwrap();
         assert!(decoded.message.is_none());
     }
-
-    // ========== Backpressure Control Tests ==========
 
     #[test]
     fn test_message_concurrency_config_can_be_acquired() {
@@ -8507,8 +8493,6 @@ mod tests {
             "Available permits should increase after releasing: was {after_acquire}, now {after_release}"
         );
     }
-
-    // ========== Danmaku Color Validation Tests ==========
 
     #[test]
     fn test_validate_danmaku_color_valid_hex_colors() {
@@ -8605,8 +8589,6 @@ mod tests {
         let result = super::validate_danmaku_color(&Some("#\u{0000}F0000".to_string())); // Null byte
         assert!(result.is_err());
     }
-
-    // ========== Membership Cache Invalidation Tests ==========
 
     #[test]
     fn test_membership_cache_stores_and_retrieves() {
@@ -8760,8 +8742,6 @@ mod tests {
         assert!(!cached.is_banned, "Active member should not be banned");
     }
 
-    // ========== WebRTC SDP/ICE Size Validation Tests (P1#12) ==========
-
     #[test]
     fn test_sdp_offer_within_limit() {
         let offer = crate::proto::client::WebRtcOffer {
@@ -8813,8 +8793,6 @@ mod tests {
         };
         assert!(candidate.data.len() > super::MAX_ICE_CANDIDATE_SIZE);
     }
-
-    // ========== Playback Progress Throttle Tests (P1#11) ==========
 
     #[tokio::test]
     async fn test_progress_throttle_first_write_always_allowed() {
@@ -8877,8 +8855,6 @@ mod tests {
             "Elapsed time exceeding threshold should trigger a write"
         );
     }
-
-    // ========== UserLeft Retry Semaphore Tests (P2#15) ==========
 
     #[tokio::test]
     async fn test_user_left_retry_semaphore_limits_concurrent_tasks() {
@@ -9708,8 +9684,6 @@ mod tests {
             &rid,
         ));
     }
-
-    // ========== Connection Reservation Tests (P1#6) ==========
 
     #[tokio::test]
     async fn test_connection_reservation_room_slot() {

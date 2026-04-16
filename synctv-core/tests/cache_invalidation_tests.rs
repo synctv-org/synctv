@@ -76,14 +76,12 @@ async fn test_cache_invalidation_broadcast_received() {
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
-    // Create two invalidation services (simulating two replicas)
     let service1 =
         distributed_invalidation_service(redis_client.clone(), "node1", stream_key.clone()).await;
 
     let service2 =
         distributed_invalidation_service(redis_client.clone(), "node2", stream_key).await;
 
-    // Start listeners
     service1.start().await.expect("Failed to start service1");
     service2.start().await.expect("Failed to start service2");
 
@@ -99,7 +97,6 @@ async fn test_cache_invalidation_broadcast_received() {
         .await
         .expect("Failed to broadcast invalidation");
 
-    // Wait for message on service2
     tokio::select! {
         msg = receiver.recv() => {
             let msg = msg.expect("Failed to receive message");
@@ -228,7 +225,6 @@ async fn test_cache_invalidation_multiple_messages() {
         }
     });
 
-    // Send multiple invalidation messages
     let room1 = RoomId::new();
     let room2 = RoomId::new();
     let user1 = UserId::new();
@@ -246,7 +242,6 @@ async fn test_cache_invalidation_multiple_messages() {
         .await
         .expect("Failed to invalidate user");
 
-    // Wait for messages
     tokio::time::timeout(tokio::time::Duration::from_secs(5), receiver_handle)
         .await
         .expect("Timeout")
@@ -268,7 +263,6 @@ async fn test_cache_invalidation_without_redis() {
     // only when receiving messages FROM Redis (via the consumer task).
     let service = CacheInvalidationService::new("node1".to_string(), unique_stream_key());
 
-    // Start should succeed even without Redis (no-op for local-only)
     service
         .start()
         .await
@@ -545,9 +539,7 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
     service.stop().await;
 }
 
-// ============================================================================
 // Cache Invalidation Timing Tests
-// ============================================================================
 
 /// Test that cache invalidation happens only AFTER transaction commit.
 ///
@@ -572,7 +564,6 @@ async fn test_cache_invalidation_after_commit() {
     )
     .await;
 
-    // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -591,7 +582,6 @@ async fn test_cache_invalidation_after_commit() {
         brute_force,
     );
 
-    // Create room service WITH cache invalidation
     let mut room_service = RoomService::new(pool.clone(), user_service);
     let invalidation_service = Arc::new(CacheInvalidationService::new(
         "room-delete-node".to_string(),
@@ -601,7 +591,6 @@ async fn test_cache_invalidation_after_commit() {
     room_service.set_playback_cache_invalidation(invalidation_service.clone());
     let room_service = room_service;
 
-    // Create a user and room
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -644,7 +633,6 @@ async fn test_cache_invalidation_after_commit() {
         .await
         .expect("Failed to create room");
 
-    // Create the creator member entry
     let member_repo = RoomMemberRepository::new(pool.clone());
     let _member = member_repo
         .add(&RoomMember {
@@ -737,7 +725,6 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     )
     .await;
 
-    // Create user service
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -765,7 +752,6 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     room_service.set_playback_cache_invalidation(invalidation_service.clone());
     let room_service = room_service;
 
-    // Create a user and room
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 

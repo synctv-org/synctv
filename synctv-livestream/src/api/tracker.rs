@@ -1,8 +1,6 @@
 // Stream tracker — multi-index lookup for active RTMP publishers
-//
 // Provides O(1) lookup by user_id, room_id, (room_id, media_id), and
 // RTMP identifiers (app_name, stream_name).
-//
 // All five indexes are wrapped in a single `parking_lot::RwLock` so that
 // insert/remove/cleanup operations are atomic across all maps. This prevents
 // concurrent readers from observing partial state and eliminates races

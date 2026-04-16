@@ -270,8 +270,6 @@ mod tests {
         }
     }
 
-    // ========== Provider Name Validation Tests ==========
-
     #[test]
     fn test_validate_provider_name_valid() {
         assert!(validate_provider_name("provider1").is_ok());

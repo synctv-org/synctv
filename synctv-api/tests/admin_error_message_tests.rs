@@ -34,17 +34,13 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 
-// ============================================================================
 // Test constants - the expected unified error message
-// ============================================================================
 
 /// The unified error message that should be returned for all auth failures
 /// that could leak user existence information.
 const UNIFIED_AUTH_ERROR_MESSAGE: &str = "Authentication failed";
 
-// ============================================================================
 // Helper functions for testing
-// ============================================================================
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-admin-error-tests-long-enough-1234567890").unwrap()
@@ -81,13 +77,9 @@ fn get_authentication_error_message(
     }
 }
 
-// ============================================================================
 // Unit tests (no Docker required)
-// ============================================================================
 
-// ============================================================================
 // Integration tests (require Docker)
-// ============================================================================
 
 /// Integration test: Verify user-not-found returns unified error message
 ///
@@ -128,7 +120,6 @@ async fn test_banned_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(pool);
 
-    // Create a banned user (register returns (User, Option<String>, Option<String>))
     let (user, _, _) = user_service
         .register(
             "banned_test_user".to_string(),
@@ -167,7 +158,6 @@ async fn test_deleted_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(pool);
 
-    // Create a user
     let (user, _, _) = user_service
         .register(
             "deleted_test_user".to_string(),
@@ -206,7 +196,6 @@ async fn test_pending_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(pool);
 
-    // Create a pending user (requires manual status setting after registration)
     let (user, _, _) = user_service
         .register(
             "pending_test_user".to_string(),
@@ -245,7 +234,6 @@ async fn test_active_user_passes_auth() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(pool);
 
-    // Create an active user
     let (user, _, _) = user_service
         .register(
             "active_test_user".to_string(),

@@ -11,7 +11,6 @@ use synctv_proto::admin::{UpdateUserPasswordRequest, UpdateUserPasswordResponse}
 /// This test ensures the API matches the actual implementation behavior.
 #[test]
 fn test_update_password_request_no_force_logout() {
-    // Create a request with only the supported fields
     let request = UpdateUserPasswordRequest {
         user_id: "test-user-id".to_string(),
         new_password: "newpassword123".to_string(),
@@ -37,7 +36,6 @@ fn test_update_password_request_no_force_logout() {
 /// This test ensures the response matches the actual implementation behavior.
 #[test]
 fn test_update_password_response_no_sessions_invalidated() {
-    // Create a response with only the success field
     let response = UpdateUserPasswordResponse { success: true };
 
     // Verify the response can be serialized

@@ -18,9 +18,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-// ============================================================================
 // Helper: extract JSON body from response
-// ============================================================================
 
 async fn body_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -31,10 +29,6 @@ async fn _body_string(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap_or_default()
 }
-
-// ============================================================================
-// Module: AppError serialization and HTTP status mapping
-// ============================================================================
 
 mod error_responses {
     use super::*;
@@ -167,8 +161,6 @@ mod error_responses {
         assert_eq!(obj.len(), 2, "Error response should have exactly 2 fields");
     }
 
-    // === Convenience constructors ===
-
     #[tokio::test]
     async fn test_invalid_credentials() {
         let app = error_router(AppError::invalid_credentials());
@@ -236,14 +228,10 @@ mod error_responses {
         assert!(msg.contains("must be valid"), "Should mention reason");
     }
 
-    // ========================================================================
     // Security: Internal error message sanitization
-    // ========================================================================
-    //
     // Internal errors (5xx) should return a generic message to avoid leaking
     // sensitive information like database connection strings, file paths,
     // stack traces, or internal implementation details.
-    //
     // Client errors (4xx) should preserve the original message to help the
     // client understand and fix their request.
 
@@ -421,10 +409,6 @@ mod error_responses {
     }
 }
 
-// ============================================================================
-// Module: Error classification (map_api_error)
-// ============================================================================
-
 mod error_classification {
     use axum::http::StatusCode;
     use synctv_api::http::error::map_api_error;
@@ -535,10 +519,6 @@ mod error_classification {
         assert_eq!(app_err.status, StatusCode::FORBIDDEN);
     }
 }
-
-// ============================================================================
-// Module: Security headers middleware
-// ============================================================================
 
 mod security_headers {
     use super::*;
@@ -675,10 +655,6 @@ mod security_headers {
         assert!(resp.headers().contains_key("Referrer-Policy"));
     }
 }
-
-// ============================================================================
-// Module: Provider routes security headers
-// ============================================================================
 
 mod provider_security_headers {
     use super::*;
@@ -872,10 +848,6 @@ mod provider_security_headers {
     }
 }
 
-// ============================================================================
-// Module: HSTS header generation
-// ============================================================================
-
 mod hsts_headers {
     use synctv_api::http::middleware::hsts_header;
 
@@ -915,10 +887,6 @@ mod hsts_headers {
     }
 }
 
-// ============================================================================
-// Module: Health endpoints (liveness)
-// ============================================================================
-
 mod health_endpoints {
     use super::*;
 
@@ -954,10 +922,6 @@ mod health_endpoints {
         assert!(json.get("details").is_none());
     }
 }
-
-// ============================================================================
-// Module: Routing structure (non-existent routes return 404)
-// ============================================================================
 
 mod routing_structure {
     use super::*;
@@ -1008,10 +972,6 @@ mod routing_structure {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }
-
-// ============================================================================
-// Module: Request/response format validation (proto type serialization)
-// ============================================================================
 
 mod request_format {
     use synctv_proto::client::{
@@ -1142,10 +1102,6 @@ mod request_format {
     }
 }
 
-// ============================================================================
-// Module: Response format validation
-// ============================================================================
-
 mod response_format {
     use synctv_proto::client::{LoginResponse, RegisterResponse, User};
 
@@ -1195,10 +1151,6 @@ mod response_format {
     }
 }
 
-// ============================================================================
-// Module: Unauthenticated endpoint behavior
-// ============================================================================
-
 mod unauthenticated_access {
     use super::*;
     use synctv_api::http::error::AppError;
@@ -1239,10 +1191,6 @@ mod unauthenticated_access {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
-
-// ============================================================================
-// Module: ApiError type classification
-// ============================================================================
 
 mod api_error_classification {
     use synctv_api::impls::{classify_error, ApiError, ErrorKind};
@@ -1340,10 +1288,6 @@ mod api_error_classification {
     }
 }
 
-// ============================================================================
-// Module: HTTP request body edge cases
-// ============================================================================
-
 mod body_edge_cases {
     use super::*;
 
@@ -1420,10 +1364,6 @@ mod body_edge_cases {
     }
 }
 
-// ============================================================================
-// Module: UpdatePlaybackRequest deserialization
-// ============================================================================
-
 mod playback_request {
     use synctv_proto::client::{PlaybackPatchState, UpdatePlaybackRequest};
 
@@ -1486,14 +1426,6 @@ mod playback_request {
     }
 }
 
-// ============================================================================
-// Module: User update request deserialization
-// ============================================================================
-
-// ============================================================================
-// Module: Complete authentication flow (no DB required)
-// ============================================================================
-
 mod auth_flow {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{hash_password, verify_password, JwtService, TokenType};
@@ -1507,13 +1439,11 @@ mod auth_flow {
     async fn test_register_login_flow() {
         let password = "StrongP@ssw0rd!";
 
-        // 1. Registration: hash the password (simulates register endpoint)
         let hash = hash_password(password)
             .await
             .expect("hashing should succeed");
         assert_ne!(hash, password, "hash must differ from plaintext");
 
-        // 2. Login: verify the password
         assert!(
             verify_password(password, &hash)
                 .await
@@ -1527,7 +1457,6 @@ mod auth_flow {
             "wrong password should fail verification"
         );
 
-        // 3. Issue access + refresh tokens
         let jwt = jwt_service();
         let user_id = UserId::new();
 
@@ -1538,24 +1467,20 @@ mod auth_flow {
             .sign_token(&user_id, TokenType::Refresh, 0)
             .expect("refresh token");
 
-        // 4. Validate access token (simulates auth middleware)
         let claims = jwt
             .verify_access_token(&access_token)
             .expect("access token valid");
         assert_eq!(claims.sub, user_id.as_str());
         assert!(claims.is_access_token());
 
-        // 5. Access token cannot be used as refresh token
         assert!(jwt.verify_refresh_token(&access_token).is_err());
 
-        // 6. Validate refresh token (simulates token refresh endpoint)
         let refresh_claims = jwt
             .verify_refresh_token(&refresh_token)
             .expect("refresh token valid");
         assert_eq!(refresh_claims.sub, user_id.as_str());
         assert!(refresh_claims.is_refresh_token());
 
-        // 7. Issue new access token from refresh (simulates refresh flow)
         let new_access = jwt
             .sign_token(&user_id, TokenType::Access, 0)
             .expect("new access token");

@@ -147,8 +147,6 @@ mod tests {
         CredentialEncryption::new(&key).expect("Test encryption key should be valid")
     }
 
-    // ============== encrypt_field_in_value tests ==============
-
     #[test]
     fn test_encrypt_string_field_encrypts_non_empty_plaintext() {
         let enc = test_encryption();
@@ -258,8 +256,6 @@ mod tests {
         assert_eq!(result, config);
     }
 
-    // ============== decrypt_field_in_value tests ==============
-
     #[test]
     fn test_decrypt_string_field_decrypts_encrypted_value() {
         let enc = test_encryption();
@@ -354,8 +350,6 @@ mod tests {
         assert_eq!(result, config);
     }
 
-    // ============== Round-trip tests ==============
-
     #[test]
     fn test_roundtrip_string_field() {
         let enc = test_encryption();
@@ -386,8 +380,6 @@ mod tests {
 
         assert_eq!(decrypted, original);
     }
-
-    // ============== Error handling tests ==============
 
     #[test]
     fn test_decrypt_with_wrong_key_fails() {

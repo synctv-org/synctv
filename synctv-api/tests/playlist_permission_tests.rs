@@ -12,9 +12,7 @@
 
 use synctv_core::models::permission::PermissionBits;
 
-// ============================================================================
 // Permission Bits Tests
-// ============================================================================
 
 const _: () = assert!(
     PermissionBits::REORDER_PLAYLIST > 0,
@@ -41,13 +39,9 @@ fn test_reorder_playlist_is_distinct_from_other_permissions() {
     );
 }
 
-// ============================================================================
 // Role Default Permission Tests
-// ============================================================================
 
-// ============================================================================
 // Permission Check Tests for Effective Permissions
-// ============================================================================
 
 #[test]
 fn test_permission_check_with_removed_permission() {
@@ -79,9 +73,7 @@ fn test_permission_check_with_added_permission() {
     );
 }
 
-// ============================================================================
 // View Playlist Permission Tests (for read operations)
-// ============================================================================
 
 const _: () = assert!(
     PermissionBits::VIEW_PLAYLIST > 0,
@@ -114,9 +106,7 @@ fn test_all_roles_have_view_playlist_permission() {
     );
 }
 
-// ============================================================================
 // Permission Hierarchy Tests
-// ============================================================================
 
 #[test]
 fn test_admin_permissions_include_member_permissions() {
@@ -158,9 +148,7 @@ fn test_creator_has_all_permissions() {
     );
 }
 
-// ============================================================================
 // Permission Combination Tests
-// ============================================================================
 
 #[test]
 fn test_multiple_permissions_can_be_checked() {
@@ -201,9 +189,7 @@ fn test_permission_bitmask_operations() {
     assert!(removed.has(perm_b), "Should still have permission B");
 }
 
-// ============================================================================
 // Permission Check for API Layer Tests
-// ============================================================================
 
 #[test]
 fn test_check_permission_pattern() {
@@ -211,10 +197,8 @@ fn test_check_permission_pattern() {
     // The actual check is: room_service.check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
 
     // Simulate the check:
-    // 1. Get user's effective permissions
     let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
 
-    // 2. Check if user has required permission
     let has_permission = member_default.has(PermissionBits::REORDER_PLAYLIST);
 
     // Members do NOT have REORDER_PLAYLIST by default - it's admin-only
@@ -242,15 +226,12 @@ fn test_check_permission_pattern() {
     );
 }
 
-// ============================================================================
 // Playlist Operation Permission Requirements Documentation
-// ============================================================================
 
 #[test]
 fn test_document_playlist_permission_requirements() {
     // Document what permissions are required for each playlist operation:
 
-    // Create: REORDER_PLAYLIST
     let create_req = PermissionBits::REORDER_PLAYLIST;
 
     // Update: REORDER_PLAYLIST

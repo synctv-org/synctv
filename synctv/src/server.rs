@@ -1098,7 +1098,6 @@ impl SyncTvServer {
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
         // system to be alive so they can be broadcast to other replicas.
-        //
         // D6 fix: Use the REMAINING time from the total budget instead of a
         // separate full timeout, ensuring total shutdown stays within K8s grace period.
         {

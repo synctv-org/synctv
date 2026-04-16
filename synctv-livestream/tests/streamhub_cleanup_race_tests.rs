@@ -52,7 +52,6 @@ async fn test_cleanup_during_concurrent_unregistration() {
     let unregister_started = Arc::new(Notify::new());
     let unregister_started_clone = Arc::clone(&unregister_started);
     let unregister_handle = tokio::spawn(async move {
-        // Wait for both tasks to be ready
         barrier_clone.wait().await;
 
         // Unregister some streams concurrently with cleanup
@@ -71,7 +70,6 @@ async fn test_cleanup_during_concurrent_unregistration() {
     let barrier_clone = barrier.clone();
     let registry_for_cleanup = registry.clone();
     let cleanup_handle = tokio::spawn(async move {
-        // Wait for both tasks to be ready
         barrier_clone.wait().await;
 
         unregister_started.notified().await;
@@ -83,7 +81,6 @@ async fn test_cleanup_during_concurrent_unregistration() {
             .unwrap();
     });
 
-    // Wait for both tasks to complete
     let (_, _) = tokio::join!(unregister_handle, cleanup_handle);
 
     // Verify: All streams should be cleaned up (no orphaned entries)
@@ -200,7 +197,6 @@ async fn test_concurrent_cleanups_same_node() {
         }));
     }
 
-    // Wait for all cleanups to complete
     for handle in handles {
         let result = handle.await.unwrap();
         assert!(result.is_ok(), "Concurrent cleanup should succeed");
@@ -232,14 +228,11 @@ async fn test_cleanup_then_reregister_sequence() {
     }
 
     // Simulate the restart sequence:
-    // 1. Stop all (not modeled here, would call unregister)
-    // 2. Cleanup all publishers for node
     registry
         .cleanup_all_publishers_for_node(node_id)
         .await
         .unwrap();
 
-    // 3. Immediately re-register
     for i in 0..3 {
         let registered = registry
             .try_register_publisher(
@@ -320,7 +313,6 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
     // Signal stop complete immediately (before streams actually stop)
     let _ = stop_done_tx.send(());
 
-    // Wait for stop_done with timeout (simulates the 100ms timeout in server.rs)
     let _ = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
 
     let _ = begin_unregister_tx.send(());
@@ -334,7 +326,6 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
         "Cleanup should succeed even with concurrent unregisters"
     );
 
-    // Wait for unregister task to complete
     let _ = unregister_handle.await;
 
     // Final state: no publishers should remain
@@ -392,12 +383,10 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
         }
     });
 
-    // Wait for unregistrations to start
     if unregister_started.load(Ordering::SeqCst) == 0 {
         started_notify.notified().await;
     }
 
-    // Wait for the in-flight unregister sequence to complete before cleanup,
     // which is what the grace period is intended to achieve.
     if unregister_completed.load(Ordering::SeqCst) < 3 {
         completed_notify.notified().await;
@@ -409,7 +398,6 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
         .await
         .unwrap();
 
-    // Wait for unregister task
     let _ = unregister_handle.await;
 
     // Verify: all streams should be gone
@@ -621,7 +609,6 @@ async fn test_complete_restart_sequence_with_delay_fix() {
         assert!(registered, "Re-registration should succeed");
     }
 
-    // Wait for unregister task to complete
     let _ = unregister_handle.await;
 
     // Verify: 3 streams should be active (the ones we re-registered)

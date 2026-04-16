@@ -41,7 +41,6 @@ impl MockRtmpServer {
     }
 }
 
-// === Test 1: Handshake timeout protection ===
 // When a malicious server doesn't respond, the client should timeout after 10 seconds
 
 #[tokio::test]
@@ -62,14 +61,12 @@ async fn test_client_session_handshake_timeout_on_no_response() {
         tokio::time::sleep(Duration::from_secs(10)).await;
     });
 
-    // Connect client
     let client_stream = TcpStream::connect(addr).await.unwrap();
     let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> =
         Arc::new(Mutex::new(Box::new(TcpIO::new(client_stream))));
 
     let mut handshaker = SimpleHandshakeClient::new(Arc::clone(&io));
 
-    // Send C0/C1
     handshaker.handshake().await.unwrap();
     assert_eq!(handshaker.state, ClientHandshakeState::ReadS0S1S2);
 
@@ -102,8 +99,6 @@ async fn test_client_session_handshake_timeout_on_no_response() {
     server_handle.abort();
 }
 
-// === Test 2: Normal handshake flow ===
-
 #[tokio::test]
 async fn test_client_session_handshake_normal_flow() {
     // This test verifies the handshake timeout mechanism works correctly
@@ -123,7 +118,6 @@ async fn test_client_session_handshake_normal_flow() {
         // Verify C0 version byte
         assert_eq!(c0c1[0], 3, "RTMP version should be 3");
 
-        // Send S0/S1/S2 (3073 bytes total)
         // S0: version byte
         // S1: 1536 bytes (time + zero + random)
         // S2: echo back C1
@@ -147,14 +141,12 @@ async fn test_client_session_handshake_normal_flow() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     });
 
-    // Connect client
     let client_stream = TcpStream::connect(addr).await.unwrap();
     let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> =
         Arc::new(Mutex::new(Box::new(TcpIO::new(client_stream))));
 
     let mut handshaker = SimpleHandshakeClient::new(Arc::clone(&io));
 
-    // Send C0/C1
     handshaker.handshake().await.unwrap();
     assert_eq!(handshaker.state, ClientHandshakeState::ReadS0S1S2);
 
@@ -190,8 +182,6 @@ async fn test_client_session_handshake_normal_flow() {
     server_handle.await.unwrap();
 }
 
-// === Test 3: Invalid C0/C1 data handling ===
-
 #[tokio::test]
 async fn test_client_session_handles_invalid_s0_version() {
     // This test verifies that client properly handles invalid S0 version
@@ -207,7 +197,6 @@ async fn test_client_session_handles_invalid_s0_version() {
         let mut c0c1 = vec![0u8; 1537];
         stream.read_exact(&mut c0c1).await.unwrap();
 
-        // Send S0 with INVALID version (99 instead of 3)
         let mut s0s1s2 = Vec::with_capacity(3073);
         s0s1s2.push(99); // Invalid RTMP version!
         s0s1s2.extend_from_slice(&[0u8; 1536]); // S1
@@ -219,14 +208,12 @@ async fn test_client_session_handles_invalid_s0_version() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     });
 
-    // Connect client
     let client_stream = TcpStream::connect(addr).await.unwrap();
     let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> =
         Arc::new(Mutex::new(Box::new(TcpIO::new(client_stream))));
 
     let mut handshaker = SimpleHandshakeClient::new(Arc::clone(&io));
 
-    // Send C0/C1
     handshaker.handshake().await.unwrap();
 
     // Read S0/S1/S2
@@ -249,7 +236,6 @@ async fn test_client_session_handles_invalid_s0_version() {
     server_handle.await.unwrap();
 }
 
-// === Test 5: Timeout error propagation ===
 // This test verifies the timeout error type exists and has correct message
 // (actual timeout behavior is tested in test_client_session_handshake_timeout_on_no_response)
 

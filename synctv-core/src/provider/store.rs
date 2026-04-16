@@ -97,9 +97,7 @@ pub trait ProviderStoreExt: ProviderStore {
 
 impl<S: ProviderStore + ?Sized> ProviderStoreExt for S {}
 
-// ---------------------------------------------------------------------------
 // InMemoryProviderStore
-// ---------------------------------------------------------------------------
 
 /// Value wrapper that carries a per-entry TTL for moka's `Expiry` trait.
 #[derive(Clone)]
@@ -222,9 +220,7 @@ impl ProviderStore for InMemoryProviderStore {
     }
 }
 
-// ---------------------------------------------------------------------------
 // RedisProviderStore
-// ---------------------------------------------------------------------------
 
 /// Redis-backed provider store with distributed locking via `SET NX EX`.
 ///
@@ -333,9 +329,7 @@ impl ProviderStore for RedisProviderStore {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PrefixedProviderStore
-// ---------------------------------------------------------------------------
 
 /// Wraps another `ProviderStore` and prepends a prefix to all keys.
 pub struct PrefixedProviderStore<S> {
@@ -374,9 +368,7 @@ impl<S: ProviderStore> ProviderStore for PrefixedProviderStore<S> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ProviderStoreRegistry — lazy, per-provider store creation
-// ---------------------------------------------------------------------------
 
 /// Registry that lazily creates and caches per-provider stores on first access.
 ///
@@ -465,9 +457,7 @@ pub fn build_provider_store_resolver_from_profile(
     )
 }
 
-// ---------------------------------------------------------------------------
 // VersionedPlayback
-// ---------------------------------------------------------------------------
 
 /// Cached playback result with a version tag and expiry timestamp.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -483,9 +473,7 @@ impl VersionedPlayback {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

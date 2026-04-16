@@ -170,10 +170,7 @@ impl DirectUrlProvider {
             hasher.update(b"\0");
         }
 
-        let cache_key_suffix: String = format!("{:x}", hasher.finalize())
-            .chars()
-            .take(16)
-            .collect();
+        let cache_key_suffix: String = hex::encode(hasher.finalize()).chars().take(16).collect();
         format!("playback:{cache_key_suffix}")
     }
 }

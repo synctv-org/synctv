@@ -109,7 +109,7 @@ handlebars.workspace = true
 # Misc
 base64.workspace = true
 hostname.workspace = true
-urlencoding = "2.1"
+urlencoding.workspace = true
 
 
 # STUN server (turn-rs with STUN-only config)
@@ -130,7 +130,7 @@ criterion.workspace = true
 rand.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
-synctv-core-testing = { path = "testing" }
+synctv-core-testing.workspace = true
 tempfile.workspace = true
 
 [[bench]]

@@ -44,6 +44,17 @@ use tokio::io::AsyncReadExt;
 use super::SliceCacheBackend;
 use crate::slice_cache::etag::StoredEntry;
 
+fn encode_header(header: &FileEntryHeader) -> anyhow::Result<Vec<u8>> {
+    bincode::serde::encode_to_vec(header, bincode::config::standard())
+        .map_err(|e| anyhow::anyhow!("bincode encode: {e}"))
+}
+
+fn decode_header(bytes: &[u8]) -> anyhow::Result<FileEntryHeader> {
+    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .map(|(header, _consumed)| header)
+        .map_err(|e| anyhow::anyhow!("bincode decode: {e}"))
+}
+
 /// Magic bytes identifying a valid SyncTV cache file (version 1).
 const CACHE_FILE_MAGIC: &[u8; 4] = b"STV\x01";
 
@@ -531,8 +542,7 @@ impl SliceCacheBackend for FileBackend {
         };
 
         // Serialize header with bincode.
-        let header_bytes =
-            bincode::serialize(&header).map_err(|e| anyhow::anyhow!("bincode encode: {e}"))?;
+        let header_bytes = encode_header(&header)?;
         let header_len = u32::try_from(header_bytes.len())
             .map_err(|_| anyhow::anyhow!("cache header too large: {}", header_bytes.len()))?;
 
@@ -690,7 +700,7 @@ async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Byt
     // Read and deserialize header.
     let mut header_buf = vec![0u8; header_len];
     file.read_exact(&mut header_buf).await?;
-    let header: FileEntryHeader = bincode::deserialize(&header_buf).map_err(|e| {
+    let header = decode_header(&header_buf).map_err(|e| {
         anyhow::anyhow!("Failed to deserialize header from {}: {e}", path.display())
     })?;
 
@@ -752,7 +762,7 @@ async fn read_cache_file_header(path: &PathBuf) -> anyhow::Result<FileEntryHeade
     // Read and deserialize header.
     let mut header_buf = vec![0u8; header_len];
     file.read_exact(&mut header_buf).await?;
-    let header: FileEntryHeader = bincode::deserialize(&header_buf)?;
+    let header = decode_header(&header_buf)?;
 
     Ok(header)
 }
@@ -795,14 +805,13 @@ async fn update_file_last_accessed(
     // Read and deserialize existing header.
     let mut header_buf = vec![0u8; header_len];
     file.read_exact(&mut header_buf).await?;
-    let mut header: FileEntryHeader = bincode::deserialize(&header_buf)?;
+    let mut header = decode_header(&header_buf)?;
 
     // Update last_accessed.
     header.last_accessed_millis = last_accessed_millis;
 
     // Re-serialize.
-    let new_header_buf =
-        bincode::serialize(&header).map_err(|e| anyhow::anyhow!("bincode encode: {e}"))?;
+    let new_header_buf = encode_header(&header)?;
     if new_header_buf.len() != header_len {
         // Header size changed -- skip update to avoid corrupting the file.
         return Ok(());

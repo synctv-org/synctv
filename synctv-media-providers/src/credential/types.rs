@@ -174,7 +174,7 @@ impl CredentialData {
             Self::Bilibili { .. } => "bilibili".to_string(),
             Self::Alist { host, .. } | Self::Emby { host, .. } => {
                 use sha2::{Digest, Sha256};
-                format!("{:x}", Sha256::digest(host.as_bytes()))
+                hex::encode(Sha256::digest(host.as_bytes()))
             }
         }
     }
@@ -186,20 +186,16 @@ impl CredentialData {
 
         match self {
             Self::Bilibili { .. } => match Self::normalized_instance_name(provider_instance_name) {
-                Some(instance_name) => {
-                    format!(
-                        "{:x}",
-                        Sha256::digest(format!("bilibili\n{instance_name}").as_bytes())
-                    )
-                }
+                Some(instance_name) => hex::encode(Sha256::digest(
+                    format!("bilibili\n{instance_name}").as_bytes(),
+                )),
                 None => self.server_id(),
             },
             Self::Alist { host, .. } | Self::Emby { host, .. } => {
                 match Self::normalized_instance_name(provider_instance_name) {
-                    Some(instance_name) => format!(
-                        "{:x}",
-                        Sha256::digest(format!("{host}\n{instance_name}").as_bytes())
-                    ),
+                    Some(instance_name) => hex::encode(Sha256::digest(
+                        format!("{host}\n{instance_name}").as_bytes(),
+                    )),
                     None => self.server_id(),
                 }
             }

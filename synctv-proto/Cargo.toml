@@ -27,6 +27,6 @@ serde_json.workspace = true
 utoipa = { workspace = true, optional = true }
 
 [build-dependencies]
-tonic-prost-build = { workspace = true }
+tonic-prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 prost-reflect-build.workspace = true

@@ -66,8 +66,8 @@ tokio = { version = "1.49", features = [
     "signal",
     "fs",
 ] }
-tokio-util = { version = "0.7", features = ["codec", "io", "rt"] }
-tokio-stream = "0.1"
+tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
+tokio-stream = "0.1.18"
 
 # gRPC & Protobuf
 tonic = { version = "0.14", default-features = false, features = [
@@ -78,21 +78,21 @@ tonic = { version = "0.14", default-features = false, features = [
     "router",
     "channel",
 ] }
-tonic-web = "0.14"
-tonic-reflection = "0.14"
-tonic-health = "0.14"
-tonic-build = "0.14"
-tonic-prost = "0.14"
-tonic-prost-build = "0.14"
+tonic-web = "0.14.5"
+tonic-reflection = "0.14.5"
+tonic-health = "0.14.5"
+tonic-build = "0.14.5"
+tonic-prost = "0.14.5"
+tonic-prost-build = "0.14.5"
 protoc-bin-vendored = "3.2.0"
-prost = "0.14"
-prost-types = "0.14"
+prost = "0.14.3"
+prost-types = "0.14.3"
 prost-reflect = "0.16.3"
 prost-reflect-build = "0.16.0"
 prost-protovalidate = "0.3.0"
 
 # HTTP Framework
-axum = { version = "0.8", features = ["macros", "ws"] }
+axum = { version = "0.8.9", features = ["macros", "ws"] }
 tower = { version = "0.5", features = [
     "util",
     "timeout",
@@ -143,46 +143,46 @@ redis = { version = "1.0", features = [
 ] }
 
 # Security
-argon2 = "0.5"
-jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
-oauth2 = "5.0"
-aes-gcm = "0.10"
-ammonia = "4.1"
-http-acl = "0.11"
-http-acl-reqwest = "0.11"
-sha1 = "0.10"
-sha2 = "0.10"
-md-5 = "0.10"
-hmac = "0.12"
-subtle = "2.6"
+argon2 = "0.5.3"
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+oauth2 = "5.0.0"
+aes-gcm = "0.10.3"
+ammonia = "4.1.2"
+http-acl = "0.11.0"
+http-acl-reqwest = "0.11.0"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+md-5 = "0.11.0"
+hmac = "0.13.0"
+subtle = "2.6.1"
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-serde_ignored = "0.1"
-toml = "0.9"
-serde_urlencoded = "0.7"
-indexmap = "2"
-bincode = "1.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_yaml = "0.9.34"
+serde_ignored = "0.1.14"
+toml = "1.1.2"
+serde_urlencoded = "0.7.1"
+indexmap = "2.14.0"
+bincode = { version = "2.0.1", features = ["serde"] }
 
 # Caching
-moka = { version = "0.12", features = ["future", "sync"] }
-dashmap = "6.1"
-lru = "0.16"
+moka = { version = "0.12.15", features = ["future", "sync"] }
+dashmap = "6.1.0"
+lru = "0.17.0"
 
 # IDs & Crypto
-nanoid = "0.4"
-uuid = { version = "1.21", features = ["v4", "serde"] }
-rand = "0.10"
-base64 = "0.22"
-humantime = "2.3"
-hex = "0.4"
-chrono-tz = "0.10"
-iana-time-zone = "0.1"
+nanoid = "0.5.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+rand = "0.10.1"
+base64 = "0.22.1"
+humantime = "2.3.0"
+hex = "0.4.3"
+chrono-tz = "0.10.4"
+iana-time-zone = "0.1.65"
 
 # WebRTC
-webrtc = "0.17"
+webrtc = "0.17.1"
 
 # STUN server (turn-rs, STUN-only mode)
 turn-server = { git = "https://github.com/mycrl/turn-rs", default-features = false, features = [
@@ -193,59 +193,60 @@ turn-server = { git = "https://github.com/mycrl/turn-rs", default-features = fal
 synctv-xiu = { path = "synctv-xiu" }
 
 # Object Storage
-opendal = { version = "0.55", features = ["services-s3"] }
+opendal = { version = "0.55.0", features = ["services-s3"] }
 
 # Logging & Tracing
-tracing = "0.1"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "json",
     "fmt",
 ] }
-tracing-appender = "0.2"
-dotenvy = "0.15"
+tracing-appender = "0.2.4"
+dotenvy = "0.15.7"
 
 # Configuration
-config = "0.15"
-clap = { version = "4.5", features = ["derive", "env"] }
-clap_complete = "4.5"
+config = "0.15.22"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+clap_complete = "4.6.2"
 
 # Utilities
-anyhow = "1.0"
-thiserror = "2.0"
-bytes = "1.11"
-parking_lot = "0.12"
-async-trait = "0.1"
-futures = "0.3"
-futures-util = "0.3"
-hostname = "0.4"
-url = "2.5"
-percent-encoding = "2.3"
-regex = "1.12"
-paste = "1.0"
-byteorder = "1.5"
-http = "1.4"
-garde = { version = "0.22", features = ["derive"] }
+anyhow = "1.0.102"
+thiserror = "2.0.18"
+bytes = "1.11.1"
+parking_lot = "0.12.5"
+async-trait = "0.1.89"
+futures = "0.3.32"
+futures-util = "0.3.32"
+hostname = "0.4.2"
+url = "2.5.8"
+percent-encoding = "2.3.2"
+urlencoding = "2.1.3"
+regex = "1.12.3"
+paste = "1.0.15"
+byteorder = "1.5.0"
+http = "1.4.0"
+garde = { version = "0.22.1", features = ["derive"] }
 
 # Monitoring
 prometheus = "0.14.0"
 
 # Time
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 
 
 # Kubernetes (in-cluster client for leader election & service discovery)
-kube = { version = "1.0", features = ["runtime", "client", "derive"] }
-k8s-openapi = { version = "0.25", features = ["v1_32"] }
+kube = { version = "3.1.0", features = ["runtime", "client", "derive"] }
+k8s-openapi = { version = "0.27.1", features = ["v1_32"] }
 
 # TLS
-tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
-rustls-pemfile = "2.2"
-hyper-util = { version = "0.1", features = ["client-legacy", "tokio", "http2"] }
+tokio-rustls = "0.26.4"
+rustls = { version = "0.23.38", default-features = false, features = ["std", "ring"] }
+rustls-pemfile = "2.2.0"
+hyper-util = { version = "0.1.20", features = ["client-legacy", "tokio", "http2"] }
 
 # Networking
-ipnet = "2.11"
+ipnet = "2.12.0"
 
 # Email
 lettre = { version = "0.11", default-features = false, features = [
@@ -255,43 +256,43 @@ lettre = { version = "0.11", default-features = false, features = [
     "hostname",
     "tokio1",
 ] }
-handlebars = "6.4"
+handlebars = "6.4.0"
 
 # Initialization
-ctor = "0.6"
+ctor = "0.10.0"
 
 # Compression
-flate2 = "1.1"
-brotli = "8.0"
+flate2 = "1.1.9"
+brotli = "8.0.2"
 
 # Resilience
-governor = "0.10"
-nonzero_ext = "0.3"
-backon = "1.6"
-failsafe = "1.3"
+governor = "0.10.4"
+nonzero_ext = "0.3.0"
+backon = "1.6.0"
+failsafe = "1.3.0"
 
 # Data Structures
-async_singleflight = "0.6"
+async_singleflight = "0.6.2"
 
 # HTTP Body
-http-body-util = "0.1"
+http-body-util = "0.1.3"
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # Testing
-mockall = "0.14"
-wiremock = "0.6"
-tempfile = "3.25"
-testcontainers = "0.26"
-testcontainers-modules = { version = "0.14", features = ["postgres", "redis"] }
-tokio-tungstenite = "0.26"
+mockall = "0.14.0"
+wiremock = "0.6.5"
+tempfile = "3.27.0"
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["postgres", "redis"] }
+tokio-tungstenite = "0.29.0"
 
 # Benchmarking
-criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
+criterion = { version = "0.8.2", features = ["html_reports", "async_tokio"] }
 
 # Allocators
-tikv-jemallocator = "0.6"
-mimalloc = { version = "0.1", features = ["v3"] }
+tikv-jemallocator = "0.6.1"
+mimalloc = { version = "0.1.48", features = ["v3"] }
 
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto" }

@@ -21,22 +21,22 @@ tracing.workspace = true
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
 synctv-common.workspace = true
-moka = { workspace = true }
+moka.workspace = true
 dashmap.workspace = true
 sha2.workspace = true
 hex.workspace = true
 bytes.workspace = true
 async-trait.workspace = true
 bincode.workspace = true
-serde = { workspace = true }
+serde.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-wiremock = { workspace = true }
+wiremock.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-reqwest = { workspace = true }
-http-body-util = { workspace = true }
-axum = { workspace = true }
-tower = { workspace = true }
+reqwest.workspace = true
+http-body-util.workspace = true
+axum.workspace = true
+tower.workspace = true

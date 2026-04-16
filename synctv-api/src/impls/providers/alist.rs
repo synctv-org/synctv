@@ -125,10 +125,9 @@ impl AlistApiImpl {
             password
         } else {
             use sha2::{Digest, Sha256};
-            format!(
-                "{:x}",
-                Sha256::digest(format!("{password}-https://github.com/AlistGo/alist").as_bytes())
-            )
+            hex::encode(Sha256::digest(
+                format!("{password}-https://github.com/AlistGo/alist").as_bytes(),
+            ))
         };
 
         let credential_data = ProviderCredential::alist(host, req.username, stored_password);

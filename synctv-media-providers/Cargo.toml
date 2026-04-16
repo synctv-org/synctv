@@ -17,7 +17,7 @@ async-trait.workspace = true
 # HTTP Client
 reqwest.workspace = true
 tokio-tungstenite = { workspace = true, features = ["native-tls"] }
-futures-util = "0.3"
+futures-util.workspace = true
 
 # gRPC
 tonic.workspace = true
@@ -72,5 +72,5 @@ protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-wiremock = { workspace = true }
-futures = "0.3"
+wiremock.workspace = true
+futures.workspace = true

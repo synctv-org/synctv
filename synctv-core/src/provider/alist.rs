@@ -197,10 +197,7 @@ impl AlistProvider {
         hasher.update(path.as_bytes());
         hasher.update(b"\0");
         hasher.update(password.unwrap_or("").as_bytes());
-        let path_hash: String = format!("{:x}", hasher.finalize())
-            .chars()
-            .take(16)
-            .collect();
+        let path_hash: String = hex::encode(hasher.finalize()).chars().take(16).collect();
         format!("playback:{server_id}:{path_hash}")
     }
 

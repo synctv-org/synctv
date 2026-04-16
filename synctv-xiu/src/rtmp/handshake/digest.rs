@@ -6,7 +6,7 @@ use {
     },
     crate::bytesio::bytes_reader::BytesReader,
     bytes::BytesMut,
-    hmac::{Hmac, Mac},
+    hmac::{Hmac, KeyInit, Mac},
     sha2::Sha256,
 };
 

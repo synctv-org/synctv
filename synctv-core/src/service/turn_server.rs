@@ -8,6 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
+use hmac::KeyInit;
+
 type HmacSha1 = hmac::Hmac<sha1::Sha1>;
 
 /// STUN server configuration

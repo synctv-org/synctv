@@ -306,7 +306,7 @@ fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)>
     let to_hash = format!("{query_str}{mixin_key}");
     let mut hasher = Md5::new();
     hasher.update(to_hash.as_bytes());
-    let w_rid = format!("{:x}", hasher.finalize());
+    let w_rid = hex::encode(hasher.finalize());
 
     // Add w_rid to the params
     all_params.push(("w_rid".to_string(), w_rid));
@@ -3780,7 +3780,7 @@ mod tests {
 
         let mut hasher = Md5::new();
         hasher.update(format!("{expected_query}{mixin_key}").as_bytes());
-        let expected_hash = format!("{:x}", hasher.finalize());
+        let expected_hash = hex::encode(hasher.finalize());
 
         assert_eq!(
             w_rid, expected_hash,

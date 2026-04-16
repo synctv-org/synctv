@@ -46,6 +46,18 @@ fn metric_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn current_micro_time() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime {
+    k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime::from(
+        k8s_openapi::jiff::Timestamp::now(),
+    )
+}
+
+fn elapsed_secs_since(
+    renew_time: &k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime,
+) -> i64 {
+    k8s_openapi::jiff::Timestamp::now().as_second() - renew_time.0.as_second()
+}
+
 /// K8s Lease-based leader election.
 ///
 /// Creates or acquires a Lease resource in the pod's namespace.
@@ -281,12 +293,9 @@ impl K8sLeaderElector {
         // CLUSTER-002: Add clock drift tolerance to prevent premature takeovers
         // due to NTP adjustments or clock skew between nodes
         let lease_expired = if let Some(renew) = renew_time {
-            let renew_time = renew.0;
-            let now = chrono::Utc::now();
-            let elapsed = now.signed_duration_since(renew_time);
             // Add tolerance to lease duration to account for clock drift
             let effective_duration = i64::from(duration) + CLOCK_DRIFT_TOLERANCE_SECS;
-            elapsed.num_seconds() > effective_duration
+            elapsed_secs_since(renew) > effective_duration
         } else {
             true // No renew time means expired
         };
@@ -421,16 +430,12 @@ impl K8sLeaderElector {
                 return;
             }
 
-            let now = chrono::Utc::now();
-
             // LS-4: Use replace() instead of Patch::Merge to enforce
             // resourceVersion optimistic locking. The API server rejects
             // the request with 409 if the resourceVersion doesn't match.
             let mut updated_lease = current_lease.clone();
             if let Some(ref mut spec) = updated_lease.spec {
-                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
-                    now,
-                ));
+                spec.renew_time = Some(current_micro_time());
             }
 
             match leases
@@ -539,10 +544,7 @@ impl K8sLeaderElector {
                 .and_then(|s| s.lease_duration_seconds)
                 .unwrap_or(self.lease_duration_secs);
             let lease_expired = if let Some(renew) = renew_time {
-                let renew_time = renew.0;
-                let now = chrono::Utc::now();
-                let elapsed = now.signed_duration_since(renew_time);
-                elapsed.num_seconds() > i64::from(duration)
+                elapsed_secs_since(renew) > i64::from(duration)
             } else {
                 true // No renew time means expired
             };
@@ -559,20 +561,15 @@ impl K8sLeaderElector {
                 return;
             }
 
-            let now = chrono::Utc::now();
-
             // LS-4: Use replace() instead of Patch::Merge to enforce
             // resourceVersion optimistic locking on acquisition.
             let mut updated_lease = current_lease.clone();
             if let Some(ref mut spec) = updated_lease.spec {
                 spec.holder_identity = Some(self.identity.clone());
                 spec.lease_duration_seconds = Some(self.lease_duration_secs);
-                spec.acquire_time = Some(
-                    k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
-                );
-                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
-                    now,
-                ));
+                let now = current_micro_time();
+                spec.acquire_time = Some(now.clone());
+                spec.renew_time = Some(now);
             }
 
             match leases
@@ -688,7 +685,7 @@ impl K8sLeaderElector {
 
     /// Build a new Lease resource.
     fn build_lease(&self) -> Lease {
-        let now = chrono::Utc::now();
+        let now = current_micro_time();
         Lease {
             metadata: kube::api::ObjectMeta {
                 name: Some(self.lease_name.clone()),
@@ -698,12 +695,8 @@ impl K8sLeaderElector {
             spec: Some(k8s_openapi::api::coordination::v1::LeaseSpec {
                 holder_identity: Some(self.identity.clone()),
                 lease_duration_seconds: Some(self.lease_duration_secs),
-                acquire_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
-                    now,
-                )),
-                renew_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
-                    now,
-                )),
+                acquire_time: Some(now.clone()),
+                renew_time: Some(now),
                 ..Default::default()
             }),
         }

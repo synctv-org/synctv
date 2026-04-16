@@ -294,21 +294,25 @@ impl KubernetesMetricsAuthorizer {
             .and_then(|status| status.authenticated)
             .unwrap_or(false);
         if !authenticated {
-            return Err(kube::Error::Api(kube::error::ErrorResponse {
-                status: "Failure".to_string(),
-                message: "token review rejected request".to_string(),
-                reason: "Unauthorized".to_string(),
-                code: 401,
-            }));
+            return Err(kube::Error::Api(
+                kube::core::Status::failure(
+                    "token review rejected request",
+                    kube::core::response::reason::UNAUTHORIZED,
+                )
+                .with_code(401)
+                .boxed(),
+            ));
         }
 
         let Some(user_info) = review.status.and_then(|status| status.user) else {
-            return Err(kube::Error::Api(kube::error::ErrorResponse {
-                status: "Failure".to_string(),
-                message: "token review did not return user info".to_string(),
-                reason: "Unauthorized".to_string(),
-                code: 401,
-            }));
+            return Err(kube::Error::Api(
+                kube::core::Status::failure(
+                    "token review did not return user info",
+                    kube::core::response::reason::UNAUTHORIZED,
+                )
+                .with_code(401)
+                .boxed(),
+            ));
         };
 
         self.authentication_cache.insert(
@@ -394,7 +398,7 @@ fn map_kubernetes_metrics_error(error: &kube::Error) -> MetricsAccessError {
 fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

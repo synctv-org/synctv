@@ -199,7 +199,7 @@ impl UserProviderCredential {
     #[must_use]
     pub fn generate_server_id(host: &str) -> String {
         use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(host.as_bytes()))
+        hex::encode(Sha256::digest(host.as_bytes()))
     }
 
     /// Generate a `server_id` scoped to the provider instance.
@@ -211,12 +211,9 @@ impl UserProviderCredential {
         use sha2::{Digest, Sha256};
 
         match Self::normalized_instance_name(provider_instance_name) {
-            Some(instance_name) => {
-                format!(
-                    "{:x}",
-                    Sha256::digest(format!("{host}\n{instance_name}").as_bytes())
-                )
-            }
+            Some(instance_name) => hex::encode(Sha256::digest(
+                format!("{host}\n{instance_name}").as_bytes(),
+            )),
             None => Self::generate_server_id(host),
         }
     }
@@ -230,7 +227,7 @@ impl UserProviderCredential {
             Some(instance_name) => format!("{}\n{instance_name}", Self::BILIBILI_SCOPE),
             None => Self::BILIBILI_SCOPE.to_string(),
         };
-        format!("{:x}", Sha256::digest(input.as_bytes()))
+        hex::encode(Sha256::digest(input.as_bytes()))
     }
 
     /// Check if this credential has expired

@@ -4,7 +4,7 @@
 // authenticated by an HMAC-SHA256 signature. This replaces JWT auth on proxy routes,
 // allowing URLs to be shared (e.g., in M3U8 playlists) without leaking JWT tokens.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fmt;
 use urlencoding::encode as url_encode;

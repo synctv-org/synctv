@@ -482,13 +482,8 @@ mod tests {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             room_service,
             content_filter: ContentFilter::new(),
@@ -628,7 +623,9 @@ mod tests {
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
                 rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
-                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(
+                    None,
+                )),
                 redis_runtime: None,
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,

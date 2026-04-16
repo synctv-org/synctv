@@ -43,9 +43,11 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
             .expect("jwt"),
             synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
             synctv_core::config::PasswordComplexityConfig::default(),
-            Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                128, 3600, 86400,
-            )),
+            Arc::new(
+                synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                ),
+            ),
             synctv_core::cache::KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         )),
@@ -67,9 +69,11 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                     60,
                 ),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                )),
+                Arc::new(
+                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                        128, 3600, 86400,
+                    ),
+                ),
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),
@@ -158,9 +162,11 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
             .expect("jwt"),
             synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
             synctv_core::config::PasswordComplexityConfig::default(),
-            Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                128, 3600, 86400,
-            )),
+            Arc::new(
+                synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                    128, 3600, 86400,
+                ),
+            ),
             synctv_core::cache::KeyBuilder::new("test"),
             synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
         )),
@@ -182,9 +188,11 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                     60,
                 ),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                )),
+                Arc::new(
+                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                        128, 3600, 86400,
+                    ),
+                ),
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),

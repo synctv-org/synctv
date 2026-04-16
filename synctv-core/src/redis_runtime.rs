@@ -8,7 +8,8 @@ pub trait RedisConnectionRuntime: Send + Sync {
 
 #[async_trait]
 pub trait RedisCoordinationRuntime: RedisConnectionRuntime {
-    async fn multiplexed_connection(&self) -> redis::RedisResult<redis::aio::MultiplexedConnection>;
+    async fn multiplexed_connection(&self)
+        -> redis::RedisResult<redis::aio::MultiplexedConnection>;
 
     async fn async_pubsub(&self) -> redis::RedisResult<redis::aio::PubSub>;
 }
@@ -74,7 +75,9 @@ impl RedisConnectionRuntime for OnDemandRedisRuntime {
 
 #[async_trait]
 impl RedisCoordinationRuntime for OnDemandRedisRuntime {
-    async fn multiplexed_connection(&self) -> redis::RedisResult<redis::aio::MultiplexedConnection> {
+    async fn multiplexed_connection(
+        &self,
+    ) -> redis::RedisResult<redis::aio::MultiplexedConnection> {
         self.client.get_multiplexed_async_connection().await
     }
 
@@ -118,7 +121,9 @@ impl RedisConnectionRuntime for ManagedRedisRuntime {
 
 #[async_trait]
 impl RedisCoordinationRuntime for ManagedRedisRuntime {
-    async fn multiplexed_connection(&self) -> redis::RedisResult<redis::aio::MultiplexedConnection> {
+    async fn multiplexed_connection(
+        &self,
+    ) -> redis::RedisResult<redis::aio::MultiplexedConnection> {
         self.client.get_multiplexed_async_connection().await
     }
 
@@ -128,9 +133,7 @@ impl RedisCoordinationRuntime for ManagedRedisRuntime {
 }
 
 #[must_use]
-pub fn direct_runtime(
-    conn: redis::aio::ConnectionManager,
-) -> Arc<dyn RedisConnectionRuntime> {
+pub fn direct_runtime(conn: redis::aio::ConnectionManager) -> Arc<dyn RedisConnectionRuntime> {
     Arc::new(DirectRedisConnectionRuntime::new(conn))
 }
 

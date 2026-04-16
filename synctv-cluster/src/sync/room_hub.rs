@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use synctv_core::{models::id::{RoomId, UserId}, RedisConnectionRuntime};
+use synctv_core::{
+    models::id::{RoomId, UserId},
+    RedisConnectionRuntime,
+};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};

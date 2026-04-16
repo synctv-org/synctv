@@ -7,9 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core::service::{
-    oauth2::RedisOAuthStateStore, OAuth2State, OAuthStateStore,
-};
+use synctv_core::service::{oauth2::RedisOAuthStateStore, OAuth2State, OAuthStateStore};
 use synctv_core_testing::start_redis as start_test_redis;
 use tokio::sync::RwLock;
 
@@ -34,7 +32,10 @@ fn make_state(instance_name: &str) -> OAuth2State {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_store_and_consume() {
     let (_container, conn) = start_redis().await;
-    let store = RedisOAuthStateStore::from_runtime(synctv_core::shared_runtime(Arc::new(RwLock::new(conn))), "");
+    let store = RedisOAuthStateStore::from_runtime(
+        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
+        "",
+    );
 
     let state = make_state("github");
     let ttl = std::time::Duration::from_mins(1);

@@ -779,7 +779,11 @@ async fn test_send_message_broadcasts_to_room_members() {
             .expect("notification channel should remain open");
     observer.observe(&event_room_id, &event);
 
-    assert_eq!(observer.get_event_count(), 1, "One event should have been published");
+    assert_eq!(
+        observer.get_event_count(),
+        1,
+        "One event should have been published"
+    );
     assert_eq!(
         observer.get_last_room_id().as_deref(),
         Some(room.id.as_str()),
@@ -795,7 +799,6 @@ async fn test_send_message_broadcasts_to_room_members() {
     assert!(!msg.id.is_empty(), "Message should have an ID");
     assert_eq!(msg.content, "Hello, world!", "Message content should match");
 }
-
 
 // ========== get_history: cursor pagination behavior ==========
 
@@ -1425,7 +1428,6 @@ async fn test_send_message_html_xss_stripped() {
         msg.content
     );
 }
-
 
 // ========== Delete message with None user_id (deleted user) ==========
 

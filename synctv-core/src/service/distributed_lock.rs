@@ -354,7 +354,10 @@ impl DistributedLock {
 
     /// Create a distributed lock service from the shared Redis handle with
     /// deployment-mode awareness.
-    pub fn new_shared_with_mode(redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>, is_sentinel: bool) -> Self {
+    pub fn new_shared_with_mode(
+        redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>,
+        is_sentinel: bool,
+    ) -> Self {
         Self::from_runtime_with_mode(crate::shared_runtime(redis), is_sentinel)
     }
 

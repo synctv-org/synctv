@@ -2,8 +2,8 @@
 
 use serde_json::Value as JsonValue;
 use synctv_core::models::{
-    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
-    UserId,
+    PermissionBits, PlaylistListSortBy as CorePlaylistListSortBy,
+    SortDirection as CoreSortDirection, UserId,
 };
 use synctv_core::service::playlist::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,

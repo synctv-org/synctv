@@ -16,9 +16,8 @@ pub trait RoomLifecycleFanoutService: Send + Sync {
         &self,
     ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
-    async fn reserve_room_banned(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+    async fn reserve_room_banned(&self)
+        -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
     async fn reserve_room_owner_inactive(
         &self,
@@ -229,10 +228,8 @@ mod tests {
     #[tokio::test]
     async fn test_room_lifecycle_fanout_publishes_room_deleted_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_lifecycle_fanout_service(default_cluster_fanout_service(
-            Some(tx),
-            true,
-        ));
+        let service =
+            default_room_lifecycle_fanout_service(default_cluster_fanout_service(Some(tx), true));
 
         let reservation = service
             .reserve_room_deleted()
@@ -257,10 +254,8 @@ mod tests {
     #[tokio::test]
     async fn test_room_lifecycle_fanout_publishes_room_banned_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_lifecycle_fanout_service(default_cluster_fanout_service(
-            Some(tx),
-            true,
-        ));
+        let service =
+            default_room_lifecycle_fanout_service(default_cluster_fanout_service(Some(tx), true));
 
         let reservation = service
             .reserve_room_banned()
@@ -271,9 +266,7 @@ mod tests {
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
             ClusterEvent::RoomBanned {
-                room_id,
-                banned_by,
-                ..
+                room_id, banned_by, ..
             } => {
                 assert_eq!(room_id.as_str(), "room-lifecycle-fanout");
                 assert_eq!(banned_by.as_str(), "user-lifecycle-fanout");

@@ -90,7 +90,9 @@ async fn test_set_if_newer_older_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_set_if_newer_concurrent() {
     let (_container, conn) = start_redis().await;
-    let l2 = std::sync::Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn)));
+    let l2 = std::sync::Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        conn,
+    )));
 
     let key = "test:sin:concurrent";
 

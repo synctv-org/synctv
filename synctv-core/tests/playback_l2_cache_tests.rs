@@ -15,9 +15,7 @@ use chrono::Utc;
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use synctv_core::{
-    cache::{
-        CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache,
-    },
+    cache::{CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{RoomId, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
@@ -653,8 +651,9 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
 
-    let l2_backend: Arc<dyn CacheL2Backend> =
-        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
+    let l2_backend: Arc<dyn CacheL2Backend> = Arc::new(RedisCacheL2::from_runtime(
+        synctv_core::direct_runtime(redis_conn.clone()),
+    ));
     let l2_cache = PlaybackStateCache::new(
         l2_backend,
         128,
@@ -745,8 +744,9 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
 async fn test_playback_state_cache_direct_with_redis() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2_backend =
-        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
+    let l2_backend = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        redis_conn.clone(),
+    )));
     let cache = PlaybackStateCache::new(
         l2_backend,
         100, // L1 max capacity
@@ -804,8 +804,9 @@ async fn test_playback_state_cache_direct_with_redis() {
 async fn test_playback_state_cache_set_if_newer_with_redis() {
     let (_redis_container, redis_conn) = start_redis().await;
 
-    let l2_backend =
-        Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone())));
+    let l2_backend = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        redis_conn.clone(),
+    )));
     let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string())
         .expect("Failed to create PlaybackStateCache");
 

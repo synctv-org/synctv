@@ -593,7 +593,10 @@ impl TieredTokenBlacklistStore {
     }
 
     #[must_use]
-    pub fn from_shared_state_profile(pg: PgTokenBlacklistStore, profile: &SharedStateProfile) -> Self {
+    pub fn from_shared_state_profile(
+        pg: PgTokenBlacklistStore,
+        profile: &SharedStateProfile,
+    ) -> Self {
         Self::from_runtime(
             pg,
             profile.shared_runtime(),
@@ -1628,7 +1631,10 @@ mod tests {
         );
 
         assert!(
-            store.redis_runtime.as_ref().is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            store
+                .redis_runtime
+                .as_ref()
+                .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
             "tiered token blacklist store should retain the injected runtime object"
         );
     }
@@ -1662,7 +1668,10 @@ mod tests {
         );
 
         assert!(
-            store.redis_runtime.as_ref().is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
+            store
+                .redis_runtime
+                .as_ref()
+                .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
             "shared-state builder should retain the injected runtime object"
         );
     }

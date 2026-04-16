@@ -2639,7 +2639,8 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
         DbSubcommand::Status(_) => {
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
             sqlx::query("SELECT 1").execute(&pool).await?;
-            println!("{}", database_status_summary(&config));
+            let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
+            println!("{}", database_status_summary(&config, &migrations_status));
             pool.close().await;
             Ok(())
         }
@@ -4176,10 +4177,20 @@ pub fn version_string() -> String {
     format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
 }
 
-fn database_status_summary(config: &synctv_core::Config) -> String {
+fn database_status_summary(
+    config: &synctv_core::Config,
+    migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
+) -> String {
     let masked_url = mask_connection_url(&config.database.url);
-
-    format!("Database connection: OK\nDatabase URL: {masked_url}")
+    let mut lines = vec![
+        "Database connection: OK".to_string(),
+        format!("Migration status: {}", migrations_status.label()),
+    ];
+    if let Some(detail) = migrations_status.detail() {
+        lines.push(format!("Migration detail: {detail}"));
+    }
+    lines.push(format!("Database URL: {masked_url}"));
+    lines.join("\n")
 }
 
 fn render_config_for_display(config: &synctv_core::Config) -> Value {
@@ -4669,7 +4680,9 @@ impl ToHuman for synctv_proto::common::RoomMember {
             admin_added_permissions: self.admin_added_permissions,
             admin_added_permission_names: humanize_permission_bits(self.admin_added_permissions),
             admin_removed_permissions: self.admin_removed_permissions,
-            admin_removed_permission_names: humanize_permission_bits(self.admin_removed_permissions),
+            admin_removed_permission_names: humanize_permission_bits(
+                self.admin_removed_permissions,
+            ),
             joined_at: humanize_timestamp(self.joined_at),
             is_online: self.is_online,
         }
@@ -6346,14 +6359,7 @@ mod tests {
 
     #[test]
     fn cli_parses_user_set_role_with_role_flag() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "user",
-            "set-role",
-            "alice",
-            "--role",
-            "admin",
-        ]);
+        let cli = Cli::parse_from(["synctv", "user", "set-role", "alice", "--role", "admin"]);
         match cli.command {
             Commands::User(UserCommand {
                 command: UserSubcommand::SetRole(args),
@@ -8212,15 +8218,41 @@ mod tests {
 
     #[test]
     fn database_status_summary_masks_credentials() {
-        let summary = database_status_summary(&sample_config());
+        let summary = database_status_summary(
+            &sample_config(),
+            &crate::migrations::EmbeddedMigrationsStatus::Ready,
+        );
 
         assert!(
             !summary.contains("super-secret-db"),
             "database status summary leaked password: {summary}"
         );
         assert!(
+            summary.contains("Migration status: ready"),
+            "database status summary should report migration readiness: {summary}"
+        );
+        assert!(
             summary.contains("postgresql://***:***@db.internal:5432/synctv"),
             "database status summary should print masked url: {summary}"
+        );
+    }
+
+    #[test]
+    fn database_status_summary_reports_broken_migration_history() {
+        let summary = database_status_summary(
+            &sample_config(),
+            &crate::migrations::EmbeddedMigrationsStatus::Broken(
+                crate::migrations::MigrationHistoryIssue::Dirty(20_240_101_000_004),
+            ),
+        );
+
+        assert!(
+            summary.contains("Migration status: broken"),
+            "database status summary should flag broken migration history: {summary}"
+        );
+        assert!(
+            summary.contains("Migration detail: migration 20240101000004 is marked dirty"),
+            "database status summary should explain the broken migration detail: {summary}"
         );
     }
 

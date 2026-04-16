@@ -713,7 +713,10 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
     let room_member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("banned_owner")).await.unwrap();
-    let member = user_repo.create(&make_user("banned_owner_member")).await.unwrap();
+    let member = user_repo
+        .create(&make_user("banned_owner_member"))
+        .await
+        .unwrap();
 
     let owned_room = room_repo
         .create(&make_room("owner-room", &owner.id))

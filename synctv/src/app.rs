@@ -312,19 +312,16 @@ fn build_realtime_state_profile(
     redis_key_prefix: &str,
     cluster_mode: bool,
 ) -> synctv_core::SharedStateProfile {
-    synctv_core::SharedStateProfile::from_runtime(
-        shared_runtime,
-        redis_key_prefix,
-        cluster_mode,
-    )
+    synctv_core::SharedStateProfile::from_runtime(shared_runtime, redis_key_prefix, cluster_mode)
 }
 
 fn build_connection_manager(
     limits: ConnectionLimits,
     profile: &synctv_core::SharedStateProfile,
 ) -> Result<Arc<dyn RealtimeConnectionService>> {
-    build_cluster_connection_runtime(limits, profile)
-        .map_err(|error| anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}"))
+    build_cluster_connection_runtime(limits, profile).map_err(|error| {
+        anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}")
+    })
 }
 
 fn build_room_message_runtime(
@@ -688,11 +685,12 @@ impl Application {
             &infra.config.redis.key_prefix,
             cluster_runtime_enabled(&infra.config),
         );
-        let cache_invalidation = synctv_core::cache::cache_invalidation_runtime_from_shared_state_profile(
-            &cache_shared_state_profile,
-            infra.node_id.clone(),
-            key_builder.cache_invalidation_stream(),
-        )?;
+        let cache_invalidation =
+            synctv_core::cache::cache_invalidation_runtime_from_shared_state_profile(
+                &cache_shared_state_profile,
+                infra.node_id.clone(),
+                key_builder.cache_invalidation_stream(),
+            )?;
         let cache_invalidation_listener_task =
             register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
 
@@ -878,32 +876,29 @@ impl Application {
         );
 
         #[cfg(feature = "k8s")]
-        let leader_runtime = build_managed_leader_runtime(
-            &infra.config,
-            &infra.node_id,
-            &shared_state_profile,
-        )
-        .await
-        .map_err(|e| {
-            error!(
-                error = %e,
-                mode = %infra.config.cluster.leader_election_mode,
-                "CRITICAL: leader election initialization failed"
-            );
-            e
-        })?;
+        let leader_runtime =
+            build_managed_leader_runtime(&infra.config, &infra.node_id, &shared_state_profile)
+                .await
+                .map_err(|e| {
+                    error!(
+                        error = %e,
+                        mode = %infra.config.cluster.leader_election_mode,
+                        "CRITICAL: leader election initialization failed"
+                    );
+                    e
+                })?;
 
         #[cfg(not(feature = "k8s"))]
         let leader_runtime =
             build_managed_leader_runtime(&infra.config, &infra.node_id, &shared_state_profile)
-        .map_err(|e| {
-            error!(
-                error = %e,
-                mode = %infra.config.cluster.leader_election_mode,
-                "CRITICAL: leader election initialization failed"
-            );
-            e
-        })?;
+                .map_err(|e| {
+                    error!(
+                        error = %e,
+                        mode = %infra.config.cluster.leader_election_mode,
+                        "CRITICAL: leader election initialization failed"
+                    );
+                    e
+                })?;
 
         match leader_runtime.mode_label() {
             "redis" => {
@@ -1356,10 +1351,10 @@ mod tests {
         cache::{KeyBuilder, UsernameCache},
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
-        RedisConnectionRuntime, SharedRedisConnectionRuntime,
         service::{
             auth::hash_password, BruteForceProtection, InMemoryTokenBlacklistStore, UserService,
         },
+        RedisConnectionRuntime, SharedRedisConnectionRuntime,
     };
     use synctv_core_testing::test_redis_key_prefix;
     use tokio::sync::{broadcast, RwLock};
@@ -1423,8 +1418,7 @@ mod tests {
         assert!(before.is_empty(), "registry should start empty");
 
         let registry_runtime: Arc<dyn synctv_cluster::ClusterNodeDirectory> = registry.clone();
-        let health_runtime: Arc<dyn synctv_cluster::ClusterHealthRuntime> =
-            health_monitor.clone();
+        let health_runtime: Arc<dyn synctv_cluster::ClusterHealthRuntime> = health_monitor.clone();
 
         DefaultClusterNodeActivator::new(
             config,
@@ -1742,9 +1736,11 @@ mod tests {
         let config = minimal_valid_startup_config();
         let realtime_profile =
             synctv_core::SharedStateProfile::from_runtime(None, "test-local:", false);
-        let connection_manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("local connection manager should initialize");
-        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
+        let connection_manager =
+            build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+                .expect("local connection manager should initialize");
+        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            "test-node".to_string(),
             "test-local:cache:invalidate".to_string(),
         ));
 
@@ -1835,14 +1831,15 @@ mod tests {
         let shared_conn = Arc::new(RwLock::new(conn.clone()));
         let shared_runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
-        let realtime_profile =
-            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), "test-cluster:", true);
+        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(
+            Some(shared_runtime),
+            "test-cluster:",
+            true,
+        );
 
-        let connection_manager = build_connection_manager(
-            ConnectionLimits::default(),
-            &realtime_profile,
-        )
-        .expect("cluster mode should require and accept shared realtime connection state");
+        let connection_manager =
+            build_connection_manager(ConnectionLimits::default(), &realtime_profile)
+                .expect("cluster mode should require and accept shared realtime connection state");
 
         let cluster_config = ClusterConfig {
             distributed_transport_factory: Some(
@@ -1991,9 +1988,9 @@ mod tests {
             .await
             .expect("App connection manager should be created");
         let realtime_profile = synctv_core::SharedStateProfile::from_runtime(
-            Some(Arc::new(SharedRedisConnectionRuntime::new(Arc::new(RwLock::new(
-                app_conn,
-            ))))),
+            Some(Arc::new(SharedRedisConnectionRuntime::new(Arc::new(
+                RwLock::new(app_conn),
+            )))),
             "test-standalone:",
             false,
         );
@@ -2298,7 +2295,8 @@ mod tests {
             }
         }
 
-        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut shutdown = ShutdownCoordinator::new(Duration::from_millis(50));

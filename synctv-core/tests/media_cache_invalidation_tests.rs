@@ -20,9 +20,8 @@ use synctv_core::{
     service::{
         media::{AddMediaRequest, EditMediaRequest, MediaService},
         notification::RoomEvent,
-        NotificationService,
         permission::PermissionService,
-        ProvidersManager,
+        NotificationService, ProvidersManager,
     },
 };
 use synctv_core_testing::create_test_pool;
@@ -216,9 +215,7 @@ async fn test_edit_media_sends_notification() {
                 assert_eq!(notif_room_id, room.id);
                 match event {
                     RoomEvent::MediaUpdated {
-                        media_id,
-                        title,
-                        ..
+                        media_id, title, ..
                     } => {
                         assert_eq!(media_id, media.id.as_str());
                         assert_eq!(title, "Updated Media");
@@ -226,7 +223,9 @@ async fn test_edit_media_sends_notification() {
                         break;
                     }
                     RoomEvent::MediaAdded { .. } => {}
-                    other => panic!("unexpected notification event while waiting for MediaUpdated: {other:?}"),
+                    other => panic!(
+                        "unexpected notification event while waiting for MediaUpdated: {other:?}"
+                    ),
                 }
             }
             Ok(Err(e)) => panic!("Channel error: {e}"),

@@ -17,7 +17,9 @@ pub(crate) fn static_playback_snapshot_version(media: &synctv_core::models::Medi
     media.version.to_string()
 }
 
-pub(crate) fn dynamic_playback_snapshot_version(playlist: &synctv_core::models::Playlist) -> String {
+pub(crate) fn dynamic_playback_snapshot_version(
+    playlist: &synctv_core::models::Playlist,
+) -> String {
     playlist.version.to_string()
 }
 

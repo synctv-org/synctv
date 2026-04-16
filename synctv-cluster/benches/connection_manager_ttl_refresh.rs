@@ -9,8 +9,8 @@ mod integration_test_helpers;
 
 use integration_test_helpers::TestRedis;
 use synctv_cluster::sync::{build_connection_manager, ConnectionLimits};
-use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::SharedStateProfile;
 
 fn uid(s: &str) -> UserId {
     UserId::from_string(s.to_string())

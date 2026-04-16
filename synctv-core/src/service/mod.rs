@@ -80,8 +80,8 @@ pub use notification_partition_manager::{
     NotificationPartitionManager,
 };
 pub use oauth2::{
-    local_oauth_state_store, shared_oauth_state_store, OAuth2Service, OAuth2State,
-    OAuth2UserInfo, OAuthStateStore,
+    local_oauth_state_store, shared_oauth_state_store, OAuth2Service, OAuth2State, OAuth2UserInfo,
+    OAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use permission::PermissionService;

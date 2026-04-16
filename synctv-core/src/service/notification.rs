@@ -236,10 +236,7 @@ impl NotificationService {
     pub fn with_config(config: NotificationConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.channel_capacity);
 
-        Self {
-            event_tx,
-            config,
-        }
+        Self { event_tx, config }
     }
 
     /// Subscribe to room events locally

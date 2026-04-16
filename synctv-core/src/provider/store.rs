@@ -450,7 +450,10 @@ pub fn build_provider_store_resolver_from_runtime(
     redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn ProviderStoreResolver> {
-    Arc::new(ProviderStoreRegistry::from_runtime(redis_runtime, key_prefix))
+    Arc::new(ProviderStoreRegistry::from_runtime(
+        redis_runtime,
+        key_prefix,
+    ))
 }
 
 pub fn build_provider_store_resolver_from_profile(

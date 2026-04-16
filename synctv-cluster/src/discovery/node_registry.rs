@@ -279,7 +279,6 @@ impl ClusterNodeDirectoryFactory for RedisClusterNodeDirectoryFactory {
             key_prefix,
         )?))
     }
-
 }
 
 #[derive(Clone, Default)]
@@ -298,7 +297,6 @@ impl ClusterNodeDirectoryFactory for LocalClusterNodeDirectoryFactory {
             key_prefix,
         )?))
     }
-
 }
 
 impl NodeRegistry {

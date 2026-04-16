@@ -10,9 +10,11 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_cluster::sync::{build_room_message_runtime, room_hub::RoomLifecycleEvent, RoomMessageRuntime};
-use synctv_core::SharedStateProfile;
+use synctv_cluster::sync::{
+    build_room_message_runtime, room_hub::RoomLifecycleEvent, RoomMessageRuntime,
+};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::SharedStateProfile;
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
 

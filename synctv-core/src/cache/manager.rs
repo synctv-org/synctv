@@ -209,7 +209,8 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
         manager.start_invalidation_listener(&service);
@@ -247,7 +248,8 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
         manager.start_invalidation_listener(&service);
@@ -284,7 +286,8 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let service: Arc<dyn CacheInvalidationRuntime> = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
         manager.start_invalidation_listener(&service);

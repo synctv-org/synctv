@@ -268,8 +268,12 @@ pub trait RequestRateLimiterService: Send + Sync {
     ) -> std::result::Result<(), RateLimitError>;
 
     /// Get remaining quota for a rate limit.
-    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64)
-    -> Result<(u32, u64)>;
+    async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)>;
 
     /// Reset rate limit state for a key.
     async fn reset(&self, key: &str) -> Result<()>;
@@ -691,7 +695,10 @@ impl RateLimiter {
         key_prefix: String,
     ) -> Self {
         if let Some(conn) = redis_runtime {
-            let backend = Arc::new(RedisRateLimitBackend::from_runtime(conn, key_prefix.clone()));
+            let backend = Arc::new(RedisRateLimitBackend::from_runtime(
+                conn,
+                key_prefix.clone(),
+            ));
             Self::from_backend(backend, key_prefix)
         } else {
             tracing::warn!(
@@ -869,8 +876,8 @@ impl Default for RateLimitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
     use synctv_core_testing::start_redis;
 
     #[test]
@@ -963,8 +970,10 @@ mod tests {
     async fn test_rate_limit_basic() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter =
-            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
+        let limiter = RateLimiter::from_redis_runtime(
+            crate::shared_runtime_from_conn(Some(conn)),
+            "test:".to_string(),
+        );
 
         let key = "user:test1:chat";
         limiter.reset(key).await.unwrap();
@@ -991,8 +1000,10 @@ mod tests {
     async fn test_rate_limit_sliding_window() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter =
-            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
+        let limiter = RateLimiter::from_redis_runtime(
+            crate::shared_runtime_from_conn(Some(conn)),
+            "test:".to_string(),
+        );
 
         let key = "user:test2:chat";
         limiter.reset(key).await.unwrap();
@@ -1014,8 +1025,10 @@ mod tests {
     async fn test_get_quota() {
         let (_redis, conn) = start_redis().await;
         let conn = Arc::new(tokio::sync::RwLock::new(conn));
-        let limiter =
-            RateLimiter::from_redis_runtime(crate::shared_runtime_from_conn(Some(conn)), "test:".to_string());
+        let limiter = RateLimiter::from_redis_runtime(
+            crate::shared_runtime_from_conn(Some(conn)),
+            "test:".to_string(),
+        );
 
         let key = "user:test3:chat";
         limiter.reset(key).await.unwrap();

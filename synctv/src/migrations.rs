@@ -41,6 +41,51 @@ pub async fn run_migrations(
     run_migrations_with_mode(pool, lock, key_prefix, cluster_mode).await
 }
 
+/// Inspect the current database against the embedded migration set and report
+/// whether it is ready, pending, or broken.
+pub async fn inspect_embedded_migrations(pool: &PgPool) -> Result<EmbeddedMigrationsStatus> {
+    let mut conn = pool.acquire().await.map_err(|e| {
+        anyhow::anyhow!("Failed to acquire DB connection for migration status inspection: {e}")
+    })?;
+
+    inspect_embedded_migrations_with_connection(&mut conn).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddedMigrationsStatus {
+    Ready,
+    Pending,
+    Broken(MigrationHistoryIssue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationHistoryIssue {
+    Dirty(i64),
+    Drifted,
+}
+
+impl EmbeddedMigrationsStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Pending => "pending",
+            Self::Broken(_) => "broken",
+        }
+    }
+
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Ready | Self::Pending => None,
+            Self::Broken(MigrationHistoryIssue::Dirty(version)) => Some(format!(
+                "migration {version} is marked dirty; resolve the partial migration state before retrying"
+            )),
+            Self::Broken(MigrationHistoryIssue::Drifted) => Some(
+                "applied migration history does not match the embedded migration set".to_string(),
+            ),
+        }
+    }
+}
+
 async fn run_migrations_with_mode(
     pool: &PgPool,
     lock: std::sync::Arc<dyn MigrationLock>,
@@ -132,6 +177,95 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
     };
 
     migrations_already_applied_with_connection(&mut conn).await
+}
+
+async fn inspect_embedded_migrations_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Postgres>,
+) -> Result<EmbeddedMigrationsStatus> {
+    let dirty_version: Option<i64> = match sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE success = false ORDER BY version LIMIT 1",
+    )
+    .fetch_optional(&mut **conn)
+    .await
+    {
+        Ok(version) => version,
+        Err(err) if is_missing_migrations_table(&err) => {
+            return Ok(EmbeddedMigrationsStatus::Pending)
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "Failed to inspect dirty migration metadata in _sqlx_migrations: {err}"
+            ));
+        }
+    };
+
+    if let Some(version) = dirty_version {
+        return Ok(EmbeddedMigrationsStatus::Broken(
+            MigrationHistoryIssue::Dirty(version),
+        ));
+    }
+
+    let migrator = sqlx::migrate!("../migrations");
+    let applied: Vec<(i64, Vec<u8>)> = match sqlx::query_as(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE success = true ORDER BY version",
+    )
+    .fetch_all(&mut **conn)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(err) if is_missing_migrations_table(&err) => {
+            return Ok(EmbeddedMigrationsStatus::Pending)
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "Failed to inspect applied migration metadata in _sqlx_migrations: {err}"
+            ));
+        }
+    };
+
+    Ok(classify_embedded_migrations(
+        migrator
+            .migrations
+            .iter()
+            .map(|migration| (migration.version, migration.checksum.as_ref())),
+        applied,
+    ))
+}
+
+fn classify_embedded_migrations<'a, M, A>(migrations: M, applied: A) -> EmbeddedMigrationsStatus
+where
+    M: IntoIterator<Item = (i64, &'a [u8])>,
+    A: IntoIterator<Item = (i64, Vec<u8>)>,
+{
+    let expected: Vec<(i64, &'a [u8])> = migrations.into_iter().collect();
+    let applied: Vec<(i64, Vec<u8>)> = applied.into_iter().collect();
+
+    if applied.len() > expected.len() {
+        return EmbeddedMigrationsStatus::Broken(MigrationHistoryIssue::Drifted);
+    }
+
+    for ((expected_version, expected_checksum), (applied_version, applied_checksum)) in
+        expected.iter().zip(applied.iter())
+    {
+        if expected_version != applied_version || *expected_checksum != applied_checksum.as_slice()
+        {
+            return EmbeddedMigrationsStatus::Broken(MigrationHistoryIssue::Drifted);
+        }
+    }
+
+    if applied.len() == expected.len() {
+        EmbeddedMigrationsStatus::Ready
+    } else {
+        EmbeddedMigrationsStatus::Pending
+    }
+}
+
+fn is_missing_migrations_table(err: &sqlx::Error) -> bool {
+    matches!(
+        err,
+        sqlx::Error::Database(database_error)
+            if database_error.code().as_deref() == Some("42P01")
+    )
 }
 
 async fn migrations_already_applied_with_connection(
@@ -556,8 +690,9 @@ async fn release_lock(lock: &dyn MigrationLock, lock_key: &str, lock_value: &str
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_migration_error, migrations_match_applied_set, run_migrations_with_mode,
-        run_migrations_with_runner, MIGRATION_LOCK_TTL, MIGRATION_MAX_WAIT,
+        classify_embedded_migrations, describe_migration_error, inspect_embedded_migrations,
+        migrations_match_applied_set, run_migrations_with_mode, run_migrations_with_runner,
+        EmbeddedMigrationsStatus, MigrationHistoryIssue, MIGRATION_LOCK_TTL, MIGRATION_MAX_WAIT,
         PG_ADVISORY_LOCK_MAX_WAIT,
     };
     use anyhow::anyhow;
@@ -899,6 +1034,63 @@ mod tests {
         assert!(
             !migrations_match_applied_set(expected, applied),
             "extra applied versions must not be treated as the exact embedded migration state"
+        );
+    }
+
+    #[test]
+    fn embedded_migration_status_marks_exact_prefix_as_pending() {
+        let expected = vec![
+            (1_i64, b"checksum-a".as_slice()),
+            (2_i64, b"checksum-b".as_slice()),
+        ];
+        let applied = vec![(1_i64, b"checksum-a".to_vec())];
+
+        assert_eq!(
+            classify_embedded_migrations(expected, applied),
+            EmbeddedMigrationsStatus::Pending
+        );
+    }
+
+    #[test]
+    fn embedded_migration_status_marks_checksum_drift_as_broken() {
+        let expected = vec![(1_i64, b"checksum-a".as_slice())];
+        let applied = vec![(1_i64, b"checksum-b".to_vec())];
+
+        assert_eq!(
+            classify_embedded_migrations(expected, applied),
+            EmbeddedMigrationsStatus::Broken(MigrationHistoryIssue::Drifted)
+        );
+    }
+
+    #[test]
+    fn embedded_migration_status_marks_gaps_as_broken() {
+        let expected = vec![
+            (1_i64, b"checksum-a".as_slice()),
+            (2_i64, b"checksum-b".as_slice()),
+        ];
+        let applied = vec![(2_i64, b"checksum-b".to_vec())];
+
+        assert_eq!(
+            classify_embedded_migrations(expected, applied),
+            EmbeddedMigrationsStatus::Broken(MigrationHistoryIssue::Drifted)
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_migration_status_surfaces_pool_acquire_failures() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("connect_lazy should succeed");
+
+        let err = inspect_embedded_migrations(&pool)
+            .await
+            .expect_err("inspect should surface acquisition failures");
+
+        assert!(
+            err.to_string()
+                .contains("Failed to acquire DB connection for migration status inspection"),
+            "unexpected error: {err}"
         );
     }
 

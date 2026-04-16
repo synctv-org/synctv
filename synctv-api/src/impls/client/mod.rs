@@ -50,13 +50,13 @@ pub use convert::{
 use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
-use crate::impls::ApiError;
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
+use crate::impls::ApiError;
+use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
 use crate::membership_event_fanout::{
     default_membership_event_fanout_service, MembershipEventFanoutService,
 };
-use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
@@ -221,8 +221,7 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
-        let cluster_fanout =
-            default_cluster_fanout_service(None, config.cluster_runtime_enabled());
+        let cluster_fanout = default_cluster_fanout_service(None, config.cluster_runtime_enabled());
         let room_settings_fanout =
             default_room_settings_fanout_service(cluster_fanout.clone(), None);
         let member_fanout = default_member_fanout_service(cluster_fanout.clone());
@@ -359,8 +358,7 @@ impl ClientApiImpl {
             self.live_streaming_infrastructure.clone(),
             cluster_fanout.clone(),
         );
-        self.room_lifecycle_fanout =
-            default_room_lifecycle_fanout_service(cluster_fanout.clone());
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
         self.cluster_fanout = cluster_fanout;
         self
     }
@@ -380,10 +378,8 @@ impl ClientApiImpl {
             self.cluster_fanout.clone(),
             Some(event_service.clone()),
         );
-        self.media_fanout = default_media_fanout_service(
-            self.cluster_fanout.clone(),
-            Some(event_service.clone()),
-        );
+        self.media_fanout =
+            default_media_fanout_service(self.cluster_fanout.clone(), Some(event_service.clone()));
         self.realtime_event_service = Some(event_service);
         self
     }
@@ -471,5 +467,4 @@ impl ClientApiImpl {
         self.turn_health_checker = checker;
         self
     }
-
 }

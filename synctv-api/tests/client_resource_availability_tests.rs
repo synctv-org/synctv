@@ -584,7 +584,8 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .rooms
         .iter()
         .find_map(|entry| {
-            entry.room
+            entry
+                .room
                 .as_ref()
                 .filter(|candidate| candidate.id == room.id.as_str())
         })

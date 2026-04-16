@@ -28,9 +28,7 @@ pub trait MediaFanoutService: Send + Sync {
         &self,
     ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
-    async fn reserve_reordered(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+    async fn reserve_reordered(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
     fn publish_added(
         &self,
@@ -153,9 +151,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             .await
     }
 
-    async fn reserve_reordered(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+    async fn reserve_reordered(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
         self.cluster_fanout
             .reserve("failed to fan out PlaylistReordered to cluster replicas")
             .await
@@ -238,10 +234,8 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest { event },
-        );
+        self.cluster_fanout
+            .publish(reservation, PublishRequest { event });
     }
 
     fn publish_reordered(
@@ -260,10 +254,8 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest { event },
-        );
+        self.cluster_fanout
+            .publish(reservation, PublishRequest { event });
     }
 }
 
@@ -364,7 +356,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_fanout_is_noop_when_cluster_fanout_is_local() {
-        let service = default_media_fanout_service(default_cluster_fanout_service(None, false), None);
+        let service =
+            default_media_fanout_service(default_cluster_fanout_service(None, false), None);
         let reservations = service
             .reserve_added(1)
             .await
@@ -436,7 +429,10 @@ mod tests {
         );
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
 
         let request = rx.recv().await.expect("publish request should be queued");
         assert!(matches!(request.event, ClusterEvent::MediaAdded { .. }));
@@ -467,7 +463,10 @@ mod tests {
         );
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         assert!(
             event_service
                 .local_events
@@ -500,9 +499,15 @@ mod tests {
         );
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
 
         let request = rx.recv().await.expect("publish request should be queued");
-        assert!(matches!(request.event, ClusterEvent::PlaylistReordered { .. }));
+        assert!(matches!(
+            request.event,
+            ClusterEvent::PlaylistReordered { .. }
+        ));
     }
 }

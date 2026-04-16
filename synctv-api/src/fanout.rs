@@ -9,8 +9,9 @@ use crate::runtime::RealtimeEventService;
 
 #[async_trait]
 pub trait RoomSettingsFanoutService: Send + Sync {
-    async fn reserve_settings_changed(&self)
-        -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+    async fn reserve_settings_changed(
+        &self,
+    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
     fn publish_settings_changed(
         &self,
@@ -50,7 +51,9 @@ impl std::fmt::Debug for DefaultRoomSettingsFanoutService {
 
 #[async_trait]
 impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
-    async fn reserve_settings_changed(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+    async fn reserve_settings_changed(
+        &self,
+    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
         self.cluster_fanout
             .reserve("failed to fan out RoomSettingsChanged to cluster replicas")
             .await
@@ -172,10 +175,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_room_settings_fanout_is_noop_when_cluster_fanout_is_local() {
-        let service = default_room_settings_fanout_service(
-            default_cluster_fanout_service(None, false),
-            None,
-        );
+        let service =
+            default_room_settings_fanout_service(default_cluster_fanout_service(None, false), None);
         let reservation = service
             .reserve_settings_changed()
             .await
@@ -257,10 +258,16 @@ mod tests {
         );
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
 
         let request = rx.recv().await.expect("publish request should be queued");
-        assert!(matches!(request.event, ClusterEvent::RoomSettingsChanged { .. }));
+        assert!(matches!(
+            request.event,
+            ClusterEvent::RoomSettingsChanged { .. }
+        ));
     }
 
     #[tokio::test]
@@ -286,7 +293,10 @@ mod tests {
         );
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         assert!(
             event_service
                 .local_events

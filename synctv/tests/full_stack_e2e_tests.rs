@@ -24,7 +24,9 @@ use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
 use synctv_xiu::bytesio::bytesio_errors::BytesIOErrorValue;
 use synctv_xiu::flv::amf0::define::Amf0ValueType;
 use synctv_xiu::rtmp::chunk::unpacketizer::{ChunkUnpacketizer, UnpackResult};
-use synctv_xiu::rtmp::handshake::{define::ClientHandshakeState, handshake_client::SimpleHandshakeClient};
+use synctv_xiu::rtmp::handshake::{
+    define::ClientHandshakeState, handshake_client::SimpleHandshakeClient,
+};
 use synctv_xiu::rtmp::messages::{define::RtmpMessageData, parser::MessageParser};
 use synctv_xiu::rtmp::netconnection::writer::{ConnectProperties, NetConnection};
 use synctv_xiu::rtmp::netstream::writer::NetStreamWriter;
@@ -133,6 +135,36 @@ fn test_config(
     config.http_rate_limits.websocket_max_requests = 5_000;
     config.http_rate_limits.websocket_window_seconds = 1;
     config
+}
+
+fn write_cli_test_config(path: &std::path::Path, config: &Config) {
+    let yaml = serde_yaml::to_string(config).expect("CLI test config should serialize to YAML");
+    std::fs::write(path, yaml).expect("CLI test config should be written");
+}
+
+async fn recreate_test_database_as_empty(container: &TestContainer) {
+    let admin_url = format!(
+        "postgresql://synctv:synctv_test@{}:{}/postgres",
+        container.host(),
+        container.port_ipv4(5432)
+    );
+    let admin_pool = sqlx::PgPool::connect(&admin_url)
+        .await
+        .expect("test should connect to postgres admin database");
+    let database_name = container.database_name();
+
+    sqlx::query(&format!(
+        "DROP DATABASE IF EXISTS {database_name} WITH (FORCE)"
+    ))
+    .execute(&admin_pool)
+    .await
+    .expect("test should drop the cloned database");
+    sqlx::query(&format!("CREATE DATABASE {database_name}"))
+        .execute(&admin_pool)
+        .await
+        .expect("test should recreate the cloned database without migrations");
+
+    admin_pool.close().await;
 }
 
 #[cfg(unix)]
@@ -689,46 +721,31 @@ fn write_daemon_test_config(
     management_socket_path: &std::path::Path,
     rtmp_port: u16,
 ) {
-    let config = format!(
-        r#"
-server:
-  host: "127.0.0.1"
-  port: {api_port}
-  enable_reflection: false
-  advertise_host: "127.0.0.1"
-  shutdown_drain_timeout_seconds: 3
-metrics:
-  enabled: false
-  host: "127.0.0.1"
-  port: 9090
-  auth:
-    mode: "bearer_token"
-    bearer_token: ""
-management:
-  enabled: true
-  transport: "unix"
-  unix_socket_path: "{management_socket_path}"
-  enable_reflection: false
-database:
-  url: "{database_url}"
-redis:
-  url: "{redis_url}"
-  key_prefix: "synctv:test:daemon"
-jwt:
-  secret: "test-jwt-secret-key-for-daemon-e2e-123456"
-bootstrap:
-  create_root_user: true
-  root_username: "admin"
-  root_password: "StrongPwd12345!"
-livestream:
-  rtmp_port: {rtmp_port}
-webrtc:
-  enable_builtin_stun: false
-"#,
-        management_socket_path = management_socket_path.display(),
-    );
+    let mut config = Config::default();
+    config.server.host = "127.0.0.1".to_string();
+    config.server.port = api_port;
+    config.server.enable_reflection = false;
+    config.server.advertise_host = "127.0.0.1".to_string();
+    config.server.shutdown_drain_timeout_seconds = 3;
+    config.metrics.enabled = false;
+    config.metrics.host = "127.0.0.1".to_string();
+    config.metrics.port = 9090;
+    config.management.enabled = true;
+    config.management.transport = synctv_core::config::ManagementTransport::Unix;
+    config.management.unix_socket_path = management_socket_path.display().to_string();
+    config.management.enable_reflection = false;
+    config.management.auth_token.clear();
+    config.database.url = database_url.to_string();
+    config.redis.url = redis_url.to_string();
+    config.redis.key_prefix = "synctv:test:daemon".to_string();
+    config.jwt.secret = "test-jwt-secret-key-for-daemon-e2e-123456".to_string();
+    config.bootstrap.create_root_user = true;
+    config.bootstrap.root_username = "admin".to_string();
+    config.bootstrap.root_password = "StrongPwd12345!".to_string();
+    config.livestream.rtmp_port = rtmp_port;
+    config.webrtc.enable_builtin_stun = false;
 
-    std::fs::write(path, config).expect("daemon test config should be written");
+    write_cli_test_config(path, &config);
 }
 
 /// Creates a test HTTP client with reasonable timeouts for E2E tests.
@@ -957,10 +974,9 @@ async fn run_idle_rtmp_publisher(
         std::sync::Arc::new(tokio::sync::Mutex::new(Box::new(TcpIO::new(tcp_stream))));
     perform_rtmp_handshake(std::sync::Arc::clone(&io)).await?;
 
-    let mut control_messages =
-        ProtocolControlMessagesWriter::new(synctv_xiu::bytesio::bytes_writer::AsyncBytesWriter::new(
-            std::sync::Arc::clone(&io),
-        ));
+    let mut control_messages = ProtocolControlMessagesWriter::new(
+        synctv_xiu::bytesio::bytes_writer::AsyncBytesWriter::new(std::sync::Arc::clone(&io)),
+    );
     control_messages
         .write_set_chunk_size(4096)
         .await
@@ -1018,8 +1034,12 @@ async fn run_idle_rtmp_publisher(
                     for chunk in chunks {
                         let mut message = MessageParser::new(chunk)
                             .parse()
-                            .map_err(|error| format!("RTMP publisher failed to parse message: {error}"))?
-                            .ok_or_else(|| "RTMP publisher received an empty message".to_string())?;
+                            .map_err(|error| {
+                                format!("RTMP publisher failed to parse message: {error}")
+                            })?
+                            .ok_or_else(|| {
+                                "RTMP publisher received an empty message".to_string()
+                            })?;
 
                         match &mut message {
                             RtmpMessageData::SetChunkSize { chunk_size } => {
@@ -1045,22 +1065,27 @@ async fn run_idle_rtmp_publisher(
                                 ..
                             } => match rtmp_command_name(command_name) {
                                 Some("_result")
-                                    if is_rtmp_transaction_id(transaction_id, 1) && !create_stream_sent =>
+                                    if is_rtmp_transaction_id(transaction_id, 1)
+                                        && !create_stream_sent =>
                                 {
                                     create_stream_sent = true;
-                                    let mut netconnection = NetConnection::new(std::sync::Arc::clone(&io));
-                                    netconnection
-                                        .write_create_stream(&2.0)
-                                        .await
-                                        .map_err(|error| {
-                                            format!("RTMP publisher should send createStream: {error}")
-                                        })?;
+                                    let mut netconnection =
+                                        NetConnection::new(std::sync::Arc::clone(&io));
+                                    netconnection.write_create_stream(&2.0).await.map_err(
+                                        |error| {
+                                            format!(
+                                                "RTMP publisher should send createStream: {error}"
+                                            )
+                                        },
+                                    )?;
                                 }
                                 Some("_result")
-                                    if is_rtmp_transaction_id(transaction_id, 2) && !publish_sent =>
+                                    if is_rtmp_transaction_id(transaction_id, 2)
+                                        && !publish_sent =>
                                 {
                                     publish_sent = true;
-                                    let mut netstream = NetStreamWriter::new(std::sync::Arc::clone(&io));
+                                    let mut netstream =
+                                        NetStreamWriter::new(std::sync::Arc::clone(&io));
                                     netstream
                                         .write_publish(&3.0, &raw_stream_name, &"live".to_string())
                                         .await
@@ -1069,7 +1094,8 @@ async fn run_idle_rtmp_publisher(
                                         })?;
                                 }
                                 Some("onStatus")
-                                    if rtmp_status_code(others) == Some("NetStream.Publish.Start") =>
+                                    if rtmp_status_code(others)
+                                        == Some("NetStream.Publish.Start") =>
                                 {
                                     publish_started = true;
                                     if let Some(started_tx) = started_tx.take() {
@@ -1128,8 +1154,7 @@ async fn spawn_idle_rtmp_publisher(rtmp_url: &str, stream_key: &str) -> IdleRtmp
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let session_task = tokio::spawn(async move {
         if let Err(error) =
-            run_idle_rtmp_publisher(host, port, app_name, raw_stream_name, started_tx)
-                .await
+            run_idle_rtmp_publisher(host, port, app_name, raw_stream_name, started_tx).await
         {
             panic!("RTMP idle publisher failed: {error}");
         }
@@ -1172,7 +1197,11 @@ where
     }
 }
 
-async fn wait_for_room_stream_total(server: &TestServer, room_id: &str, expected_total: i64) -> Value {
+async fn wait_for_room_stream_total(
+    server: &TestServer,
+    room_id: &str,
+    expected_total: i64,
+) -> Value {
     wait_for_remote_cli_json(
         server,
         &["room", "stream", "list", "--room-id", room_id],
@@ -1205,7 +1234,10 @@ async fn ws_connect_with_ticket(
     room_id: &str,
     ticket: &str,
 ) -> Result<
-    (TestWebSocketStream, tungstenite::handshake::client::Response),
+    (
+        TestWebSocketStream,
+        tungstenite::handshake::client::Response,
+    ),
     tokio_tungstenite::tungstenite::Error,
 > {
     tokio_tungstenite::connect_async(format!("ws://{addr}/ws/rooms/{room_id}?ticket={ticket}"))
@@ -1255,11 +1287,8 @@ async fn recv_server_message(ws: &mut TestWebSocketStream) -> Option<ServerMessa
 
 async fn drain_until_quiet(ws: &mut TestWebSocketStream, quiet_ms: u64) -> Vec<ServerMessage> {
     let mut collected = Vec::new();
-    while let Ok(Some(message)) = tokio::time::timeout(
-        Duration::from_millis(quiet_ms),
-        recv_server_message(ws),
-    )
-    .await
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(quiet_ms), recv_server_message(ws)).await
     {
         collected.push(message);
     }
@@ -1294,7 +1323,10 @@ where
     }
 }
 
-async fn send_client_message(ws: &mut TestWebSocketStream, message: synctv_proto::client::ClientMessage) {
+async fn send_client_message(
+    ws: &mut TestWebSocketStream,
+    message: synctv_proto::client::ClientMessage,
+) {
     ws.send(tungstenite::Message::Binary(message.encode_to_vec().into()))
         .await
         .expect("send websocket client message");
@@ -2337,7 +2369,14 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
 
     let banned_users = run_synctv_remote_cli_json(
         &server,
-        &["user", "list", "--status", "banned", "--search", "cli_batch_user_"],
+        &[
+            "user",
+            "list",
+            "--status",
+            "banned",
+            "--search",
+            "cli_batch_user_",
+        ],
         "list batch-banned users",
     )
     .await;
@@ -2450,8 +2489,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     full_room_settings.insert("chat_enabled".to_string(), Value::Bool(false));
     full_room_settings.insert("danmaku_enabled".to_string(), Value::Bool(false));
     full_room_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let full_room_settings_json =
-        Value::Object(full_room_settings).to_string();
+    let full_room_settings_json = Value::Object(full_room_settings).to_string();
 
     let updated_room_settings = run_synctv_remote_cli_json(
         &server,
@@ -2477,7 +2515,10 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         "get room settings after full update",
     )
     .await;
-    assert_eq!(fetched_updated_room_settings["settings"]["chat_enabled"], false);
+    assert_eq!(
+        fetched_updated_room_settings["settings"]["chat_enabled"],
+        false
+    );
     assert_eq!(
         fetched_updated_room_settings["settings"]["allow_guest_join"],
         true
@@ -2539,7 +2580,14 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
     let pending_list = run_synctv_remote_cli_json(
         &server,
-        &["user", "list", "--status", "pending", "--search", &pending_username],
+        &[
+            "user",
+            "list",
+            "--status",
+            "pending",
+            "--search",
+            &pending_username,
+        ],
         "user list pending",
     )
     .await;
@@ -2572,7 +2620,8 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         Some(synctv_proto::common::UserStatus::Active as i64)
     );
 
-    let active_login_token = login_http_ok_token(&server, &pending_username, pending_password).await;
+    let active_login_token =
+        login_http_ok_token(&server, &pending_username, pending_password).await;
     assert!(
         !active_login_token.is_empty(),
         "approved user should receive an access token"
@@ -2624,7 +2673,8 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         StatusCode::UNAUTHORIZED,
         "old username should stop working after CLI username rotation"
     );
-    let renamed_login_token = login_http_ok_token(&server, &renamed_username, rotated_password).await;
+    let renamed_login_token =
+        login_http_ok_token(&server, &renamed_username, rotated_password).await;
     assert!(
         !renamed_login_token.is_empty(),
         "renamed user should still be able to log in"
@@ -2693,17 +2743,15 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         "banned users must not be able to authenticate"
     );
 
-    let unbanned_user = run_synctv_remote_cli_json(
-        &server,
-        &["user", "unban", &renamed_username],
-        "user unban",
-    )
-    .await;
+    let unbanned_user =
+        run_synctv_remote_cli_json(&server, &["user", "unban", &renamed_username], "user unban")
+            .await;
     assert_eq!(
         unbanned_user["user"]["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Active as i64)
     );
-    let restored_login_token = login_http_ok_token(&server, &renamed_username, rotated_password).await;
+    let restored_login_token =
+        login_http_ok_token(&server, &renamed_username, rotated_password).await;
     assert!(
         !restored_login_token.is_empty(),
         "unbanned user should be able to authenticate again"
@@ -2780,7 +2828,14 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
     let banned_users = run_synctv_remote_cli_json(
         &server,
-        &["user", "list", "--status", "banned", "--search", "cli_batch_ban_"],
+        &[
+            "user",
+            "list",
+            "--status",
+            "banned",
+            "--search",
+            "cli_batch_ban_",
+        ],
         "user list banned after batch ban",
     )
     .await;
@@ -2982,12 +3037,8 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "pending room should appear in filtered list: {pending_rooms}"
     );
 
-    let pending_room_get = run_synctv_remote_cli_json(
-        &server,
-        &["room", "get", &room_id],
-        "get pending room",
-    )
-    .await;
+    let pending_room_get =
+        run_synctv_remote_cli_json(&server, &["room", "get", &room_id], "get pending room").await;
     assert_eq!(
         pending_room_get["room"]["status"].as_i64(),
         Some(synctv_proto::common::RoomStatus::Pending as i64)
@@ -3023,7 +3074,13 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
 
     let room_password_set = run_synctv_remote_cli_json(
         &server,
-        &["room", "set-password", &room_id, "--password", room_password],
+        &[
+            "room",
+            "set-password",
+            &room_id,
+            "--password",
+            room_password,
+        ],
         "set room password",
     )
     .await;
@@ -3070,11 +3127,9 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             "--role",
             "admin",
             "--admin-added-permissions",
-            &(
-                synctv_core::models::PermissionBits::ADD_MEDIA
-                    | synctv_core::models::PermissionBits::START_LIVE
-            )
-            .to_string(),
+            &(synctv_core::models::PermissionBits::ADD_MEDIA
+                | synctv_core::models::PermissionBits::START_LIVE)
+                .to_string(),
             "--admin-removed-permissions",
             &synctv_core::models::PermissionBits::SEND_CHAT.to_string(),
         ],
@@ -3241,7 +3296,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "get room after transfer",
     )
     .await;
-    assert_eq!(room_after_transfer["room"]["creator_username"], member_username);
+    assert_eq!(
+        room_after_transfer["room"]["creator_username"],
+        member_username
+    );
 
     let playlist_alpha = run_synctv_remote_cli_json(
         &server,
@@ -3295,7 +3353,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "rename playlist",
     )
     .await;
-    assert_eq!(renamed_playlist["playlist"]["name"], "Alpha Playlist Renamed");
+    assert_eq!(
+        renamed_playlist["playlist"]["name"],
+        "Alpha Playlist Renamed"
+    );
 
     let moved_playlist = run_synctv_remote_cli_json(
         &server,
@@ -3332,7 +3393,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "get playlist",
     )
     .await;
-    assert_eq!(fetched_playlist["playlist"]["name"], "Alpha Playlist Renamed");
+    assert_eq!(
+        fetched_playlist["playlist"]["name"],
+        "Alpha Playlist Renamed"
+    );
 
     let first_media = run_synctv_remote_cli_json(
         &server,
@@ -3407,7 +3471,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "rename media",
     )
     .await;
-    assert_eq!(renamed_media["media"]["title"], "CLI Room Media Two Renamed");
+    assert_eq!(
+        renamed_media["media"]["title"],
+        "CLI Room Media Two Renamed"
+    );
 
     let moved_media = run_synctv_remote_cli_json(
         &server,
@@ -3478,7 +3545,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         media_one_id
     );
     assert_eq!(playback_state["playback_state"]["is_playing"], true);
-    assert_eq!(playback_state["playback_snapshot"]["media_id"], media_one_id);
+    assert_eq!(
+        playback_state["playback_snapshot"]["media_id"],
+        media_one_id
+    );
 
     let stopped_playback = run_synctv_remote_cli_json(
         &server,
@@ -3615,20 +3685,14 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         "batch room delete should return per-item results: {batch_deleted_rooms}"
     );
 
-    let deleted_room = run_synctv_remote_cli_json(
-        &server,
-        &["room", "delete", &room_id],
-        "delete main room",
-    )
-    .await;
+    let deleted_room =
+        run_synctv_remote_cli_json(&server, &["room", "delete", &room_id], "delete main room")
+            .await;
     assert_eq!(deleted_room["success"], true);
 
-    let deleted_room_get_error = run_synctv_remote_cli_failure(
-        &server,
-        &["room", "get", &room_id],
-        "get deleted room",
-    )
-    .await;
+    let deleted_room_get_error =
+        run_synctv_remote_cli_failure(&server, &["room", "get", &room_id], "get deleted room")
+            .await;
     assert!(
         deleted_room_get_error.contains("not found")
             || deleted_room_get_error.contains("Not found")
@@ -3757,9 +3821,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "wait for active room stream",
         |response| {
             response["total"].as_i64() == Some(1)
-                && response["streams"]
-                    .as_array()
-                    .is_some_and(|streams| streams.iter().any(|stream| stream["media_id"] == media_id))
+                && response["streams"].as_array().is_some_and(|streams| {
+                    streams.iter().any(|stream| stream["media_id"] == media_id)
+                })
         },
     )
     .await;
@@ -3831,9 +3895,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "kick stream should emit a JSON object"
     );
 
-    publisher
-        .wait_for_disconnect("system stream kick")
-        .await;
+    publisher.wait_for_disconnect("system stream kick").await;
 
     let room_streams_after_kick = wait_for_room_stream_total(&server, &room_id, 0).await;
     assert_eq!(room_streams_after_kick["total"].as_i64(), Some(0));
@@ -3855,9 +3917,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     .await;
     assert_eq!(room_stream_info_after_kick["active"], false);
 
-    publisher
-        .shutdown("stream test cleanup after kick")
-        .await;
+    publisher.shutdown("stream test cleanup after kick").await;
 }
 
 #[tokio::test]
@@ -4043,7 +4103,8 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_and_media_mutations() {
+async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_and_media_mutations()
+{
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
 
@@ -4922,6 +4983,102 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
 #[cfg(unix)]
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_config_auth_token() {
+    let (postgres, database_url) = create_test_database_url_with_label(
+        "synctv_e2e_unix_auth_explicit",
+        "full-stack-management-unix-auth-explicit",
+    )
+    .await;
+    let (redis, redis_url) =
+        start_redis_url_with_label("full-stack-management-unix-auth-explicit").await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let socket_dir = tempfile::tempdir().expect("temp dir should be created");
+    let socket_path = socket_dir.path().join("management.sock");
+    let config_path = socket_dir.path().join("synctv.yaml");
+    let management_auth_token = "unix-management-explicit-endpoint-token";
+
+    let mut config = test_config(
+        database_url,
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    configure_management_unix_socket_with_auth_token(
+        &mut config,
+        &socket_path,
+        management_auth_token,
+    );
+    write_cli_test_config(&config_path, &config);
+
+    let app = Box::pin(Application::build_with_options(
+        config,
+        ApplicationBuildOptions {
+            credential_encryption_hex_key_override: Some(
+                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
+            ),
+            ..ApplicationBuildOptions::default()
+        },
+    ))
+    .await
+    .expect("unix management auth application should build");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_handle = tokio::spawn(async move {
+        Box::pin(app.run_with_shutdown_signal(async move {
+            let _ = shutdown_rx.await;
+        }))
+        .await
+    });
+
+    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    wait_until_live(&api_base_url).await;
+    wait_until_unix_grpc_ready(&socket_path).await;
+
+    let management_endpoint = format!("unix://{}", socket_path.display());
+    let system_stats = run_synctv_cli_with_env_async(
+        &[
+            "system",
+            "stats",
+            "--output",
+            "json",
+            "--endpoint",
+            &management_endpoint,
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        !system_stats.status.success(),
+        "explicit endpoint should not implicitly use the config auth token\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&system_stats),
+        cli_stderr(&system_stats),
+    );
+
+    let stderr = cli_stderr(&system_stats);
+    assert!(
+        stderr.contains("authentication failed"),
+        "explicit endpoint without env auth token should fail authentication\nstderr:\n{stderr}"
+    );
+
+    let _ = shutdown_tx.send(());
+    let server_result = server_handle
+        .await
+        .expect("unix management auth server task should join");
+    server_result.expect("unix management auth server should shut down cleanly");
+
+    drop(postgres);
+    drop(redis);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_stop_graceful", "full-stack-stop-graceful")
@@ -4992,6 +5149,606 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
 
     drop(postgres);
     drop(redis);
+}
+
+#[tokio::test]
+async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv.yaml");
+
+    let mut config = test_config(
+        "postgresql://postgres:super-secret-db@db.internal:5432/synctv_cli_config".to_string(),
+        "redis://:redis-secret@redis.internal:6379/0".to_string(),
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    config.management.auth_token = "management-config-secret".to_string();
+    write_cli_test_config(&config_path, &config);
+
+    let validate_output = run_synctv_cli_with_env_async(
+        &[
+            "config",
+            "validate",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        validate_output.status.success(),
+        "config validate should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&validate_output),
+        cli_stderr(&validate_output),
+    );
+    let validate_stdout = cli_stdout(&validate_output);
+    assert!(
+        validate_stdout.contains("Configuration is valid"),
+        "config validate should confirm success\nstdout:\n{validate_stdout}"
+    );
+    assert!(
+        validate_stdout.contains(&format!("127.0.0.1:{api_port}")),
+        "config validate should print the resolved API address\nstdout:\n{validate_stdout}"
+    );
+
+    let show_output = run_synctv_cli_with_env_async(
+        &[
+            "config",
+            "show",
+            "--output",
+            "json",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    let show_body = cli_json_output(&show_output, "config show");
+    let show_text = cli_stdout(&show_output);
+    assert_eq!(show_body["server"]["port"], api_port);
+    assert_eq!(show_body["management"]["auth_token"], "<redacted>");
+    assert!(
+        show_body["database"]["url"]
+            .as_str()
+            .expect("rendered database url should be a string")
+            .contains("***"),
+        "config show should mask database credentials: {show_text}"
+    );
+    assert!(
+        !show_text.contains("super-secret-db")
+            && !show_text.contains("redis-secret")
+            && !show_text.contains("management-config-secret"),
+        "config show should redact embedded secrets: {show_text}"
+    );
+
+    let show_toml_output = run_synctv_cli_with_env_async(
+        &[
+            "config",
+            "show",
+            "--output",
+            "toml",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        show_toml_output.status.success(),
+        "config show --output toml should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&show_toml_output),
+        cli_stderr(&show_toml_output),
+    );
+    let show_toml = cli_stdout(&show_toml_output);
+    assert!(
+        show_toml.contains("[server]") && show_toml.contains("port ="),
+        "config show --output toml should render TOML tables\nstdout:\n{show_toml}"
+    );
+    assert!(
+        !show_toml.contains("= null"),
+        "config show --output toml should prune null values before rendering\nstdout:\n{show_toml}"
+    );
+    assert!(
+        !show_toml.contains("super-secret-db")
+            && !show_toml.contains("redis-secret")
+            && !show_toml.contains("management-config-secret"),
+        "config show --output toml should redact embedded secrets\nstdout:\n{show_toml}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_idempotent() {
+    let (postgres, database_url) =
+        create_test_database_url_with_label("synctv_e2e_db_cli", "full-stack-cli-db").await;
+    let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db").await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv-db-cli.yaml");
+
+    let config = test_config(
+        database_url.clone(),
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    write_cli_test_config(&config_path, &config);
+    recreate_test_database_as_empty(&postgres).await;
+
+    let pending_status = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "status",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        pending_status.status.success(),
+        "db status before migrations should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&pending_status),
+        cli_stderr(&pending_status),
+    );
+    let pending_stdout = cli_stdout(&pending_status);
+    assert!(
+        pending_stdout.contains("Database connection: OK"),
+        "db status should verify connectivity\nstdout:\n{pending_stdout}"
+    );
+    assert!(
+        pending_stdout.contains("Migration status: pending"),
+        "db status should report unapplied embedded migrations\nstdout:\n{pending_stdout}"
+    );
+    assert!(
+        pending_stdout.contains("postgresql://***:***@"),
+        "db status should mask database credentials\nstdout:\n{pending_stdout}"
+    );
+
+    let migrate_output = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "migrate",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        migrate_output.status.success(),
+        "db migrate should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&migrate_output),
+        cli_stderr(&migrate_output),
+    );
+
+    let pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .expect("test should connect to migrated database");
+    let applied_migrations: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = true")
+            .fetch_one(&pool)
+            .await
+            .expect("_sqlx_migrations should exist after db migrate");
+    assert!(
+        applied_migrations > 0,
+        "db migrate should apply embedded migrations"
+    );
+    pool.close().await;
+
+    let second_migrate_output = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "migrate",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        second_migrate_output.status.success(),
+        "db migrate should be idempotent\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&second_migrate_output),
+        cli_stderr(&second_migrate_output),
+    );
+
+    let ready_status = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "status",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        ready_status.status.success(),
+        "db status after migrations should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&ready_status),
+        cli_stderr(&ready_status),
+    );
+    let ready_stdout = cli_stdout(&ready_status);
+    assert!(
+        ready_stdout.contains("Migration status: ready"),
+        "db status should report ready after migrations are applied\nstdout:\n{ready_stdout}"
+    );
+
+    let pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .expect("test should reconnect to migrated database");
+    sqlx::query(
+        "UPDATE _sqlx_migrations \
+         SET checksum = decode('00', 'hex') \
+         WHERE version = (SELECT MIN(version) FROM _sqlx_migrations WHERE success = true)",
+    )
+    .execute(&pool)
+    .await
+    .expect("test should tamper with migration checksum");
+    pool.close().await;
+
+    let broken_status = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "status",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        broken_status.status.success(),
+        "db status with drifted history should still report status\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&broken_status),
+        cli_stderr(&broken_status),
+    );
+    let broken_stdout = cli_stdout(&broken_status);
+    assert!(
+        broken_stdout.contains("Migration status: broken"),
+        "db status should distinguish drifted history from pending\nstdout:\n{broken_stdout}"
+    );
+    assert!(
+        broken_stdout.contains(
+            "Migration detail: applied migration history does not match the embedded migration set"
+        ),
+        "db status should explain drifted migration history\nstdout:\n{broken_stdout}"
+    );
+
+    drop(postgres);
+    drop(redis);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() {
+    let (postgres, database_url) =
+        create_test_database_url_with_label("synctv_e2e_db_cli_acl", "full-stack-cli-db-acl").await;
+    let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db-acl").await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv-db-cli-acl.yaml");
+
+    let config = test_config(
+        database_url.clone(),
+        redis_url.clone(),
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    write_cli_test_config(&config_path, &config);
+
+    let migrate_output = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "migrate",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        migrate_output.status.success(),
+        "db migrate should succeed before permission test\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&migrate_output),
+        cli_stderr(&migrate_output),
+    );
+
+    let limited_role = format!("status_reader_{}", unique_test_suffix());
+    let limited_password = "StatusPwd12345!";
+    let admin_pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .expect("test should connect to prepared database");
+    sqlx::query(&format!(
+        "CREATE ROLE \"{limited_role}\" LOGIN PASSWORD '{limited_password}'"
+    ))
+    .execute(&admin_pool)
+    .await
+    .expect("test should create a limited role");
+    sqlx::query(&format!(
+        "GRANT CONNECT ON DATABASE \"{}\" TO \"{limited_role}\"",
+        postgres.database_name()
+    ))
+    .execute(&admin_pool)
+    .await
+    .expect("test should grant database connect");
+    sqlx::query(&format!(
+        "GRANT USAGE ON SCHEMA public TO \"{limited_role}\""
+    ))
+    .execute(&admin_pool)
+    .await
+    .expect("test should grant schema usage without table reads");
+    admin_pool.close().await;
+
+    let limited_database_url = format!(
+        "postgresql://{limited_role}:{limited_password}@{}:{}/{}",
+        postgres.host(),
+        postgres.port_ipv4(5432),
+        postgres.database_name()
+    );
+    let limited_config = test_config(
+        limited_database_url,
+        redis_url,
+        reserve_local_port(),
+        reserve_local_port(),
+        reserve_local_port(),
+    );
+    let limited_config_path = temp_dir.path().join("synctv-db-cli-acl-limited.yaml");
+    write_cli_test_config(&limited_config_path, &limited_config);
+
+    let status_output = run_synctv_cli_with_env_async(
+        &[
+            "db",
+            "status",
+            "--config",
+            limited_config_path
+                .to_str()
+                .expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        !status_output.status.success(),
+        "db status should fail when migration metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&status_output),
+        cli_stderr(&status_output),
+    );
+    let stderr = cli_stderr(&status_output);
+    assert!(
+        stderr.contains("Failed to inspect") && stderr.contains("_sqlx_migrations"),
+        "db status should surface migration inspection failures\nstderr:\n{stderr}"
+    );
+
+    drop(postgres);
+    drop(redis);
+}
+
+#[tokio::test]
+async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listeners() {
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv-dry-run.yaml");
+
+    let config = test_config(
+        "postgresql://postgres:password@127.0.0.1:5432/synctv_dry_run".to_string(),
+        "redis://127.0.0.1:6379/0".to_string(),
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    write_cli_test_config(&config_path, &config);
+
+    let dry_run_output = run_synctv_cli_with_env_async(
+        &[
+            "serve",
+            "--dry-run",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        dry_run_output.status.success(),
+        "serve --dry-run should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&dry_run_output),
+        cli_stderr(&dry_run_output),
+    );
+
+    let combined_output = format!(
+        "{}\n{}",
+        cli_stdout(&dry_run_output),
+        cli_stderr(&dry_run_output)
+    );
+    assert!(
+        combined_output.contains("Dry run requested"),
+        "serve --dry-run should report that startup was skipped\noutput:\n{combined_output}"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_version_prints_package_name_and_version() {
+    let version_output = run_synctv_cli_with_env_async(&["version"], &[]).await;
+    assert!(
+        version_output.status.success(),
+        "version CLI should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&version_output),
+        cli_stderr(&version_output),
+    );
+
+    assert_eq!(
+        cli_stdout(&version_output).trim(),
+        format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        "version CLI should print the package name and version"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_completion_bash_emits_shell_script() {
+    let completion_output = run_synctv_cli_with_env_async(&["completion", "bash"], &[]).await;
+    assert!(
+        completion_output.status.success(),
+        "completion bash should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&completion_output),
+        cli_stderr(&completion_output),
+    );
+
+    let completion_stdout = cli_stdout(&completion_output);
+    assert!(
+        completion_stdout.contains("_synctv()"),
+        "bash completion should define the synctv completion function\nstdout:\n{completion_stdout}"
+    );
+    assert!(
+        completion_stdout.contains("complete -F _synctv") && completion_stdout.contains(" synctv"),
+        "bash completion should register completion for synctv\nstdout:\n{completion_stdout}"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_completion_zsh_emits_compdef_registration() {
+    let completion_output = run_synctv_cli_with_env_async(&["completion", "zsh"], &[]).await;
+    assert!(
+        completion_output.status.success(),
+        "completion zsh should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&completion_output),
+        cli_stderr(&completion_output),
+    );
+
+    let completion_stdout = cli_stdout(&completion_output);
+    assert!(
+        completion_stdout.contains("#compdef synctv"),
+        "zsh completion should declare the target command\nstdout:\n{completion_stdout}"
+    );
+    assert!(
+        completion_stdout.contains("compdef _synctv synctv"),
+        "zsh completion should register completion for synctv\nstdout:\n{completion_stdout}"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_completion_fish_emits_completion_directives() {
+    let completion_output = run_synctv_cli_with_env_async(&["completion", "fish"], &[]).await;
+    assert!(
+        completion_output.status.success(),
+        "completion fish should succeed\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&completion_output),
+        cli_stderr(&completion_output),
+    );
+
+    let completion_stdout = cli_stdout(&completion_output);
+    assert!(
+        completion_stdout.contains("complete -c synctv"),
+        "fish completion should emit complete directives for synctv\nstdout:\n{completion_stdout}"
+    );
+    assert!(
+        completion_stdout.contains("__fish_synctv_global_optspecs"),
+        "fish completion should define the global option spec helper\nstdout:\n{completion_stdout}"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_serve_rejects_daemon_and_dry_run_combination() {
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv-invalid-serve.yaml");
+
+    let config = test_config(
+        "postgresql://postgres:password@127.0.0.1:5432/synctv_invalid_serve".to_string(),
+        "redis://127.0.0.1:6379/0".to_string(),
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    write_cli_test_config(&config_path, &config);
+
+    let invalid_output = run_synctv_cli_with_env_async(
+        &[
+            "serve",
+            "--daemon",
+            "--dry-run",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        !invalid_output.status.success(),
+        "serve should reject --daemon with --dry-run\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&invalid_output),
+        cli_stderr(&invalid_output),
+    );
+
+    let combined_output = format!(
+        "{}\n{}",
+        cli_stdout(&invalid_output),
+        cli_stderr(&invalid_output)
+    );
+    assert!(
+        combined_output.contains("--daemon cannot be combined with --dry-run"),
+        "invalid serve combination should explain the rejection\noutput:\n{combined_output}"
+    );
+}
+
+#[tokio::test]
+async fn full_stack_cli_system_stats_reports_unreachable_management_endpoint() {
+    let output = run_synctv_cli_with_env_async(
+        &[
+            "system",
+            "stats",
+            "--endpoint",
+            "http://127.0.0.1:9",
+            "--output",
+            "json",
+            "--no-dotenv",
+        ],
+        &[],
+    )
+    .await;
+    assert!(
+        !output.status.success(),
+        "system stats should fail when the explicit management endpoint is unreachable\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&output),
+        cli_stderr(&output),
+    );
+
+    let stderr = cli_stderr(&output);
+    assert!(
+        stderr.contains("failed to connect to any management endpoint"),
+        "connection failure should mention that no management endpoint could be reached\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("127.0.0.1:9"),
+        "connection failure should include the unreachable endpoint for debugging\nstderr:\n{stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -5823,7 +6580,8 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial_and_future_updates() {
+async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial_and_future_updates(
+) {
     use synctv_proto::client::client_message;
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::server_message;
@@ -5943,10 +6701,12 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
     )
     .await;
     let initial_version = match initial_snapshot.message {
-        Some(server_message::Message::PlaybackSnapshot(snapshot)) => snapshot
-            .snapshot
-            .expect("playback snapshot should be present")
-            .version,
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
+            snapshot
+                .snapshot
+                .expect("playback snapshot should be present")
+                .version
+        }
         other => panic!("expected playback snapshot, got: {other:?}"),
     };
 
@@ -5983,7 +6743,9 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
 
     match updated_snapshot.message {
         Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.media_id, media_two_id);
             assert_eq!(
                 snapshot.version, initial_version,
@@ -6051,10 +6813,12 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
     let initial_settings = recv_matching_grpc_server_message(
         &mut inbound,
         Duration::from_secs(10),
-        |message| matches!(
-            &message.message,
-            Some(server_message::Message::RoomSettings(_))
-        ),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomSettings(_))
+            )
+        },
         "initial grpc room settings snapshot",
     )
     .await;
@@ -6218,7 +6982,9 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
     .await;
     let initial_version = match initial_snapshot.message {
         Some(server_message::Message::PlaylistItems(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("playlist items snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("playlist items snapshot should be present");
             assert_eq!(snapshot.version, initial_api_snapshot.version);
             assert_eq!(snapshot.total, 0);
             snapshot.version
@@ -6267,7 +7033,9 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
 
     match updated_snapshot.message {
         Some(server_message::Message::PlaylistItems(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.total, 1);
             assert!(snapshot.media.iter().any(|media| media.id == media_id));
             assert_ne!(
@@ -6303,16 +7071,18 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
     outbound_tx
         .send(ClientMessage {
-            message: Some(client_message::Message::WatchRoomMembers(WatchRoomMembers {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                status: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                version: String::new(),
-            })),
+            message: Some(client_message::Message::WatchRoomMembers(
+                WatchRoomMembers {
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    role: None,
+                    status: None,
+                    sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    version: String::new(),
+                },
+            )),
         })
         .await
         .expect("queue initial room members watch request");
@@ -6347,9 +7117,14 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
     .await;
     let initial_version = match initial_members.message {
         Some(server_message::Message::RoomMembers(changed)) => {
-            let snapshot = changed.snapshot.expect("room members snapshot should be present");
+            let snapshot = changed
+                .snapshot
+                .expect("room members snapshot should be present");
             assert!(
-                snapshot.members.iter().any(|member| member.user_id == member_user_id),
+                snapshot
+                    .members
+                    .iter()
+                    .any(|member| member.user_id == member_user_id),
                 "initial room members snapshot should include the joined member"
             );
             snapshot.version
@@ -6401,11 +7176,16 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
 
     match updated_members.message {
         Some(server_message::Message::RoomMembers(changed)) => {
-            let snapshot = changed.snapshot.expect("updated snapshot should be present");
+            let snapshot = changed
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.total, 3);
             assert_ne!(snapshot.version, initial_version);
             assert!(
-                snapshot.members.iter().any(|member| member.user_id == joiner_id),
+                snapshot
+                    .members
+                    .iter()
+                    .any(|member| member.user_id == joiner_id),
                 "updated room members snapshot should include the new joiner"
             );
         }
@@ -6514,7 +7294,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         .to_string();
     let observer_token = login_http_ok_token(&server, &observer_username, observer_password).await;
     let observer_join = join_room_http(&server, &room_id, "", &observer_token).await;
-    assert_eq!(observer_join.status(), StatusCode::OK, "observer should join room");
+    assert_eq!(
+        observer_join.status(),
+        StatusCode::OK,
+        "observer should join room"
+    );
     let mut observer_ws = ws_connect(&api_addr, &room_id, &observer_token).await;
     let _ = recv_matching_server_message(
         &mut member_ws,
@@ -6792,10 +7576,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     let room_settings_message = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| matches!(
-            &message.message,
-            Some(server_message::Message::RoomSettings(_))
-        ),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomSettings(_))
+            )
+        },
         "room settings broadcast",
     )
     .await;
@@ -6805,7 +7591,10 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 serde_json::from_slice(&settings.settings).expect("decode room settings payload");
             assert_eq!(decoded["chat_enabled"], false);
             assert_eq!(decoded["allow_guest_join"], true);
-            assert!(settings.version > 0, "room settings change should carry version");
+            assert!(
+                settings.version > 0,
+                "room settings change should carry version"
+            );
         }
         other => panic!("expected RoomSettingsChanged, got: {other:?}"),
     }
@@ -7072,13 +7861,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 
     let _ = run_synctv_remote_cli_json(
         &server,
-        &[
-            "playlist",
-            "delete",
-            "--room-id",
-            &room_id,
-            &playlist_id,
-        ],
+        &["playlist", "delete", "--room-id", &room_id, &playlist_id],
         "delete realtime playlist",
     )
     .await;
@@ -7118,7 +7901,12 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        |message| {
+            matches!(
+                message.message,
+                Some(server_message::Message::UserJoined(_))
+            )
+        },
         "initial websocket UserJoined",
     )
     .await;
@@ -7253,10 +8041,12 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
     )
     .await;
     let initial_version = match initial_snapshot.message {
-        Some(server_message::Message::PlaybackSnapshot(snapshot)) => snapshot
-            .snapshot
-            .expect("playback snapshot should be present")
-            .version,
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
+            snapshot
+                .snapshot
+                .expect("playback snapshot should be present")
+                .version
+        }
         other => panic!("expected playback snapshot, got: {other:?}"),
     };
 
@@ -7293,7 +8083,9 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
 
     match updated_snapshot.message {
         Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.media_id, media_two_id);
             assert_eq!(
                 snapshot.version, initial_version,
@@ -7324,7 +8116,12 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        |message| {
+            matches!(
+                message.message,
+                Some(server_message::Message::UserJoined(_))
+            )
+        },
         "initial websocket UserJoined",
     )
     .await;
@@ -7332,9 +8129,9 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     send_client_message(
         &mut member_ws,
         ClientMessage {
-            message: Some(client_message::Message::WatchRoomSettings(WatchRoomSettings {
-                version: None,
-            })),
+            message: Some(client_message::Message::WatchRoomSettings(
+                WatchRoomSettings { version: None },
+            )),
         },
     )
     .await;
@@ -7353,10 +8150,12 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     let initial_settings = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| matches!(
-            &message.message,
-            Some(server_message::Message::RoomSettings(_))
-        ),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomSettings(_))
+            )
+        },
         "initial websocket room settings snapshot",
     )
     .await;
@@ -7442,7 +8241,12 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
     let _ = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
-        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        |message| {
+            matches!(
+                message.message,
+                Some(server_message::Message::UserJoined(_))
+            )
+        },
         "initial websocket UserJoined",
     )
     .await;
@@ -7518,7 +8322,9 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
     .await;
     let initial_version = match initial_snapshot.message {
         Some(server_message::Message::PlaylistItems(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("playlist items snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("playlist items snapshot should be present");
             assert_eq!(snapshot.version, expected_initial_version);
             assert_eq!(snapshot.total, 0);
             snapshot.version
@@ -7567,7 +8373,9 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
 
     match updated_snapshot.message {
         Some(server_message::Message::PlaylistItems(snapshot)) => {
-            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            let snapshot = snapshot
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.total, 1);
             assert!(snapshot.media.iter().any(|media| media.id == media_id));
             assert_ne!(
@@ -7600,16 +8408,18 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
     send_client_message(
         &mut member_ws,
         ClientMessage {
-            message: Some(client_message::Message::WatchRoomMembers(WatchRoomMembers {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                status: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                version: String::new(),
-            })),
+            message: Some(client_message::Message::WatchRoomMembers(
+                WatchRoomMembers {
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    role: None,
+                    status: None,
+                    sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    version: String::new(),
+                },
+            )),
         },
     )
     .await;
@@ -7631,9 +8441,14 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
     .await;
     let initial_version = match initial_members.message {
         Some(server_message::Message::RoomMembers(changed)) => {
-            let snapshot = changed.snapshot.expect("room members snapshot should be present");
+            let snapshot = changed
+                .snapshot
+                .expect("room members snapshot should be present");
             assert!(
-                snapshot.members.iter().any(|member| member.user_id == member_user_id),
+                snapshot
+                    .members
+                    .iter()
+                    .any(|member| member.user_id == member_user_id),
                 "initial websocket room members snapshot should include the joined member"
             );
             snapshot.version
@@ -7685,11 +8500,16 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
 
     match updated_members.message {
         Some(server_message::Message::RoomMembers(changed)) => {
-            let snapshot = changed.snapshot.expect("updated snapshot should be present");
+            let snapshot = changed
+                .snapshot
+                .expect("updated snapshot should be present");
             assert_eq!(snapshot.total, 3);
             assert_ne!(snapshot.version, initial_version);
             assert!(
-                snapshot.members.iter().any(|member| member.user_id == joiner_id),
+                snapshot
+                    .members
+                    .iter()
+                    .any(|member| member.user_id == joiner_id),
                 "updated room members snapshot should include the new joiner"
             );
         }

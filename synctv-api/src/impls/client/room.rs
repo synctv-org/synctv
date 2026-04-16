@@ -363,12 +363,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        self.room_lifecycle_fanout.publish_room_created(
-            cluster_event,
-            &room.id,
-            &room.name,
-            &uid,
-        );
+        self.room_lifecycle_fanout
+            .publish_room_created(cluster_event, &room.id, &room.name, &uid);
 
         let member_count = self
             .connection_service
@@ -534,10 +530,7 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
 
-        let cluster_event = self
-            .membership_event_fanout
-            .reserve_user_left()
-            .await?;
+        let cluster_event = self.membership_event_fanout.reserve_user_left().await?;
 
         self.room_service
             .leave_room(rid.clone(), uid.clone())
@@ -551,11 +544,7 @@ impl ClientApiImpl {
             .await;
 
         self.membership_event_fanout
-            .publish_user_left(
-                &rid,
-                &uid,
-                cluster_event,
-            )
+            .publish_user_left(&rid, &uid, cluster_event)
             .await?;
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
@@ -607,10 +596,7 @@ impl ClientApiImpl {
 
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self
-            .room_settings_fanout
-            .reserve_settings_changed()
-            .await?;
+        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let snapshot = self
             .room_service
             .set_settings(rid.clone(), uid.clone(), settings)
@@ -625,15 +611,14 @@ impl ClientApiImpl {
             .map(|u| u.username)
             .unwrap_or_default();
 
-        self.room_settings_fanout
-            .publish_settings_changed(
-                room_settings_fanout,
-                &rid,
-                &uid,
-                &username,
-                settings_json,
-                snapshot.version,
-            );
+        self.room_settings_fanout.publish_settings_changed(
+            room_settings_fanout,
+            &rid,
+            &uid,
+            &username,
+            settings_json,
+            snapshot.version,
+        );
         self.room_cache_fanout
             .publish_invalidation(cache_invalidation, &rid);
 
@@ -694,10 +679,7 @@ impl ClientApiImpl {
             Some(hash)
         };
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self
-            .room_settings_fanout
-            .reserve_settings_changed()
-            .await?;
+        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let username = self
             .user_service
             .get_user(&uid)
@@ -773,10 +755,7 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self
-            .room_settings_fanout
-            .reserve_settings_changed()
-            .await?;
+        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let snapshot = self
             .room_service
             .reset_room_settings(&rid, &uid)
@@ -790,15 +769,14 @@ impl ClientApiImpl {
             .await
             .map(|u| u.username)
             .unwrap_or_default();
-        self.room_settings_fanout
-            .publish_settings_changed(
-                room_settings_fanout,
-                &rid,
-                &uid,
-                &username,
-                settings_json.clone(),
-                snapshot.version,
-            );
+        self.room_settings_fanout.publish_settings_changed(
+            room_settings_fanout,
+            &rid,
+            &uid,
+            &username,
+            settings_json.clone(),
+            snapshot.version,
+        );
         self.room_cache_fanout
             .publish_invalidation(cache_invalidation, &rid);
 

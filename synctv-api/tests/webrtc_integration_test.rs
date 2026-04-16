@@ -336,23 +336,29 @@ mod permissions {
                 .expect("Redis connection manager"),
         ));
         let username_cache = UsernameCache::new(
-            Arc::new(RedisCacheL2::from_runtime(synctv_core::shared_runtime(redis_conn.clone()))),
+            Arc::new(RedisCacheL2::from_runtime(synctv_core::shared_runtime(
+                redis_conn.clone(),
+            ))),
             format!("{redis_key_prefix}un:"),
             100,
             300,
         );
         let brute_force = BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn.clone(),
-                50_000,
-                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-            )),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn,
-                100_000,
-                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-            )),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn.clone(),
+                    50_000,
+                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+                ),
+            ),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn,
+                    100_000,
+                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+                ),
+            ),
             synctv_core::service::BruteForceConfig::default(),
         );
         let jwt_service =

@@ -333,7 +333,8 @@ async fn test_cache_invalidation_self_origin_not_received() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_broadcast_local() {
     // broadcast_local should deliver to local subscribers without using Redis
-    let service = CacheInvalidationService::new("local_node".to_string(),
+    let service = CacheInvalidationService::new(
+        "local_node".to_string(),
         "test:cache:local_only".to_string(),
     );
 
@@ -592,7 +593,8 @@ async fn test_cache_invalidation_after_commit() {
 
     // Create room service WITH cache invalidation
     let mut room_service = RoomService::new(pool.clone(), user_service);
-    let invalidation_service = Arc::new(CacheInvalidationService::new("room-delete-node".to_string(),
+    let invalidation_service = Arc::new(CacheInvalidationService::new(
+        "room-delete-node".to_string(),
         unique_stream_key(),
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());
@@ -755,7 +757,8 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     );
 
     let mut room_service = RoomService::new(pool.clone(), user_service);
-    let invalidation_service = Arc::new(CacheInvalidationService::new("room-rollback-node".to_string(),
+    let invalidation_service = Arc::new(CacheInvalidationService::new(
+        "room-rollback-node".to_string(),
         unique_stream_key(),
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());

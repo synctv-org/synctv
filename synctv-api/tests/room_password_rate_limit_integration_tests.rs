@@ -90,11 +90,9 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         None,
         None,
     )
-    .with_rate_limiter(
-        synctv_core::service::rate_limit::RateLimiter::local_only(
-            "api:room-password:".to_string(),
-        ),
-    );
+    .with_rate_limiter(synctv_core::service::rate_limit::RateLimiter::local_only(
+        "api:room-password:".to_string(),
+    ));
 
     for _attempt in 0..4 {
         let err = client_api

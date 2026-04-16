@@ -327,8 +327,7 @@ mod tests {
     #[tokio::test]
     async fn test_email_token_rate_limiting() {
         // Create rate limiter with in-memory backend
-        let limiter =
-            synctv_core_testing::create_test_request_rate_limiter("email_token_test:");
+        let limiter = synctv_core_testing::create_test_request_rate_limiter("email_token_test:");
 
         // Create service with aggressive rate limiting for testing
         let config = EmailTokenRateLimitConfig {

@@ -586,8 +586,8 @@ fn current_unix_timestamp_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::node_registry::NodeRegistry;
     use super::super::node_registry::NodeInfo;
+    use super::super::node_registry::NodeRegistry;
     use super::*;
     use std::collections::HashMap;
 

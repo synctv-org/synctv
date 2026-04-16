@@ -259,7 +259,6 @@ pub fn parse_optional_playlist_id_param(
     }
 }
 
-
 /// Application-level error codes for client-side programmatic handling.
 ///
 /// These codes are included in the `ErrorMessage.code` field and allow

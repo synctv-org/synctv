@@ -6,12 +6,12 @@ use tonic::{Request, Response, Status};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, StreamMessage, StreamMessageHandler,
 };
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
     UserService as CoreUserService,
 };
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 // Use synctv_proto for all gRPC traits and types
 use crate::proto::client::{

@@ -8,9 +8,7 @@
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
 use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
-use crate::{
-    Error, RedisConnectionRuntime, Result, SharedStateProfile,
-};
+use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
 use async_trait::async_trait;
 use std::future::Future;
 

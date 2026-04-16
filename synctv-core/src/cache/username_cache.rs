@@ -12,10 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
-use crate::{
-    cache::CacheInvalidationRuntime,
-    Result,
-};
+use crate::{cache::CacheInvalidationRuntime, Result};
 
 /// L1 (in-memory) cache TTL in seconds.
 /// Matches UserCache/RoomCache defaults so stale entries are bounded even
@@ -114,10 +111,7 @@ impl UsernameCache {
 
     /// Set the cache invalidation service for cross-replica sync
     #[must_use]
-    pub fn with_invalidation_service(
-        mut self,
-        service: Arc<dyn CacheInvalidationRuntime>,
-    ) -> Self {
+    pub fn with_invalidation_service(mut self, service: Arc<dyn CacheInvalidationRuntime>) -> Self {
         self.invalidation_service = Some(service);
         self
     }
@@ -344,7 +338,8 @@ mod tests {
     /// to be immediately deleted.
     #[tokio::test]
     async fn test_set_with_invalidation_service_no_self_invalidation() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 
@@ -374,7 +369,8 @@ mod tests {
     /// retrievable.
     #[tokio::test]
     async fn test_preload_all_entries_retrievable() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 
@@ -420,7 +416,8 @@ mod tests {
     /// should broadcast to other replicas.
     #[tokio::test]
     async fn test_set_does_not_broadcast_invalidation() {
-        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate:stream".to_string(),
         ));
 

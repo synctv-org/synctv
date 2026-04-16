@@ -753,8 +753,13 @@ impl MemberService {
             .await;
 
             if !has_permission_changes {
-                self.notify_permission_changed(&room_id, &actor_id, &actor_username, &updated_member)
-                    .await;
+                self.notify_permission_changed(
+                    &room_id,
+                    &actor_id,
+                    &actor_username,
+                    &updated_member,
+                )
+                .await;
                 return Ok(updated_member);
             }
         }

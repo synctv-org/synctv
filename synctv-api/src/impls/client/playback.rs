@@ -12,11 +12,11 @@ use super::convert::{
     sign_local_bilibili_danmaku_urls,
 };
 use super::ClientApiImpl;
-use crate::impls::ApiError;
 use crate::impls::playback_snapshot::{
     dynamic_playback_snapshot_version, playback_snapshot_expires_at,
     static_playback_snapshot_version,
 };
+use crate::impls::ApiError;
 use synctv_core::models::MediaId;
 
 fn providers_manager_unavailable_error() -> ApiError {

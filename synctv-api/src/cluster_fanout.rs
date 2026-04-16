@@ -14,11 +14,7 @@ pub trait ClusterFanoutService: Send + Sync {
         failure_message: &'static str,
     ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
-    fn publish(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        request: PublishRequest,
-    );
+    fn publish(&self, reservation: Option<ClusterEventPublishReservation>, request: PublishRequest);
 
     async fn try_publish(&self, request: PublishRequest) -> bool;
 
@@ -152,8 +148,14 @@ mod tests {
             },
         );
 
-        let request = rx.recv().await.expect("reserved request should be published");
-        assert!(matches!(request.event, ClusterEvent::SystemNotification { .. }));
+        let request = rx
+            .recv()
+            .await
+            .expect("reserved request should be published");
+        assert!(matches!(
+            request.event,
+            ClusterEvent::SystemNotification { .. }
+        ));
         assert!(
             service.is_distributed_enabled(),
             "configured clustered fanout should report distributed mode as enabled"

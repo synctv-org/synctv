@@ -32,11 +32,7 @@ pub fn build_connection_manager(
             ))
         }
         SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => Ok(
-            ConnectionManager::from_redis_runtime(
-                limits,
-                None,
-                profile.key_prefix(),
-            ),
+            ConnectionManager::from_redis_runtime(limits, None, profile.key_prefix()),
         ),
     }
 }
@@ -48,7 +44,9 @@ pub fn build_connection_runtime(
     Ok(Arc::new(build_connection_manager(limits, profile)?))
 }
 
-pub fn build_room_message_runtime(profile: &SharedStateProfile) -> Result<Arc<dyn RoomMessageRuntime>> {
+pub fn build_room_message_runtime(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn RoomMessageRuntime>> {
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             let shared_runtime = profile.shared_runtime().ok_or_else(|| {

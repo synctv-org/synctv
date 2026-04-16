@@ -204,8 +204,14 @@ async fn test_create_room_initializes_settings_version_at_one() {
     assert!(settings.danmaku_enabled.0);
     assert!(settings.allow_auto_join.0);
     assert!(!settings.allow_guest_join.0);
-    assert_eq!(settings.max_members.0, RoomSettings::default().max_members.0);
-    assert_eq!(version, 1, "new rooms should persist default settings eagerly");
+    assert_eq!(
+        settings.max_members.0,
+        RoomSettings::default().max_members.0
+    );
+    assert_eq!(
+        version, 1,
+        "new rooms should persist default settings eagerly"
+    );
 }
 
 #[tokio::test]
@@ -2834,7 +2840,10 @@ async fn test_set_settings_returns_committed_room_settings_snapshot() {
     assert_eq!(snapshot.version, 2);
     assert!(!snapshot.settings.chat_enabled.0);
     assert!(snapshot.settings.allow_guest_join.0);
-    assert_eq!(snapshot.settings.max_members.0, updated_settings.max_members.0);
+    assert_eq!(
+        snapshot.settings.max_members.0,
+        updated_settings.max_members.0
+    );
 }
 
 #[tokio::test]
@@ -2872,7 +2881,10 @@ async fn test_set_room_settings_returns_committed_room_settings_snapshot() {
 
     assert_eq!(snapshot.version, 2);
     assert!(!snapshot.settings.danmaku_enabled.0);
-    assert_eq!(snapshot.settings.max_members.0, updated_settings.max_members.0);
+    assert_eq!(
+        snapshot.settings.max_members.0,
+        updated_settings.max_members.0
+    );
 }
 
 #[tokio::test]
@@ -2915,7 +2927,10 @@ async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
     assert_eq!(snapshot.version, 3);
     assert!(!snapshot.settings.require_password.0);
     assert!(snapshot.settings.chat_enabled.0);
-    assert_eq!(snapshot.settings.max_members.0, RoomSettings::default().max_members.0);
+    assert_eq!(
+        snapshot.settings.max_members.0,
+        RoomSettings::default().max_members.0
+    );
 }
 
 #[tokio::test]

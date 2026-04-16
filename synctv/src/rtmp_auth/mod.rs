@@ -1027,9 +1027,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use synctv_livestream::relay::{
-        local_stream_registry, PublisherInfo, StreamRegistryTrait,
-    };
+    use synctv_livestream::relay::{local_stream_registry, PublisherInfo, StreamRegistryTrait};
     use tokio::sync::RwLock;
 
     struct FlakyUnregisterRegistry {
@@ -1731,15 +1729,13 @@ mod tests {
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )
                 .expect("jwt"),
-                synctv_core::cache::UsernameCache::local_only(
-                    "test:username:".to_string(),
-                    16,
-                    60,
-                ),
+                synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 16, 60),
                 synctv_core::config::PasswordComplexityConfig::default(),
-                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                )),
+                Arc::new(
+                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                        128, 3600, 86400,
+                    ),
+                ),
                 synctv_core::cache::KeyBuilder::new("test"),
                 synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
             )
@@ -1919,11 +1915,12 @@ mod tests {
                 .expect("initial connection manager should build"),
         ));
         let runtime: Arc<dyn RedisConnectionRuntime> = synctv_core::shared_runtime(shared);
-        let auth = make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
-        .with_user_stream_index(Arc::new(SharedUserStreamIndex::from_runtime(
-            runtime,
-            "test:".to_string(),
-        )));
+        let auth =
+            make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
+                .with_user_stream_index(Arc::new(SharedUserStreamIndex::from_runtime(
+                    runtime,
+                    "test:".to_string(),
+                )));
 
         let mut verify_conn = redis::aio::ConnectionManager::new(client)
             .await
@@ -1982,7 +1979,7 @@ mod tests {
     async fn test_get_user_stream_uses_injected_shared_user_stream_index() {
         let auth =
             make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
-        .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
+                .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
 
         let user_stream = auth.get_user_stream("shared-user").await;
         assert_eq!(

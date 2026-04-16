@@ -80,7 +80,8 @@ pub fn state_store_from_shared_state_profile(
 ) -> Result<Arc<dyn OAuthStateStore>> {
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
-            let shared_runtime = profile.require_shared_runtime("single-use OAuth2 state storage")?;
+            let shared_runtime =
+                profile.require_shared_runtime("single-use OAuth2 state storage")?;
             Ok(shared_oauth_state_store(
                 shared_runtime,
                 profile.key_prefix().to_string(),
@@ -1164,8 +1165,8 @@ impl OAuth2Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RedisConnectionRuntime;
     use crate::oauth2::Provider as OAuth2ProviderTrait;
+    use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
     use sqlx::PgPool;
 
@@ -1236,11 +1237,8 @@ mod tests {
         }
 
         let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
-        let profile = SharedStateProfile::new(
-            SharedStateMode::SharedBestEffort,
-            Some(runtime),
-            "test:",
-        );
+        let profile =
+            SharedStateProfile::new(SharedStateMode::SharedBestEffort, Some(runtime), "test:");
 
         let store = state_store_from_shared_state_profile(&profile)
             .expect("shared runtime profile should yield a distributed OAuth2 state store");

@@ -20,11 +20,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tower::ServiceExt;
 use tracing::{error, info, warn};
 
-use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
-use synctv_api::runtime::{
-    RealtimeConnectionService, RealtimeEventService,
-};
 use synctv_api::cluster_fanout::ClusterFanoutService;
+use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
+use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
 use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
     cache::UserCache,
@@ -125,13 +123,14 @@ struct SharedProviderPlaybackRuntime {
 impl SharedProviderPlaybackRuntime {
     fn new(config: &Config, redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>) -> Self {
         Self {
-            provider_stores: synctv_core::provider::store::build_provider_store_resolver_from_profile(
-                &synctv_core::SharedStateProfile::from_runtime(
-                    redis_runtime,
-                    config.redis.key_prefix.clone(),
-                    false,
+            provider_stores:
+                synctv_core::provider::store::build_provider_store_resolver_from_profile(
+                    &synctv_core::SharedStateProfile::from_runtime(
+                        redis_runtime,
+                        config.redis.key_prefix.clone(),
+                        false,
+                    ),
                 ),
-            ),
             signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
                 config.jwt.secret.as_bytes(),
             )),
@@ -1151,7 +1150,9 @@ impl SyncTvServer {
         // Shut down the cluster manager so the admin event broadcast channel
         // closes, allowing the admin_event_handle listener to exit.
         if let Some(ref event_service) = self.services.realtime_event_service {
-            info!("Shutting down realtime event service (post-drain, closing admin event channel)...");
+            info!(
+                "Shutting down realtime event service (post-drain, closing admin event channel)..."
+            );
             event_service.shutdown().await;
             info!("Realtime event service shut down (admin event channel closed)");
         }
@@ -1242,7 +1243,6 @@ impl SyncTvServer {
             health_monitor.shutdown().await;
             info!("Health monitor shut down");
         }
-
     }
 
     async fn shutdown_startup_failure_components(&mut self, deadline: tokio::time::Instant) {
@@ -1408,8 +1408,9 @@ impl SyncTvServer {
 
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
-            let proxy_cache_lifecycle =
-                synctv_api::http::start_proxy_cache_lifecycle(&shared_http_app_state.proxy_slice_cache);
+            let proxy_cache_lifecycle = synctv_api::http::start_proxy_cache_lifecycle(
+                &shared_http_app_state.proxy_slice_cache,
+            );
             let graceful = async move {
                 let _ = rx.changed().await;
             };
@@ -1541,7 +1542,8 @@ impl SyncTvServer {
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::http::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let (client_api, admin_api) = management_apis_from_http_state(shared_http_app_state.as_ref())?;
+        let (client_api, admin_api) =
+            management_apis_from_http_state(shared_http_app_state.as_ref())?;
 
         spawn_management_server(ManagementServerConfig {
             config: Arc::new(self.config.clone()),
@@ -1620,12 +1622,12 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_runtime_server_shutdown, await_task_shutdown, management_apis_from_http_state,
-        build_proxy_slice_cache_config, cleanup_partial_startup,
-        livestream_shutdown_timeout_secs, map_background_task_exit, map_runtime_server_exit,
-        shutdown_after_startup_failure, shutdown_livestream_state,
-        shutdown_metrics_connection_tasks, shutdown_runtime_phase, spawn_admin_event_listener,
-        LivestreamShutdown, SharedProviderPlaybackRuntime, StartupFailureShutdownContext,
+        await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
+        cleanup_partial_startup, livestream_shutdown_timeout_secs, management_apis_from_http_state,
+        map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
+        shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
+        spawn_admin_event_listener, LivestreamShutdown, SharedProviderPlaybackRuntime,
+        StartupFailureShutdownContext,
     };
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
@@ -1639,9 +1641,7 @@ mod tests {
         cache::UsernameCache,
         config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
-        service::{
-            JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService,
-        },
+        service::{JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService},
         Config,
     };
     use synctv_core_testing::{
@@ -1716,8 +1716,8 @@ mod tests {
             settings_service.clone(),
         ));
         let (audit_service, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
-        let http_state = synctv_api::http::create_app_state_from_config(
-            synctv_api::http::RouterConfig {
+        let http_state =
+            synctv_api::http::create_app_state_from_config(synctv_api::http::RouterConfig {
                 config: config.clone(),
                 user_service,
                 user_cache: Arc::new(
@@ -1754,7 +1754,9 @@ mod tests {
                 rate_limiter: Arc::new(synctv_core::service::RateLimiter::local_only(
                     "test:".to_string(),
                 )),
-                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(
+                    None,
+                )),
                 redis_runtime: None,
                 shared_provider_stores: Some(shared_runtime.provider_stores.clone()),
                 shared_proxy_signing_key: Some(shared_runtime.signing_key.clone()),
@@ -1769,8 +1771,7 @@ mod tests {
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(providers_manager),
-            },
-        );
+            });
         let (client_api, admin_api) =
             management_apis_from_http_state(&http_state).expect("shared management APIs");
 

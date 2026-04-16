@@ -129,7 +129,9 @@ mod tests {
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
-            ClusterEvent::CacheInvalidate { targets, event_id, .. } => {
+            ClusterEvent::CacheInvalidate {
+                targets, event_id, ..
+            } => {
                 assert_eq!(targets.len(), 1);
                 match &targets[0] {
                     CacheTarget::Room { room_id } => assert_eq!(room_id, "test_room_cache"),

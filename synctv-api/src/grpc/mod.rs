@@ -524,12 +524,16 @@ fn validate_cluster_grpc_runtime_requirements(
 }
 
 // Use synctv_proto for all server traits and message types (single source of truth)
+use crate::cluster_fanout::ClusterFanoutService;
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
     auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
     notification_service_server::NotificationServiceServer,
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
+};
+use crate::runtime::{
+    RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
 };
 use std::sync::Arc;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
@@ -540,10 +544,6 @@ use synctv_core::service::{
     SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
 use synctv_core::Config;
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::runtime::{
-    RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
-};
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -635,8 +635,7 @@ struct FallbackHttpAppStateDeps {
     content_filter: ContentFilter,
     publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     jwt_service: JwtService,
-    live_streaming_infrastructure:
-        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     providers_manager: Option<Arc<ProvidersManager>>,
     provider_instance_manager: Arc<RemoteProviderManager>,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -661,14 +660,18 @@ struct FallbackHttpAppStateDeps {
 }
 
 fn cluster_node_id(event_service: Option<&Arc<dyn RealtimeEventService>>) -> String {
-    event_service
-        .map_or_else(|| "single-node".to_string(), |service| service.node_id().to_string())
+    event_service.map_or_else(
+        || "single-node".to_string(),
+        |service| service.node_id().to_string(),
+    )
 }
 
 fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::http::AppState> {
     let providers = synctv_core::provider::ProviderSet {
         alist: Arc::new(AlistProvider::new(deps.provider_instance_manager.clone())),
-        bilibili: Arc::new(BilibiliProvider::new(deps.provider_instance_manager.clone())),
+        bilibili: Arc::new(BilibiliProvider::new(
+            deps.provider_instance_manager.clone(),
+        )),
         emby: Arc::new(EmbyProvider::new(deps.provider_instance_manager.clone())),
         direct_url: Arc::new(DirectUrlProvider::new()),
         rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
@@ -677,46 +680,48 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
     let proxy_http_client =
         synctv_proxy::build_proxy_http_client().expect("gRPC proxy HTTP client should build");
 
-    Arc::new(crate::http::create_app_state_from_config(crate::http::RouterConfig {
-        config: deps.config,
-        user_service: deps.user_service,
-        user_cache: deps.user_cache,
-        room_service: deps.room_service,
-        content_filter: deps.content_filter,
-        provider_instance_manager: deps.provider_instance_manager,
-        user_provider_credential_repository: deps.credential_repo,
-        providers,
-        event_service: deps.event_service,
-        connection_manager: deps.connection_service,
-        jwt_service: deps.jwt_service,
-        cluster_fanout_service: deps.cluster_fanout_service,
-        oauth2_service: deps.oauth2_service,
-        settings_service: Some(deps.settings_service),
-        settings_registry: deps.settings_registry,
-        email_service: deps.email_service,
-        email_token_service: deps.email_token_service,
-        publish_key_service: deps.publish_key_service,
-        notification_service: deps.notification_service,
-        chat_service: deps.chat_service,
-        audit_service: deps.audit_service,
-        live_streaming_infrastructure: deps.live_streaming_infrastructure,
-        rate_limiter: deps.rate_limiter,
-        ws_ticket_service: deps.ws_ticket_service,
-        redis_runtime: deps.redis_runtime,
-        shared_provider_stores: Some(deps.provider_stores),
-        shared_proxy_signing_key: Some(deps.proxy_signing_key),
-        builtin_stun_url: deps.builtin_stun_url,
-        turn_health_checker: deps.turn_health_checker,
-        credential_encryption: deps.credential_encryption,
-        proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-            synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            proxy_http_client.clone(),
-        )),
-        proxy_http_client,
-        messaging_rate_limit_config: deps.messaging_rate_limit_config,
-        heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-        providers_manager: deps.providers_manager,
-    }))
+    Arc::new(crate::http::create_app_state_from_config(
+        crate::http::RouterConfig {
+            config: deps.config,
+            user_service: deps.user_service,
+            user_cache: deps.user_cache,
+            room_service: deps.room_service,
+            content_filter: deps.content_filter,
+            provider_instance_manager: deps.provider_instance_manager,
+            user_provider_credential_repository: deps.credential_repo,
+            providers,
+            event_service: deps.event_service,
+            connection_manager: deps.connection_service,
+            jwt_service: deps.jwt_service,
+            cluster_fanout_service: deps.cluster_fanout_service,
+            oauth2_service: deps.oauth2_service,
+            settings_service: Some(deps.settings_service),
+            settings_registry: deps.settings_registry,
+            email_service: deps.email_service,
+            email_token_service: deps.email_token_service,
+            publish_key_service: deps.publish_key_service,
+            notification_service: deps.notification_service,
+            chat_service: deps.chat_service,
+            audit_service: deps.audit_service,
+            live_streaming_infrastructure: deps.live_streaming_infrastructure,
+            rate_limiter: deps.rate_limiter,
+            ws_ticket_service: deps.ws_ticket_service,
+            redis_runtime: deps.redis_runtime,
+            shared_provider_stores: Some(deps.provider_stores),
+            shared_proxy_signing_key: Some(deps.proxy_signing_key),
+            builtin_stun_url: deps.builtin_stun_url,
+            turn_health_checker: deps.turn_health_checker,
+            credential_encryption: deps.credential_encryption,
+            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                proxy_http_client.clone(),
+            )),
+            proxy_http_client,
+            messaging_rate_limit_config: deps.messaging_rate_limit_config,
+            heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
+            providers_manager: deps.providers_manager,
+        },
+    ))
 }
 
 pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<axum::Router> {
@@ -757,12 +762,11 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     } = grpc_config;
     validate_cluster_grpc_runtime_requirements(config, node_registry.is_some())?;
 
-    let (proxy_signing_key, provider_stores) =
-        resolve_provider_proxy_runtime(
-            config,
-            redis_runtime.clone(),
-            shared_http_app_state.as_ref(),
-        );
+    let (proxy_signing_key, provider_stores) = resolve_provider_proxy_runtime(
+        config,
+        redis_runtime.clone(),
+        shared_http_app_state.as_ref(),
+    );
     let shared_http_app_state = shared_http_app_state.or_else(|| {
         Some(build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: user_service.clone(),
@@ -819,21 +823,18 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let email_service_registered =
         should_register_email_service(email_service.is_some(), email_token_service.is_some());
     let providers_manager_for_client = providers_manager.clone();
-    let shared_http_app_state = shared_http_app_state
-        .expect("shared or fallback HTTP state must be available for gRPC");
+    let shared_http_app_state =
+        shared_http_app_state.expect("shared or fallback HTTP state must be available for gRPC");
     let shared_api_runtime = shared_http_app_state.shared_api_runtime.clone();
     let client_api = shared_api_runtime.client_api.clone();
-    let email_api = shared_api_runtime
-        .email_api
-        .clone()
-        .or_else(|| {
-            crate::impls::email::build_shared_email_api(
-                user_service.clone(),
-                email_service.clone(),
-                email_token_service.clone(),
-                rate_limiter.clone(),
-            )
-        });
+    let email_api = shared_api_runtime.email_api.clone().or_else(|| {
+        crate::impls::email::build_shared_email_api(
+            user_service.clone(),
+            email_service.clone(),
+            email_token_service.clone(),
+            rate_limiter.clone(),
+        )
+    });
 
     let rate_limiter_for_layer = rate_limiter.clone();
     let event_service_for_rt = event_service.clone();
@@ -1103,15 +1104,12 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let oauth2_svc =
             oauth2_service.expect("oauth2 service presence must match registration plan");
         let oauth2_auth_interceptor = auth_interceptor.clone();
-        let oauth2_api = shared_api_runtime
-            .oauth2_api
-            .clone()
-            .unwrap_or_else(|| {
-                Arc::new(crate::impls::OAuth2ApiImpl::new(
-                    oauth2_svc,
-                    user_service.clone(),
-                ))
-            });
+        let oauth2_api = shared_api_runtime.oauth2_api.clone().unwrap_or_else(|| {
+            Arc::new(crate::impls::OAuth2ApiImpl::new(
+                oauth2_svc,
+                user_service.clone(),
+            ))
+        });
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
             oauth2_api,
             Arc::new(config.clone()),
@@ -1322,9 +1320,9 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fallback_http_app_state, cluster_node_id,
-        effective_grpc_request_timeout, extract_client_ip, grpc_service_registration_plan,
-        grpc_unary_request_timeout, map_provider_error, resolve_provider_proxy_runtime,
+        build_fallback_http_app_state, cluster_node_id, effective_grpc_request_timeout,
+        extract_client_ip, grpc_service_registration_plan, grpc_unary_request_timeout,
+        map_provider_error, resolve_provider_proxy_runtime,
         set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
         should_mark_cluster_service_serving, should_mark_email_service_serving,
         should_mark_livestream_relay_serving, should_mark_notification_service_serving,
@@ -1333,28 +1331,27 @@ mod tests {
         should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
         FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
+    use crate::runtime::{
+        RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
+        RealtimeEventService, RealtimeMetrics,
+    };
     use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use synctv_cluster::sync::{BroadcastResult, ClusterEvent};
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
-    use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::provider::{
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderSet, RtmpProvider,
     };
+    use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::service::{
-        auth::JwtService, AuditService, ContentFilter, RateLimitConfig,
-        RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
-        UserService,
+        auth::JwtService, AuditService, ContentFilter, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
     };
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
-    };
-    use crate::runtime::{
-        RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
-        RealtimeEventService, RealtimeMetrics,
     };
     use tokio::sync::{broadcast, mpsc};
     use tonic::metadata::{MetadataKey, MetadataValue};
@@ -1387,8 +1384,10 @@ mod tests {
             _room_id: RoomId,
             _user_id: UserId,
             _connection_id: String,
-        ) -> synctv_cluster::Result<(mpsc::Receiver<ClusterEvent>, synctv_cluster::sync::ConnectionId)>
-        {
+        ) -> synctv_cluster::Result<(
+            mpsc::Receiver<ClusterEvent>,
+            synctv_cluster::sync::ConnectionId,
+        )> {
             panic!("subscribe_with_id should not be called in this test");
         }
 
@@ -1562,7 +1561,9 @@ mod tests {
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
                 rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
-                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
+                ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(
+                    None,
+                )),
                 redis_runtime: None,
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
@@ -1595,21 +1596,18 @@ mod tests {
             distributed_enabled: true,
         });
         let provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
-            Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only(
-                context.config.redis.key_prefix.clone(),
-            ));
-        let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> = Arc::new(
-            synctv_core::service::WsTicketService::local_only(None),
-        );
+            Arc::new(
+                synctv_core::provider::store::ProviderStoreRegistry::local_only(
+                    context.config.redis.key_prefix.clone(),
+                ),
+            );
+        let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> =
+            Arc::new(synctv_core::service::WsTicketService::local_only(None));
         let proxy_signing_key = Arc::new(synctv_core::service::ProxySigningKey::derive_from(
             b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
         ));
-        let content_filter = ContentFilter::with_config(
-            17,
-            9,
-            Some(vec!["blocked".to_string()]),
-            false,
-        );
+        let content_filter =
+            ContentFilter::with_config(17, 9, Some(vec!["blocked".to_string()]), false);
         let messaging_rate_limit_config = RateLimitConfig {
             chat_per_second: 23,
             danmaku_per_second: 7,
@@ -1618,13 +1616,8 @@ mod tests {
         let http_state = build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: context.user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             room_service: context.room_service,
             event_service: Some(event_service.clone()),
@@ -1697,13 +1690,11 @@ mod tests {
             "fallback HTTP state must preserve the injected realtime event service"
         );
         assert_eq!(
-            http_state.content_filter.max_chat_length,
-            content_filter.max_chat_length,
+            http_state.content_filter.max_chat_length, content_filter.max_chat_length,
             "fallback HTTP state must preserve custom chat filtering limits"
         );
         assert_eq!(
-            http_state.content_filter.max_danmaku_length,
-            content_filter.max_danmaku_length,
+            http_state.content_filter.max_danmaku_length, content_filter.max_danmaku_length,
             "fallback HTTP state must preserve custom danmaku filtering limits"
         );
         assert_eq!(
@@ -2010,33 +2001,27 @@ mod tests {
     fn test_user_notification_fanout_requires_distributed_delivery_only_when_available() {
         let requirement = RealtimeDeliveryRequirement::DistributedIfAvailable;
 
-        assert!(
-            !RealtimeDeliveryOutcome::from_publish_only(
-                false,
-                RealtimeMetrics {
-                    distributed_enabled: true,
-                },
-            )
-            .satisfies(requirement)
-        );
-        assert!(
-            RealtimeDeliveryOutcome::from_publish_only(
-                true,
-                RealtimeMetrics {
-                    distributed_enabled: true,
-                },
-            )
-            .satisfies(requirement)
-        );
-        assert!(
-            RealtimeDeliveryOutcome::from_publish_only(
-                false,
-                RealtimeMetrics {
-                    distributed_enabled: false,
-                },
-            )
-            .satisfies(requirement)
-        );
+        assert!(!RealtimeDeliveryOutcome::from_publish_only(
+            false,
+            RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        )
+        .satisfies(requirement));
+        assert!(RealtimeDeliveryOutcome::from_publish_only(
+            true,
+            RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        )
+        .satisfies(requirement));
+        assert!(RealtimeDeliveryOutcome::from_publish_only(
+            false,
+            RealtimeMetrics {
+                distributed_enabled: false,
+            },
+        )
+        .satisfies(requirement));
     }
 
     #[test]

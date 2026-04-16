@@ -6,7 +6,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use synctv_core::{models::id::{RoomId, UserId}, RedisConnectionRuntime};
+use synctv_core::{
+    models::id::{RoomId, UserId},
+    RedisConnectionRuntime,
+};
 #[cfg(test)]
 use synctv_core::{DirectRedisConnectionRuntime, SharedRedisConnectionRuntime};
 use tokio::sync::{broadcast, mpsc};

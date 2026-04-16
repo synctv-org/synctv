@@ -514,10 +514,13 @@ impl RoomSettingsService {
             }
         };
 
-        let _ = self
-            .notification_service
-            .notify_settings_updated(room_id, None, "", settings_value, version)
-            ;
+        let _ = self.notification_service.notify_settings_updated(
+            room_id,
+            None,
+            "",
+            settings_value,
+            version,
+        );
     }
 
     /// Preload settings for multiple rooms (bulk loading)
@@ -579,15 +582,15 @@ pub struct CacheStats {
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::cache::{KeyBuilder, UsernameCache};
+    use crate::config::PasswordComplexityConfig;
     use crate::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use crate::repository::RoomSettingsRepository;
     use crate::repository::UserRepository;
-    use crate::service::{auth::JwtService, InMemoryTokenBlacklistStore, UserService};
-    use chrono::Utc;
-    use crate::cache::{KeyBuilder, UsernameCache};
-    use crate::config::PasswordComplexityConfig;
     use crate::service::auth::BruteForceProtection;
     use crate::service::notification::NotificationService;
+    use crate::service::{auth::JwtService, InMemoryTokenBlacklistStore, UserService};
+    use chrono::Utc;
     use sqlx::PgPool;
     use synctv_core_testing::create_test_pool;
 
@@ -596,7 +599,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
         let room_id = RoomId::from_string("room-settings-stop".to_string());
-        let invalidation_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:test:room-settings".to_string(),
         ));
         let service = RoomSettingsService::new(
@@ -612,7 +616,8 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_via_streams() {
         // Create a CacheInvalidationService without Redis (local-only mode)
-        let inv_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let inv_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
 
@@ -654,7 +659,8 @@ mod tests {
     #[tokio::test]
     async fn test_lagged_receiver_flushes_cache() {
         // Create invalidation service with local-only mode
-        let inv_service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let inv_service = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ));
 

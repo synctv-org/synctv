@@ -213,12 +213,11 @@ mod tests {
     #[tokio::test]
     async fn write_publish_serializes_stream_name_and_type() {
         let writes = Arc::new(StdMutex::new(Vec::new()));
-        let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> = Arc::new(Mutex::new(Box::new(
-            CaptureNetIo {
+        let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> =
+            Arc::new(Mutex::new(Box::new(CaptureNetIo {
                 writes: Arc::clone(&writes),
                 reads: VecDeque::new(),
-            },
-        )));
+            })));
 
         let mut writer = NetStreamWriter::new(io);
         writer
@@ -250,7 +249,11 @@ mod tests {
             UnpackResult::Chunks(chunks) => chunks,
             _ => panic!("expected publish command chunks"),
         };
-        assert_eq!(chunks.len(), 1, "publish should serialize into one RTMP message");
+        assert_eq!(
+            chunks.len(),
+            1,
+            "publish should serialize into one RTMP message"
+        );
 
         let parsed = MessageParser::new(chunks.into_iter().next().expect("one chunk"))
             .parse()
@@ -271,7 +274,11 @@ mod tests {
                     transaction_id,
                     Amf0ValueType::Number(value) if (value - 3.0).abs() < f64::EPSILON
                 ));
-                assert_eq!(others.len(), 2, "publish should preserve stream name and type");
+                assert_eq!(
+                    others.len(),
+                    2,
+                    "publish should preserve stream name and type"
+                );
                 assert!(matches!(
                     &others[0],
                     Amf0ValueType::UTF8String(value) if value == "room-1/media-2?key=secret"

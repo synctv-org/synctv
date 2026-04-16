@@ -28,7 +28,9 @@ fn make_cached_user(id: &str, username: &str) -> CachedUser {
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_set_and_get() {
     let (_container, conn) = start_test_redis().await;
-    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn)));
+    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        conn,
+    )));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:".to_string())
         .expect("Failed to create UserCache");
@@ -56,7 +58,9 @@ async fn test_tiered_cache_l2_set_and_get() {
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     let (_container, conn) = start_test_redis().await;
-    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn)));
+    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        conn,
+    )));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:inv:".to_string())
         .expect("Failed to create UserCache");
@@ -87,7 +91,9 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
 #[ignore = "Requires Docker"]
 async fn test_tiered_cache_clear_removes_all() {
     let (_container, conn) = start_test_redis().await;
-    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn)));
+    let l2 = Arc::new(RedisCacheL2::from_runtime(synctv_core::direct_runtime(
+        conn,
+    )));
 
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:clr:".to_string())
         .expect("Failed to create UserCache");

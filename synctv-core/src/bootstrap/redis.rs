@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::config::RedisDeploymentMode;
-use crate::{ManagedRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime};
 use crate::Config;
+use crate::{ManagedRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime};
 
 type RedisConnectionManagerConfig = redis::aio::ConnectionManagerConfig;
 type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;

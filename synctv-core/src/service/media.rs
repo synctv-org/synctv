@@ -373,20 +373,17 @@ impl MediaService {
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
 
-        if let Err(e) = self
-            .notification_service
-            .notify_media_added(
-                &room_id,
-                MediaAddedNotification {
-                    user_id: &user_id,
-                    username: &actor_username,
-                    media_id: created_media.id.as_str(),
-                    title: &created_media.name,
-                    url: "", // URL is generated dynamically at playback time
-                    position: created_media.position,
-                },
-            )
-        {
+        if let Err(e) = self.notification_service.notify_media_added(
+            &room_id,
+            MediaAddedNotification {
+                user_id: &user_id,
+                username: &actor_username,
+                media_id: created_media.id.as_str(),
+                title: &created_media.name,
+                url: "", // URL is generated dynamically at playback time
+                position: created_media.position,
+            },
+        ) {
             tracing::warn!(
                 error = %e,
                 room_id = %room_id.as_str(),
@@ -486,20 +483,17 @@ impl MediaService {
             provider = %request.provider_instance_name,
             "Media added to playlist by admin"
         );
-        if let Err(e) = self
-            .notification_service
-            .notify_media_added(
-                &room_id,
-                MediaAddedNotification {
-                    user_id: &admin_user_id,
-                    username: actor_username,
-                    media_id: created_media.id.as_str(),
-                    title: &created_media.name,
-                    url: "",
-                    position: created_media.position,
-                },
-            )
-        {
+        if let Err(e) = self.notification_service.notify_media_added(
+            &room_id,
+            MediaAddedNotification {
+                user_id: &admin_user_id,
+                username: actor_username,
+                media_id: created_media.id.as_str(),
+                title: &created_media.name,
+                url: "",
+                position: created_media.position,
+            },
+        ) {
             tracing::warn!(
                 error = %e,
                 room_id = %room_id.as_str(),
@@ -636,20 +630,17 @@ impl MediaService {
         let actor_username = self.resolve_actor_username(&user_id).await;
 
         for item in &created_items {
-            if let Err(e) = self
-                .notification_service
-                .notify_media_added(
-                    &room_id,
-                    MediaAddedNotification {
-                        user_id: &user_id,
-                        username: &actor_username,
-                        media_id: item.id.as_str(),
-                        title: &item.name,
-                        url: "",
-                        position: item.position,
-                    },
-                )
-            {
+            if let Err(e) = self.notification_service.notify_media_added(
+                &room_id,
+                MediaAddedNotification {
+                    user_id: &user_id,
+                    username: &actor_username,
+                    media_id: item.id.as_str(),
+                    title: &item.name,
+                    url: "",
+                    position: item.position,
+                },
+            ) {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
@@ -731,17 +722,14 @@ impl MediaService {
                     );
                     let actor_username = self.resolve_actor_username(&user_id).await;
 
-                    if let Err(e) = self
-                        .notification_service
-                        .notify_media_updated(
-                            &room_id,
-                            &user_id,
-                            &actor_username,
-                            updated_media.id.as_str(),
-                            &updated_media.name,
-                            updated_media.position,
-                        )
-                    {
+                    if let Err(e) = self.notification_service.notify_media_updated(
+                        &room_id,
+                        &user_id,
+                        &actor_username,
+                        updated_media.id.as_str(),
+                        &updated_media.name,
+                        updated_media.position,
+                    ) {
                         tracing::warn!(
                             error = %e,
                             room_id = %room_id.as_str(),
@@ -817,17 +805,14 @@ impl MediaService {
                         media_id = %request.media_id.as_str(),
                         "Media edited by admin"
                     );
-                    if let Err(e) = self
-                        .notification_service
-                        .notify_media_updated(
-                            &room_id,
-                            &admin_user_id,
-                            actor_username,
-                            updated_media.id.as_str(),
-                            &updated_media.name,
-                            updated_media.position,
-                        )
-                    {
+                    if let Err(e) = self.notification_service.notify_media_updated(
+                        &room_id,
+                        &admin_user_id,
+                        actor_username,
+                        updated_media.id.as_str(),
+                        &updated_media.name,
+                        updated_media.position,
+                    ) {
                         tracing::warn!(
                             error = %e,
                             room_id = %room_id.as_str(),
@@ -926,10 +911,12 @@ impl MediaService {
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
 
-        if let Err(e) = self
-            .notification_service
-            .notify_media_removed(&room_id, Some(&user_id), &actor_username, media_id.as_str())
-        {
+        if let Err(e) = self.notification_service.notify_media_removed(
+            &room_id,
+            Some(&user_id),
+            &actor_username,
+            media_id.as_str(),
+        ) {
             tracing::warn!(
                 error = %e,
                 room_id = %room_id.as_str(),
@@ -1115,10 +1102,12 @@ impl MediaService {
         let actor_username = self.resolve_actor_username(&user_id).await;
 
         for mid in &media_ids {
-            if let Err(e) = self
-                .notification_service
-                .notify_media_removed(&room_id, Some(&user_id), &actor_username, mid.as_str())
-            {
+            if let Err(e) = self.notification_service.notify_media_removed(
+                &room_id,
+                Some(&user_id),
+                &actor_username,
+                mid.as_str(),
+            ) {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
@@ -1148,13 +1137,7 @@ impl MediaService {
         actor_username: &str,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(
-            room_id,
-            admin_user_id,
-            Some(actor_username),
-            request,
-            true,
-        )
+        self.move_media_internal(room_id, admin_user_id, Some(actor_username), request, true)
             .await
     }
 
@@ -1329,17 +1312,14 @@ impl MediaService {
         if moved_within_same_scope {
             if moved.len() == 1 {
                 let media = &moved[0];
-                if let Err(e) = self
-                    .notification_service
-                    .notify_media_updated(
-                        &room_id,
-                        &user_id,
-                        &actor_username,
-                        media.id.as_str(),
-                        &media.name,
-                        media.position,
-                    )
-                {
+                if let Err(e) = self.notification_service.notify_media_updated(
+                    &room_id,
+                    &user_id,
+                    &actor_username,
+                    media.id.as_str(),
+                    &media.name,
+                    media.position,
+                ) {
                     tracing::warn!(
                         error = %e,
                         room_id = %room_id.as_str(),
@@ -1352,15 +1332,12 @@ impl MediaService {
                     .iter()
                     .map(|media| media.id.as_str().to_string())
                     .collect();
-                if let Err(e) = self
-                    .notification_service
-                    .notify_playlist_reordered(
-                        &room_id,
-                        Some(&user_id),
-                        &actor_username,
-                        &moved_ids,
-                    )
-                {
+                if let Err(e) = self.notification_service.notify_playlist_reordered(
+                    &room_id,
+                    Some(&user_id),
+                    &actor_username,
+                    &moved_ids,
+                ) {
                     tracing::warn!(
                         error = %e,
                         room_id = %room_id.as_str(),
@@ -1372,15 +1349,12 @@ impl MediaService {
             for media in &moved {
                 if let Some(original_scope) = original_scope_by_id.get(&media.id) {
                     if *original_scope != media.playlist_id {
-                        if let Err(e) = self
-                            .notification_service
-                            .notify_media_removed(
-                                &room_id,
-                                Some(&user_id),
-                                &actor_username,
-                                media.id.as_str(),
-                            )
-                        {
+                        if let Err(e) = self.notification_service.notify_media_removed(
+                            &room_id,
+                            Some(&user_id),
+                            &actor_username,
+                            media.id.as_str(),
+                        ) {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
@@ -1388,20 +1362,17 @@ impl MediaService {
                                 "Failed to broadcast moved media removal event"
                             );
                         }
-                        if let Err(e) = self
-                            .notification_service
-                            .notify_media_added(
-                                &room_id,
-                                MediaAddedNotification {
-                                    user_id: &user_id,
-                                    username: &actor_username,
-                                    media_id: media.id.as_str(),
-                                    title: &media.name,
-                                    url: "",
-                                    position: media.position,
-                                },
-                            )
-                        {
+                        if let Err(e) = self.notification_service.notify_media_added(
+                            &room_id,
+                            MediaAddedNotification {
+                                user_id: &user_id,
+                                username: &actor_username,
+                                media_id: media.id.as_str(),
+                                title: &media.name,
+                                url: "",
+                                position: media.position,
+                            },
+                        ) {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
@@ -1409,17 +1380,14 @@ impl MediaService {
                                 "Failed to broadcast moved media add event"
                             );
                         }
-                    } else if let Err(e) = self
-                        .notification_service
-                        .notify_media_updated(
-                            &room_id,
-                            &user_id,
-                            &actor_username,
-                            media.id.as_str(),
-                            &media.name,
-                            media.position,
-                        )
-                    {
+                    } else if let Err(e) = self.notification_service.notify_media_updated(
+                        &room_id,
+                        &user_id,
+                        &actor_username,
+                        media.id.as_str(),
+                        &media.name,
+                        media.position,
+                    ) {
                         tracing::warn!(
                             error = %e,
                             room_id = %room_id.as_str(),

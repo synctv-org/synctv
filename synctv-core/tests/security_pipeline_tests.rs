@@ -215,9 +215,7 @@ async fn test_cache_hit_active_user_passes() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     // Pre-populate cache
     let cached = CachedUser::with_updated_at(
@@ -248,9 +246,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 5)).await;
     let user_service = Arc::new(create_user_service(pool));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     // Cache with password_version=5
     let cached = CachedUser::with_updated_at(
@@ -287,9 +283,7 @@ async fn test_cache_hit_banned_user_rejected() {
     let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
         user.id.as_str().to_string(),
@@ -342,9 +336,7 @@ async fn test_cache_hit_pending_user_rejected() {
     let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     // Pre-populate cache with Pending status
     let cached = CachedUser::with_updated_at(
@@ -379,9 +371,7 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool.clone()));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
         user.id.as_str().to_string(),
@@ -422,9 +412,7 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool.clone()));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
         user.id.as_str().to_string(),
@@ -487,9 +475,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
         .expect("Failed to set password_version");
     let user_service = Arc::new(create_user_service(pool));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     // Cache is empty -- no entry for this user
     assert!(
@@ -535,9 +521,7 @@ async fn test_cache_populated_then_subsequent_check_fails_closed_when_db_unavail
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool.clone()));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache.clone())
@@ -628,9 +612,7 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
         key_builder.clone(),
     ));
 
-    let user_cache = Arc::new(
-        UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap(),
-    );
+    let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     // Pre-populate cache
     let cached = CachedUser::with_updated_at(
@@ -750,8 +732,7 @@ fn create_user_service_with_blacklist(
     key_builder: KeyBuilder,
 ) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache =
-        cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
+    let username_cache = cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     UserService::new(
@@ -771,8 +752,7 @@ fn create_user_service_with_dyn_blacklist(
     key_builder: KeyBuilder,
 ) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache =
-        cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
+    let username_cache = cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     UserService::new(

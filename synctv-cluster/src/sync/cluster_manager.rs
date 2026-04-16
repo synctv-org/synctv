@@ -84,10 +84,7 @@ impl std::fmt::Debug for ClusterConfig {
                     .as_ref()
                     .map(|_| "configured"),
             )
-            .field(
-                "message_runtime",
-                &"Arc<dyn RoomMessageRuntime>",
-            )
+            .field("message_runtime", &"Arc<dyn RoomMessageRuntime>")
             .field("cluster_enabled", &self.cluster_enabled)
             .field("node_id", &self.node_id)
             .field("dedup_window", &self.dedup_window)
@@ -231,7 +228,9 @@ impl ClusterManager {
     pub async fn new(
         config: ClusterConfig,
         permission_service: Option<PermissionService>,
-        cache_invalidation: Option<std::sync::Arc<dyn synctv_core::cache::CacheInvalidationRuntime>>,
+        cache_invalidation: Option<
+            std::sync::Arc<dyn synctv_core::cache::CacheInvalidationRuntime>,
+        >,
     ) -> ClusterResult<Self> {
         let deduplicator = Arc::new(MessageDeduplicator::new(config.dedup_window));
         let manager_cancel_token = config.parent_cancel_token.as_ref().map_or_else(
@@ -255,26 +254,25 @@ impl ClusterManager {
             publisher_handle,
             critical_forwarder_handle,
         ) = if distributed_transport_ready {
-            let distributed_transport =
-                config
-                    .distributed_transport_factory
-                    .as_ref()
-                    .ok_or_else(|| {
-                        crate::error::Error::Configuration(
-                            "cluster.enabled=true requires shared cluster transport".to_string(),
-                        )
-                    })?
-                    .build(ClusterMessageTransportConfig {
-                        message_runtime: message_hub.clone(),
-                        node_id: config.node_id.clone(),
-                        key_prefix: config.key_prefix.clone(),
-                        admin_event_tx: admin_event_tx.clone(),
-                        permission_service,
-                        cache_invalidation,
-                        deduplicator: deduplicator.clone(),
-                        catchup_window_secs: config.catchup_window_secs,
-                        stream_max_length: config.stream_max_length,
-                    })?;
+            let distributed_transport = config
+                .distributed_transport_factory
+                .as_ref()
+                .ok_or_else(|| {
+                    crate::error::Error::Configuration(
+                        "cluster.enabled=true requires shared cluster transport".to_string(),
+                    )
+                })?
+                .build(ClusterMessageTransportConfig {
+                    message_runtime: message_hub.clone(),
+                    node_id: config.node_id.clone(),
+                    key_prefix: config.key_prefix.clone(),
+                    admin_event_tx: admin_event_tx.clone(),
+                    permission_service,
+                    cache_invalidation,
+                    deduplicator: deduplicator.clone(),
+                    catchup_window_secs: config.catchup_window_secs,
+                    stream_max_length: config.stream_max_length,
+                })?;
 
             let transport_runtime = distributed_transport
                 .clone()
@@ -645,8 +643,8 @@ impl ClusterManager {
         F: Fn() -> usize + Send + Sync + 'static,
     {
         let cancel_token = self.cancel_token.clone();
-        let interval_secs = u64::try_from((node_registry.heartbeat_timeout_secs() / 3).max(1))
-            .unwrap_or(1);
+        let interval_secs =
+            u64::try_from((node_registry.heartbeat_timeout_secs() / 3).max(1)).unwrap_or(1);
         let failure_count = self.heartbeat_failure_count.clone();
         let epoch_mismatch_count = self.epoch_mismatch_count.clone();
         let is_quarantined = self.is_quarantined.clone();
@@ -1144,8 +1142,8 @@ pub struct ClusterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NodeRegistry;
     use crate::sync::{ConnectionLimits, ConnectionManager};
+    use crate::NodeRegistry;
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::atomic::AtomicUsize;
@@ -1172,7 +1170,6 @@ mod tests {
                 shutdown_count: self.shutdown_count.clone(),
             }))
         }
-
     }
 
     #[async_trait]
@@ -1192,7 +1189,6 @@ mod tests {
         async fn shutdown(&self) {
             self.shutdown_count.fetch_add(1, Ordering::Relaxed);
         }
-
     }
 
     struct FixedMetricsRoomRuntime {
@@ -1503,7 +1499,8 @@ mod tests {
     #[tokio::test]
     async fn test_non_cluster_mode_with_cache_invalidation_service() {
         // Create a CacheInvalidationService without Redis (local-only mode)
-        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(// No Redis client
+        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            // No Redis client
             "test_node".to_string(),
             "synctv:test:cache:invalidate".to_string(),
         ));
@@ -2500,8 +2497,7 @@ mod tests {
             distributed_transport_factory: redis_client.map(|client| {
                 Arc::new(crate::sync::RedisClusterMessageTransportFactory::new(
                     synctv_core::coordination_runtime_from_client(client),
-                ))
-                    as Arc<dyn ClusterMessageTransportFactory>
+                )) as Arc<dyn ClusterMessageTransportFactory>
             }),
             message_runtime: Arc::new(RoomMessageHub::new()),
             cluster_enabled: true,

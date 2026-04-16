@@ -57,8 +57,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error,
-    RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, RedisConnectionRuntime,
+    Result, SharedStateMode, SharedStateProfile,
 };
 
 /// Stable service boundary for brute-force protection.
@@ -796,10 +796,7 @@ impl BruteForceProtection {
     /// **WARNING**: In multi-replica deployments, fallback mode means each
     /// replica maintains independent brute-force counters, allowing attackers
     /// to bypass lockouts. Use [`Self::with_redis_fail_closed`] for cluster mode.
-    fn with_redis_runtime(
-        conn: Arc<dyn RedisConnectionRuntime>,
-        key_prefix: String,
-    ) -> Self {
+    fn with_redis_runtime(conn: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
         let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::from_runtime(
             conn.clone(),
@@ -1144,8 +1141,8 @@ impl BruteForceProtectionService for BruteForceProtection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::RedisConnectionRuntime;
+    use async_trait::async_trait;
 
     // Note: Integration tests that require Redis (record_failure, check_allowed, etc.)
     // are in the integration test suite. Unit tests here cover pure logic only.
@@ -1228,11 +1225,9 @@ mod tests {
 
         let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
         let config = BruteForceConfig::default();
-        let username_tracker: Arc<dyn AttemptTracker> = Arc::new(RedisAttemptTracker::from_runtime(
-            runtime.clone(),
-            50_000,
-            config.attempts_ttl_secs,
-        ));
+        let username_tracker: Arc<dyn AttemptTracker> = Arc::new(
+            RedisAttemptTracker::from_runtime(runtime.clone(), 50_000, config.attempts_ttl_secs),
+        );
         let ip_tracker: Arc<dyn AttemptTracker> = Arc::new(RedisAttemptTracker::from_runtime(
             runtime,
             100_000,

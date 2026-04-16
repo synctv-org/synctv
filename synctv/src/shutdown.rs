@@ -717,7 +717,8 @@ mod tests {
             }
         }
 
-        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut coord = ShutdownCoordinator::new(Duration::from_millis(50));
@@ -758,7 +759,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_invalidation_stop_hook_does_not_consume_full_timeout_budget() {
-        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut coord = ShutdownCoordinator::new(Duration::from_millis(250));
@@ -788,7 +790,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_manager_shutdown_hook_runs_manager_shutdown() {
-        use synctv_cluster::sync::{cluster_manager::ClusterConfig, ClusterManager, RoomMessageHub};
+        use synctv_cluster::sync::{
+            cluster_manager::ClusterConfig, ClusterManager, RoomMessageHub,
+        };
 
         let manager = Arc::new(
             ClusterManager::new(

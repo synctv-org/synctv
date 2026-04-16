@@ -12,8 +12,8 @@ use synctv_cluster::{
     build_room_message_runtime, ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator,
     RoomMessageHub,
 };
-use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
+use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::{start_redis_with_client, RedisContainer};
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
@@ -130,12 +130,8 @@ async fn test_cross_node_broadcast() {
         "node1",
         shared_prefix.clone(),
     );
-    let config2 = make_cluster_config_with_prefix(
-        redis_client2.clone(),
-        &conn2,
-        "node2",
-        shared_prefix,
-    );
+    let config2 =
+        make_cluster_config_with_prefix(redis_client2.clone(), &conn2, "node2", shared_prefix);
 
     let manager1 = ClusterManager::new(config1, None, None)
         .await
@@ -468,12 +464,8 @@ async fn test_critical_event_delivery() {
         "node1",
         shared_prefix.clone(),
     );
-    let config2 = make_cluster_config_with_prefix(
-        redis_client2.clone(),
-        &conn2,
-        "node2",
-        shared_prefix,
-    );
+    let config2 =
+        make_cluster_config_with_prefix(redis_client2.clone(), &conn2, "node2", shared_prefix);
 
     let manager1 = ClusterManager::new(config1, None, None)
         .await

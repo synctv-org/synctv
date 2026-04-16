@@ -10,8 +10,8 @@ use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -120,10 +120,7 @@ pub trait CacheInvalidationRuntime: Send + Sync {
 
     async fn invalidate_all(&self) -> Result<()>;
 
-    async fn invalidate_and_broadcast_user(
-        &self,
-        user_id: &crate::models::UserId,
-    ) -> Result<()>;
+    async fn invalidate_and_broadcast_user(&self, user_id: &crate::models::UserId) -> Result<()>;
 
     async fn invalidate_and_broadcast_room(&self, room_id: &RoomId) -> Result<()>;
 
@@ -152,9 +149,9 @@ pub fn cache_invalidation_runtime_from_shared_state_profile(
     node_id: String,
     stream_key: String,
 ) -> Result<Arc<dyn CacheInvalidationRuntime>> {
-    Ok(Arc::new(CacheInvalidationService::from_shared_state_profile(
-        profile, node_id, stream_key,
-    )?))
+    Ok(Arc::new(
+        CacheInvalidationService::from_shared_state_profile(profile, node_id, stream_key)?,
+    ))
 }
 
 /// Service for broadcasting and receiving cache invalidation messages
@@ -1502,10 +1499,7 @@ impl CacheInvalidationRuntime for CacheInvalidationService {
         Self::invalidate_all(self).await
     }
 
-    async fn invalidate_and_broadcast_user(
-        &self,
-        user_id: &crate::models::UserId,
-    ) -> Result<()> {
+    async fn invalidate_and_broadcast_user(&self, user_id: &crate::models::UserId) -> Result<()> {
         Self::invalidate_and_broadcast_user(self, user_id).await
     }
 
@@ -1641,11 +1635,8 @@ mod tests {
         }
 
         let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
-        let profile = SharedStateProfile::from_runtime(
-            Some(runtime.clone()),
-            "synctv:test:",
-            false,
-        );
+        let profile =
+            SharedStateProfile::from_runtime(Some(runtime.clone()), "synctv:test:", false);
         let service = CacheInvalidationService::from_shared_state_profile(
             &profile,
             "test-node".to_string(),
@@ -1663,8 +1654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_invalidation_runtime_from_shared_state_profile_returns_live_trait_object()
-    {
+    async fn test_cache_invalidation_runtime_from_shared_state_profile_returns_live_trait_object() {
         let profile = SharedStateProfile::from_runtime(None, "synctv:test:", false);
         let runtime = cache_invalidation_runtime_from_shared_state_profile(
             &profile,
@@ -1805,7 +1795,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_state_sync_only_executes_when_recovery_is_pending() {
-        let service = CacheInvalidationService::new("test-node".to_string(),
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let shutdown = service.shutdown.clone();
@@ -1890,7 +1881,8 @@ mod tests {
     async fn test_state_sync_uses_shutdown_flag_not_ctrl_c() {
         // L17: Verify that spawn_state_sync_task respects the shutdown AtomicBool
         // rather than relying on tokio::signal::ctrl_c().
-        let service = CacheInvalidationService::new("test-node".to_string(),
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
 
@@ -1912,7 +1904,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_and_broadcast_room_settings() {
-        let service = CacheInvalidationService::new("test-node".to_string(),
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let mut receiver = service.subscribe();
@@ -1934,7 +1927,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_without_redis_still_succeeds() {
-        let service = CacheInvalidationService::new("test-node".to_string(),
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
 
@@ -1958,7 +1952,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_awaits_registered_background_tasks() {
-        let service = CacheInvalidationService::new("test-node".to_string(),
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         );
         let observed_shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));

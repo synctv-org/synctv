@@ -2289,11 +2289,9 @@ mod tests {
             brute_force,
         );
 
-        user_service.set_refresh_rate_limiter_for_tests(
-            Arc::new(
-                RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
-            ),
-        );
+        user_service.set_refresh_rate_limiter_for_tests(Arc::new(
+            RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
+        ));
 
         let result = user_service
             .refresh_rate_limiter

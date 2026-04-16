@@ -215,8 +215,8 @@ impl LoadBalancer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{HealthMonitor, NodeRegistry};
+    use super::*;
     use std::collections::HashSet;
 
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)

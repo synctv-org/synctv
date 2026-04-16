@@ -326,7 +326,6 @@ impl ClusterMessageTransportFactory for RedisClusterMessageTransportFactory {
             config.stream_max_length,
         )?))
     }
-
 }
 
 impl RedisPubSub {
@@ -2334,7 +2333,6 @@ impl ClusterMessageTransport for RedisPubSub {
     async fn shutdown(&self) {
         RedisPubSub::shutdown(self).await;
     }
-
 }
 
 /// Parse a Redis Stream ID (`"{timestamp_ms}-{seq}"`) into a `(u64, u64)` tuple.
@@ -2428,9 +2426,9 @@ struct EventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::{RoomMessageHub, RoomMessageRuntime};
     use chrono::Utc;
     use synctv_core::models::id::UserId;
-    use crate::sync::{RoomMessageHub, RoomMessageRuntime};
 
     async fn publish_until_received<F>(
         publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,

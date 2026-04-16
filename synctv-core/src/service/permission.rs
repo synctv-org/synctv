@@ -1491,7 +1491,8 @@ mod tests {
     fn test_set_invalidation_service_propagates_to_clones() {
         let mut service = make_service();
         let cloned = service.clone();
-        let invalidation_service = Arc::new(crate::cache::CacheInvalidationService::new("permission-clone-node".to_string(),
+        let invalidation_service = Arc::new(crate::cache::CacheInvalidationService::new(
+            "permission-clone-node".to_string(),
             "permission-clone-stream".to_string(),
         ));
 
@@ -1580,7 +1581,8 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
         );
 
-        let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis - local only
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            // No Redis - local only
             "test-node".to_string(),
             "test-stream".to_string(),
         ));
@@ -2082,7 +2084,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                // No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));

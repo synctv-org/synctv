@@ -287,23 +287,21 @@ pub fn init_cluster_components(
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = node_directory_factory.build(
-        node_id,
-        heartbeat_timeout_secs,
-        &config.redis.key_prefix,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create cluster node directory: {e}"))?;
+    let registry = node_directory_factory
+        .build(node_id, heartbeat_timeout_secs, &config.redis.key_prefix)
+        .map_err(|e| anyhow::anyhow!("Failed to create cluster node directory: {e}"))?;
 
-    let health_monitor: Arc<dyn ClusterHealthRuntime> =
-        Arc::new(HealthMonitor::with_runtime_cancellation_token_and_probe_config(
-        registry.clone(),
-        15,
-        &cm.cancel_token(),
-        HealthProbeConfig {
-            cluster_secret: config.server.cluster_secret.clone(),
-            ..HealthProbeConfig::default()
-        },
-    ));
+    let health_monitor: Arc<dyn ClusterHealthRuntime> = Arc::new(
+        HealthMonitor::with_runtime_cancellation_token_and_probe_config(
+            registry.clone(),
+            15,
+            &cm.cancel_token(),
+            HealthProbeConfig {
+                cluster_secret: config.server.cluster_secret.clone(),
+                ..HealthProbeConfig::default()
+            },
+        ),
+    );
 
     Ok(ClusterDiscoveryComponents {
         registry,
@@ -414,10 +412,7 @@ mod tests {
             .expect("current-thread runtime");
 
         runtime.block_on(async {
-            let task = super::ClusterDiscoveryTask::new(
-                "peer_discovery",
-                tokio::spawn(async {}),
-            );
+            let task = super::ClusterDiscoveryTask::new("peer_discovery", tokio::spawn(async {}));
 
             assert_eq!(task.name, "peer_discovery");
             task.handle
@@ -447,7 +442,6 @@ mod tests {
                 )?,
             ))
         }
-
     }
 
     #[tokio::test]
@@ -507,17 +501,20 @@ mod tests {
                 .await
                 .expect("shared redis connection manager"),
         ));
-        let coordination_provider =
-            build_cluster_coordination_provider(synctv_core::coordination_runtime_from_client(
-                client.clone(),
-            ));
+        let coordination_provider = build_cluster_coordination_provider(
+            synctv_core::coordination_runtime_from_client(client.clone()),
+        );
         let cluster_config = ClusterConfig {
-            distributed_transport_factory: Some(coordination_provider.distributed_transport_factory()),
-            message_runtime: build_room_message_runtime(&synctv_core::SharedStateProfile::from_runtime(
-                Some(synctv_core::shared_runtime(shared_conn.clone())),
-                "test-k8s-env-order:",
-                true,
-            ))
+            distributed_transport_factory: Some(
+                coordination_provider.distributed_transport_factory(),
+            ),
+            message_runtime: build_room_message_runtime(
+                &synctv_core::SharedStateProfile::from_runtime(
+                    Some(synctv_core::shared_runtime(shared_conn.clone())),
+                    "test-k8s-env-order:",
+                    true,
+                ),
+            )
             .expect("shared message runtime should initialize"),
             cluster_enabled: true,
             node_id: "bootstrap-k8s-env-order".to_string(),

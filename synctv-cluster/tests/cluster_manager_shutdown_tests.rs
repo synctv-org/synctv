@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
 use synctv_cluster::sync::ClusterManager;
+use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
 
 /// Helper to create a `NodeRegistry` for testing (local mode, no actual Redis connection needed)
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {

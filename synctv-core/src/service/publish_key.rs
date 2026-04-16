@@ -688,8 +688,8 @@ impl StreamingPublishKeyService for PublishKeyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RedisConnectionRuntime;
     use crate::service::auth::JwtService;
+    use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
 
     fn create_jwt_service() -> JwtService {
@@ -739,8 +739,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_streaming_publish_key_service_from_shared_state_profile_returns_live_trait_object()
-    {
+    async fn test_streaming_publish_key_service_from_shared_state_profile_returns_live_trait_object(
+    ) {
         let jwt = create_jwt_service();
         let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
         let service = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
@@ -767,16 +767,15 @@ mod tests {
     ) {
         let jwt = create_jwt_service();
         let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
-        let Err(error) =
-            streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
+        let Err(error) = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
         else {
             panic!("cluster runtime must reject local publish-key deduplication");
         };
 
         assert!(
-            error.to_string().contains(
-                "cluster runtime requires shared publish-key deduplication state"
-            ),
+            error
+                .to_string()
+                .contains("cluster runtime requires shared publish-key deduplication state"),
             "unexpected error: {error}"
         );
     }

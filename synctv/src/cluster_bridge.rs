@@ -138,16 +138,15 @@ pub fn room_event_to_cluster_event(
             playlist_id: synctv_core::models::PlaylistId::from_string(playlist_id.clone()),
             timestamp,
         }),
-        synctv_core::service::RoomEvent::UserLeft {
-            user_id,
-            username,
-        } => Some(ClusterEvent::UserLeft {
-            event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
-            username: username.clone(),
-            timestamp,
-        }),
+        synctv_core::service::RoomEvent::UserLeft { user_id, username } => {
+            Some(ClusterEvent::UserLeft {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
+                user_id: user_id.clone(),
+                username: username.clone(),
+                timestamp,
+            })
+        }
         synctv_core::service::RoomEvent::PermissionChanged {
             user_id,
             role,
@@ -245,25 +244,24 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
         user_id: &synctv_core::models::UserId,
         reason: &str,
     ) {
-        let _ =
-            self.cluster_manager.broadcast(ClusterEvent::KickUserFromRoom {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
-                    reason: reason.to_string(),
-                    timestamp: chrono::Utc::now(),
-                });
-    }
-
-    fn broadcast_kick_user(&self, user_id: &synctv_core::models::UserId, reason: &str) {
         let _ = self
             .cluster_manager
-            .broadcast(ClusterEvent::KickUser {
+            .broadcast(ClusterEvent::KickUserFromRoom {
                 event_id: synctv_common::snanoid!(16),
+                room_id: room_id.clone(),
                 user_id: user_id.clone(),
                 reason: reason.to_string(),
                 timestamp: chrono::Utc::now(),
             });
+    }
+
+    fn broadcast_kick_user(&self, user_id: &synctv_core::models::UserId, reason: &str) {
+        let _ = self.cluster_manager.broadcast(ClusterEvent::KickUser {
+            event_id: synctv_common::snanoid!(16),
+            user_id: user_id.clone(),
+            reason: reason.to_string(),
+            timestamp: chrono::Utc::now(),
+        });
     }
 }
 
@@ -280,9 +278,9 @@ impl synctv_core::service::PlaylistBroadcaster for ClusterPlaylistBroadcaster {
         user_id: &synctv_core::models::UserId,
         username: &str,
     ) {
-        let _ =
-            self.cluster_manager
-                .broadcast(playlist_created_event(room_id, playlist, user_id, username));
+        let _ = self
+            .cluster_manager
+            .broadcast(playlist_created_event(room_id, playlist, user_id, username));
     }
 
     fn broadcast_playlist_updated(
@@ -292,9 +290,9 @@ impl synctv_core::service::PlaylistBroadcaster for ClusterPlaylistBroadcaster {
         user_id: &synctv_core::models::UserId,
         username: &str,
     ) {
-        let _ =
-            self.cluster_manager
-                .broadcast(playlist_updated_event(room_id, playlist, user_id, username));
+        let _ = self
+            .cluster_manager
+            .broadcast(playlist_updated_event(room_id, playlist, user_id, username));
     }
 
     fn broadcast_playlist_deleted(
@@ -330,12 +328,9 @@ impl synctv_core::service::PlaylistBroadcaster for LocalPlaylistBroadcaster {
         user_id: &synctv_core::models::UserId,
         username: &str,
     ) {
-        let _ = self.cluster_manager.broadcast_local(playlist_created_event(
-            room_id,
-            playlist,
-            user_id,
-            username,
-        ));
+        let _ = self
+            .cluster_manager
+            .broadcast_local(playlist_created_event(room_id, playlist, user_id, username));
     }
 
     fn broadcast_playlist_updated(
@@ -345,12 +340,9 @@ impl synctv_core::service::PlaylistBroadcaster for LocalPlaylistBroadcaster {
         user_id: &synctv_core::models::UserId,
         username: &str,
     ) {
-        let _ = self.cluster_manager.broadcast_local(playlist_updated_event(
-            room_id,
-            playlist,
-            user_id,
-            username,
-        ));
+        let _ = self
+            .cluster_manager
+            .broadcast_local(playlist_updated_event(room_id, playlist, user_id, username));
     }
 
     fn broadcast_playlist_deleted(
@@ -371,14 +363,16 @@ impl synctv_core::service::PlaylistBroadcaster for LocalPlaylistBroadcaster {
 
 #[cfg(test)]
 mod tests {
-    use super::{room_event_to_cluster_event, ClusterPlaybackBroadcaster, LocalPlaylistBroadcaster};
+    use super::{
+        room_event_to_cluster_event, ClusterPlaybackBroadcaster, LocalPlaylistBroadcaster,
+    };
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::sync::{
-        ClusterConfig, ClusterManager, ClusterMessageTransport, ClusterMessageTransportConfig,
-        ClusterMessageTransportFactory, ClusterMessageTransportRuntime, ClusterEvent,
-        PublishRequest, RoomMessageHub,
+        ClusterConfig, ClusterEvent, ClusterManager, ClusterMessageTransport,
+        ClusterMessageTransportConfig, ClusterMessageTransportFactory,
+        ClusterMessageTransportRuntime, PublishRequest, RoomMessageHub,
     };
     use synctv_core::models::{MediaId, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId};
 
@@ -543,7 +537,9 @@ mod tests {
             .expect("playlist event should be delivered locally")
             .expect("local subscriber should stay open");
         match delivered {
-            ClusterEvent::PlaylistCreated { room_id, playlist, .. } => {
+            ClusterEvent::PlaylistCreated {
+                room_id, playlist, ..
+            } => {
                 assert_eq!(room_id.as_str(), "room-playlist");
                 assert_eq!(playlist.id.as_str(), "playlist-1");
             }
@@ -563,8 +559,9 @@ mod tests {
     fn test_room_event_to_cluster_event_maps_room_deleted() {
         let room_id = RoomId::from_string("room-deleted".to_string());
 
-        let event = room_event_to_cluster_event(&room_id, &synctv_core::service::RoomEvent::RoomDeleted)
-            .expect("RoomDeleted should bridge to ClusterEvent");
+        let event =
+            room_event_to_cluster_event(&room_id, &synctv_core::service::RoomEvent::RoomDeleted)
+                .expect("RoomDeleted should bridge to ClusterEvent");
 
         match event {
             ClusterEvent::RoomDeleted { room_id, .. } => {

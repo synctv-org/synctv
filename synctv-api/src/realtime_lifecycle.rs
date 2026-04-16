@@ -149,7 +149,8 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
             .disconnect_user_from_room(user_id, room_id);
 
         if let Some(infra) = &self.live_streaming_infrastructure {
-            infra.kick_user_room_publishers(room_id.as_str(), user_id.as_str())
+            infra
+                .kick_user_room_publishers(room_id.as_str(), user_id.as_str())
                 .await;
         }
     }
@@ -216,7 +217,9 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 
         for deleted_room in deleted_room_fanout {
             let room_id = deleted_room.room_id;
-            room_service.finalize_deleted_room_after_commit(&room_id).await;
+            room_service
+                .finalize_deleted_room_after_commit(&room_id)
+                .await;
 
             self.cluster_fanout.publish(
                 deleted_room.reservation,
@@ -233,7 +236,8 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
             self.disconnect_room(&room_id, "room_deleted").await;
         }
 
-        self.disconnect_user(&summary.user_id, disconnect_reason).await;
+        self.disconnect_user(&summary.user_id, disconnect_reason)
+            .await;
     }
 }
 
@@ -431,12 +435,9 @@ mod tests {
         );
 
         assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(50),
-                event_receiver.recv()
-            )
-            .await
-            .is_err(),
+            tokio::time::timeout(std::time::Duration::from_millis(50), event_receiver.recv())
+                .await
+                .is_err(),
             "room-scoped disconnect must not kick publishers from other rooms"
         );
 

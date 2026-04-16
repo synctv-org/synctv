@@ -25,6 +25,8 @@ pub mod websocket;
 pub mod provider_common;
 pub mod providers;
 
+use crate::cluster_fanout::ClusterFanoutService;
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use axum::{
     http::{HeaderValue, Method},
     middleware as axum_middleware,
@@ -43,8 +45,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 pub use error::{AppError, AppResult};
 
@@ -188,7 +188,8 @@ pub struct RouterConfig {
     /// Shared runtime for playback caching and other shared-state lookups.
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared provider playback store registry reused across transports when available.
-    pub shared_provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub shared_provider_stores:
+        Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// Shared proxy signing key reused across transports when available.
     pub shared_proxy_signing_key: Option<Arc<ProxySigningKey>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -492,9 +493,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         } else {
             admin_api
         };
-        Arc::new(
-            admin_api,
-        )
+        Arc::new(admin_api)
     });
     let email_api = crate::impls::email::build_shared_email_api(
         config.user_service.clone(),
@@ -1376,13 +1375,8 @@ mod tests {
         let router_config = RouterConfig {
             config: Arc::new(config),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             user_service,
             room_service,
@@ -1586,11 +1580,10 @@ mod tests {
             enabled: false,
             ..SliceCacheConfig::default()
         }));
-        let injected_provider_stores: Arc<
-            dyn synctv_core::provider::store::ProviderStoreResolver,
-        > = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only(
-            "shared:test:",
-        ));
+        let injected_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
+            Arc::new(
+                synctv_core::provider::store::ProviderStoreRegistry::local_only("shared:test:"),
+            );
         let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
             b"test-secret-key-for-http-router-tests-minimum-32-chars",
         ));
@@ -1601,13 +1594,8 @@ mod tests {
             config: Arc::new(synctv_core::Config::default()),
             user_service,
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             room_service,
             content_filter: ContentFilter::new(),

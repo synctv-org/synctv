@@ -5,10 +5,10 @@ use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
-    Media, MediaId, MediaListQuery as CoreMediaListQuery,
-    MediaListSortBy as CoreMediaListSortBy, Playlist,
-    PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
-    RoomId, SortDirection as CoreSortDirection, UserId,
+    Media, MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
+    Playlist, PlaylistListQuery as CorePlaylistListQuery,
+    PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
+    UserId,
 };
 use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
@@ -59,7 +59,11 @@ fn finalize_playlist_items_response_version(
 
 fn hash_proto_message<M: prost::Message>(hasher: &mut Sha256, message: &M) {
     let encoded = message.encode_to_vec();
-    hasher.update(u64::try_from(encoded.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(
+        u64::try_from(encoded.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
     hasher.update(encoded);
 }
 
@@ -245,8 +249,10 @@ pub(crate) fn publish_move_media_fanout(
             );
         }
         MoveMediaFanoutPlan::PerMedia(steps) => {
-            let moved_by_id: std::collections::HashMap<MediaId, &Media> =
-                moved_media.iter().map(|media| (media.id.clone(), media)).collect();
+            let moved_by_id: std::collections::HashMap<MediaId, &Media> = moved_media
+                .iter()
+                .map(|media| (media.id.clone(), media))
+                .collect();
             for step in steps {
                 match step {
                     MoveMediaFanoutStep::Updated {
@@ -644,30 +650,35 @@ impl ClientApiImpl {
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
         let (result, (cluster_events, playlist_cluster_events)) = self
             .room_service
-            .delete_entries_with_precommit(rid.clone(), uid.clone(), service_req, |plan| async move {
-                let cluster_events = self
-                    .media_fanout
-                    .reserve_removed(plan.deleted_media_ids.len())
-                    .await
-                    .map_err(|error| {
-                        synctv_core::Error::ServiceUnavailable(error.message().to_string())
-                    })?;
-                let mut playlist_cluster_events =
-                    Vec::with_capacity(plan.deleted_playlist_ids.len());
-                for _ in &plan.deleted_playlist_ids {
-                    playlist_cluster_events.push(
-                        self.playlist_fanout
-                            .reserve_deleted()
-                            .await
-                            .map_err(|error| {
-                                synctv_core::Error::ServiceUnavailable(
-                                    error.message().to_string(),
-                                )
-                            })?,
-                    );
-                }
-                Ok((cluster_events, playlist_cluster_events))
-            })
+            .delete_entries_with_precommit(
+                rid.clone(),
+                uid.clone(),
+                service_req,
+                |plan| async move {
+                    let cluster_events = self
+                        .media_fanout
+                        .reserve_removed(plan.deleted_media_ids.len())
+                        .await
+                        .map_err(|error| {
+                            synctv_core::Error::ServiceUnavailable(error.message().to_string())
+                        })?;
+                    let mut playlist_cluster_events =
+                        Vec::with_capacity(plan.deleted_playlist_ids.len());
+                    for _ in &plan.deleted_playlist_ids {
+                        playlist_cluster_events.push(
+                            self.playlist_fanout
+                                .reserve_deleted()
+                                .await
+                                .map_err(|error| {
+                                    synctv_core::Error::ServiceUnavailable(
+                                        error.message().to_string(),
+                                    )
+                                })?,
+                        );
+                    }
+                    Ok((cluster_events, playlist_cluster_events))
+                },
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -680,17 +691,14 @@ impl ClientApiImpl {
                 .unwrap_or_default();
 
             for (media_id, cluster_event) in result.deleted_media_ids.iter().zip(cluster_events) {
-                self.media_fanout.publish_removed(
-                    cluster_event,
-                    &rid,
-                    &uid,
-                    &username,
-                    media_id,
-                );
+                self.media_fanout
+                    .publish_removed(cluster_event, &rid, &uid, &username, media_id);
             }
 
-            for (playlist_id, cluster_event) in
-                result.deleted_playlist_ids.iter().zip(playlist_cluster_events)
+            for (playlist_id, cluster_event) in result
+                .deleted_playlist_ids
+                .iter()
+                .zip(playlist_cluster_events)
             {
                 self.playlist_fanout.publish_deleted(
                     cluster_event,
@@ -1434,9 +1442,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService for Cli
 #[cfg(test)]
 mod tests {
     use super::{
-        build_add_media_batch_request, build_add_media_request,
-        build_delete_entries_request, build_delete_media_request,
-        build_edit_media_request, build_move_media_request,
+        build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
+        build_delete_media_request, build_edit_media_request, build_move_media_request,
         compute_playlist_items_response_version, resolve_add_media_provider_instance,
         validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };

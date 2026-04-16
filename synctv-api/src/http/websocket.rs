@@ -1220,8 +1220,7 @@ mod tests {
     fn test_user_service(pool: sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
-        let username_cache =
-            UsernameCache::local_only("test:username:".to_string(), 100, 60);
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
         UserService::new(
@@ -2047,13 +2046,12 @@ mod tests {
         let user_id = UserId::from_string("user-ticket-claim-fail".to_string());
         let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
 
-        let reservation =
-            reserve_websocket_upgrade_slots(
-                state.router_config.connection_manager.as_ref(),
-                &room_id,
-                &user_id,
-            )
-            .expect("handshake should reserve websocket capacity");
+        let reservation = reserve_websocket_upgrade_slots(
+            state.router_config.connection_manager.as_ref(),
+            &room_id,
+            &user_id,
+        )
+        .expect("handshake should reserve websocket capacity");
 
         let ticket = ws_ticket_service
             .create_ticket(&user_id, &room_id, 0)
@@ -2103,13 +2101,12 @@ mod tests {
         let timeout_state = state.clone();
         let user_id = UserId::from_string("user-ticket-timeout".to_string());
         let room_id = RoomId::from_string("room-ticket-timeout".to_string());
-        let reservation =
-            reserve_websocket_upgrade_slots(
-                state.router_config.connection_manager.as_ref(),
-                &room_id,
-                &user_id,
-            )
-            .expect("handshake should reserve websocket capacity");
+        let reservation = reserve_websocket_upgrade_slots(
+            state.router_config.connection_manager.as_ref(),
+            &room_id,
+            &user_id,
+        )
+        .expect("handshake should reserve websocket capacity");
 
         let prepared = PreparedWebSocketUpgrade {
             room_id: room_id.clone(),

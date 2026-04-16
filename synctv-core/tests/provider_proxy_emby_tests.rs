@@ -78,9 +78,11 @@ fn fake_proxy_services() -> ProxyServices {
             .expect("jwt");
     let username_cache =
         synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let token_blacklist = Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-        1000, 3600, 86400,
-    ));
+    let token_blacklist = Arc::new(
+        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+            1000, 3600, 86400,
+        ),
+    );
     let key_builder = synctv_core::cache::KeyBuilder::new("test");
     let brute_force =
         synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());

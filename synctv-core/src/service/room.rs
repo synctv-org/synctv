@@ -1550,8 +1550,7 @@ impl RoomService {
             .unwrap_or_else(|| "Unknown".to_string());
         let _ = self
             .notification_service
-            .notify_user_joined(&room_id, &user_id, &username)
-            ;
+            .notify_user_joined(&room_id, &user_id, &username);
 
         tracing::info!(
             room_id = %room_id,
@@ -2087,8 +2086,7 @@ impl RoomService {
             .unwrap_or_else(|| "Unknown".to_string());
         let _ = self
             .notification_service
-            .notify_user_left(&room_id, &user_id, &username)
-            ;
+            .notify_user_left(&room_id, &user_id, &username);
 
         tracing::info!(room_id = %room_id, user_id = %user_id, username = %username, "User left room");
 
@@ -2212,10 +2210,7 @@ impl RoomService {
         self.invalidate_room_caches(&room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
-        let _ = self
-            .notification_service
-            .notify_room_deleted(&room_id)
-            ;
+        let _ = self.notification_service.notify_room_deleted(&room_id);
 
         tracing::info!(
             room_id = %room_id,
@@ -2445,8 +2440,7 @@ impl RoomService {
         settings.validate_permissions()?;
 
         // Verify room exists
-        self
-            .room_repo
+        self.room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
@@ -2459,24 +2453,25 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             super::optimistic_retry::retry_with_optimistic_lock_timeout(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
-            std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
-            "Settings update failed after maximum retry attempts",
-            || {
-                let room_id = room_id_clone.clone();
-                let settings = settings_clone.clone();
-                let room_settings_repo = room_settings_repo.clone();
-                async move {
-                    let (current, version) = room_settings_repo.get_with_version(&room_id).await?;
-                    let new_version = room_settings_repo
-                        .set_settings_with_version(&room_id, &settings, version)
-                        .await?;
-                    Ok((current, settings, new_version))
-                }
-            },
-        )
-        .await?;
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
+                "Settings update failed after maximum retry attempts",
+                || {
+                    let room_id = room_id_clone.clone();
+                    let settings = settings_clone.clone();
+                    let room_settings_repo = room_settings_repo.clone();
+                    async move {
+                        let (current, version) =
+                            room_settings_repo.get_with_version(&room_id).await?;
+                        let new_version = room_settings_repo
+                            .set_settings_with_version(&room_id, &settings, version)
+                            .await?;
+                        Ok((current, settings, new_version))
+                    }
+                },
+            )
+            .await?;
 
         let snapshot = self
             .finalize_room_settings_update(
@@ -2592,19 +2587,20 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             super::optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
-            "Settings update failed after maximum retry attempts",
-            || async {
-                let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                let new_version = self
-                    .room_settings_repo
-                    .set_settings_with_version(room_id, settings, version)
-                    .await?;
-                Ok((current, settings.clone(), new_version))
-            },
-        )
-        .await?;
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                "Settings update failed after maximum retry attempts",
+                || async {
+                    let (current, version) =
+                        self.room_settings_repo.get_with_version(room_id).await?;
+                    let new_version = self
+                        .room_settings_repo
+                        .set_settings_with_version(room_id, settings, version)
+                        .await?;
+                    Ok((current, settings.clone(), new_version))
+                },
+            )
+            .await?;
         self.finalize_room_settings_update(
             room_id,
             &previous_settings,
@@ -2689,14 +2685,14 @@ impl RoomService {
 
         let snapshot = self
             .finalize_room_settings_update(
-            room_id,
-            &previous_settings,
-            &settings,
-            version,
-            Some(user_id),
-            "",
-        )
-        .await?;
+                room_id,
+                &previous_settings,
+                &settings,
+                version,
+                Some(user_id),
+                "",
+            )
+            .await?;
 
         serde_json::to_string(&snapshot.settings).internal_with_err("Failed to serialize settings")
     }
@@ -2773,20 +2769,22 @@ impl RoomService {
 
         let default_settings = RoomSettings::default();
 
-        let (previous_settings, updated_settings, updated_version) = super::optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
-            "Settings reset failed after maximum retry attempts",
-            || async {
-                let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                let new_version = self
-                    .room_settings_repo
-                    .set_settings_with_version(room_id, &default_settings, version)
-                    .await?;
-                Ok((current, default_settings.clone(), new_version))
-            },
-        )
-        .await?;
+        let (previous_settings, updated_settings, updated_version) =
+            super::optimistic_retry::retry_with_optimistic_lock(
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                "Settings reset failed after maximum retry attempts",
+                || async {
+                    let (current, version) =
+                        self.room_settings_repo.get_with_version(room_id).await?;
+                    let new_version = self
+                        .room_settings_repo
+                        .set_settings_with_version(room_id, &default_settings, version)
+                        .await?;
+                    Ok((current, default_settings.clone(), new_version))
+                },
+            )
+            .await?;
         self.finalize_room_settings_update(
             room_id,
             &previous_settings,
@@ -2973,8 +2971,12 @@ impl RoomService {
         // Invalidate room cache across all replicas after membership side effects complete
         self.notify_room_invalidation(room_id).await;
         self.notify_room_settings_invalidation(room_id).await;
-        self.emit_room_settings_snapshot_after_password_update(room_id, actor_user_id, actor_username)
-            .await
+        self.emit_room_settings_snapshot_after_password_update(
+            room_id,
+            actor_user_id,
+            actor_username,
+        )
+        .await
     }
 
     /// Core password update logic: atomically set/remove password hash and sync `require_password`.
@@ -3399,7 +3401,10 @@ impl RoomService {
         let total_targets = playlist_ids.len() + media_ids.len();
 
         if total_targets == 0 {
-            return Ok((DeleteEntriesResult::default(), precommit(DeleteEntriesPlan::default()).await?));
+            return Ok((
+                DeleteEntriesResult::default(),
+                precommit(DeleteEntriesPlan::default()).await?,
+            ));
         }
 
         if total_targets > MAX_DELETE_TARGETS {
@@ -3512,15 +3517,12 @@ impl RoomService {
         if !impact.deleted_media_ids.is_empty() || should_notify_playlist_delete {
             let actor_username = self.resolve_actor_username(&user_id).await;
             for media_id in &impact.deleted_media_ids {
-                if let Err(error) = self
-                    .notification_service
-                    .notify_media_removed(
-                        &room_id,
-                        Some(&user_id),
-                        &actor_username,
-                        media_id.as_str(),
-                    )
-                {
+                if let Err(error) = self.notification_service.notify_media_removed(
+                    &room_id,
+                    Some(&user_id),
+                    &actor_username,
+                    media_id.as_str(),
+                ) {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id.as_str(),
@@ -3659,15 +3661,12 @@ impl RoomService {
 
         if !impact.deleted_media_ids.is_empty() || !impact.deleted_playlist_ids.is_empty() {
             for media_id in &impact.deleted_media_ids {
-                if let Err(error) = self
-                    .notification_service
-                    .notify_media_removed(
-                        &room_id,
-                        Some(&admin_user_id),
-                        actor.username(),
-                        media_id.as_str(),
-                    )
-                {
+                if let Err(error) = self.notification_service.notify_media_removed(
+                    &room_id,
+                    Some(&admin_user_id),
+                    actor.username(),
+                    media_id.as_str(),
+                ) {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id.as_str(),
@@ -3711,9 +3710,7 @@ impl RoomService {
         request: DeleteEntriesRequest,
     ) -> Result<DeleteEntriesResult> {
         let (result, ()) = self
-            .admin_delete_entries_as_with_precommit(room_id, actor, request, |_| async {
-                Ok(())
-            })
+            .admin_delete_entries_as_with_precommit(room_id, actor, request, |_| async { Ok(()) })
             .await?;
         Ok(result)
     }
@@ -3851,10 +3848,12 @@ impl RoomService {
         tx.commit().await?;
 
         for media_id in &deleted_media_ids {
-            if let Err(error) = self
-                .notification_service
-                .notify_media_removed(&room_id, None, "", media_id.as_str())
-            {
+            if let Err(error) = self.notification_service.notify_media_removed(
+                &room_id,
+                None,
+                "",
+                media_id.as_str(),
+            ) {
                 tracing::warn!(
                     error = %error,
                     room_id = %room_id.as_str(),
@@ -3871,19 +3870,16 @@ impl RoomService {
 
             match self.playback_service.get_state(&room_id).await {
                 Ok(state) => {
-                    if let Err(error) = self
-                        .notification_service
-                        .notify_playback_state_changed(
-                            &room_id,
-                            state.is_playing,
-                            state.current_time,
-                            state.speed,
-                            state
-                                .playing_media_id
-                                .as_ref()
-                                .map(|id| id.as_str().to_string()),
-                        )
-                    {
+                    if let Err(error) = self.notification_service.notify_playback_state_changed(
+                        &room_id,
+                        state.is_playing,
+                        state.current_time,
+                        state.speed,
+                        state
+                            .playing_media_id
+                            .as_ref()
+                            .map(|id| id.as_str().to_string()),
+                    ) {
                         tracing::warn!(
                             error = %error,
                             room_id = %room_id.as_str(),
@@ -4365,8 +4361,12 @@ impl RoomService {
         self.notify_room_invalidation(room_id).await;
         self.notify_room_settings_invalidation(room_id).await;
 
-        self.emit_room_settings_snapshot_after_password_update(room_id, actor_user_id, actor_username)
-            .await
+        self.emit_room_settings_snapshot_after_password_update(
+            room_id,
+            actor_user_id,
+            actor_username,
+        )
+        .await
     }
 
     async fn emit_room_settings_snapshot_after_password_update(
@@ -4380,7 +4380,9 @@ impl RoomService {
             .get_refresh_with_version(room_id)
             .await?;
         let resolved_actor_username = match actor_user_id {
-            Some(user_id) if actor_username.is_empty() => self.resolve_actor_username(user_id).await,
+            Some(user_id) if actor_username.is_empty() => {
+                self.resolve_actor_username(user_id).await
+            }
             Some(_) => actor_username.to_string(),
             None => String::new(),
         };
@@ -4426,9 +4428,7 @@ impl RoomService {
     ) -> Result<()> {
         self.remove_guest_role_members(room_id).await?;
         self.bump_room_guest_version(room_id).await?;
-        self.notification_service
-            .kick_all_guests(room_id, reason)
-            ?;
+        self.notification_service.kick_all_guests(room_id, reason)?;
         Ok(())
     }
 
@@ -4696,9 +4696,9 @@ impl RoomService {
         }
 
         for media_id in deleted_media_ids {
-            if let Err(error) = self
-                .notification_service
-                .notify_media_removed(room_id, None, "", media_id.as_str())
+            if let Err(error) =
+                self.notification_service
+                    .notify_media_removed(room_id, None, "", media_id.as_str())
             {
                 tracing::warn!(
                     error = %error,
@@ -5103,7 +5103,11 @@ async fn apply_delete_entries_impact_in_tx(
     }
 
     if !impact.deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<&str> = impact.deleted_media_ids.iter().map(MediaId::as_str).collect();
+        let media_id_strs: Vec<&str> = impact
+            .deleted_media_ids
+            .iter()
+            .map(MediaId::as_str)
+            .collect();
         sqlx::query("DELETE FROM media WHERE id = ANY($1)")
             .bind(&media_id_strs)
             .execute(&mut **tx)
@@ -5406,7 +5410,8 @@ mod tests {
             "plain RoomService::new should start without permission invalidation wiring"
         );
 
-        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new("room-service-node".to_string(),
+        room_service.set_cache_invalidation(Arc::new(CacheInvalidationService::new(
+            "room-service-node".to_string(),
             "room-service-stream".to_string(),
         )));
 

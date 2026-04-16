@@ -176,16 +176,13 @@ impl ChatService {
         );
 
         // Broadcast chat message to room members
-        if let Err(e) = self
-            .notification_service
-            .notify_chat_message(
-                &room_id,
-                &created_message.id,
-                &user_id,
-                &username,
-                &filtered_content,
-            )
-        {
+        if let Err(e) = self.notification_service.notify_chat_message(
+            &room_id,
+            &created_message.id,
+            &user_id,
+            &username,
+            &filtered_content,
+        ) {
             error!(
                 room_id = room_id.as_str(),
                 user_id = user_id.as_str(),
@@ -363,16 +360,13 @@ impl ChatService {
         );
 
         // Broadcast danmaku message to room members
-        if let Err(e) = self
-            .notification_service
-            .notify_danmaku(
-                &room_id,
-                &user_id,
-                &username,
-                &filtered_content,
-                position_str,
-            )
-        {
+        if let Err(e) = self.notification_service.notify_danmaku(
+            &room_id,
+            &user_id,
+            &username,
+            &filtered_content,
+            position_str,
+        ) {
             error!(
                 room_id = room_id.as_str(),
                 user_id = user_id.as_str(),

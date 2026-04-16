@@ -13,8 +13,8 @@ use chrono::Utc;
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent};
 use synctv_cluster::{build_room_message_runtime, ClusterConfig, ClusterManager};
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
-use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
@@ -26,8 +26,7 @@ fn shared_message_runtime(
 ) -> Arc<dyn synctv_cluster::RoomMessageRuntime> {
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(redis_conn));
-    let realtime_profile =
-        SharedStateProfile::from_runtime(Some(shared_runtime), key_prefix, true);
+    let realtime_profile = SharedStateProfile::from_runtime(Some(shared_runtime), key_prefix, true);
     build_room_message_runtime(&realtime_profile).expect("shared message runtime should initialize")
 }
 
@@ -38,7 +37,8 @@ async fn test_cross_replica_cache_invalidation() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A (local-only, no Redis stream)
-    let cache_svc_a = Arc::new(CacheInvalidationService::new("node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new(
+        "node_a".to_string(),
         "test:cache:inv".to_string(),
     ));
     let mut local_rx_a = cache_svc_a.subscribe();
@@ -192,7 +192,8 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create a CacheInvalidationService for node A
-    let cache_svc_a = Arc::new(CacheInvalidationService::new("node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new(
+        "node_a".to_string(),
         "test:perm:inv".to_string(),
     ));
     let mut local_rx_a = cache_svc_a.subscribe();
@@ -271,10 +272,12 @@ async fn test_cluster_permission_cache_consistency() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create cache invalidation services for both nodes
-    let cache_svc_a = Arc::new(CacheInvalidationService::new("perm_node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new(
+        "perm_node_a".to_string(),
         format!("{key_prefix}perm:cache"),
     ));
-    let cache_svc_b = Arc::new(CacheInvalidationService::new("perm_node_b".to_string(),
+    let cache_svc_b = Arc::new(CacheInvalidationService::new(
+        "perm_node_b".to_string(),
         format!("{key_prefix}perm:cache"),
     ));
 
@@ -432,13 +435,16 @@ async fn test_concurrent_permission_cache_updates() {
     let key_prefix = redis.key_prefix.clone();
 
     // Create three nodes with cache invalidation
-    let cache_svc_a = Arc::new(CacheInvalidationService::new("concurrent_node_a".to_string(),
+    let cache_svc_a = Arc::new(CacheInvalidationService::new(
+        "concurrent_node_a".to_string(),
         format!("{key_prefix}concurrent:cache"),
     ));
-    let cache_svc_b = Arc::new(CacheInvalidationService::new("concurrent_node_b".to_string(),
+    let cache_svc_b = Arc::new(CacheInvalidationService::new(
+        "concurrent_node_b".to_string(),
         format!("{key_prefix}concurrent:cache"),
     ));
-    let cache_svc_c = Arc::new(CacheInvalidationService::new("concurrent_node_c".to_string(),
+    let cache_svc_c = Arc::new(CacheInvalidationService::new(
+        "concurrent_node_c".to_string(),
         format!("{key_prefix}concurrent:cache"),
     ));
 

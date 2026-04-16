@@ -463,13 +463,8 @@ impl ClientApiImpl {
         }
 
         self.membership_event_fanout
-            .publish_permission_changed(
-            &rid,
-            &target_uid,
-            &uid,
-            permission_fanout,
-        )
-        .await?;
+            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .await?;
 
         // Get updated member directly instead of fetching all members
         let member = self
@@ -558,13 +553,8 @@ impl ClientApiImpl {
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(
-            &rid,
-            &target_uid,
-            &uid,
-            permission_fanout,
-        )
-        .await?;
+            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .await?;
 
         Ok(crate::proto::client::KickMemberResponse { success: true })
     }
@@ -610,13 +600,8 @@ impl ClientApiImpl {
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(
-            &rid,
-            &target_uid,
-            &uid,
-            permission_fanout,
-        )
-        .await?;
+            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .await?;
 
         Ok(crate::proto::client::BanMemberResponse { success: true })
     }
@@ -647,13 +632,8 @@ impl ClientApiImpl {
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(
-            &rid,
-            &target_uid,
-            &uid,
-            permission_fanout,
-        )
-        .await?;
+            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .await?;
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }

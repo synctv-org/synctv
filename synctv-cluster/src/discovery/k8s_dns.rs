@@ -174,9 +174,7 @@ impl K8sDnsDiscovery {
             .collect();
 
         for (_, info) in verified_peers {
-            registry
-                .upsert_discovered_local_node(info, "k8s_dns")
-                .await;
+            registry.upsert_discovered_local_node(info, "k8s_dns").await;
         }
 
         for node_id in old_mapping

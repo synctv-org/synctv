@@ -10,7 +10,10 @@ use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
 
-async fn list_owned_room_ids(api: &ClientApiImpl, user_id: &UserId) -> Result<Vec<RoomId>, ApiError> {
+async fn list_owned_room_ids(
+    api: &ClientApiImpl,
+    user_id: &UserId,
+) -> Result<Vec<RoomId>, ApiError> {
     let mut page = 1;
     let mut room_ids = Vec::new();
 

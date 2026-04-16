@@ -6,8 +6,8 @@ use std::time::Duration;
 use redis::AsyncCommands;
 
 use synctv_cluster::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
-use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::SharedStateProfile;
 
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
@@ -48,7 +48,11 @@ fn distributed_manager(
 ) -> ConnectionManager {
     build_connection_manager(
         limits,
-        &SharedStateProfile::from_runtime(Some(synctv_core::direct_runtime(conn)), key_prefix, true),
+        &SharedStateProfile::from_runtime(
+            Some(synctv_core::direct_runtime(conn)),
+            key_prefix,
+            true,
+        ),
     )
     .expect("shared realtime connection runtime should initialize")
 }
@@ -189,8 +193,7 @@ async fn test_ttl_refresh_idempotent() {
 async fn test_shutdown_cancels_ttl_refresh_task() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register a connection to ensure TTL task has work to do
     let user_id = uid("user_1");
@@ -222,8 +225,7 @@ async fn test_shutdown_cancels_ttl_refresh_task() {
 async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register some connections
     for i in 0..5 {
@@ -296,8 +298,7 @@ async fn test_manager_without_redis_works_without_shutdown() {
 async fn test_shutdown_during_active_operations() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register many connections concurrently with shutdown
     let manager_clone = manager.clone();
@@ -341,8 +342,7 @@ async fn test_shutdown_during_active_operations() {
 async fn test_shutdown_cancels_disconnect_retry_task() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
@@ -374,8 +374,7 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
     let user_id = uid("user_zero");
     let room_id = rid("room_zero");
 
@@ -440,8 +439,7 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
 async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_ttl_test");
@@ -476,8 +474,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 async fn test_distributed_counter_expires_after_ttl() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_expire_test");
@@ -531,8 +528,7 @@ async fn test_distributed_counter_expires_after_ttl() {
 async fn test_ttl_multiplier_provides_safety_margin() {
     let (_container, conn, prefix) = setup_redis().await;
 
-    let manager =
-        distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
     // Register a connection
     let user_id = uid("user_margin_test");

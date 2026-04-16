@@ -160,7 +160,11 @@ fn build_email_token_service(
         return None;
     }
 
-    Some(Arc::new(EmailTokenService::with_rate_limiter(pool, rate_limiter, None)))
+    Some(Arc::new(EmailTokenService::with_rate_limiter(
+        pool,
+        rate_limiter,
+        None,
+    )))
 }
 
 fn build_brute_force_protection(
@@ -242,11 +246,7 @@ pub fn build_migration_lock(
     config: &Config,
     shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
 ) -> Arc<dyn crate::service::MigrationLock> {
-    build_migration_lock_from_runtime(
-        pool,
-        &config.redis.deployment_mode,
-        shared_runtime,
-    )
+    build_migration_lock_from_runtime(pool, &config.redis.deployment_mode, shared_runtime)
 }
 
 const fn should_use_pg_advisory_migration_lock(
@@ -386,7 +386,10 @@ pub async fn init_services_with_options(
     // stale snapshot.
     let cache_l2: Arc<dyn CacheL2Backend> =
         build_l2_cache_backend_from_profile(&shared_state_profile);
-    info!(l2_cache_enabled = cache_l2.is_active(), "Cache L2 initialized");
+    info!(
+        l2_cache_enabled = cache_l2.is_active(),
+        "Cache L2 initialized"
+    );
 
     // Initialize username cache (using config values)
     let username_cache_capacity = usize::try_from(config.cache.username_cache_capacity)
@@ -427,10 +430,11 @@ pub async fn init_services_with_options(
     let brute_force = build_brute_force_protection(&shared_state_profile)?;
 
     // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
-    let token_blacklist = crate::service::auth::token_blacklist::token_blacklist_store_from_shared_state_profile(
-        pool.clone(),
-        &shared_state_profile,
-    );
+    let token_blacklist =
+        crate::service::auth::token_blacklist::token_blacklist_store_from_shared_state_profile(
+            pool.clone(),
+            &shared_state_profile,
+        );
     info!(
         "Token blacklist store initialized (tiered: PG primary{})",
         if shared_runtime.is_some() {
@@ -581,8 +585,7 @@ pub async fn init_services_with_options(
         .as_object()
         .is_some_and(|m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
-        init_oauth2_service(pool.clone(), config, &shared_state_profile)
-        .await?
+        init_oauth2_service(pool.clone(), config, &shared_state_profile).await?
     } else {
         None
     };
@@ -914,10 +917,15 @@ fn build_room_service_runtime(
         let redis_runtime = profile.require_shared_runtime("room coordination locking").expect(
             "cluster.enabled=true requires shared runtime and is validated before service initialization",
         );
-        Some(Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
-            redis_runtime,
-            matches!(deployment_mode, crate::config::RedisDeploymentMode::Sentinel),
-        )) as Arc<dyn crate::service::distributed_lock::CoordinationLock>)
+        Some(
+            Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
+                redis_runtime,
+                matches!(
+                    deployment_mode,
+                    crate::config::RedisDeploymentMode::Sentinel
+                ),
+            )) as Arc<dyn crate::service::distributed_lock::CoordinationLock>,
+        )
     } else {
         None
     };
@@ -991,9 +999,11 @@ fn build_publish_key_service(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn StreamingPublishKeyService>, anyhow::Error> {
     let service = crate::service::streaming_publish_key_service_from_shared_state_profile(
-        jwt_service, 24, profile,
+        jwt_service,
+        24,
+        profile,
     )
-        .map_err(anyhow::Error::from)?;
+    .map_err(anyhow::Error::from)?;
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             info!("Publish key service initialized with shared JTI deduplication (required)");
@@ -1047,9 +1057,7 @@ fn init_credential_encryption(
 }
 
 /// Initialize Email service (optional - requires SMTP configuration).
-fn init_email_service(
-    config: &Config,
-) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
+fn init_email_service(config: &Config) -> Result<Option<Arc<EmailService>>, anyhow::Error> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
         return Ok(None);
@@ -1134,9 +1142,9 @@ mod tests {
         };
 
         assert!(
-            error.to_string().contains(
-                "cluster runtime requires shared publish-key deduplication state"
-            ),
+            error
+                .to_string()
+                .contains("cluster runtime requires shared publish-key deduplication state"),
             "unexpected error: {error}"
         );
     }
@@ -1189,10 +1197,8 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
             .expect("lazy pool");
-        let jwt_service = JwtService::new(
-            "test-jwt-secret-key-for-refresh-limit-minimum-32-chars",
-        )
-        .expect("jwt service");
+        let jwt_service = JwtService::new("test-jwt-secret-key-for-refresh-limit-minimum-32-chars")
+            .expect("jwt service");
         let username_cache =
             crate::cache::UsernameCache::local_only("test:username:".to_string(), 64, 60);
         let mut user_service = UserService::new(
@@ -1200,7 +1206,9 @@ mod tests {
             jwt_service,
             username_cache,
             crate::config::PasswordComplexityConfig::default(),
-            Arc::new(crate::service::InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+            Arc::new(crate::service::InMemoryTokenBlacklistStore::new(
+                128, 3600, 86400,
+            )),
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test".to_string()),
         );
@@ -1289,8 +1297,7 @@ mod tests {
             Arc::new(tokio::sync::RwLock::new(redis_conn)),
         ));
 
-        let profile =
-            SharedStateProfile::from_runtime(Some(redis_runtime), "test:", false);
+        let profile = SharedStateProfile::from_runtime(Some(redis_runtime), "test:", false);
         let service = build_ws_ticket_service(&profile)
             .expect("distributed ticket storage should be accepted");
 
@@ -1371,7 +1378,8 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
 
@@ -1457,7 +1465,8 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
 
@@ -1540,7 +1549,8 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let mut room_service = build_room_service(RoomServiceBuildArgs {
@@ -1594,7 +1604,8 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
@@ -1645,7 +1656,8 @@ mod tests {
             crate::cache::KeyBuilder::new("test"),
             crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
         );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
@@ -1713,7 +1725,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer() {
+    async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer()
+    {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let mut config = Config::default();
         config.cluster.enabled = true;

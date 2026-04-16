@@ -35,5 +35,7 @@ pub use transport::{
 pub fn build_cluster_message_transport_factory(
     runtime: Arc<dyn RedisCoordinationRuntime>,
 ) -> Arc<dyn ClusterMessageTransportFactory> {
-    Arc::new(redis_pubsub::RedisClusterMessageTransportFactory::new(runtime))
+    Arc::new(redis_pubsub::RedisClusterMessageTransportFactory::new(
+        runtime,
+    ))
 }

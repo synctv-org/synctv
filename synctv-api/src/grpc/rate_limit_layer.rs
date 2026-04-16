@@ -61,11 +61,7 @@ impl GrpcRateLimitLayer {
     /// * `config` - Application configuration
     /// * `jwt_validator` - JWT validator for extracting `user_id` from tokens
     #[must_use]
-    pub fn new<T>(
-        rate_limiter: T,
-        config: Arc<Config>,
-        jwt_validator: JwtValidator,
-    ) -> Self
+    pub fn new<T>(rate_limiter: T, config: Arc<Config>, jwt_validator: JwtValidator) -> Self
     where
         T: RequestRateLimiterService + 'static,
     {

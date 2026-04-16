@@ -10,8 +10,8 @@ use std::time::Duration;
 use integration_test_helpers::TestRedis;
 use redis::aio::{ConnectionManager as RedisConnectionManager, ConnectionManagerConfig};
 use synctv_cluster::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
-use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::SharedStateProfile;
 use synctv_core_testing::test_redis_key_prefix;
 
 fn uid(s: &str) -> UserId {
@@ -57,7 +57,11 @@ fn distributed_manager(
 ) -> ConnectionManager {
     build_connection_manager(
         limits,
-        &SharedStateProfile::from_runtime(Some(synctv_core::direct_runtime(conn)), key_prefix, true),
+        &SharedStateProfile::from_runtime(
+            Some(synctv_core::direct_runtime(conn)),
+            key_prefix,
+            true,
+        ),
     )
     .expect("shared realtime connection runtime should initialize")
 }

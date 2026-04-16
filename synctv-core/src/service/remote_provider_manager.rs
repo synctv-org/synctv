@@ -1566,7 +1566,8 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test")
             .expect("lazy pool should build without a live database");
         let repository = Arc::new(ProviderInstanceRepository::new(pool));
-        let invalidation = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let invalidation = Arc::new(CacheInvalidationService::new(
+            "test-node".to_string(),
             "test:provider:invalidate".to_string(),
         ));
         let manager = RemoteProviderManager::new_with_invalidation(repository, Some(invalidation));

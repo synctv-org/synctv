@@ -18,7 +18,9 @@ use std::time::Duration;
 use synctv_cluster::sync::ClusterEvent;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{MemberStatus, PermissionBits, RoomId, RoomPlaybackState, RoomStatus, UserId, UserStatus},
+    models::{
+        MemberStatus, PermissionBits, RoomId, RoomPlaybackState, RoomStatus, UserId, UserStatus,
+    },
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
     },
@@ -1953,7 +1955,9 @@ impl StreamMessageHandler {
                 );
                 None
             }
-            UserLeftDeliveryPlan::LocalAndRedis => Some(self.event_service.broadcast_outcome(event)),
+            UserLeftDeliveryPlan::LocalAndRedis => {
+                Some(self.event_service.broadcast_outcome(event))
+            }
         };
 
         if let Some(outcome) = result {
@@ -2573,10 +2577,7 @@ impl StreamMessageHandler {
         self.sender.send(message)
     }
 
-    async fn handle_watch_playback_state(
-        &self,
-        version: Option<i64>,
-    ) -> Result<(), String> {
+    async fn handle_watch_playback_state(&self, version: Option<i64>) -> Result<(), String> {
         let state = self
             .room_service
             .get_playback_state(&self.room_id)
@@ -2591,30 +2592,32 @@ impl StreamMessageHandler {
 
         if should_send {
             self.send_server_message(ServerMessage {
-                message: Some(crate::proto::client::server_message::Message::PlaybackState(
-                    crate::proto::client::PlaybackStateChanged {
-                        room_id: self.room_id.as_str().to_string(),
-                        state: Some(crate::proto::client::PlaybackState {
-                            room_id: state.room_id.as_str().to_string(),
-                            playing_media_id: state
-                                .playing_media_id
-                                .as_ref()
-                                .map(|id| id.as_str().to_string())
-                                .unwrap_or_default(),
-                            current_time: state.current_time,
-                            speed: state.speed,
-                            is_playing: state.is_playing,
-                            updated_at: state.updated_at.timestamp(),
-                            version: state.version,
-                            playing_playlist_id: state
-                                .playing_playlist_id
-                                .as_ref()
-                                .map(|id| id.as_str().to_string())
-                                .unwrap_or_default(),
-                            target: state.target,
-                        }),
-                    },
-                )),
+                message: Some(
+                    crate::proto::client::server_message::Message::PlaybackState(
+                        crate::proto::client::PlaybackStateChanged {
+                            room_id: self.room_id.as_str().to_string(),
+                            state: Some(crate::proto::client::PlaybackState {
+                                room_id: state.room_id.as_str().to_string(),
+                                playing_media_id: state
+                                    .playing_media_id
+                                    .as_ref()
+                                    .map(|id| id.as_str().to_string())
+                                    .unwrap_or_default(),
+                                current_time: state.current_time,
+                                speed: state.speed,
+                                is_playing: state.is_playing,
+                                updated_at: state.updated_at.timestamp(),
+                                version: state.version,
+                                playing_playlist_id: state
+                                    .playing_playlist_id
+                                    .as_ref()
+                                    .map(|id| id.as_str().to_string())
+                                    .unwrap_or_default(),
+                                target: state.target,
+                            }),
+                        },
+                    ),
+                ),
             })?;
         }
 
@@ -2651,12 +2654,14 @@ impl StreamMessageHandler {
 
         if should_send {
             self.send_server_message(ServerMessage {
-                message: Some(crate::proto::client::server_message::Message::PlaybackSnapshot(
-                    crate::proto::client::PlaybackSnapshotChanged {
-                        room_id: self.room_id.as_str().to_string(),
-                        snapshot: Some(snapshot),
-                    },
-                )),
+                message: Some(
+                    crate::proto::client::server_message::Message::PlaybackSnapshot(
+                        crate::proto::client::PlaybackSnapshotChanged {
+                            room_id: self.room_id.as_str().to_string(),
+                            snapshot: Some(snapshot),
+                        },
+                    ),
+                ),
             })?;
         }
 
@@ -2721,12 +2726,14 @@ impl StreamMessageHandler {
 
         if should_send {
             self.send_server_message(ServerMessage {
-                message: Some(crate::proto::client::server_message::Message::PlaylistItems(
-                    crate::proto::client::PlaylistItemsChanged {
-                        room_id: self.room_id.as_str().to_string(),
-                        snapshot: Some(snapshot),
-                    },
-                )),
+                message: Some(
+                    crate::proto::client::server_message::Message::PlaylistItems(
+                        crate::proto::client::PlaylistItemsChanged {
+                            room_id: self.room_id.as_str().to_string(),
+                            snapshot: Some(snapshot),
+                        },
+                    ),
+                ),
             })?;
         }
 
@@ -2862,7 +2869,8 @@ impl StreamMessageHandler {
             }
         };
 
-        self.maybe_send_watched_playback_snapshot_for_state(&state).await
+        self.maybe_send_watched_playback_snapshot_for_state(&state)
+            .await
     }
 
     async fn maybe_send_watched_playback_snapshot_for_event(
@@ -2961,12 +2969,14 @@ impl StreamMessageHandler {
         drop(watch_state);
 
         self.send_server_message(ServerMessage {
-            message: Some(crate::proto::client::server_message::Message::PlaybackSnapshot(
-                crate::proto::client::PlaybackSnapshotChanged {
-                    room_id: self.room_id.as_str().to_string(),
-                    snapshot: Some(snapshot),
-                },
-            )),
+            message: Some(
+                crate::proto::client::server_message::Message::PlaybackSnapshot(
+                    crate::proto::client::PlaybackSnapshotChanged {
+                        room_id: self.room_id.as_str().to_string(),
+                        snapshot: Some(snapshot),
+                    },
+                ),
+            ),
         })?;
 
         Ok(())
@@ -3013,12 +3023,14 @@ impl StreamMessageHandler {
         drop(watch_state);
 
         self.send_server_message(ServerMessage {
-            message: Some(crate::proto::client::server_message::Message::PlaylistItems(
-                crate::proto::client::PlaylistItemsChanged {
-                    room_id: self.room_id.as_str().to_string(),
-                    snapshot: Some(snapshot),
-                },
-            )),
+            message: Some(
+                crate::proto::client::server_message::Message::PlaylistItems(
+                    crate::proto::client::PlaylistItemsChanged {
+                        room_id: self.room_id.as_str().to_string(),
+                        snapshot: Some(snapshot),
+                    },
+                ),
+            ),
         })?;
 
         Ok(())
@@ -3817,8 +3829,8 @@ fn cluster_event_to_server_messages(
     use crate::proto::client::server_message::Message;
     use crate::proto::client::{
         ChatMessageReceive, ErrorMessage, MediaRemovedBatch, MediaUpdated, PlaybackState,
-        PlaybackStateChanged, PlaylistCreated, PlaylistDeleted, PlaylistReordered,
-        PlaylistUpdated, RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
+        PlaybackStateChanged, PlaylistCreated, PlaylistDeleted, PlaylistReordered, PlaylistUpdated,
+        RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
     };
     use synctv_cluster::sync::ClusterEvent;
     use synctv_proto::common::RoomMember;
@@ -3979,13 +3991,17 @@ fn cluster_event_to_server_messages(
         ClusterEvent::PlaylistCreated { playlist, .. } => vec![ServerMessage {
             message: Some(Message::PlaylistCreated(PlaylistCreated {
                 room_id: room_id.to_string(),
-                playlist: Some(crate::impls::client::convert::playlist_to_proto(playlist, 0)),
+                playlist: Some(crate::impls::client::convert::playlist_to_proto(
+                    playlist, 0,
+                )),
             })),
         }],
         ClusterEvent::PlaylistUpdated { playlist, .. } => vec![ServerMessage {
             message: Some(Message::PlaylistUpdated(PlaylistUpdated {
                 room_id: room_id.to_string(),
-                playlist: Some(crate::impls::client::convert::playlist_to_proto(playlist, 0)),
+                playlist: Some(crate::impls::client::convert::playlist_to_proto(
+                    playlist, 0,
+                )),
             })),
         }],
         ClusterEvent::PlaylistDeleted { playlist_id, .. } => vec![ServerMessage {
@@ -4464,9 +4480,10 @@ mod tests {
     use synctv_cluster::sync::{ClusterEvent, NotificationLevel, RoomMessageHub};
     use synctv_core::cache::UsernameCache;
     use synctv_core::config::PasswordComplexityConfig;
-    use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
     use synctv_core::models::notification::{Notification, NotificationType};
-    use synctv_core::models::{MediaId, PermissionBits, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId};
+    use synctv_core::models::{
+        MediaId, PermissionBits, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId,
+    };
     use synctv_core::repository::NotificationRepository;
     use synctv_core::repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
@@ -4478,6 +4495,7 @@ mod tests {
         ChatService, ContentFilter, NotificationService, PermissionService, RateLimitConfig,
         RateLimiter, RoomService, RoomSettingsService, UserService,
     };
+    use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_request_rate_limiter,
         create_test_token_blacklist_store_service, start_dedicated_redis_url_with_label,
@@ -4981,14 +4999,11 @@ mod tests {
             _room_id: &RoomId,
             _state: &RoomPlaybackState,
         ) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
-            self.responses
-                .lock()
-                .pop_front()
-                .unwrap_or_else(|| {
-                    Err(crate::impls::ApiError::Internal(
-                        "no playback snapshot response queued".to_string(),
-                    ))
-                })
+            self.responses.lock().pop_front().unwrap_or_else(|| {
+                Err(crate::impls::ApiError::Internal(
+                    "no playback snapshot response queued".to_string(),
+                ))
+            })
         }
     }
 
@@ -5004,15 +5019,18 @@ mod tests {
         async fn get_room_settings_snapshot(
             &self,
             _room_id: &RoomId,
-        ) -> Result<crate::impls::room_settings_snapshot::RoomSettingsSnapshot, crate::impls::ApiError>
-        {
+        ) -> Result<
+            crate::impls::room_settings_snapshot::RoomSettingsSnapshot,
+            crate::impls::ApiError,
+        > {
             Ok(self.snapshot.clone())
         }
     }
 
     #[derive(Clone)]
     struct MutableRoomSettingsSnapshotService {
-        snapshot: Arc<parking_lot::Mutex<crate::impls::room_settings_snapshot::RoomSettingsSnapshot>>,
+        snapshot:
+            Arc<parking_lot::Mutex<crate::impls::room_settings_snapshot::RoomSettingsSnapshot>>,
     }
 
     impl MutableRoomSettingsSnapshotService {
@@ -5030,8 +5048,10 @@ mod tests {
         async fn get_room_settings_snapshot(
             &self,
             _room_id: &RoomId,
-        ) -> Result<crate::impls::room_settings_snapshot::RoomSettingsSnapshot, crate::impls::ApiError>
-        {
+        ) -> Result<
+            crate::impls::room_settings_snapshot::RoomSettingsSnapshot,
+            crate::impls::ApiError,
+        > {
             Ok(self.snapshot.lock().clone())
         }
     }
@@ -5050,7 +5070,8 @@ mod tests {
             _user_id: &UserId,
             _room_id: &RoomId,
             _req: &crate::proto::client::ListPlaylistItemsRequest,
-        ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError>
+        {
             Ok(self.snapshot.clone())
         }
     }
@@ -5081,7 +5102,8 @@ mod tests {
             _user_id: &UserId,
             _room_id: &RoomId,
             _req: &crate::proto::client::ListPlaylistItemsRequest,
-        ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError>
+        {
             Ok(self.snapshot.lock().clone())
         }
     }
@@ -5205,9 +5227,7 @@ mod tests {
             test_chat_service(pool.clone()),
             event_service.clone(),
             connection_service.clone(),
-            Arc::new(RateLimiter::local_only(format!(
-                "test:fixture:{node_id}:"
-            ))),
+            Arc::new(RateLimiter::local_only(format!("test:fixture:{node_id}:"))),
             Arc::new(RateLimitConfig::default()),
             Arc::new(ContentFilter::new()),
             sender,
@@ -5304,10 +5324,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    fn cluster_manager_subscriber_count(
-        event_service: &ClusterManager,
-        room_id: &RoomId,
-    ) -> usize {
+    fn cluster_manager_subscriber_count(event_service: &ClusterManager, room_id: &RoomId) -> usize {
         event_service.get_room_subscribers(room_id).len()
     }
 
@@ -5667,9 +5684,11 @@ mod tests {
         prepare_handler_for_run_after_join(handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackState(
-                crate::proto::client::WatchPlaybackState { version: None },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackState(
+                    crate::proto::client::WatchPlaybackState { version: None },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -5677,9 +5696,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::PlaybackState(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::PlaybackState(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -5719,11 +5740,9 @@ mod tests {
     #[tokio::test]
     async fn test_watch_playback_snapshot_without_version_sends_snapshot_immediately() {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_playback_snapshot_initial",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_playback_snapshot_initial", message_sender.clone())
+                .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -5731,34 +5750,37 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_playback_snapshot_service(Arc::new(
-            FakePlaybackSnapshotService {
-                snapshot: crate::proto::client::PlaybackSnapshot {
-                    media_id: "media_test".to_string(),
-                    playlist_id: String::new(),
-                    room_id: handler.room_id.as_str().to_string(),
-                    name: "test media".to_string(),
-                    position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    version: "snapshot-v1".to_string(),
-                    expires_at: Some(12345),
-                },
-            },
-        ));
+        let handler =
+            handler
+                .clone()
+                .with_playback_snapshot_service(Arc::new(FakePlaybackSnapshotService {
+                    snapshot: crate::proto::client::PlaybackSnapshot {
+                        media_id: "media_test".to_string(),
+                        playlist_id: String::new(),
+                        room_id: handler.room_id.as_str().to_string(),
+                        name: "test media".to_string(),
+                        position: 0.0,
+                        playback_infos: std::collections::HashMap::new(),
+                        default_mode: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        version: "snapshot-v1".to_string(),
+                        expires_at: Some(12345),
+                    },
+                }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: String::new(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: String::new(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -5766,9 +5788,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::PlaybackSnapshot(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -5825,9 +5849,11 @@ mod tests {
         prepare_handler_for_run_after_join(handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackState(
-                crate::proto::client::WatchPlaybackState { version: Some(0) },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackState(
+                    crate::proto::client::WatchPlaybackState { version: Some(0) },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -5836,9 +5862,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackState(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackState(_))) }),
             "matching playback state version should not trigger an immediate resend"
         );
         assert!(
@@ -5855,13 +5882,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_playback_snapshot_with_current_version_and_matching_source_skips_immediate_resend() {
+    async fn test_watch_playback_snapshot_with_current_version_and_matching_source_skips_immediate_resend(
+    ) {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_pb_snap_same_src",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_pb_snap_same_src", message_sender.clone()).await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -5869,34 +5894,37 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_playback_snapshot_service(Arc::new(
-            FakePlaybackSnapshotService {
-                snapshot: crate::proto::client::PlaybackSnapshot {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    room_id: handler.room_id.as_str().to_string(),
-                    name: "test media".to_string(),
-                    position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    version: "snapshot-v1".to_string(),
-                    expires_at: Some(12345),
-                },
-            },
-        ));
+        let handler =
+            handler
+                .clone()
+                .with_playback_snapshot_service(Arc::new(FakePlaybackSnapshotService {
+                    snapshot: crate::proto::client::PlaybackSnapshot {
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        room_id: handler.room_id.as_str().to_string(),
+                        name: "test media".to_string(),
+                        position: 0.0,
+                        playback_infos: std::collections::HashMap::new(),
+                        default_mode: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        version: "snapshot-v1".to_string(),
+                        expires_at: Some(12345),
+                    },
+                }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: "snapshot-v1".to_string(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: "snapshot-v1".to_string(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -5905,9 +5933,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackSnapshot(_))) }),
             "matching playback snapshot version should not trigger an immediate resend"
         );
         assert!(
@@ -5925,13 +5954,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_playback_snapshot_with_current_version_but_different_source_resends_immediately() {
+    async fn test_watch_playback_snapshot_with_current_version_but_different_source_resends_immediately(
+    ) {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_pb_snap_src_diff",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_pb_snap_src_diff", message_sender.clone()).await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -5939,34 +5966,37 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_playback_snapshot_service(Arc::new(
-            FakePlaybackSnapshotService {
-                snapshot: crate::proto::client::PlaybackSnapshot {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    room_id: handler.room_id.as_str().to_string(),
-                    name: "test media".to_string(),
-                    position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    version: "snapshot-v1".to_string(),
-                    expires_at: Some(12345),
-                },
-            },
-        ));
+        let handler =
+            handler
+                .clone()
+                .with_playback_snapshot_service(Arc::new(FakePlaybackSnapshotService {
+                    snapshot: crate::proto::client::PlaybackSnapshot {
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        room_id: handler.room_id.as_str().to_string(),
+                        name: "test media".to_string(),
+                        position: 0.0,
+                        playback_infos: std::collections::HashMap::new(),
+                        default_mode: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        version: "snapshot-v1".to_string(),
+                        expires_at: Some(12345),
+                    },
+                }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: "snapshot-v1".to_string(),
-                    media_id: "stale_media".to_string(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: "snapshot-v1".to_string(),
+                        media_id: "stale_media".to_string(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -5974,9 +6004,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::PlaybackSnapshot(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -6006,8 +6038,8 @@ mod tests {
             ..
         } = &fixture;
 
-        let snapshot_service = MutablePlaybackSnapshotService::new(
-            crate::proto::client::PlaybackSnapshot {
+        let snapshot_service =
+            MutablePlaybackSnapshotService::new(crate::proto::client::PlaybackSnapshot {
                 media_id: "media_test".to_string(),
                 playlist_id: String::new(),
                 room_id: handler.room_id.as_str().to_string(),
@@ -6018,8 +6050,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 version: "1".to_string(),
                 expires_at: Some(4_102_444_800),
-            },
-        );
+            });
         let handler = handler
             .clone()
             .with_playback_snapshot_service(snapshot_service.clone());
@@ -6027,14 +6058,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: "1".to_string(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: "1".to_string(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6042,9 +6075,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackSnapshot(_))) }),
             "same snapshot version should not resend immediately"
         );
 
@@ -6109,11 +6143,8 @@ mod tests {
     #[tokio::test]
     async fn test_watched_playback_snapshot_refreshes_when_current_media_is_updated() {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_pb_snap_md_upd",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_pb_snap_md_upd", message_sender.clone()).await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -6159,8 +6190,8 @@ mod tests {
             .await
             .expect("playback should point at created media");
 
-        let snapshot_service = MutablePlaybackSnapshotService::new(
-            crate::proto::client::PlaybackSnapshot {
+        let snapshot_service =
+            MutablePlaybackSnapshotService::new(crate::proto::client::PlaybackSnapshot {
                 media_id: media.id.as_str().to_string(),
                 playlist_id: String::new(),
                 room_id: handler.room_id.as_str().to_string(),
@@ -6171,8 +6202,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 version: media.version.to_string(),
                 expires_at: Some(4_102_444_800),
-            },
-        );
+            });
         let handler = handler
             .clone()
             .with_playback_snapshot_service(snapshot_service.clone());
@@ -6180,14 +6210,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: media.version.to_string(),
-                    media_id: media.id.as_str().to_string(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: media.version.to_string(),
+                        media_id: media.id.as_str().to_string(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6195,9 +6227,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackSnapshot(_))) }),
             "matching playback snapshot version should not resend immediately"
         );
 
@@ -6270,11 +6303,8 @@ mod tests {
     #[tokio::test]
     async fn test_watched_playback_snapshot_refreshes_when_current_playlist_is_updated() {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_pb_snap_pl_upd",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_pb_snap_pl_upd", message_sender.clone()).await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -6317,8 +6347,8 @@ mod tests {
             .await
             .expect("playback should point at created playlist");
 
-        let snapshot_service = MutablePlaybackSnapshotService::new(
-            crate::proto::client::PlaybackSnapshot {
+        let snapshot_service =
+            MutablePlaybackSnapshotService::new(crate::proto::client::PlaybackSnapshot {
                 media_id: String::new(),
                 playlist_id: playlist.id.as_str().to_string(),
                 room_id: handler.room_id.as_str().to_string(),
@@ -6329,8 +6359,7 @@ mod tests {
                 metadata: std::collections::HashMap::new(),
                 version: playlist.version.to_string(),
                 expires_at: Some(4_102_444_800),
-            },
-        );
+            });
         let handler = handler
             .clone()
             .with_playback_snapshot_service(snapshot_service.clone());
@@ -6338,14 +6367,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: playlist.version.to_string(),
-                    media_id: String::new(),
-                    playlist_id: playlist.id.as_str().to_string(),
-                    target: br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: playlist.version.to_string(),
+                        media_id: String::new(),
+                        playlist_id: playlist.id.as_str().to_string(),
+                        target: br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6353,9 +6384,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackSnapshot(_))) }),
             "matching playback snapshot version should not resend immediately"
         );
 
@@ -6478,14 +6510,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: "1".to_string(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: "1".to_string(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6493,9 +6527,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaybackSnapshot(_))) }),
             "matching playback snapshot version should not resend immediately"
         );
 
@@ -6545,11 +6580,9 @@ mod tests {
     #[tokio::test]
     async fn test_playback_snapshot_refresh_failure_disables_watch_without_closing_connection() {
         let message_sender = RecordingMessageSender::new();
-        let fixture = create_start_handler_fixture(
-            "watch_pb_snap_refresh_fail",
-            message_sender.clone(),
-        )
-        .await;
+        let fixture =
+            create_start_handler_fixture("watch_pb_snap_refresh_fail", message_sender.clone())
+                .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -6581,14 +6614,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: String::new(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: String::new(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6596,9 +6631,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::PlaybackSnapshot(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::PlaybackSnapshot(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -6644,9 +6681,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if stream_state.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::UserLeft(_)))
-                }) {
+                if stream_state
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::UserLeft(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -6720,14 +6759,16 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
-                crate::proto::client::WatchPlaybackSnapshot {
-                    version: String::new(),
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaybackSnapshot(
+                    crate::proto::client::WatchPlaybackSnapshot {
+                        version: String::new(),
+                        media_id: String::new(),
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6777,21 +6818,23 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_room_settings_snapshot_service(Arc::new(
-            FakeRoomSettingsSnapshotService {
+        let handler = handler
+            .clone()
+            .with_room_settings_snapshot_service(Arc::new(FakeRoomSettingsSnapshotService {
                 snapshot: crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
                     settings: br#"{"chat_enabled":true}"#.to_vec(),
                     version: 7,
                 },
-            },
-        ));
+            }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomSettings(
-                crate::proto::client::WatchRoomSettings { version: None },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomSettings(
+                    crate::proto::client::WatchRoomSettings { version: None },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6852,8 +6895,9 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_playlist_items_snapshot_service(Arc::new(
-            FakePlaylistItemsSnapshotService {
+        let handler = handler
+            .clone()
+            .with_playlist_items_snapshot_service(Arc::new(FakePlaylistItemsSnapshotService {
                 snapshot: crate::proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
                     media: vec![crate::proto::client::Media {
@@ -6877,27 +6921,28 @@ mod tests {
                     current_path: Vec::new(),
                     version: "items-v1".to_string(),
                 },
-            },
-        ));
+            }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaylistItems(
-                crate::proto::client::WatchPlaylistItems {
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                    page: 1,
-                    page_size: 50,
-                    search: String::new(),
-                    source_provider: String::new(),
-                    provider_instance_name: String::new(),
-                    sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
-                    version: String::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaylistItems(
+                    crate::proto::client::WatchPlaylistItems {
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                        page: 1,
+                        page_size: 50,
+                        search: String::new(),
+                        source_provider: String::new(),
+                        provider_instance_name: String::new(),
+                        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                        version: String::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -6905,9 +6950,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::PlaylistItems(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::PlaylistItems(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -6950,9 +6997,11 @@ mod tests {
     #[tokio::test]
     async fn test_watch_playlist_items_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
-        let fixture =
-            create_start_handler_fixture("watch_playlist_items_same_version", message_sender.clone())
-                .await;
+        let fixture = create_start_handler_fixture(
+            "watch_playlist_items_same_version",
+            message_sender.clone(),
+        )
+        .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -6960,8 +7009,9 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_playlist_items_snapshot_service(Arc::new(
-            FakePlaylistItemsSnapshotService {
+        let handler = handler
+            .clone()
+            .with_playlist_items_snapshot_service(Arc::new(FakePlaylistItemsSnapshotService {
                 snapshot: crate::proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
                     media: Vec::new(),
@@ -6972,27 +7022,28 @@ mod tests {
                     current_path: Vec::new(),
                     version: "items-v1".to_string(),
                 },
-            },
-        ));
+            }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaylistItems(
-                crate::proto::client::WatchPlaylistItems {
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                    page: 1,
-                    page_size: 50,
-                    search: String::new(),
-                    source_provider: String::new(),
-                    provider_instance_name: String::new(),
-                    sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
-                    version: "items-v1".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaylistItems(
+                    crate::proto::client::WatchPlaylistItems {
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                        page: 1,
+                        page_size: 50,
+                        search: String::new(),
+                        source_provider: String::new(),
+                        provider_instance_name: String::new(),
+                        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                        version: "items-v1".to_string(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7001,9 +7052,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaylistItems(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaylistItems(_))) }),
             "matching playlist items version should not trigger an immediate resend"
         );
         assert!(
@@ -7023,9 +7075,11 @@ mod tests {
     #[tokio::test]
     async fn test_watched_playlist_items_receive_future_media_updates() {
         let message_sender = RecordingMessageSender::new();
-        let fixture =
-            create_start_handler_fixture("watch_playlist_items_future_update", message_sender.clone())
-                .await;
+        let fixture = create_start_handler_fixture(
+            "watch_playlist_items_future_update",
+            message_sender.clone(),
+        )
+        .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -7052,21 +7106,23 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchPlaylistItems(
-                crate::proto::client::WatchPlaylistItems {
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                    page: 1,
-                    page_size: 50,
-                    search: String::new(),
-                    source_provider: String::new(),
-                    provider_instance_name: String::new(),
-                    sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
-                    version: "items-v1".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchPlaylistItems(
+                    crate::proto::client::WatchPlaylistItems {
+                        playlist_id: String::new(),
+                        target: Vec::new(),
+                        page: 1,
+                        page_size: 50,
+                        search: String::new(),
+                        source_provider: String::new(),
+                        provider_instance_name: String::new(),
+                        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                        version: "items-v1".to_string(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7074,9 +7130,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::PlaylistItems(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::PlaylistItems(_))) }),
             "same playlist items version should not resend immediately"
         );
 
@@ -7144,7 +7201,8 @@ mod tests {
     async fn test_watch_room_members_without_version_sends_snapshot_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
-            create_start_handler_fixture("watch_room_members_initial", message_sender.clone()).await;
+            create_start_handler_fixture("watch_room_members_initial", message_sender.clone())
+                .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -7178,18 +7236,20 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomMembers(
-                crate::proto::client::WatchRoomMembers {
-                    page: 1,
-                    page_size: 20,
-                    search: String::new(),
-                    role: None,
-                    status: None,
-                    sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    version: String::new(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomMembers(
+                    crate::proto::client::WatchRoomMembers {
+                        page: 1,
+                        page_size: 20,
+                        search: String::new(),
+                        role: None,
+                        status: None,
+                        sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        version: String::new(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7197,9 +7257,11 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if message_sender.sent_messages().iter().any(|message| {
-                    matches!(message.message, Some(Message::RoomMembers(_)))
-                }) {
+                if message_sender
+                    .sent_messages()
+                    .iter()
+                    .any(|message| matches!(message.message, Some(Message::RoomMembers(_))))
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -7265,18 +7327,20 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomMembers(
-                crate::proto::client::WatchRoomMembers {
-                    page: 1,
-                    page_size: 20,
-                    search: String::new(),
-                    role: None,
-                    status: None,
-                    sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    version: "members-v1".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomMembers(
+                    crate::proto::client::WatchRoomMembers {
+                        page: 1,
+                        page_size: 20,
+                        search: String::new(),
+                        role: None,
+                        status: None,
+                        sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        version: "members-v1".to_string(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7285,9 +7349,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::RoomMembers(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::RoomMembers(_))) }),
             "matching room members version should not trigger an immediate resend"
         );
         assert!(
@@ -7307,9 +7372,11 @@ mod tests {
     #[tokio::test]
     async fn test_watched_room_members_receive_future_permission_updates() {
         let message_sender = RecordingMessageSender::new();
-        let fixture =
-            create_start_handler_fixture("watch_room_members_future_update", message_sender.clone())
-                .await;
+        let fixture = create_start_handler_fixture(
+            "watch_room_members_future_update",
+            message_sender.clone(),
+        )
+        .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -7317,13 +7384,12 @@ mod tests {
             ..
         } = &fixture;
 
-        let snapshot_service = MutableRoomMembersSnapshotService::new(
-            crate::proto::client::GetRoomMembersResponse {
+        let snapshot_service =
+            MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
                 members: Vec::new(),
                 total: 0,
                 version: "members-v1".to_string(),
-            },
-        );
+            });
         let handler = handler
             .clone()
             .with_room_members_snapshot_service(snapshot_service.clone());
@@ -7331,18 +7397,20 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomMembers(
-                crate::proto::client::WatchRoomMembers {
-                    page: 1,
-                    page_size: 20,
-                    search: String::new(),
-                    role: None,
-                    status: None,
-                    sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    version: "members-v1".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomMembers(
+                    crate::proto::client::WatchRoomMembers {
+                        page: 1,
+                        page_size: 20,
+                        search: String::new(),
+                        role: None,
+                        status: None,
+                        sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        version: "members-v1".to_string(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7350,9 +7418,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::RoomMembers(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::RoomMembers(_))) }),
             "same room members version should not resend immediately"
         );
 
@@ -7432,13 +7501,12 @@ mod tests {
             ..
         } = &fixture;
 
-        let snapshot_service = MutableRoomMembersSnapshotService::new(
-            crate::proto::client::GetRoomMembersResponse {
+        let snapshot_service =
+            MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
                 members: Vec::new(),
                 total: 0,
                 version: "members-v1".to_string(),
-            },
-        );
+            });
         let handler = handler
             .clone()
             .with_room_members_snapshot_service(snapshot_service.clone());
@@ -7446,18 +7514,20 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomMembers(
-                crate::proto::client::WatchRoomMembers {
-                    page: 1,
-                    page_size: 20,
-                    search: String::new(),
-                    role: None,
-                    status: None,
-                    sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                    sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                    version: "members-v1".to_string(),
-                },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomMembers(
+                    crate::proto::client::WatchRoomMembers {
+                        page: 1,
+                        page_size: 20,
+                        search: String::new(),
+                        role: None,
+                        status: None,
+                        sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                        sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                        version: "members-v1".to_string(),
+                    },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7465,9 +7535,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::RoomMembers(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::RoomMembers(_))) }),
             "same room members version should not resend immediately"
         );
 
@@ -7532,9 +7603,11 @@ mod tests {
     #[tokio::test]
     async fn test_watch_room_settings_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
-        let fixture =
-            create_start_handler_fixture("watch_room_settings_same_version", message_sender.clone())
-                .await;
+        let fixture = create_start_handler_fixture(
+            "watch_room_settings_same_version",
+            message_sender.clone(),
+        )
+        .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -7542,21 +7615,23 @@ mod tests {
             ..
         } = &fixture;
 
-        let handler = handler.clone().with_room_settings_snapshot_service(Arc::new(
-            FakeRoomSettingsSnapshotService {
+        let handler = handler
+            .clone()
+            .with_room_settings_snapshot_service(Arc::new(FakeRoomSettingsSnapshotService {
                 snapshot: crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
                     settings: br#"{"chat_enabled":true}"#.to_vec(),
                     version: 7,
                 },
-            },
-        ));
+            }));
 
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomSettings(
-                crate::proto::client::WatchRoomSettings { version: Some(7) },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomSettings(
+                    crate::proto::client::WatchRoomSettings { version: Some(7) },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7565,9 +7640,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::RoomSettings(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::RoomSettings(_))) }),
             "matching room settings version should not trigger an immediate resend"
         );
         assert!(
@@ -7587,9 +7663,11 @@ mod tests {
     #[tokio::test]
     async fn test_watched_room_settings_receive_future_updates() {
         let message_sender = RecordingMessageSender::new();
-        let fixture =
-            create_start_handler_fixture("watch_room_settings_future_update", message_sender.clone())
-                .await;
+        let fixture = create_start_handler_fixture(
+            "watch_room_settings_future_update",
+            message_sender.clone(),
+        )
+        .await;
         let StartTestFixture {
             handler,
             connection_service,
@@ -7597,11 +7675,12 @@ mod tests {
             ..
         } = &fixture;
 
-        let snapshot_service =
-            MutableRoomSettingsSnapshotService::new(crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
+        let snapshot_service = MutableRoomSettingsSnapshotService::new(
+            crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
                 settings: br#"{"chat_enabled":true}"#.to_vec(),
                 version: 7,
-            });
+            },
+        );
         let handler = handler
             .clone()
             .with_room_settings_snapshot_service(snapshot_service.clone());
@@ -7609,9 +7688,11 @@ mod tests {
         prepare_handler_for_run_after_join(&handler, connection_service).await;
 
         let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::WatchRoomSettings(
-                crate::proto::client::WatchRoomSettings { version: Some(7) },
-            )),
+            message: Some(
+                crate::proto::client::client_message::Message::WatchRoomSettings(
+                    crate::proto::client::WatchRoomSettings { version: Some(7) },
+                ),
+            ),
         }]);
 
         let task_handler = handler.clone();
@@ -7619,9 +7700,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            message_sender.sent_messages().iter().all(|message| {
-                !matches!(message.message, Some(Message::RoomSettings(_)))
-            }),
+            message_sender
+                .sent_messages()
+                .iter()
+                .all(|message| { !matches!(message.message, Some(Message::RoomSettings(_))) }),
             "same room settings version should not resend immediately"
         );
 
@@ -7693,8 +7775,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
-        let event_service =
-            test_cluster_manager("test_run_after_join_backpressure_failure").await;
+        let event_service = test_cluster_manager("test_run_after_join_backpressure_failure").await;
         let connection_service = test_connection_manager();
         let handler = test_message_handler(
             FailingMessageSender::fail_after(usize::MAX),

@@ -362,8 +362,8 @@ mod p1_cluster_cleanup_tests {
     #[tokio::test]
     async fn test_cancel_token_stops_heartbeat_loop() {
         use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-        use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
         use synctv_cluster::sync::ClusterManager;
+        use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
 
         // Create ClusterManager in single-node mode
         let config = ClusterConfig {

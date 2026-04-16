@@ -22,9 +22,7 @@ pub trait MembershipEventFanoutService: Send + Sync {
         reservation: Option<ClusterEventPublishReservation>,
     ) -> Result<(), ApiError>;
 
-    async fn reserve_user_left(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+    async fn reserve_user_left(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
 
     async fn publish_user_left(
         &self,
@@ -196,9 +194,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
             })
     }
 
-    async fn reserve_user_left(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
+    async fn reserve_user_left(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
         self.cluster_fanout
             .reserve("failed to fan out UserLeft to cluster replicas")
             .await
@@ -258,10 +254,10 @@ mod tests {
     use synctv_cluster::sync::{BroadcastResult, ClusterEvent, ConnectionId};
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
-    use synctv_core::KeyBuilder;
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     };
+    use synctv_core::KeyBuilder;
     use tokio::sync::{broadcast, mpsc};
 
     #[derive(Default)]
@@ -369,7 +365,10 @@ mod tests {
             .expect("standalone permission change publish should succeed");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         let local_events = event_service
             .local_events
             .lock()
@@ -398,13 +397,19 @@ mod tests {
             .expect("standalone self-join publish should succeed");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            1
+        );
         let local_events = event_service
             .local_events
             .lock()
             .expect("recorded local events mutex should not be poisoned");
         assert_eq!(local_events.len(), 1);
-        assert!(matches!(local_events[0].1, ClusterEvent::PermissionChanged { .. }));
+        assert!(matches!(
+            local_events[0].1,
+            ClusterEvent::PermissionChanged { .. }
+        ));
     }
 
     #[tokio::test]
@@ -434,7 +439,10 @@ mod tests {
             .expect("cluster permission change publish should succeed");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         let request = rx
             .recv()
             .await
@@ -471,7 +479,10 @@ mod tests {
             .expect("cluster user-left publish should succeed");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         let request = rx
             .recv()
             .await
@@ -500,7 +511,10 @@ mod tests {
             .expect("standalone user-left publish should succeed");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(event_service.broadcast_local_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event_service.broadcast_local_calls.load(Ordering::SeqCst),
+            0
+        );
         let local_events = event_service
             .local_events
             .lock()

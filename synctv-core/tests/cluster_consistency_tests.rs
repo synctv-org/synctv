@@ -20,9 +20,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
-    cache::{
-        CacheInvalidationService, InvalidationMessage, KeyBuilder, UsernameCache,
-    },
+    cache::{CacheInvalidationService, InvalidationMessage, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
         room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,

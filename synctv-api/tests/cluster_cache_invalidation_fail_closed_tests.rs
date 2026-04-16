@@ -193,7 +193,10 @@ async fn test_set_room_password_fails_closed_when_room_settings_fanout_fails() {
     let user_service = Arc::new(make_user_service(pool.clone()));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-    let owner = user_repo.create(&make_user("room_owner_settings")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_settings"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Protected Room".to_string(),
@@ -769,7 +772,10 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
         .expect("ownership transfer should succeed");
 
     assert_eq!(
-        response.room.expect("room response should exist").created_by,
+        response
+            .room
+            .expect("room response should exist")
+            .created_by,
         successor.id.as_str()
     );
 
@@ -1094,7 +1100,10 @@ async fn test_create_playlist_fails_closed_when_cluster_fanout_fails() {
     let user_service = Arc::new(make_user_service(pool.clone()));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-    let owner = user_repo.create(&make_user("playlist_creator")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("playlist_creator"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Playlist Fanout Room".to_string(),
@@ -1172,7 +1181,10 @@ async fn test_update_playlist_fails_closed_when_cluster_fanout_fails() {
     let user_service = Arc::new(make_user_service(pool.clone()));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-    let owner = user_repo.create(&make_user("playlist_updater")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("playlist_updater"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Playlist Update Room".to_string(),
@@ -1264,7 +1276,10 @@ async fn test_delete_playlist_fails_closed_when_cluster_fanout_fails() {
     let user_service = Arc::new(make_user_service(pool.clone()));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-    let owner = user_repo.create(&make_user("playlist_deleter")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("playlist_deleter"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Playlist Delete Room".to_string(),
@@ -1813,7 +1828,10 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
         .await
         .unwrap();
 
-    let owner = user_repo.create(&make_user("media_reorder_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("media_reorder_owner"))
+        .await
+        .unwrap();
     let (room, _member) = room_service
         .create_room(
             "Media Reorder Room".to_string(),

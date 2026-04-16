@@ -191,7 +191,10 @@ impl StreamRegistry {
         redis: Arc<RwLock<RedisConnectionManager>>,
         key_prefix: impl Into<String>,
     ) -> Self {
-        Self::from_runtime(Arc::new(SharedRegistryConnectionRuntime::new(redis)), key_prefix)
+        Self::from_runtime(
+            Arc::new(SharedRegistryConnectionRuntime::new(redis)),
+            key_prefix,
+        )
     }
 
     /// Create a new stream registry from an abstract Redis runtime provider.

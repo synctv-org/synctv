@@ -359,19 +359,16 @@ pub async fn build_managed_leader_runtime(
                 )
             })?;
 
-            let elector = K8sLeaderElector::new(
-                pod_name,
-                namespace,
-                K8sLeaderElectorConfig::default(),
-            )
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "K8s leader election initialization failed: {e}. \
+            let elector =
+                K8sLeaderElector::new(pod_name, namespace, K8sLeaderElectorConfig::default())
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "K8s leader election initialization failed: {e}. \
                      Cannot safely continue in cluster mode. \
                      Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
-                )
-            })?;
+                        )
+                    })?;
 
             Ok(Arc::new(AnyLeaderElector::K8s(elector)))
         }
@@ -424,12 +421,14 @@ fn build_redis_leader_runtime(
         anyhow::anyhow!("cluster.enabled=true requires Redis-backed leader election wiring")
     })?;
 
-    Ok(Arc::new(AnyLeaderElector::Redis(LeaderElector::from_runtime(
-        redis_runtime,
-        node_id.to_string(),
-        shared_state_profile.key_prefix(),
-        is_sentinel,
-    ))))
+    Ok(Arc::new(AnyLeaderElector::Redis(
+        LeaderElector::from_runtime(
+            redis_runtime,
+            node_id.to_string(),
+            shared_state_profile.key_prefix(),
+            is_sentinel,
+        ),
+    )))
 }
 
 /// Default Redis key for leader election lock (used when no prefix is configured).
@@ -1165,8 +1164,7 @@ mod tests {
         };
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile)
-        else {
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile) else {
             panic!("standalone mode must use AlwaysLeader directly");
         };
 
@@ -1193,8 +1191,7 @@ mod tests {
         };
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile)
-        else {
+        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile) else {
             panic!("sentinel-backed redis leader election must fail closed");
         };
 
@@ -1251,7 +1248,7 @@ mod tests {
         let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
             build_managed_leader_runtime(&config, "node-1", &profile)
                 .await
-        .expect("redis leader runtime should be built through the unified trait");
+                .expect("redis leader runtime should be built through the unified trait");
 
         #[cfg(not(feature = "k8s"))]
         let leader_runtime: Arc<dyn ManagedLeaderRuntime> =

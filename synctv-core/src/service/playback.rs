@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::{
-        CacheInvalidationRuntime, InvalidationMessage, PlaybackStateCache, SingleFlight,
-    },
+    cache::{CacheInvalidationRuntime, InvalidationMessage, PlaybackStateCache, SingleFlight},
     models::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
         UserId,
@@ -1652,9 +1650,7 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
-        CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache,
-    };
+    use crate::cache::{CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache};
     use crate::config::PasswordComplexityConfig;
     use crate::models::RoomId;
     use crate::repository::{
@@ -1773,7 +1769,8 @@ mod tests {
             media_service,
             user_service,
         );
-        let invalidation_service = Arc::new(CacheInvalidationService::new("node-test".to_string(),
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
             "synctv:test:cache:invalidate".to_string(),
         ));
         (playback_service, invalidation_service)

@@ -829,11 +829,9 @@ mod websocket_e2e {
         ));
 
         // UsernameCache with Redis L2 backend
-        let l2_backend = Arc::new(
-            synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
-                synctv_core::shared_runtime(redis_conn.clone()),
-            ),
-        );
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
+            synctv_core::shared_runtime(redis_conn.clone()),
+        ));
         let username_cache =
             UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
@@ -843,22 +841,28 @@ mod websocket_e2e {
         // BruteForceProtection with Redis backend
         let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn.clone(),
-                50_000,
-                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-            )),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn.clone(),
-                100_000,
-                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-            )),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn.clone(),
+                    50_000,
+                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+                ),
+            ),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn.clone(),
+                    100_000,
+                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+                ),
+            ),
             synctv_core::service::BruteForceConfig::default(),
         );
 
         // Token blacklist with in-memory backend (sufficient for tests)
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                10_000, 3600, 86400,
+            ),
         );
 
         let user_service = Arc::new(UserService::new(
@@ -890,11 +894,7 @@ mod websocket_e2e {
                 ),
             ),
             message_runtime: synctv_cluster::build_room_message_runtime(
-                &SharedStateProfile::from_runtime(
-                    Some(shared_runtime),
-                    &redis_key_prefix,
-                    true,
-                ),
+                &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
             )
             .expect("shared message runtime should initialize"),
             cluster_enabled: true,
@@ -998,13 +998,8 @@ mod websocket_e2e {
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
@@ -4097,31 +4092,35 @@ mod websocket_connection_limit_timing {
                 .expect("Redis ConnectionManager"),
         ));
 
-        let l2_backend = Arc::new(
-            synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
-                synctv_core::shared_runtime(redis_conn.clone()),
-            ),
-        );
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
+            synctv_core::shared_runtime(redis_conn.clone()),
+        ));
         let username_cache =
             UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
         let username_cache_for_chat = username_cache.clone();
         let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
         let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn.clone(),
-                50_000,
-                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-            )),
-            Arc::new(synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                redis_conn.clone(),
-                100_000,
-                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-            )),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn.clone(),
+                    50_000,
+                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+                ),
+            ),
+            Arc::new(
+                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
+                    redis_conn.clone(),
+                    100_000,
+                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+                ),
+            ),
             synctv_core::service::BruteForceConfig::default(),
         );
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                10_000, 3600, 86400,
+            ),
         );
 
         let user_service = Arc::new(UserService::new(
@@ -4151,11 +4150,7 @@ mod websocket_connection_limit_timing {
                 ),
             ),
             message_runtime: synctv_cluster::build_room_message_runtime(
-                &SharedStateProfile::from_runtime(
-                    Some(shared_runtime),
-                    &redis_key_prefix,
-                    true,
-                ),
+                &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
             )
             .expect("shared message runtime should initialize"),
             node_id: "limit_test_node".to_string(),
@@ -4258,13 +4253,8 @@ mod websocket_connection_limit_timing {
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(
-                synctv_core::cache::UserCache::local_only(
-                    128,
-                    60,
-                    300,
-                    "test:user:".to_string(),
-                )
-                .expect("user cache"),
+                synctv_core::cache::UserCache::local_only(128, 60, 300, "test:user:".to_string())
+                    .expect("user cache"),
             ),
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
@@ -4327,19 +4317,18 @@ mod websocket_connection_limit_timing {
         let shared_provider_stores = std::sync::Arc::new(
             synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
         );
-        let shared_proxy_provider_registry =
-            std::sync::Arc::new(providers.build_proxy_registry());
-        let shared_proxy_signing_key = std::sync::Arc::new(
-            synctv_core::service::ProxySigningKey::derive_from(
+        let shared_proxy_provider_registry = std::sync::Arc::new(providers.build_proxy_registry());
+        let shared_proxy_signing_key =
+            std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
                 b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-            ),
-        );
-        let shared_proxy_services = std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
-            room_service: room_service.clone(),
-            credential_encryption: None,
-            credential_repo: user_provider_credential_repo.clone(),
-            signing_key: shared_proxy_signing_key.clone(),
-        });
+            ));
+        let shared_proxy_services =
+            std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
+                room_service: room_service.clone(),
+                credential_encryption: None,
+                credential_repo: user_provider_credential_repo.clone(),
+                signing_key: shared_proxy_signing_key.clone(),
+            });
 
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),

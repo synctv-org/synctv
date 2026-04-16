@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use synctv_cluster::sync::{
-    BroadcastResult, ClusterEvent, ClusterManager, ConnectionId,
-};
+use synctv_cluster::sync::{BroadcastResult, ClusterEvent, ClusterManager, ConnectionId};
 use synctv_core::models::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
 
@@ -39,10 +37,7 @@ impl RealtimeDeliveryOutcome {
     }
 
     #[must_use]
-    pub const fn from_publish_only(
-        distributed_delivered: bool,
-        metrics: RealtimeMetrics,
-    ) -> Self {
+    pub const fn from_publish_only(distributed_delivered: bool, metrics: RealtimeMetrics) -> Self {
         Self {
             local_delivered: false,
             distributed_delivered,
@@ -237,7 +232,9 @@ impl RealtimeEventService for ClusterRealtimeEventService {
     }
 
     fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
-        <ClusterManager as RealtimeEventService>::subscribe_admin_events(self.cluster_manager.as_ref())
+        <ClusterManager as RealtimeEventService>::subscribe_admin_events(
+            self.cluster_manager.as_ref(),
+        )
     }
 
     fn metrics(&self) -> RealtimeMetrics {
@@ -305,11 +302,7 @@ mod tests {
         let event_service = ClusterRealtimeEventService::new(cluster_manager.clone());
 
         let mut room_rx = event_service
-            .subscribe_with_id(
-                room_id(),
-                user_id(),
-                "conn-runtime".to_string(),
-            )
+            .subscribe_with_id(room_id(), user_id(), "conn-runtime".to_string())
             .await
             .expect("room subscription should succeed")
             .0;
@@ -326,7 +319,10 @@ mod tests {
         };
 
         assert_eq!(event_service.broadcast_local(&room_id(), &event), 1);
-        assert!(matches!(room_rx.recv().await, Some(ClusterEvent::ChatMessage { .. })));
+        assert!(matches!(
+            room_rx.recv().await,
+            Some(ClusterEvent::ChatMessage { .. })
+        ));
         assert!(!event_service.metrics().distributed_enabled);
 
         cluster_manager.shutdown().await;

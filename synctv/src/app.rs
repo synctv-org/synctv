@@ -27,7 +27,7 @@ use synctv_core::{
         has_any_admin_users, init_redis,
         services::{init_services_with_options, InitServicesOptions},
     },
-    cache::{CacheInvalidationRuntime, CacheInvalidationService, KeyBuilder},
+    cache::{CacheInvalidationRuntime, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     service::auth::PasswordHasherService,
     Config, RedisConnectionRuntime,
@@ -688,12 +688,11 @@ impl Application {
             &infra.config.redis.key_prefix,
             cluster_runtime_enabled(&infra.config),
         );
-        let cache_invalidation_svc = CacheInvalidationService::from_shared_state_profile(
+        let cache_invalidation = synctv_core::cache::cache_invalidation_runtime_from_shared_state_profile(
             &cache_shared_state_profile,
             infra.node_id.clone(),
             key_builder.cache_invalidation_stream(),
-        );
-        let cache_invalidation = Arc::new(cache_invalidation_svc);
+        )?;
         let cache_invalidation_listener_task =
             register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
 
@@ -765,6 +764,26 @@ impl Application {
                 })?;
             shutdown.register_hook(PlaybackServiceShutdownHook {
                 service: synctv_services.room_service.playback_service().clone(),
+            });
+        }
+
+        if synctv_services
+            .room_service
+            .room_settings_service()
+            .has_invalidation_service()
+        {
+            synctv_services
+                .room_service
+                .room_settings_service()
+                .start()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to start RoomService room settings invalidation runtime: {e}"
+                    )
+                })?;
+            shutdown.register_hook(RoomSettingsServiceShutdownHook {
+                service: synctv_services.room_service.room_settings_service().clone(),
             });
         }
 
@@ -1725,7 +1744,7 @@ mod tests {
             synctv_core::SharedStateProfile::from_runtime(None, "test-local:", false);
         let connection_manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
             .expect("local connection manager should initialize");
-        let cache_invalidation = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
             "test-local:cache:invalidate".to_string(),
         ));
 
@@ -2279,7 +2298,7 @@ mod tests {
             }
         }
 
-        let service = Arc::new(CacheInvalidationService::new("test-node".to_string(),
+        let service = Arc::new(synctv_core::cache::CacheInvalidationService::new("test-node".to_string(),
             "test:cache:invalidate".to_string(),
         ));
         let mut shutdown = ShutdownCoordinator::new(Duration::from_millis(50));

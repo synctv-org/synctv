@@ -75,6 +75,7 @@ k8s-openapi = { workspace = true, optional = true }
 
 # Cryptography (for M3U8 proxy tokens)
 sha2.workspace = true
+hex.workspace = true
 subtle.workspace = true
 
 # Time

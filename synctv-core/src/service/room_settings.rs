@@ -54,15 +54,21 @@ impl RoomSettingsInvalidationRuntime {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomSettingsSnapshot {
+    pub settings: RoomSettings,
+    pub version: i64,
+}
+
 pub struct RoomSettingsService {
     repo: RoomSettingsRepository,
-    cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
+    cache: Arc<moka::future::Cache<RoomId, RoomSettingsSnapshot>>,
     invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
     invalidation_runtime: Arc<RoomSettingsInvalidationRuntime>,
     notification_service: Arc<NotificationService>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
-    single_flight: SingleFlight<String, RoomSettings, String>,
+    single_flight: SingleFlight<String, RoomSettingsSnapshot, String>,
 }
 
 impl std::fmt::Debug for RoomSettingsService {
@@ -130,6 +136,10 @@ impl RoomSettingsService {
 
     pub const fn has_invalidation_service(&self) -> bool {
         self.invalidation_service.is_some()
+    }
+
+    pub fn set_invalidation_service(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
+        self.invalidation_service = Some(service);
     }
 
     #[cfg(test)]
@@ -277,9 +287,14 @@ impl RoomSettingsService {
     /// - Cache miss + DB query: ~10ms
     /// - `SingleFlight`: Prevents thundering herd on cache miss
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
+        Ok(self.get_with_version(room_id).await?.settings)
+    }
+
+    /// Get room settings with the current optimistic-lock version.
+    pub async fn get_with_version(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
         // Try cache first
-        if let Some(settings) = self.cache.get(room_id).await {
-            return Ok(settings);
+        if let Some(snapshot) = self.cache.get(room_id).await {
+            return Ok(snapshot);
         }
 
         // Use SingleFlight to prevent thundering herd:
@@ -289,21 +304,25 @@ impl RoomSettingsService {
         let cache = self.cache.clone();
         let room_id_clone = room_id.clone();
 
-        let settings = self
+        let snapshot = self
             .single_flight
             .do_work(sf_key, async move {
                 // Double-check cache (another task may have populated it)
-                if let Some(settings) = cache.get(&room_id_clone).await {
-                    return Ok(settings);
+                if let Some(snapshot) = cache.get(&room_id_clone).await {
+                    return Ok(snapshot);
                 }
 
                 // Load from database
-                let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
+                let (settings, version) = repo
+                    .get_with_version(&room_id_clone)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let snapshot = RoomSettingsSnapshot { settings, version };
 
                 // Store in cache
-                cache.insert(room_id_clone, settings.clone()).await;
+                cache.insert(room_id_clone, snapshot.clone()).await;
 
-                Ok(settings)
+                Ok(snapshot)
             })
             .await
             .map_err(|error| match error {
@@ -313,21 +332,27 @@ impl RoomSettingsService {
                 crate::cache::SingleFlightError::Inner(message) => Error::Internal(message),
             })?;
 
-        Ok(settings)
+        Ok(snapshot)
     }
 
     /// Get room settings without cache (force refresh)
     pub async fn get_refresh(&self, room_id: &RoomId) -> Result<RoomSettings> {
+        Ok(self.get_refresh_with_version(room_id).await?.settings)
+    }
+
+    /// Get room settings and version without cache (force refresh).
+    pub async fn get_refresh_with_version(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
         // Invalidate cache
         self.invalidate_local(room_id).await;
 
         // Load from database
-        let settings = self.repo.get(room_id).await?;
+        let (settings, version) = self.repo.get_with_version(room_id).await?;
+        let snapshot = RoomSettingsSnapshot { settings, version };
 
         // Store in cache
-        let () = self.cache.insert(room_id.clone(), settings.clone()).await;
+        let () = self.cache.insert(room_id.clone(), snapshot.clone()).await;
 
-        Ok(settings)
+        Ok(snapshot)
     }
 
     /// Set room settings (write-through cache) with optimistic locking.
@@ -362,7 +387,15 @@ impl RoomSettingsService {
             {
                 Ok(new_version) => {
                     // Update local cache
-                    self.cache.insert(room_id.clone(), settings.clone()).await;
+                    self.cache
+                        .insert(
+                            room_id.clone(),
+                            RoomSettingsSnapshot {
+                                settings: settings.clone(),
+                                version: new_version,
+                            },
+                        )
+                        .await;
                     self.publish_and_notify(room_id, settings, new_version)
                         .await;
                     return Ok(());
@@ -404,7 +437,15 @@ impl RoomSettingsService {
             {
                 Ok(new_version) => {
                     // Update local cache after successful write
-                    self.cache.insert(room_id.clone(), settings.clone()).await;
+                    self.cache
+                        .insert(
+                            room_id.clone(),
+                            RoomSettingsSnapshot {
+                                settings: settings.clone(),
+                                version: new_version,
+                            },
+                        )
+                        .await;
                     self.publish_and_notify(room_id, &settings, new_version)
                         .await;
                     return Ok(settings);
@@ -448,23 +489,23 @@ impl RoomSettingsService {
     }
 
     /// Publish invalidation to other replicas and notify connected clients.
-    async fn publish_and_notify(&self, room_id: &RoomId, settings: &RoomSettings, _version: i64) {
+    async fn publish_and_notify(&self, room_id: &RoomId, settings: &RoomSettings, version: i64) {
         if let Some(ref inv_service) = self.invalidation_service {
             if let Err(e) = inv_service.invalidate_room_settings(room_id).await {
                 tracing::error!("Failed to publish settings invalidation: {}", e);
             }
         }
 
-        self.notify_settings_changed(room_id, settings);
+        self.notify_settings_changed(room_id, settings, version);
     }
 
     /// Invalidate local cache for a room
-    async fn invalidate_local(&self, room_id: &RoomId) {
+    pub async fn invalidate_local(&self, room_id: &RoomId) {
         let () = self.cache.invalidate(room_id).await;
     }
 
     /// Notify connected clients about settings change
-    fn notify_settings_changed(&self, room_id: &RoomId, settings: &RoomSettings) {
+    fn notify_settings_changed(&self, room_id: &RoomId, settings: &RoomSettings, version: i64) {
         let settings_value = match serde_json::to_value(settings) {
             Ok(v) => v,
             Err(e) => {
@@ -475,7 +516,7 @@ impl RoomSettingsService {
 
         let _ = self
             .notification_service
-            .notify_settings_updated(room_id, None, "", settings_value)
+            .notify_settings_updated(room_id, None, "", settings_value, version)
             ;
     }
 
@@ -492,11 +533,21 @@ impl RoomSettingsService {
             .map(super::super::models::id::RoomId::as_str)
             .collect();
         let batch = self.repo.get_batch(&id_strs).await?;
+        let versioned_batch = self.repo.get_batch_with_version(&id_strs).await?;
 
         // Bulk insert into cache
         for room_id in room_ids {
-            let settings = batch.get(room_id.as_str()).cloned().unwrap_or_default();
-            self.cache.insert(room_id.clone(), settings).await;
+            let snapshot = versioned_batch
+                .get(room_id.as_str())
+                .map(|(settings, version)| RoomSettingsSnapshot {
+                    settings: settings.clone(),
+                    version: *version,
+                })
+                .unwrap_or(RoomSettingsSnapshot {
+                    settings: batch.get(room_id.as_str()).cloned().unwrap_or_default(),
+                    version: 0,
+                });
+            self.cache.insert(room_id.clone(), snapshot).await;
         }
 
         Ok(())
@@ -528,9 +579,17 @@ pub struct CacheStats {
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use crate::repository::RoomSettingsRepository;
+    use crate::repository::UserRepository;
+    use crate::service::{auth::JwtService, InMemoryTokenBlacklistStore, UserService};
+    use chrono::Utc;
+    use crate::cache::{KeyBuilder, UsernameCache};
+    use crate::config::PasswordComplexityConfig;
+    use crate::service::auth::BruteForceProtection;
     use crate::service::notification::NotificationService;
     use sqlx::PgPool;
+    use synctv_core_testing::create_test_pool;
 
     fn make_room_settings_service_for_lifecycle_tests(
     ) -> (RoomSettingsService, Arc<CacheInvalidationService>, RoomId) {
@@ -629,7 +688,13 @@ mod tests {
 
         service
             .cache
-            .insert(room_id.clone(), RoomSettings::default())
+            .insert(
+                room_id.clone(),
+                RoomSettingsSnapshot {
+                    settings: RoomSettings::default(),
+                    version: 0,
+                },
+            )
             .await;
 
         service.shutdown().await;
@@ -661,7 +726,13 @@ mod tests {
 
         service
             .cache
-            .insert(room_id.clone(), RoomSettings::default())
+            .insert(
+                room_id.clone(),
+                RoomSettingsSnapshot {
+                    settings: RoomSettings::default(),
+                    version: 0,
+                },
+            )
             .await;
 
         service
@@ -683,5 +754,103 @@ mod tests {
         );
 
         service.shutdown().await;
+    }
+
+    fn make_user_service(pool: PgPool) -> UserService {
+        let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
+            .expect("jwt service should build");
+        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
+        let password_complexity = PasswordComplexityConfig::default();
+        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+        let key_builder = KeyBuilder::new("test");
+        let brute_force = BruteForceProtection::in_memory("test".to_string());
+        UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            password_complexity,
+            token_blacklist,
+            key_builder,
+            brute_force,
+        )
+    }
+
+    fn make_user(username: &str) -> User {
+        let now = Utc::now();
+        User {
+            id: UserId::new(),
+            username: username.to_string(),
+            email: Some(format!("{username}@test.com")),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            email_verified: true,
+            signup_method: SignupMethod::Email,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_with_version_returns_cached_snapshot_version() {
+        let (_container, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let user_service = make_user_service(pool.clone());
+        let room_service = crate::service::RoomService::new(pool.clone(), user_service);
+        let owner = user_repo
+            .create(&make_user("room_settings_version_owner"))
+            .await
+            .expect("owner should be created");
+        let (room, _) = room_service
+            .create_room(
+                "Room Settings Version".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created");
+
+        let service = RoomSettingsService::new(
+            RoomSettingsRepository::new(pool),
+            None,
+            Arc::new(NotificationService::default()),
+            None,
+            None,
+        );
+
+        let updated = RoomSettings {
+            chat_enabled: crate::models::room_settings::ChatEnabled(false),
+            ..RoomSettings::default()
+        };
+        service
+            .set(&room.id, &updated)
+            .await
+            .expect("room settings should be persisted");
+
+        let cached = service
+            .get(&room.id)
+            .await
+            .expect("cached room settings should be readable");
+        assert!(
+            !cached.chat_enabled.0,
+            "sanity check: cache should contain the updated settings value"
+        );
+
+        let snapshot = service
+            .get_with_version(&room.id)
+            .await
+            .expect("cached room settings snapshot should include version");
+        assert_eq!(snapshot.version, 2);
+        assert!(
+            !snapshot.settings.chat_enabled.0,
+            "snapshot should reuse the cached settings value"
+        );
     }
 }

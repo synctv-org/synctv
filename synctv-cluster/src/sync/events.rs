@@ -194,6 +194,7 @@ pub enum ClusterEvent {
         /// Serialized settings JSON (bytes)
         #[serde(default)]
         settings_json: Vec<u8>,
+        version: i64,
         timestamp: DateTime<Utc>,
     },
 

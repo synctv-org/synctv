@@ -18,9 +18,10 @@ use crate::{
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
         AuditService, ChatService, ContentFilter, EmailConfig, EmailService, EmailTokenService,
-        JwtService, OAuth2Service, PermissionService, ProvidersManager, PublishKeyService,
-        RateLimitConfig, RateLimiter, RemoteProviderManager, RoomService, RoomSettingsService,
-        SettingsRegistry, SettingsService, UserNotificationService, UserService,
+        JwtService, OAuth2Service, PermissionService, ProvidersManager, RateLimitConfig,
+        RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
+        SettingsRegistry, SettingsService, StreamingPublishKeyService, UserNotificationService,
+        UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -48,7 +49,7 @@ pub struct Services {
     /// JWT token service
     pub jwt_service: JwtService,
     /// Rate limiter (uses Redis when available)
-    pub rate_limiter: RateLimiter,
+    pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     /// Rate limit configuration
     pub rate_limit_config: RateLimitConfig,
     /// Content filter for chat and danmaku
@@ -72,9 +73,9 @@ pub struct Services {
     /// Email token service for verification codes (optional, requires SMTP configuration)
     pub email_token_service: Option<Arc<EmailTokenService>>,
     /// Shared WebSocket ticket service reused across transports.
-    pub ws_ticket_service: Arc<crate::service::WsTicketService>,
+    pub ws_ticket_service: Arc<dyn crate::service::WebSocketTicketService>,
     /// Publish key service for RTMP streaming
-    pub publish_key_service: Arc<PublishKeyService>,
+    pub publish_key_service: Arc<dyn StreamingPublishKeyService>,
     /// User notification service
     pub notification_service: Arc<UserNotificationService>,
     /// Chat service for message handling with business logic
@@ -153,23 +154,19 @@ const fn should_require_email_verification(email_service_available: bool) -> boo
 fn build_email_token_service(
     pool: PgPool,
     email_service_available: bool,
-    rate_limiter: &RateLimiter,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
 ) -> Option<Arc<EmailTokenService>> {
     if !email_service_available {
         return None;
     }
 
-    Some(Arc::new(EmailTokenService::with_rate_limiter(
-        pool,
-        rate_limiter.clone(),
-        None,
-    )))
+    Some(Arc::new(EmailTokenService::with_rate_limiter(pool, rate_limiter, None)))
 }
 
 fn build_brute_force_protection(
     profile: &SharedStateProfile,
-) -> Result<crate::service::BruteForceProtection, anyhow::Error> {
-    let service = crate::service::BruteForceProtection::from_shared_state_profile(profile)
+) -> Result<Arc<dyn crate::service::auth::BruteForceProtectionService>, anyhow::Error> {
+    let service = crate::service::brute_force_protection_from_shared_state_profile(profile)
         .map_err(anyhow::Error::from)?;
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
@@ -185,6 +182,13 @@ fn build_brute_force_protection(
     Ok(service)
 }
 
+fn build_request_rate_limiter(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn RequestRateLimiterService>, anyhow::Error> {
+    crate::service::request_rate_limiter_from_shared_state_profile(profile)
+        .map_err(anyhow::Error::from)
+}
+
 fn configure_refresh_token_rate_limiter(
     user_service: &mut UserService,
     profile: &SharedStateProfile,
@@ -196,10 +200,7 @@ fn configure_refresh_token_rate_limiter(
         rate_limit_prefix,
     );
     if !matches!(refresh_profile.state_mode(), SharedStateMode::LocalOnly) {
-        user_service.set_refresh_rate_limiter(
-            crate::service::RateLimiter::from_shared_state_profile(&refresh_profile)
-                .map_err(anyhow::Error::from)?,
-        );
+        user_service.set_refresh_rate_limiter(build_request_rate_limiter(&refresh_profile)?);
         match refresh_profile.state_mode() {
             SharedStateMode::SharedRequired => {
                 info!("Refresh token rate limiter initialized (shared state required)");
@@ -215,9 +216,8 @@ fn configure_refresh_token_rate_limiter(
 
 fn build_ws_ticket_service(
     profile: &SharedStateProfile,
-) -> Result<Arc<crate::service::WsTicketService>, anyhow::Error> {
-    crate::service::WsTicketService::from_shared_state_profile(profile, None)
-        .map(Arc::new)
+) -> Result<Arc<dyn crate::service::WebSocketTicketService>, anyhow::Error> {
+    crate::service::web_socket_ticket_service_from_shared_state_profile(profile, None)
         .map_err(anyhow::Error::from)
 }
 
@@ -442,7 +442,7 @@ pub async fn init_services_with_options(
 
     // Initialize UserService
     let key_builder = crate::cache::KeyBuilder::from_config(config);
-    let mut user_service = UserService::new(
+    let mut user_service = UserService::new_with_brute_force_service(
         pool.clone(),
         jwt_service.clone(),
         username_cache.clone(),
@@ -496,10 +496,7 @@ pub async fn init_services_with_options(
     };
 
     // Initialize rate limiter
-    let rate_limiter = RateLimiter::from_redis_runtime(
-        shared_runtime.clone(),
-        config.redis.key_prefix.clone(),
-    );
+    let rate_limiter = build_request_rate_limiter(&shared_state_profile)?;
     let rate_limit_config = RateLimitConfig {
         chat_per_second: config.messaging_rate_limits.chat_per_second,
         danmaku_per_second: config.messaging_rate_limits.danmaku_per_second,
@@ -632,7 +629,7 @@ pub async fn init_services_with_options(
 
     // Initialize Email Token service (optional - requires email service)
     let email_token_service =
-        build_email_token_service(pool.clone(), email_service.is_some(), &rate_limiter);
+        build_email_token_service(pool.clone(), email_service.is_some(), rate_limiter.clone());
     if email_token_service.is_some() {
         info!("Email token service initialized");
     } else {
@@ -727,7 +724,7 @@ pub async fn init_services_with_options(
         email_service,
         email_token_service,
         ws_ticket_service,
-        publish_key_service: Arc::new(publish_key_service),
+        publish_key_service,
         notification_service,
         chat_service: Arc::new(chat_service),
         room_notification_service,
@@ -899,7 +896,7 @@ struct RoomServiceBuildArgs {
     credential_repo: Arc<UserProviderCredentialRepository>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
-    brute_force: crate::service::auth::BruteForceProtection,
+    brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
     runtime: RoomServiceRuntime,
 }
 
@@ -970,7 +967,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
     if let Some(lock) = runtime.distributed_lock {
         room_service.set_distributed_lock(lock);
     }
-    room_service.set_brute_force_service(brute_force);
+    room_service.set_brute_force_service_arc(brute_force);
     room_service.set_cache_invalidation(cache_invalidation.clone());
     room_service.set_playback_cache_invalidation(cache_invalidation);
     if let Some(playback_l2) = runtime.playback_l2_cache {
@@ -992,8 +989,10 @@ fn test_providers_manager(pool: &PgPool) -> Arc<ProvidersManager> {
 fn build_publish_key_service(
     jwt_service: JwtService,
     profile: &SharedStateProfile,
-) -> Result<PublishKeyService, anyhow::Error> {
-    let service = PublishKeyService::from_shared_state_profile(jwt_service, 24, profile)
+) -> Result<Arc<dyn StreamingPublishKeyService>, anyhow::Error> {
+    let service = crate::service::streaming_publish_key_service_from_shared_state_profile(
+        jwt_service, 24, profile,
+    )
         .map_err(anyhow::Error::from)?;
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
@@ -1081,6 +1080,7 @@ fn init_email_service(
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::service::RateLimiter;
 
     struct FakeRedisRuntime;
 
@@ -1129,8 +1129,9 @@ mod tests {
         .expect("jwt service");
 
         let profile = SharedStateProfile::from_runtime(None, "test:", true);
-        let error = build_publish_key_service(jwt_service, &profile)
-            .expect_err("cluster runtime must reject local publish-key deduplication");
+        let Err(error) = build_publish_key_service(jwt_service, &profile) else {
+            panic!("cluster runtime must reject local publish-key deduplication");
+        };
 
         assert!(
             error.to_string().contains(
@@ -1143,14 +1144,42 @@ mod tests {
     #[test]
     fn test_build_brute_force_protection_returns_error_without_shared_runtime_in_cluster_mode() {
         let profile = SharedStateProfile::from_runtime(None, "test:", true);
-        let error = build_brute_force_protection(&profile)
-            .expect_err("cluster runtime must reject local brute-force tracking");
+        let Err(error) = build_brute_force_protection(&profile) else {
+            panic!("cluster runtime must reject local brute-force tracking");
+        };
 
         assert!(
             error
                 .to_string()
                 .contains("cluster runtime requires shared brute-force protection state"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_build_request_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let Err(error) = build_request_rate_limiter(&profile) else {
+            panic!("cluster runtime must reject local rate limiting");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared rate-limit state"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_build_request_rate_limiter_uses_local_backend_without_runtime() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let limiter = build_request_rate_limiter(&profile)
+            .expect("standalone mode should allow local rate limiting");
+
+        assert!(
+            limiter.check_rate_limit_sync("test-user", 1, 60).is_ok(),
+            "helper must return a live rate limiter service abstraction"
         );
     }
 
@@ -1271,8 +1300,9 @@ mod tests {
     #[test]
     fn test_build_ws_ticket_service_rejects_local_backend_in_cluster_mode() {
         let profile = SharedStateProfile::from_runtime(None, "test:", true);
-        let error = build_ws_ticket_service(&profile)
-            .expect_err("cluster runtime must reject local-only WebSocket ticket storage");
+        let Err(error) = build_ws_ticket_service(&profile) else {
+            panic!("cluster runtime must reject local-only WebSocket ticket storage");
+        };
 
         assert!(
             error
@@ -1351,9 +1381,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1437,9 +1467,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation: cache_invalidation.clone(),
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1461,9 +1491,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1519,9 +1549,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1575,9 +1605,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1625,9 +1655,9 @@ mod tests {
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            brute_force: crate::service::auth::BruteForceProtection::in_memory(
+            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
-            ),
+            )),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1810,14 +1840,15 @@ mod tests {
     #[tokio::test]
     async fn test_build_email_token_service_requires_email_service() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let limiter = RateLimiter::local_only("test-email-token:".to_string());
+        let limiter: Arc<dyn RequestRateLimiterService> =
+            Arc::new(RateLimiter::local_only("test-email-token:".to_string()));
 
         assert!(
-            build_email_token_service(pool.clone(), false, &limiter).is_none(),
+            build_email_token_service(pool.clone(), false, limiter.clone()).is_none(),
             "email token service must not start without email delivery"
         );
 
-        let service = build_email_token_service(pool, true, &limiter)
+        let service = build_email_token_service(pool, true, limiter)
             .expect("email token service should be built when email delivery is configured");
         assert!(
             service.has_rate_limiter(),

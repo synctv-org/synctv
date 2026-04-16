@@ -680,7 +680,7 @@ mod websocket_e2e {
         user_service: Arc<UserService>,
         connection_manager: Arc<ConnectionManager>,
         cluster_manager: Arc<ClusterManager>,
-        ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
+        ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
         server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
         server_handle: Option<JoinHandle<()>>,
     }
@@ -719,7 +719,8 @@ mod websocket_e2e {
         rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> Arc<synctv_core::service::ChatService> {
         let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
-        let chat_rate_limiter = RateLimiter::local_only("test_chat:".to_string());
+        let chat_rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> =
+            Arc::new(RateLimiter::local_only("test_chat:".to_string()));
         let content_filter = synctv_core::service::ContentFilter::new();
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
@@ -925,7 +926,9 @@ mod websocket_e2e {
         let connection_manager_ret = connection_manager.clone();
 
         // Rate limiter (in-memory only for tests)
-        let rate_limiter = RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> = Arc::new(
+            RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
+        );
 
         // Build AppState
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
@@ -3973,7 +3976,8 @@ mod websocket_connection_limit_timing {
         username_cache: UsernameCache,
     ) -> Arc<synctv_core::service::ChatService> {
         let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
-        let chat_rate_limiter = RateLimiter::local_only("test_chat:".to_string());
+        let chat_rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> =
+            Arc::new(RateLimiter::local_only("test_chat:".to_string()));
         let content_filter = synctv_core::service::ContentFilter::new();
         let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
         let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
@@ -4191,7 +4195,9 @@ mod websocket_connection_limit_timing {
         );
         let connection_manager_ret = connection_manager.clone();
 
-        let rate_limiter = RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:"));
+        let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> = Arc::new(
+            RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
+        );
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));

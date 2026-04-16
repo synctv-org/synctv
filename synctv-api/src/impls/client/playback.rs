@@ -8,11 +8,15 @@ use synctv_core::provider::ProviderContext;
 
 use super::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-    playback_result_to_proto, playback_state_to_proto, provider_playback_info_to_model,
+    playback_snapshot_to_proto, playback_state_to_proto, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls,
 };
 use super::ClientApiImpl;
 use crate::impls::ApiError;
+use crate::impls::playback_snapshot::{
+    dynamic_playback_snapshot_version, playback_snapshot_expires_at,
+    static_playback_snapshot_version,
+};
 use synctv_core::models::MediaId;
 
 fn providers_manager_unavailable_error() -> ApiError {
@@ -179,7 +183,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
-    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
             sign_local_bilibili_danmaku_urls(
                 &mut embedded_result,
@@ -187,7 +191,10 @@ impl ClientApiImpl {
                 self.signing_key.as_deref(),
                 None,
             );
-            return Ok(playback_result_to_proto(&embedded_result));
+            let mut snapshot = playback_snapshot_to_proto(&embedded_result);
+            snapshot.version = static_playback_snapshot_version(&media);
+            snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+            return Ok(snapshot);
         }
 
         let providers_manager = self
@@ -256,7 +263,10 @@ impl ClientApiImpl {
             self.signing_key.as_deref(),
             default_mode_expires_at,
         );
-        Ok(playback_result_to_proto(&full_result))
+        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        snapshot.version = static_playback_snapshot_version(&media);
+        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+        Ok(snapshot)
     }
 
     async fn build_dynamic_playlist_playback_result(
@@ -267,7 +277,7 @@ impl ClientApiImpl {
         user_id_model: &UserId,
         playlist_id: &PlaylistId,
         target: &[u8],
-    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let playlist = self
             .room_service
             .playlist_service()
@@ -354,7 +364,56 @@ impl ClientApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        Ok(playback_result_to_proto(&full_result))
+        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        snapshot.version = dynamic_playback_snapshot_version(&playlist);
+        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+        Ok(snapshot)
+    }
+
+    async fn build_playback_snapshot_from_state(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        if let Some(ref media_id) = state.playing_media_id {
+            let media = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+            return self
+                .build_static_media_playback_result(user_id.as_str(), room_id.as_str(), media)
+                .await;
+        }
+
+        if let Some(ref playlist_id) = state.playing_playlist_id {
+            return self
+                .build_dynamic_playlist_playback_result(
+                    user_id.as_str(),
+                    room_id.as_str(),
+                    room_id,
+                    user_id,
+                    playlist_id,
+                    &state.target,
+                )
+                .await;
+        }
+
+        Ok(crate::proto::client::PlaybackSnapshot {
+            media_id: String::new(),
+            playlist_id: String::new(),
+            room_id: room_id.as_str().to_string(),
+            name: String::new(),
+            position: 0.0,
+            playback_infos: std::collections::HashMap::new(),
+            default_mode: String::new(),
+            metadata: std::collections::HashMap::new(),
+            version: state.version.to_string(),
+            expires_at: None,
+        })
     }
 
     /// Start playback of either a static media item or a dynamic playlist item
@@ -434,44 +493,25 @@ impl ClientApiImpl {
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-
-        let playback_result = if let Some(ref media_id) = state.playing_media_id {
-            let media = self
-                .room_service
-                .media_service()
-                .get_media(media_id)
-                .await
-                .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-            self.build_static_media_playback_result(user_id, room_id, media)
-                .await?
-        } else if let Some(ref playlist_id) = state.playing_playlist_id {
-            self.build_dynamic_playlist_playback_result(
-                user_id,
-                room_id,
-                &rid,
-                &uid,
-                playlist_id,
-                &state.target,
-            )
-            .await?
-        } else {
-            // No media playing, return empty playback result
-            crate::proto::client::PlaybackResult {
-                media_id: String::new(),
-                playlist_id: String::new(),
-                room_id: rid.as_str().to_string(),
-                name: String::new(),
-                position: 0.0,
-                playback_infos: std::collections::HashMap::new(),
-                default_mode: String::new(),
-                metadata: std::collections::HashMap::new(),
+        let playback_snapshot = match self
+            .build_playback_snapshot_from_state(&uid, &rid, &state)
+            .await
+        {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %rid.as_str(),
+                    user_id = %uid.as_str(),
+                    error = %error,
+                    "Playback snapshot generation failed; returning playback state only"
+                );
+                None
             }
         };
 
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(playback_state_to_proto(&state)),
-            playback_result: Some(playback_result),
+            playback_snapshot,
         })
     }
 
@@ -563,6 +603,19 @@ impl ClientApiImpl {
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl {
+    async fn get_playback_snapshot(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        self.build_playback_snapshot_from_state(user_id, room_id, state)
+            .await
     }
 }
 

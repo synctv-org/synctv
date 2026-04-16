@@ -10,12 +10,13 @@
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::{
     models::UserId,
     repository::EmailTokenRepository,
-    service::rate_limit::{RateLimitError, RateLimiter},
+    service::rate_limit::{RateLimitError, RequestRateLimiterService},
     Error, Result,
 };
 
@@ -84,7 +85,7 @@ impl Default for EmailTokenRateLimitConfig {
 #[derive(Clone)]
 pub struct EmailTokenService {
     repository: EmailTokenRepository,
-    rate_limiter: Option<RateLimiter>,
+    rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
     rate_limit_config: EmailTokenRateLimitConfig,
 }
 
@@ -112,7 +113,7 @@ impl EmailTokenService {
     #[must_use]
     pub fn with_rate_limiter(
         pool: PgPool,
-        rate_limiter: RateLimiter,
+        rate_limiter: Arc<dyn RequestRateLimiterService>,
         rate_limit_config: Option<EmailTokenRateLimitConfig>,
     ) -> Self {
         Self {
@@ -325,10 +326,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_email_token_rate_limiting() {
-        use crate::service::rate_limit::RateLimiter;
-
         // Create rate limiter with in-memory backend
-        let limiter = RateLimiter::local_only("email_token_test:".to_string());
+        let limiter =
+            synctv_core_testing::create_test_request_rate_limiter("email_token_test:");
 
         // Create service with aggressive rate limiting for testing
         let config = EmailTokenRateLimitConfig {

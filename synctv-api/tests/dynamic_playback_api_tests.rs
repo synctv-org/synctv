@@ -420,16 +420,21 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         serde_json::json!({"relative_path":"/episode-1.mp4"})
     );
 
-    let playback_result = response.playback_result.unwrap();
-    assert_eq!(playback_result.playlist_id, playlist.id.as_str());
-    assert_eq!(playback_result.name, "episode-1.mp4");
-    let playback_target_meta = playback_result.metadata.get("target").unwrap();
+    let playback_snapshot = response.playback_snapshot.unwrap();
+    assert_eq!(
+        playback_snapshot.version,
+        playlist.version.to_string(),
+        "dynamic playback snapshot version should use playlist version only"
+    );
+    assert_eq!(playback_snapshot.playlist_id, playlist.id.as_str());
+    assert_eq!(playback_snapshot.name, "episode-1.mp4");
+    let playback_target_meta = playback_snapshot.metadata.get("target").unwrap();
     let playback_target_value: String = serde_json::from_str(playback_target_meta).unwrap();
     assert_eq!(
         playback_target_value,
         BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#)
     );
-    let direct = playback_result.playback_infos.get("direct").unwrap();
+    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert_eq!(
         direct.urls[0].url,
@@ -634,8 +639,13 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .await
         .unwrap();
 
-    let playback_result = response.playback_result.unwrap();
-    let direct = playback_result.playback_infos.get("direct").unwrap();
+    let playback_snapshot = response.playback_snapshot.unwrap();
+    assert_eq!(
+        playback_snapshot.version,
+        playlist.version.to_string(),
+        "bound dynamic playback snapshot version should use playlist version only"
+    );
+    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
     assert_eq!(
         direct.urls[0].url,
         "https://fake_dynamic_alt.example.com/bound-episode-1.mp4"
@@ -740,8 +750,13 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .await
         .unwrap();
 
-    let playback_result = response.playback_result.unwrap();
-    let direct = playback_result.playback_infos.get("direct").unwrap();
+    let playback_snapshot = response.playback_snapshot.unwrap();
+    assert_eq!(
+        playback_snapshot.version,
+        media.version.to_string(),
+        "static playback snapshot version should use media version only"
+    );
+    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -758,6 +773,155 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     assert!(
         direct.urls[0].headers.is_empty(),
         "proxy-backed playback should not require client-side secret headers"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_playback_without_active_media_returns_stable_non_empty_snapshot_version() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = Arc::new(make_user_service(pool.clone()));
+
+    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let room_service = Arc::new(room_service);
+
+    let owner = user_repo
+        .create(&make_user("api_idle_playback_owner"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "API Idle Playback".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service,
+        Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+        Arc::new(Config::default()),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    );
+
+    let response = client_api
+        .get_playback(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::GetPlaybackRequest {},
+        )
+        .await
+        .unwrap();
+
+    let playback_state = response
+        .playback_state
+        .expect("idle room should still expose playback state");
+    let playback_snapshot = response
+        .playback_snapshot
+        .expect("idle room should still expose playback snapshot");
+
+    assert!(
+        !playback_snapshot.version.is_empty(),
+        "idle playback snapshots must return a real version so clients can watch from it"
+    );
+    assert_eq!(
+        playback_snapshot.version,
+        playback_state.version.to_string(),
+        "idle playback snapshot version should track the persisted playback state version"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let user_service = Arc::new(make_user_service(pool.clone()));
+
+    let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
+    room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let room_service = Arc::new(room_service);
+
+    let owner = user_repo
+        .create(&make_user("api_playback_state_only"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "API Playback State Only".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = Media::from_provider(
+        None,
+        room.id.clone(),
+        Some(owner.id.clone()),
+        "Broken Playback Provider".to_string(),
+        serde_json::json!({ "opaque": true }),
+        "missing_provider",
+        String::new(),
+        0.0,
+    );
+    media_repo.create(&media).await.unwrap();
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+        Arc::new(Config::default()),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    );
+
+    client_api
+        .start_playback(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::StartPlaybackRequest {
+                media_id: media.id.as_str().to_string(),
+                playlist_id: String::new(),
+                target: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let response = client_api
+        .get_playback(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::GetPlaybackRequest {},
+        )
+        .await
+        .unwrap();
+
+    let playback_state = response
+        .playback_state
+        .expect("playback state should still be returned when snapshot generation fails");
+    assert_eq!(playback_state.playing_media_id, media.id.as_str());
+    assert!(playback_state.is_playing);
+    assert!(
+        response.playback_snapshot.is_none(),
+        "snapshot failures should degrade to state-only responses"
     );
 }
 

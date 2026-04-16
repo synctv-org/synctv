@@ -23,6 +23,9 @@ pub use redis::{
     wait_for_redis_ready, RedisConnectionHandle, RedisConnectionManager, RedisContainer,
 };
 pub use services::{
-    create_test_attempt_tracker, create_test_brute_force_protection, create_test_jwt_service,
-    create_test_jwt_service_with_secret, create_test_token_blacklist_store,
+    create_test_attempt_tracker, create_test_brute_force_protection,
+    create_test_brute_force_protection_service, create_test_jwt_service,
+    create_test_jwt_service_with_secret, create_test_request_rate_limiter,
+    create_test_streaming_publish_key_service, create_test_token_blacklist_store,
+    create_test_token_blacklist_store_service, create_test_websocket_ticket_service,
 };

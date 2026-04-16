@@ -27,31 +27,38 @@ pub fn validate<M: prost_reflect::ReflectMessage>(
 }
 
 // Common shared types (enums, RoomMember)
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod common {
     include!("synctv.common.rs");
 }
 
 // Client API
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod client {
     include!("synctv.client.rs");
 }
 
 // Admin API
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod admin {
     include!("synctv.admin.rs");
 }
 
 // Providers
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod providers {
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod bilibili {
         include!("providers/synctv.provider.bilibili.rs");
     }
 
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod alist {
         include!("providers/synctv.provider.alist.rs");
     }
 
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod emby {
         include!("providers/synctv.provider.emby.rs");
     }
@@ -112,6 +119,7 @@ mod tests {
             updated_at: 1_700_001_000,
             is_banned: false,
             availability: crate::client::ResourceAvailability::Available.into(),
+            version: 7,
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();

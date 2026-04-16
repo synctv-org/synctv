@@ -1,10 +1,38 @@
 //! Member operations: `get_room_members`, `update_member_permissions`, kick, ban, unban
 
 use crate::impls::ApiError;
+use hex::encode as hex_encode;
+use sha2::{Digest, Sha256};
 use synctv_core::models::{PermissionBits, UserId};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
+
+pub(crate) fn compute_room_members_response_version(
+    response: &crate::proto::client::GetRoomMembersResponse,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"room-members-snapshot-v1");
+    hasher.update(response.total.to_le_bytes());
+    for member in &response.members {
+        hasher.update(member.room_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(member.user_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(member.username.as_bytes());
+        hasher.update([0]);
+        hasher.update(member.role.to_le_bytes());
+        hasher.update(member.permissions.to_le_bytes());
+        hasher.update(member.status.to_le_bytes());
+        hasher.update(member.added_permissions.to_le_bytes());
+        hasher.update(member.removed_permissions.to_le_bytes());
+        hasher.update(member.admin_added_permissions.to_le_bytes());
+        hasher.update(member.admin_removed_permissions.to_le_bytes());
+        hasher.update(member.joined_at.to_le_bytes());
+        hasher.update([u8::from(member.is_online)]);
+    }
+    hex_encode(hasher.finalize())
+}
 
 impl ClientApiImpl {
     /// Get room members with pagination (E8 fix).
@@ -147,11 +175,14 @@ impl ClientApiImpl {
             self.room_service.permission_service(),
         );
 
-        Ok(crate::proto::client::GetRoomMembersResponse {
+        let mut response = crate::proto::client::GetRoomMembersResponse {
             members: proto_members,
             total: i32::try_from(total)
                 .map_err(|_| ApiError::Internal("Member count exceeds i32 range".to_string()))?,
-        })
+            version: String::new(),
+        };
+        response.version = compute_room_members_response_version(&response);
+        Ok(response)
     }
 
     pub async fn add_member(
@@ -175,11 +206,15 @@ impl ClientApiImpl {
             proto_role_to_room_role(role)?
         };
 
+        let changed_by = uid.clone();
         let member = self
             .room_service
             .add_member(rid.clone(), uid, target_uid.clone(), role, notify)
             .await
             .map_err(ApiError::from)?;
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         let username = self
             .user_service
@@ -235,11 +270,15 @@ impl ClientApiImpl {
         let rid = Self::parse_room_id(room_id)?;
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
 
+        let changed_by = uid.clone();
         let member = self
             .room_service
             .approve_member(rid.clone(), uid, target_uid.clone())
             .await
             .map_err(ApiError::from)?;
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         let username = self
             .user_service
@@ -297,10 +336,15 @@ impl ClientApiImpl {
         let target_uid = crate::impls::proto_validated_user_id(target_user_id);
         let reason = (!reason.trim().is_empty()).then_some(reason.as_str());
 
+        let changed_by = uid.clone();
         self.room_service
-            .reject_member(rid, uid, target_uid, reason)
+            .reject_member(rid.clone(), uid, target_uid.clone(), reason)
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         Ok(crate::proto::client::RejectMemberResponse { success: true })
     }
@@ -612,5 +656,18 @@ impl ClientApiImpl {
         .await?;
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientApiImpl {
+    async fn get_room_members_snapshot(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        req: &crate::proto::client::GetRoomMembersRequest,
+    ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
+        self.get_room_members(user_id.as_str(), room_id.as_str(), req.clone())
+            .await
     }
 }

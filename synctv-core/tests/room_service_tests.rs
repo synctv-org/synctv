@@ -174,6 +174,42 @@ async fn test_create_room_without_password() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_create_room_initializes_settings_version_at_one() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("settings_version_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Settings Version Room".to_string(),
+            "verify initial settings version".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (settings, version) = room_service
+        .get_room_settings_with_version(&room.id)
+        .await
+        .unwrap();
+
+    assert!(settings.chat_enabled.0);
+    assert!(settings.danmaku_enabled.0);
+    assert!(settings.allow_auto_join.0);
+    assert!(!settings.allow_guest_join.0);
+    assert_eq!(settings.max_members.0, RoomSettings::default().max_members.0);
+    assert_eq!(version, 1, "new rooms should persist default settings eagerly");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_does_not_create_root_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1606,6 +1642,57 @@ async fn test_password_removal_clears_require_password_flag() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_update_room_password_emits_settings_updated_notification() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let mut event_rx = room_service.notification_service().subscribe();
+
+    let owner = user_repo
+        .create(&make_user("password_notify_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Password Notify Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .update_room_password(&room.id, Some("hashed-password".to_string()))
+        .await
+        .unwrap();
+
+    let (event_room_id, event) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let received = event_rx.recv().await.unwrap();
+            if matches!(received.1, RoomEvent::SettingsUpdated { .. }) {
+                break received;
+            }
+        }
+    })
+    .await
+    .expect("expected room settings notification");
+    assert_eq!(event_room_id, room.id);
+    match event {
+        RoomEvent::SettingsUpdated {
+            settings, version, ..
+        } => {
+            assert_eq!(settings["require_password"], true);
+            assert_eq!(version, 2);
+        }
+        other => panic!("expected SettingsUpdated event, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_password_update_allows_join_with_new_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2658,6 +2745,177 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
         }
         other => panic!("expected SettingsUpdated event, got: {other:?}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_room_settings_with_version_refreshes_local_cache_after_write() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("settings_cache_refresh_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Settings Cache Refresh Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (initial_settings, initial_version) = room_service
+        .get_room_settings_with_version(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(initial_version, 1);
+    assert!(initial_settings.chat_enabled.0);
+
+    let updated_settings = RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        ..RoomSettings::default()
+    };
+    room_service
+        .set_room_settings(&room.id, &updated_settings)
+        .await
+        .unwrap();
+
+    let (refreshed_settings, refreshed_version) = room_service
+        .get_room_settings_with_version(&room.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed_version, 2);
+    assert!(
+        !refreshed_settings.chat_enabled.0,
+        "local reads must not return a stale cached room settings snapshot after a write"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_settings_returns_committed_room_settings_snapshot() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("settings_snapshot_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Settings Snapshot Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let updated_settings = RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+        ..RoomSettings::default()
+    };
+
+    let snapshot = room_service
+        .set_settings(room.id.clone(), owner.id.clone(), updated_settings.clone())
+        .await
+        .expect("settings update should return committed snapshot");
+
+    assert_eq!(snapshot.version, 2);
+    assert!(!snapshot.settings.chat_enabled.0);
+    assert!(snapshot.settings.allow_guest_join.0);
+    assert_eq!(snapshot.settings.max_members.0, updated_settings.max_members.0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_room_settings_returns_committed_room_settings_snapshot() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("room_settings_snapshot_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Set Room Settings Snapshot Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let updated_settings = RoomSettings {
+        danmaku_enabled: synctv_core::models::room_settings::DanmakuEnabled(false),
+        ..RoomSettings::default()
+    };
+
+    let snapshot = room_service
+        .set_room_settings(&room.id, &updated_settings)
+        .await
+        .expect("admin room settings update should return committed snapshot");
+
+    assert_eq!(snapshot.version, 2);
+    assert!(!snapshot.settings.danmaku_enabled.0);
+    assert_eq!(snapshot.settings.max_members.0, updated_settings.max_members.0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("reset_settings_snapshot_owner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Reset Room Settings Snapshot Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let updated_settings = RoomSettings {
+        require_password: synctv_core::models::room_settings::RequirePassword(true),
+        ..RoomSettings::default()
+    };
+    room_service
+        .set_room_settings(&room.id, &updated_settings)
+        .await
+        .expect("room settings should be customized before reset");
+
+    let snapshot = room_service
+        .reset_room_settings(&room.id, &owner.id)
+        .await
+        .expect("reset should return committed snapshot");
+
+    assert_eq!(snapshot.version, 3);
+    assert!(!snapshot.settings.require_password.0);
+    assert!(snapshot.settings.chat_enabled.0);
+    assert_eq!(snapshot.settings.max_members.0, RoomSettings::default().max_members.0);
 }
 
 #[tokio::test]

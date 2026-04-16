@@ -256,3 +256,89 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         "non-moderators must not query pending members explicitly, got: {err:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_room_members_returns_stable_version_until_membership_changes() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    let client_api = make_client_api(user_service, room_service.clone());
+
+    let owner = user_repo
+        .create(&make_user("member_version_owner"))
+        .await
+        .unwrap();
+    let member_one = user_repo
+        .create(&make_user("member_version_one"))
+        .await
+        .unwrap();
+    let member_two = user_repo
+        .create(&make_user("member_version_two"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Member Version Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .add_member(
+            room.id.clone(),
+            owner.id.clone(),
+            member_one.id.clone(),
+            RoomRole::Member,
+            false,
+        )
+        .await
+        .unwrap();
+
+    let request = synctv_proto::client::GetRoomMembersRequest {
+        page: 1,
+        page_size: 20,
+        search: String::new(),
+        role: None,
+        status: None,
+        sort_by: 0,
+        sort_direction: 0,
+    };
+
+    let first = client_api
+        .get_room_members(owner.id.as_str(), room.id.as_str(), request.clone())
+        .await
+        .unwrap();
+    let second = client_api
+        .get_room_members(owner.id.as_str(), room.id.as_str(), request.clone())
+        .await
+        .unwrap();
+
+    assert!(!first.version.is_empty());
+    assert_eq!(first.version, second.version);
+
+    room_service
+        .add_member(
+            room.id.clone(),
+            owner.id.clone(),
+            member_two.id.clone(),
+            RoomRole::Member,
+            false,
+        )
+        .await
+        .unwrap();
+
+    let third = client_api
+        .get_room_members(owner.id.as_str(), room.id.as_str(), request)
+        .await
+        .unwrap();
+
+    assert_ne!(first.version, third.version);
+}

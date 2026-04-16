@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 use synctv_core::service::{
-    rate_limit::RateLimitError, EmailService, EmailTokenService, EmailTokenType, RateLimiter,
-    UserService,
+    rate_limit::RateLimitError, EmailService, EmailTokenService, EmailTokenType,
+    RequestRateLimiterService, UserService,
 };
 
 use crate::impls::ApiError;
@@ -32,7 +32,7 @@ pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
     pub email_service: Arc<EmailService>,
     pub email_token_service: Arc<EmailTokenService>,
-    rate_limiter: Arc<RateLimiter>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
 }
 
 /// Send verification email result
@@ -75,7 +75,7 @@ pub fn build_shared_email_api(
     user_service: Arc<UserService>,
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
-    rate_limiter: RateLimiter,
+    rate_limiter: impl RequestRateLimiterService + 'static,
 ) -> Option<Arc<EmailApiImpl>> {
     match (email_service, email_token_service) {
         (Some(email_service), Some(email_token_service)) => Some(Arc::new(EmailApiImpl::new(
@@ -122,7 +122,7 @@ impl EmailApiImpl {
         user_service: Arc<UserService>,
         email_service: Arc<EmailService>,
         email_token_service: Arc<EmailTokenService>,
-        rate_limiter: RateLimiter,
+        rate_limiter: impl RequestRateLimiterService + 'static,
     ) -> Self {
         Self {
             user_service,

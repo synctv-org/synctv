@@ -26,7 +26,7 @@ use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
 use synctv_core::{
     models::{MediaId, Room, RoomStatus, UserId, UserStatus},
-    service::{PublishKeyService, RoomService, UserService},
+    service::{RoomService, StreamingPublishKeyService, UserService},
     RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
 use synctv_livestream::api::StreamTracker;
@@ -211,7 +211,7 @@ const MAX_PENDING_PUBLISH_CLEANUPS: usize = 3;
 pub struct SyncTvRtmpAuth {
     room_service: Arc<RoomService>,
     user_service: Arc<UserService>,
-    publish_key_service: Arc<PublishKeyService>,
+    publish_key_service: Arc<dyn StreamingPublishKeyService>,
     user_stream_tracker: Arc<StreamTracker>,
     /// Publisher registry (Redis) for single-publisher-per-media enforcement
     registry: Arc<dyn StreamRegistryTrait>,
@@ -236,7 +236,7 @@ impl SyncTvRtmpAuth {
     pub fn new(
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
-        publish_key_service: Arc<PublishKeyService>,
+        publish_key_service: Arc<dyn StreamingPublishKeyService>,
         user_stream_tracker: Arc<StreamTracker>,
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,

@@ -22,7 +22,7 @@ use tracing::warn;
 
 use super::interceptors::GrpcRateLimitTier;
 use synctv_core::service::auth::JwtValidator;
-use synctv_core::service::{RateLimitError, RateLimiter};
+use synctv_core::service::{RateLimitError, RequestRateLimiterService};
 use synctv_core::Config;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -43,7 +43,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// bypass through multiple token issuance.
 #[derive(Clone)]
 pub struct GrpcRateLimitLayer {
-    rate_limiter: Arc<RateLimiter>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
     config: Arc<Config>,
     jwt_validator: Arc<JwtValidator>,
     strict_distributed: bool,
@@ -61,11 +61,14 @@ impl GrpcRateLimitLayer {
     /// * `config` - Application configuration
     /// * `jwt_validator` - JWT validator for extracting `user_id` from tokens
     #[must_use]
-    pub fn new(
-        rate_limiter: RateLimiter,
+    pub fn new<T>(
+        rate_limiter: T,
         config: Arc<Config>,
         jwt_validator: JwtValidator,
-    ) -> Self {
+    ) -> Self
+    where
+        T: RequestRateLimiterService + 'static,
+    {
         let strict_distributed = config.cluster_runtime_enabled();
         Self {
             rate_limiter: Arc::new(rate_limiter),
@@ -101,7 +104,7 @@ impl<S> Layer<S> for GrpcRateLimitLayer {
 #[derive(Clone)]
 pub struct GrpcRateLimitService<S> {
     inner: S,
-    rate_limiter: Arc<RateLimiter>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
     config: Arc<Config>,
     jwt_validator: Arc<JwtValidator>,
     strict_distributed: bool,
@@ -1218,7 +1221,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::local_only("cluster-grpc:".to_string()),
+            synctv_core::service::RateLimiter::local_only("cluster-grpc:".to_string()),
             Arc::new(config),
             jwt_validator,
         );
@@ -1235,7 +1238,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::local_only("standalone-grpc:".to_string()),
+            synctv_core::service::RateLimiter::local_only("standalone-grpc:".to_string()),
             Arc::new(config),
             jwt_validator,
         );
@@ -1312,7 +1315,7 @@ mod tests {
     ) -> http::Response<AxumBody> {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
-        let rate_limiter = RateLimiter::from_backend(
+        let rate_limiter = synctv_core::service::RateLimiter::from_backend(
             Arc::new(StubRateLimitBackend { strict_result }),
             "grpc-test:".to_string(),
         );
@@ -1369,7 +1372,7 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let jwt_validator = create_test_jwt_validator(&jwt_service);
         let layer = GrpcRateLimitLayer::new(
-            RateLimiter::local_only("grpc-streaming-test:".to_string()),
+            synctv_core::service::RateLimiter::local_only("grpc-streaming-test:".to_string()),
             Arc::new(test_config()),
             jwt_validator,
         );

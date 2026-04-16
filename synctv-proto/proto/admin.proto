@@ -121,6 +121,7 @@ message AdminRoom {
     string description = 10; // Room description
     bool is_banned = 11; // Ban flag set by global admin only
     synctv.common.UserStatus creator_status = 12;
+    int64 version = 13; // Resource version from database
 }
 
 // Connection status for a media provider instance
@@ -631,6 +632,7 @@ message GetRoomSettingsRequest {
 
 message GetRoomSettingsResponse {
     bytes settings = 1; // JSON settings
+    int64 version = 2;
 }
 
 message UpdateRoomSettingsRequest {

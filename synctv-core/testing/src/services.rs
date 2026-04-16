@@ -1,12 +1,15 @@
 //! Service factory helpers for tests
 
 use crate::constants;
+use std::sync::Arc;
 use synctv_core::service::{
     auth::{
         brute_force::InMemoryAttemptTracker, jwt::JwtService,
         token_blacklist::InMemoryTokenBlacklistStore,
     },
-    BruteForceProtection,
+    rate_limit::RequestRateLimiterService,
+    BruteForceProtection, BruteForceProtectionService, RateLimiter, StreamingPublishKeyService,
+    TokenBlacklistStore, WebSocketTicketService, WsTicketService,
 };
 
 /// Creates a JWT service for testing
@@ -60,6 +63,12 @@ pub fn create_test_brute_force_protection() -> BruteForceProtection {
     BruteForceProtection::in_memory("test".to_string())
 }
 
+/// Creates a brute-force protection service trait object for testing.
+#[must_use]
+pub fn create_test_brute_force_protection_service() -> Arc<dyn BruteForceProtectionService> {
+    Arc::new(create_test_brute_force_protection())
+}
+
 /// Creates an attempt tracker for testing
 ///
 /// Uses test-specific capacity and TTL values.
@@ -96,4 +105,35 @@ pub fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
         constants::token_blacklist::SHORT_TTL_SECS,
         constants::token_blacklist::LONG_TTL_SECS,
     )
+}
+
+/// Creates a token blacklist store trait object for testing.
+#[must_use]
+pub fn create_test_token_blacklist_store_service() -> Arc<dyn TokenBlacklistStore> {
+    Arc::new(create_test_token_blacklist_store())
+}
+
+/// Creates a request rate limiter trait object for testing.
+#[must_use]
+pub fn create_test_request_rate_limiter(prefix: &str) -> Arc<dyn RequestRateLimiterService> {
+    Arc::new(RateLimiter::local_only(prefix.to_string()))
+}
+
+/// Creates a WebSocket ticket service trait object for testing.
+#[must_use]
+pub fn create_test_websocket_ticket_service(
+    ticket_ttl_secs: Option<u64>,
+) -> Arc<dyn WebSocketTicketService> {
+    Arc::new(WsTicketService::local_only(ticket_ttl_secs))
+}
+
+/// Creates a publish-key service trait object for testing.
+#[must_use]
+pub fn create_test_streaming_publish_key_service(
+    token_ttl_hours: i64,
+) -> Arc<dyn StreamingPublishKeyService> {
+    Arc::new(synctv_core::service::PublishKeyService::new(
+        create_test_jwt_service(),
+        token_ttl_hours,
+    ))
 }

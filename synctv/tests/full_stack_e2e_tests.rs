@@ -58,6 +58,23 @@ fn unique_test_suffix() -> String {
     nanos.to_string()
 }
 
+fn bounded_test_username(label: &str, role: &str, suffix: &str) -> String {
+    const MAX_USERNAME_LEN: usize = 50;
+
+    let reserved_len = role.len() + suffix.len() + 2;
+    let max_label_len = MAX_USERNAME_LEN.saturating_sub(reserved_len).max(1);
+    let mut bounded_label: String = label
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .take(max_label_len)
+        .collect();
+    if bounded_label.is_empty() {
+        bounded_label.push('t');
+    }
+
+    format!("{bounded_label}_{role}_{suffix}")
+}
+
 fn test_config(
     database_url: String,
     redis_url: String,
@@ -1297,10 +1314,10 @@ struct RoomRealtimeFixture {
 async fn start_room_realtime_fixture(label: &str) -> RoomRealtimeFixture {
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
-    let owner_username = format!("{label}_owner_{suffix}");
+    let owner_username = bounded_test_username(label, "owner", &suffix);
     let owner_email = format!("{label}-owner-{suffix}@example.com");
     let owner_password = "RealtimeOwnerPass12345!";
-    let member_username = format!("{label}_member_{suffix}");
+    let member_username = bounded_test_username(label, "member", &suffix);
     let member_email = format!("{label}-member-{suffix}@example.com");
     let member_password = "RealtimeMemberPass12345!";
 
@@ -1418,6 +1435,34 @@ async fn recv_grpc_server_message_skip_membership(
         ) {
             return Some(message);
         }
+    }
+}
+
+async fn recv_matching_grpc_server_message<F>(
+    stream: &mut tonic::codec::Streaming<synctv_proto::client::ServerMessage>,
+    timeout: Duration,
+    mut predicate: F,
+    context: &str,
+) -> synctv_proto::client::ServerMessage
+where
+    F: FnMut(&synctv_proto::client::ServerMessage) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let message = tokio::time::timeout(remaining, recv_grpc_server_message(stream))
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {context}"))
+            .unwrap_or_else(|| panic!("gRPC stream closed while waiting for {context}"));
+        if predicate(&message) {
+            return message;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "did not receive {context} before timeout; last message: {message:?}"
+        );
     }
 }
 
@@ -1992,6 +2037,13 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
     );
     let settings_get_body: Value = serde_json::from_slice(&settings_get.stdout)
         .expect("CLI room settings get output should be JSON");
+    let initial_settings_version = settings_get_body["version"]
+        .as_i64()
+        .expect("CLI room settings get output should contain version");
+    assert!(
+        initial_settings_version > 0,
+        "CLI room settings get should return a persisted initial version"
+    );
     let mut updated_settings = settings_get_body["settings"]
         .as_object()
         .expect("CLI room settings get output should contain settings object")
@@ -2039,6 +2091,10 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("updated room settings JSON should decode");
     assert_eq!(updated_settings_json["chat_enabled"], false);
     assert_eq!(updated_settings_json["allow_guest_join"], true);
+    assert!(
+        updated_settings_response.version > initial_settings_version,
+        "updated settings version should increase"
+    );
 
     let settings_reset =
         run_synctv_remote_cli(&server, &["room", "settings", "reset", &room_id]).await;
@@ -2062,6 +2118,10 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("reset room settings JSON should decode");
     assert_eq!(reset_settings_json["chat_enabled"], true);
     assert_eq!(reset_settings_json["allow_guest_join"], false);
+    assert!(
+        reset_settings_response.version > updated_settings_response.version,
+        "reset settings version should increase"
+    );
 }
 
 #[tokio::test]
@@ -3418,7 +3478,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         media_one_id
     );
     assert_eq!(playback_state["playback_state"]["is_playing"], true);
-    assert_eq!(playback_state["playback_result"]["media_id"], media_one_id);
+    assert_eq!(playback_state["playback_snapshot"]["media_id"], media_one_id);
 
     let stopped_playback = run_synctv_remote_cli_json(
         &server,
@@ -5763,6 +5823,598 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchPlaybackSnapshot};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let fixture = start_room_realtime_fixture("grpc-watch-playback-snapshot").await;
+    let RoomRealtimeFixture {
+        server,
+        room_id,
+        owner_username,
+        member_token,
+        ..
+    } = fixture;
+
+    let first_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/grpc-watch-playback-one.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "gRPC Watch Playback One",
+        ],
+        "add first room media for grpc playback watch",
+    )
+    .await;
+    let media_one_id = first_media["media"]["id"]
+        .as_str()
+        .expect("first media add should return media.id")
+        .to_string();
+
+    let second_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/grpc-watch-playback-two.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "gRPC Watch Playback Two",
+        ],
+        "add second room media for grpc playback watch",
+    )
+    .await;
+    let media_two_id = second_media["media"]["id"]
+        .as_str()
+        .expect("second media add should return media.id")
+        .to_string();
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_one_id,
+        ],
+        "start first playback for grpc watch",
+    )
+    .await;
+
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect member room gRPC client");
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
+    outbound_tx
+        .send(ClientMessage {
+            message: Some(client_message::Message::WatchPlaybackSnapshot(
+                WatchPlaybackSnapshot {
+                    version: String::new(),
+                    media_id: String::new(),
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                },
+            )),
+        })
+        .await
+        .expect("queue initial playback watch request");
+    let outbound = ReceiverStream::new(outbound_rx);
+    let mut request = tonic::Request::new(outbound);
+    request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let mut inbound = member_room_client
+        .message_stream(request)
+        .await
+        .expect("message_stream should establish")
+        .into_inner();
+
+    let initial_snapshot = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaybackSnapshot(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media_id == media_one_id && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial grpc playback snapshot",
+    )
+    .await;
+    let initial_version = match initial_snapshot.message {
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => snapshot
+            .snapshot
+            .expect("playback snapshot should be present")
+            .version,
+        other => panic!("expected playback snapshot, got: {other:?}"),
+    };
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_two_id,
+        ],
+        "start second playback for grpc watch",
+    )
+    .await;
+
+    let updated_snapshot = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaybackSnapshot(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media_id == media_two_id && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "updated grpc playback snapshot",
+    )
+    .await;
+
+    match updated_snapshot.message {
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.media_id, media_two_id);
+            assert_eq!(
+                snapshot.version, initial_version,
+                "switching between newly-created media should preserve resource version"
+            );
+        }
+        other => panic!("expected updated playback snapshot, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchRoomSettings};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let fixture = start_room_realtime_fixture("grpc-watch-room-settings").await;
+    let RoomRealtimeFixture {
+        server,
+        room_id,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect member room gRPC client");
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
+    outbound_tx
+        .send(ClientMessage {
+            message: Some(client_message::Message::WatchRoomSettings(
+                WatchRoomSettings { version: None },
+            )),
+        })
+        .await
+        .expect("queue initial room settings watch request");
+    let outbound = ReceiverStream::new(outbound_rx);
+    let mut request = tonic::Request::new(outbound);
+    request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let mut inbound = member_room_client
+        .message_stream(request)
+        .await
+        .expect("message_stream should establish")
+        .into_inner();
+
+    let current_settings_response = run_synctv_remote_cli_json(
+        &server,
+        &["room", "settings", "get", &room_id],
+        "get room settings before grpc watch",
+    )
+    .await;
+    let expected_initial_version = current_settings_response["version"]
+        .as_i64()
+        .expect("room settings get should return version");
+    let expected_initial_settings = current_settings_response["settings"].clone();
+
+    let initial_settings = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| matches!(
+            &message.message,
+            Some(server_message::Message::RoomSettings(_))
+        ),
+        "initial grpc room settings snapshot",
+    )
+    .await;
+    let initial_version = match initial_settings.message {
+        Some(server_message::Message::RoomSettings(settings)) => {
+            let decoded: Value =
+                serde_json::from_slice(&settings.settings).expect("decode initial settings");
+            assert_eq!(decoded, expected_initial_settings);
+            assert_eq!(settings.version, expected_initial_version);
+            settings.version
+        }
+        other => panic!("expected room settings snapshot, got: {other:?}"),
+    };
+
+    let mut current_settings = current_settings_response["settings"]
+        .as_object()
+        .expect("room settings get should return settings object")
+        .clone();
+    current_settings.insert("chat_enabled".to_string(), Value::Bool(false));
+    current_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
+    let updated_settings_json =
+        serde_json::to_string(&Value::Object(current_settings)).expect("encode room settings json");
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "settings",
+            "update",
+            &room_id,
+            "--settings-json",
+            &updated_settings_json,
+        ],
+        "update room settings for grpc watch",
+    )
+    .await;
+
+    let updated_settings = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomSettings(settings))
+                    if settings.version > initial_version
+            )
+        },
+        "updated grpc room settings snapshot",
+    )
+    .await;
+
+    match updated_settings.message {
+        Some(server_message::Message::RoomSettings(settings)) => {
+            let decoded: Value =
+                serde_json::from_slice(&settings.settings).expect("decode updated settings");
+            assert_eq!(decoded["chat_enabled"], false);
+            assert_eq!(decoded["allow_guest_join"], true);
+            assert!(settings.version > initial_version);
+        }
+        other => panic!("expected updated room settings, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, ListPlaylistItemsRequest, WatchPlaylistItems};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let fixture = start_room_realtime_fixture("grpc-watch-playlist-items").await;
+    let RoomRealtimeFixture {
+        server,
+        room_id,
+        owner_username,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect member room gRPC client");
+
+    let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: Vec::new(),
+        page: 1,
+        page_size: 50,
+        search: String::new(),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    });
+    initial_list_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    initial_list_request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let initial_api_snapshot = member_room_client
+        .list_playlist_items(initial_list_request)
+        .await
+        .expect("initial playlist items request should succeed")
+        .into_inner();
+    assert_eq!(initial_api_snapshot.total, 0);
+    assert!(!initial_api_snapshot.version.is_empty());
+
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
+    outbound_tx
+        .send(ClientMessage {
+            message: Some(client_message::Message::WatchPlaylistItems(
+                WatchPlaylistItems {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 50,
+                    search: String::new(),
+                    source_provider: String::new(),
+                    provider_instance_name: String::new(),
+                    sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                    version: String::new(),
+                },
+            )),
+        })
+        .await
+        .expect("queue initial playlist items watch request");
+    let outbound = ReceiverStream::new(outbound_rx);
+    let mut request = tonic::Request::new(outbound);
+    request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let mut inbound = member_room_client
+        .message_stream(request)
+        .await
+        .expect("message_stream should establish")
+        .into_inner();
+
+    let initial_snapshot = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaylistItems(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.total == 0 && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial grpc playlist items snapshot",
+    )
+    .await;
+    let initial_version = match initial_snapshot.message {
+        Some(server_message::Message::PlaylistItems(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("playlist items snapshot should be present");
+            assert_eq!(snapshot.version, initial_api_snapshot.version);
+            assert_eq!(snapshot.total, 0);
+            snapshot.version
+        }
+        other => panic!("expected playlist items snapshot, got: {other:?}"),
+    };
+
+    let added_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/grpc-watch-playlist-items-one.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "gRPC Watch Playlist Items One",
+        ],
+        "add first room media for grpc playlist items watch",
+    )
+    .await;
+    let media_id = added_media["media"]["id"]
+        .as_str()
+        .expect("media add should return media.id")
+        .to_string();
+
+    let updated_snapshot = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaylistItems(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media.iter().any(|media| media.id == media_id)
+                            && snapshot.total == 1
+                            && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "updated grpc playlist items snapshot",
+    )
+    .await;
+
+    match updated_snapshot.message {
+        Some(server_message::Message::PlaylistItems(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.total, 1);
+            assert!(snapshot.media.iter().any(|media| media.id == media_id));
+            assert_ne!(
+                snapshot.version, initial_version,
+                "playlist-items version should change after media is added"
+            );
+        }
+        other => panic!("expected updated playlist items snapshot, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchRoomMembers};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let fixture = start_room_realtime_fixture("grpc-watch-room-members").await;
+    let RoomRealtimeFixture {
+        server,
+        room_id,
+        member_user_id,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect member room gRPC client");
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
+    outbound_tx
+        .send(ClientMessage {
+            message: Some(client_message::Message::WatchRoomMembers(WatchRoomMembers {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                role: None,
+                status: None,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                version: String::new(),
+            })),
+        })
+        .await
+        .expect("queue initial room members watch request");
+    let outbound = ReceiverStream::new(outbound_rx);
+    let mut request = tonic::Request::new(outbound);
+    request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let mut inbound = member_room_client
+        .message_stream(request)
+        .await
+        .expect("message_stream should establish")
+        .into_inner();
+
+    let initial_members = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomMembers(changed))
+                    if changed.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.total == 2 && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial grpc room members snapshot",
+    )
+    .await;
+    let initial_version = match initial_members.message {
+        Some(server_message::Message::RoomMembers(changed)) => {
+            let snapshot = changed.snapshot.expect("room members snapshot should be present");
+            assert!(
+                snapshot.members.iter().any(|member| member.user_id == member_user_id),
+                "initial room members snapshot should include the joined member"
+            );
+            snapshot.version
+        }
+        other => panic!("expected room members snapshot, got: {other:?}"),
+    };
+
+    let suffix = unique_test_suffix();
+    let joiner_username = bounded_test_username("grpc-watch-room-members", "joiner", &suffix);
+    let joiner_email = format!("grpc-watch-room-members-joiner-{suffix}@example.com");
+    let joiner_password = "GrpcWatchMembersJoin123!";
+    let created_joiner = create_cli_user(
+        &server,
+        &joiner_username,
+        &joiner_email,
+        joiner_password,
+        Some("active"),
+        "create grpc room-members joiner",
+    )
+    .await;
+    let joiner_id = created_joiner["user"]["id"]
+        .as_str()
+        .expect("joiner create should return user id")
+        .to_string();
+    let joiner_token = login_http_ok_token(&server, &joiner_username, joiner_password).await;
+    let join_response = join_room_http(&server, &room_id, "", &joiner_token).await;
+    assert_eq!(
+        join_response.status(),
+        StatusCode::OK,
+        "joiner should join room for grpc room-members watch"
+    );
+
+    let updated_members = recv_matching_grpc_server_message(
+        &mut inbound,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomMembers(changed))
+                    if changed.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.version != initial_version
+                            && snapshot.members.iter().any(|member| member.user_id == joiner_id)
+                    })
+            )
+        },
+        "updated grpc room members snapshot",
+    )
+    .await;
+
+    match updated_members.message {
+        Some(server_message::Message::RoomMembers(changed)) => {
+            let snapshot = changed.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.total, 3);
+            assert_ne!(snapshot.version, initial_version);
+            assert!(
+                snapshot.members.iter().any(|member| member.user_id == joiner_id),
+                "updated room members snapshot should include the new joiner"
+            );
+        }
+        other => panic!("expected updated room members snapshot, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_message_stream_requires_join_room_first() {
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
@@ -6153,6 +6805,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 serde_json::from_slice(&settings.settings).expect("decode room settings payload");
             assert_eq!(decoded["chat_enabled"], false);
             assert_eq!(decoded["allow_guest_join"], true);
+            assert!(settings.version > 0, "room settings change should carry version");
         }
         other => panic!("expected RoomSettingsChanged, got: {other:?}"),
     }
@@ -6442,6 +7095,606 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         "playlist deleted broadcast",
     )
     .await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchPlaybackSnapshot};
+
+    let fixture = start_room_realtime_fixture("ws-watch-playback-snapshot").await;
+    let RoomRealtimeFixture {
+        server,
+        api_addr,
+        room_id,
+        owner_username,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        "initial websocket UserJoined",
+    )
+    .await;
+
+    let first_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/ws-watch-playback-one.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "WS Watch Playback One",
+        ],
+        "add first room media for websocket playback watch",
+    )
+    .await;
+    let media_one_id = first_media["media"]["id"]
+        .as_str()
+        .expect("first media add should return media.id")
+        .to_string();
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::MediaAdded(media))
+                    if media.media_id == media_one_id
+            )
+        },
+        "first media added broadcast",
+    )
+    .await;
+
+    let second_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/ws-watch-playback-two.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "WS Watch Playback Two",
+        ],
+        "add second room media for websocket playback watch",
+    )
+    .await;
+    let media_two_id = second_media["media"]["id"]
+        .as_str()
+        .expect("second media add should return media.id")
+        .to_string();
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::MediaAdded(media))
+                    if media.media_id == media_two_id
+            )
+        },
+        "second media added broadcast",
+    )
+    .await;
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_one_id,
+        ],
+        "start first playback for websocket watch",
+    )
+    .await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaybackState(playback))
+                    if playback
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.playing_media_id == media_one_id)
+            )
+        },
+        "first playback state broadcast",
+    )
+    .await;
+
+    send_client_message(
+        &mut member_ws,
+        ClientMessage {
+            message: Some(client_message::Message::WatchPlaybackSnapshot(
+                WatchPlaybackSnapshot {
+                    version: String::new(),
+                    media_id: String::new(),
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                },
+            )),
+        },
+    )
+    .await;
+
+    let initial_snapshot = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaybackSnapshot(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media_id == media_one_id && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial playback snapshot",
+    )
+    .await;
+    let initial_version = match initial_snapshot.message {
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => snapshot
+            .snapshot
+            .expect("playback snapshot should be present")
+            .version,
+        other => panic!("expected playback snapshot, got: {other:?}"),
+    };
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "playback",
+            "start",
+            "--room-id",
+            &room_id,
+            "--media-id",
+            &media_two_id,
+        ],
+        "start second playback for websocket watch",
+    )
+    .await;
+
+    let updated_snapshot = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaybackSnapshot(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media_id == media_two_id && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "updated playback snapshot",
+    )
+    .await;
+
+    match updated_snapshot.message {
+        Some(server_message::Message::PlaybackSnapshot(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.media_id, media_two_id);
+            assert_eq!(
+                snapshot.version, initial_version,
+                "switching between newly-created media should preserve resource version"
+            );
+        }
+        other => panic!("expected updated playback snapshot, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchRoomSettings};
+
+    let fixture = start_room_realtime_fixture("ws-watch-room-settings").await;
+    let RoomRealtimeFixture {
+        server,
+        api_addr,
+        room_id,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        "initial websocket UserJoined",
+    )
+    .await;
+
+    send_client_message(
+        &mut member_ws,
+        ClientMessage {
+            message: Some(client_message::Message::WatchRoomSettings(WatchRoomSettings {
+                version: None,
+            })),
+        },
+    )
+    .await;
+
+    let current_settings_response = run_synctv_remote_cli_json(
+        &server,
+        &["room", "settings", "get", &room_id],
+        "get room settings before websocket watch",
+    )
+    .await;
+    let expected_initial_version = current_settings_response["version"]
+        .as_i64()
+        .expect("room settings get should return version");
+    let expected_initial_settings = current_settings_response["settings"].clone();
+
+    let initial_settings = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| matches!(
+            &message.message,
+            Some(server_message::Message::RoomSettings(_))
+        ),
+        "initial websocket room settings snapshot",
+    )
+    .await;
+    let initial_version = match initial_settings.message {
+        Some(server_message::Message::RoomSettings(settings)) => {
+            let decoded: Value =
+                serde_json::from_slice(&settings.settings).expect("decode initial settings");
+            assert_eq!(decoded, expected_initial_settings);
+            assert_eq!(settings.version, expected_initial_version);
+            settings.version
+        }
+        other => panic!("expected room settings snapshot, got: {other:?}"),
+    };
+
+    let mut current_settings = current_settings_response["settings"]
+        .as_object()
+        .expect("room settings get should return settings object")
+        .clone();
+    current_settings.insert("chat_enabled".to_string(), Value::Bool(false));
+    current_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
+    let updated_settings_json =
+        serde_json::to_string(&Value::Object(current_settings)).expect("encode room settings json");
+
+    let _ = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "room",
+            "settings",
+            "update",
+            &room_id,
+            "--settings-json",
+            &updated_settings_json,
+        ],
+        "update room settings for websocket watch",
+    )
+    .await;
+
+    let updated_settings = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomSettings(settings))
+                    if settings.version > initial_version
+            )
+        },
+        "updated websocket room settings snapshot",
+    )
+    .await;
+
+    match updated_settings.message {
+        Some(server_message::Message::RoomSettings(settings)) => {
+            let decoded: Value =
+                serde_json::from_slice(&settings.settings).expect("decode updated settings");
+            assert_eq!(decoded["chat_enabled"], false);
+            assert_eq!(decoded["allow_guest_join"], true);
+            assert!(settings.version > initial_version);
+        }
+        other => panic!("expected updated room settings, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, ListPlaylistItemsRequest, WatchPlaylistItems};
+
+    let fixture = start_room_realtime_fixture("ws-watch-playlist-items").await;
+    let RoomRealtimeFixture {
+        server,
+        api_addr,
+        room_id,
+        owner_username,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| matches!(message.message, Some(server_message::Message::UserJoined(_))),
+        "initial websocket UserJoined",
+    )
+    .await;
+
+    let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
+        .await
+        .expect("connect member room gRPC client");
+    let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: Vec::new(),
+        page: 1,
+        page_size: 50,
+        search: String::new(),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+    });
+    initial_list_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    initial_list_request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let initial_api_snapshot = member_room_client
+        .list_playlist_items(initial_list_request)
+        .await
+        .expect("initial playlist items request should succeed")
+        .into_inner();
+    let expected_initial_version = initial_api_snapshot.version.clone();
+    assert_eq!(
+        initial_api_snapshot.total, 0,
+        "new room should start with an empty playlist-items snapshot"
+    );
+
+    send_client_message(
+        &mut member_ws,
+        ClientMessage {
+            message: Some(client_message::Message::WatchPlaylistItems(
+                WatchPlaylistItems {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 50,
+                    search: String::new(),
+                    source_provider: String::new(),
+                    provider_instance_name: String::new(),
+                    sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                    version: String::new(),
+                },
+            )),
+        },
+    )
+    .await;
+
+    let initial_snapshot = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaylistItems(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.total == 0 && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial websocket playlist items snapshot",
+    )
+    .await;
+    let initial_version = match initial_snapshot.message {
+        Some(server_message::Message::PlaylistItems(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("playlist items snapshot should be present");
+            assert_eq!(snapshot.version, expected_initial_version);
+            assert_eq!(snapshot.total, 0);
+            snapshot.version
+        }
+        other => panic!("expected playlist items snapshot, got: {other:?}"),
+    };
+
+    let added_media = run_synctv_remote_cli_json(
+        &server,
+        &[
+            "media",
+            "add-url",
+            "https://cdn.example.com/ws-watch-playlist-items-one.mp4",
+            "--room-id",
+            &room_id,
+            "--username",
+            &owner_username,
+            "--title",
+            "WS Watch Playlist Items One",
+        ],
+        "add first room media for websocket playlist items watch",
+    )
+    .await;
+    let media_id = added_media["media"]["id"]
+        .as_str()
+        .expect("media add should return media.id")
+        .to_string();
+
+    let updated_snapshot = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::PlaylistItems(snapshot))
+                    if snapshot.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.media.iter().any(|media| media.id == media_id)
+                            && snapshot.total == 1
+                            && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "updated websocket playlist items snapshot",
+    )
+    .await;
+
+    match updated_snapshot.message {
+        Some(server_message::Message::PlaylistItems(snapshot)) => {
+            let snapshot = snapshot.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.total, 1);
+            assert!(snapshot.media.iter().any(|media| media.id == media_id));
+            assert_ne!(
+                snapshot.version, initial_version,
+                "playlist-items version should change after media is added"
+            );
+        }
+        other => panic!("expected updated playlist items snapshot, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_websocket_watch_room_members_receives_initial_and_future_updates() {
+    use synctv_proto::client::client_message;
+    use synctv_proto::client::server_message;
+    use synctv_proto::client::{ClientMessage, WatchRoomMembers};
+
+    let fixture = start_room_realtime_fixture("ws-watch-room-members").await;
+    let RoomRealtimeFixture {
+        server,
+        api_addr,
+        room_id,
+        member_user_id,
+        member_token,
+        ..
+    } = fixture;
+
+    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
+    send_client_message(
+        &mut member_ws,
+        ClientMessage {
+            message: Some(client_message::Message::WatchRoomMembers(WatchRoomMembers {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                role: None,
+                status: None,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                version: String::new(),
+            })),
+        },
+    )
+    .await;
+
+    let initial_members = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomMembers(changed))
+                    if changed.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.total == 2 && !snapshot.version.is_empty()
+                    })
+            )
+        },
+        "initial websocket room members snapshot",
+    )
+    .await;
+    let initial_version = match initial_members.message {
+        Some(server_message::Message::RoomMembers(changed)) => {
+            let snapshot = changed.snapshot.expect("room members snapshot should be present");
+            assert!(
+                snapshot.members.iter().any(|member| member.user_id == member_user_id),
+                "initial websocket room members snapshot should include the joined member"
+            );
+            snapshot.version
+        }
+        other => panic!("expected room members snapshot, got: {other:?}"),
+    };
+
+    let suffix = unique_test_suffix();
+    let joiner_username = bounded_test_username("ws-watch-room-members", "joiner", &suffix);
+    let joiner_email = format!("ws-watch-room-members-joiner-{suffix}@example.com");
+    let joiner_password = "WsWatchMembersJoin123!";
+    let created_joiner = create_cli_user(
+        &server,
+        &joiner_username,
+        &joiner_email,
+        joiner_password,
+        Some("active"),
+        "create websocket room-members joiner",
+    )
+    .await;
+    let joiner_id = created_joiner["user"]["id"]
+        .as_str()
+        .expect("joiner create should return user id")
+        .to_string();
+    let joiner_token = login_http_ok_token(&server, &joiner_username, joiner_password).await;
+    let join_response = join_room_http(&server, &room_id, "", &joiner_token).await;
+    assert_eq!(
+        join_response.status(),
+        StatusCode::OK,
+        "joiner should join room for websocket room-members watch"
+    );
+
+    let updated_members = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::RoomMembers(changed))
+                    if changed.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.version != initial_version
+                            && snapshot.members.iter().any(|member| member.user_id == joiner_id)
+                    })
+            )
+        },
+        "updated websocket room members snapshot",
+    )
+    .await;
+
+    match updated_members.message {
+        Some(server_message::Message::RoomMembers(changed)) => {
+            let snapshot = changed.snapshot.expect("updated snapshot should be present");
+            assert_eq!(snapshot.total, 3);
+            assert_ne!(snapshot.version, initial_version);
+            assert!(
+                snapshot.members.iter().any(|member| member.user_id == joiner_id),
+                "updated room members snapshot should include the new joiner"
+            );
+        }
+        other => panic!("expected updated room members snapshot, got: {other:?}"),
+    }
 }
 
 #[tokio::test]

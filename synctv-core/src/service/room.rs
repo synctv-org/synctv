@@ -91,6 +91,7 @@ use crate::{
         permission::PermissionService,
         playback::PlaybackService,
         playlist::PlaylistService,
+        room_settings::RoomSettingsService,
         user::UserService,
         ProvidersManager,
     },
@@ -159,6 +160,7 @@ pub struct RoomService {
     playlist_service: PlaylistService,
     media_service: MediaService,
     playback_service: PlaybackService,
+    room_settings_service: RoomSettingsService,
     notification_service: NotificationService,
     user_service: UserService,
 
@@ -169,7 +171,7 @@ pub struct RoomService {
     audit_service: Option<Arc<AuditService>>,
 
     /// Optional brute-force protection for room password verification
-    brute_force_service: Option<crate::service::auth::BruteForceProtection>,
+    brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
 
     /// Optional settings registry for reading `create_room_need_review` setting
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
@@ -572,6 +574,11 @@ impl RoomService {
         &self.permission_service
     }
 
+    #[must_use]
+    pub const fn room_settings_service(&self) -> &RoomSettingsService {
+        &self.room_settings_service
+    }
+
     /// Get the user service used by room coordination flows.
     #[must_use]
     pub const fn user_service(&self) -> &UserService {
@@ -595,6 +602,8 @@ impl RoomService {
             .set_invalidation_service(Arc::clone(&service));
         self.member_service
             .set_cache_invalidation(Arc::clone(&service));
+        self.room_settings_service
+            .set_invalidation_service(Arc::clone(&service));
         self.cache_invalidation = Some(service);
     }
 
@@ -720,6 +729,13 @@ impl RoomService {
             media_service.clone(),
             user_service.clone(),
         );
+        let room_settings_service = RoomSettingsService::new(
+            room_settings_repo.clone(),
+            None,
+            Arc::new(notification_service.clone()),
+            None,
+            None,
+        );
 
         Self {
             pool,
@@ -736,6 +752,7 @@ impl RoomService {
             playlist_service,
             media_service,
             playback_service,
+            room_settings_service,
             notification_service,
             user_service,
             cache_invalidation: None,
@@ -756,7 +773,18 @@ impl RoomService {
     }
 
     /// Inject the brute-force protection service for room password rate limiting.
-    pub fn set_brute_force_service(&mut self, service: crate::service::auth::BruteForceProtection) {
+    pub fn set_brute_force_service<T>(&mut self, service: T)
+    where
+        T: crate::service::auth::BruteForceProtectionService + 'static,
+    {
+        self.set_brute_force_service_arc(Arc::new(service));
+    }
+
+    /// Inject a pre-built brute-force protection service trait object.
+    pub fn set_brute_force_service_arc(
+        &mut self,
+        service: Arc<dyn crate::service::auth::BruteForceProtectionService>,
+    ) {
         self.brute_force_service = Some(service);
     }
 
@@ -2407,7 +2435,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         settings: RoomSettings,
-    ) -> Result<Room> {
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         // Check permission
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
@@ -2417,7 +2445,7 @@ impl RoomService {
         settings.validate_permissions()?;
 
         // Verify room exists
-        let room = self
+        self
             .room_repo
             .get_by_id(&room_id)
             .await?
@@ -2429,7 +2457,7 @@ impl RoomService {
         let room_settings_repo = self.room_settings_repo.clone();
         let audit_service = self.audit_service.clone();
 
-        let (previous_settings, updated_settings) =
+        let (previous_settings, updated_settings, updated_version) =
             super::optimistic_retry::retry_with_optimistic_lock_timeout(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
@@ -2441,26 +2469,29 @@ impl RoomService {
                 let room_settings_repo = room_settings_repo.clone();
                 async move {
                     let (current, version) = room_settings_repo.get_with_version(&room_id).await?;
-                    room_settings_repo
+                    let new_version = room_settings_repo
                         .set_settings_with_version(&room_id, &settings, version)
                         .await?;
-                    Ok((current, settings))
+                    Ok((current, settings, new_version))
                 }
             },
         )
         .await?;
 
-        let settings_json = self
+        let snapshot = self
             .finalize_room_settings_update(
                 &room_id,
                 &previous_settings,
                 &updated_settings,
+                updated_version,
                 Some(&user_id),
                 "",
             )
             .await?;
 
         if let Some(ref audit) = audit_service {
+            let settings_json = serde_json::to_value(&snapshot.settings)
+                .internal_with_err("Failed to serialize settings")?;
             let _ = audit
                 .log(
                     user_id.as_str().to_string(),
@@ -2475,7 +2506,7 @@ impl RoomService {
                 .await;
         }
 
-        Ok(room)
+        Ok(snapshot)
     }
 
     // ========== Query Operations ==========
@@ -2500,13 +2531,22 @@ impl RoomService {
     /// Get room with settings
     pub async fn get_room_with_settings(&self, room_id: &RoomId) -> Result<(Room, RoomSettings)> {
         let room = self.get_room(room_id).await?;
-        let settings = self.room_settings_repo.get(room_id).await?;
+        let settings = self.room_settings_service.get(room_id).await?;
         Ok((room, settings))
     }
 
     /// Get room settings
     pub async fn get_room_settings(&self, room_id: &RoomId) -> Result<RoomSettings> {
-        self.room_settings_repo.get(room_id).await
+        self.room_settings_service.get(room_id).await
+    }
+
+    /// Get room settings together with the optimistic-lock version.
+    pub async fn get_room_settings_with_version(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<(RoomSettings, i64)> {
+        let snapshot = self.room_settings_service.get_with_version(room_id).await?;
+        Ok((snapshot.settings, snapshot.version))
     }
 
     /// Get the current room-wide guest token version.
@@ -2547,27 +2587,33 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-    ) -> Result<RoomSettings> {
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         settings.validate_permissions()?;
 
-        let (previous_settings, updated_settings) =
+        let (previous_settings, updated_settings, updated_version) =
             super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings update failed after maximum retry attempts",
             || async {
                 let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                self.room_settings_repo
+                let new_version = self
+                    .room_settings_repo
                     .set_settings_with_version(room_id, settings, version)
                     .await?;
-                Ok((current, settings.clone()))
+                Ok((current, settings.clone(), new_version))
             },
         )
         .await?;
-        self.finalize_room_settings_update(room_id, &previous_settings, &updated_settings, None, "")
-            .await?;
-
-        Ok(updated_settings)
+        self.finalize_room_settings_update(
+            room_id,
+            &previous_settings,
+            &updated_settings,
+            updated_version,
+            None,
+            "",
+        )
+        .await
     }
 
     /// Update single room setting by key (requires `SET_ROOM_SETTINGS` permission)
@@ -2597,6 +2643,7 @@ impl RoomService {
         // 3. CAS update with retry
         let mut previous_settings = None;
         let mut final_settings = None;
+        let mut final_version = None;
         for attempt in 0..Self::MAX_RETRIES {
             let (mut settings, version) = self.room_settings_repo.get_with_version(room_id).await?;
             let current = settings.clone();
@@ -2608,9 +2655,10 @@ impl RoomService {
                 .set_settings_with_version(room_id, &settings, version)
                 .await
             {
-                Ok(_new_version) => {
+                Ok(new_version) => {
                     previous_settings = Some(current);
                     final_settings = Some(settings);
+                    final_version = Some(new_version);
                     break;
                 }
                 Err(Error::OptimisticLockConflict) => {
@@ -2635,11 +2683,22 @@ impl RoomService {
         let settings = final_settings.ok_or_else(|| {
             Error::Internal("Settings update failed after maximum retry attempts".to_string())
         })?;
+        let version = final_version.ok_or_else(|| {
+            Error::Internal("Settings update failed after maximum retry attempts".to_string())
+        })?;
 
-        self.finalize_room_settings_update(room_id, &previous_settings, &settings, Some(user_id), "")
-            .await?;
+        let snapshot = self
+            .finalize_room_settings_update(
+            room_id,
+            &previous_settings,
+            &settings,
+            version,
+            Some(user_id),
+            "",
+        )
+        .await?;
 
-        serde_json::to_string(&settings).internal_with_err("Failed to serialize settings")
+        serde_json::to_string(&snapshot.settings).internal_with_err("Failed to serialize settings")
     }
 
     async fn finalize_room_settings_update(
@@ -2647,11 +2706,13 @@ impl RoomService {
         room_id: &RoomId,
         previous_settings: &RoomSettings,
         updated_settings: &RoomSettings,
+        version: i64,
         actor_user_id: Option<&UserId>,
         actor_username: &str,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         self.run_post_apply_hooks_for_settings_update(room_id, previous_settings, updated_settings)
             .await;
+        self.room_settings_service.invalidate_local(room_id).await;
         self.permission_service.invalidate_room_cache(room_id).await;
         self.notify_room_invalidation(room_id).await;
         self.notify_room_settings_invalidation(room_id).await;
@@ -2663,9 +2724,13 @@ impl RoomService {
             actor_user_id,
             actor_username,
             settings_json.clone(),
+            version,
         );
 
-        Ok(settings_json)
+        Ok(crate::service::room_settings::RoomSettingsSnapshot {
+            settings: updated_settings.clone(),
+            version,
+        })
     }
 
     async fn run_post_apply_hooks_for_settings_update(
@@ -2697,23 +2762,28 @@ impl RoomService {
     }
 
     /// Reset room settings to default values with optimistic locking.
-    pub async fn reset_room_settings(&self, room_id: &RoomId, user_id: &UserId) -> Result<String> {
+    pub async fn reset_room_settings(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         self.permission_service
             .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
 
         let default_settings = RoomSettings::default();
 
-        let (previous_settings, updated_settings) = super::optimistic_retry::retry_with_optimistic_lock(
+        let (previous_settings, updated_settings, updated_version) = super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings reset failed after maximum retry attempts",
             || async {
                 let (current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                self.room_settings_repo
+                let new_version = self
+                    .room_settings_repo
                     .set_settings_with_version(room_id, &default_settings, version)
                     .await?;
-                Ok((current, default_settings.clone()))
+                Ok((current, default_settings.clone(), new_version))
             },
         )
         .await?;
@@ -2721,12 +2791,11 @@ impl RoomService {
             room_id,
             &previous_settings,
             &updated_settings,
+            updated_version,
             Some(user_id),
             "",
         )
-        .await?;
-
-        serde_json::to_string(&updated_settings).internal_with_err("Failed to serialize settings")
+        .await
     }
 
     /// Check room password
@@ -2869,8 +2938,21 @@ impl RoomService {
         room_id: &RoomId,
         password_hash: Option<String>,
     ) -> Result<()> {
+        self.update_room_password_as(room_id, None, "", password_hash)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn update_room_password_as(
+        &self,
+        room_id: &RoomId,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+        password_hash: Option<String>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         let password_was_set = password_hash.is_some();
         self.do_set_password_hash(room_id, password_hash).await?;
+        self.room_settings_service.invalidate_local(room_id).await;
 
         if password_was_set {
             if let Err(e) = self
@@ -2890,7 +2972,9 @@ impl RoomService {
 
         // Invalidate room cache across all replicas after membership side effects complete
         self.notify_room_invalidation(room_id).await;
-        Ok(())
+        self.notify_room_settings_invalidation(room_id).await;
+        self.emit_room_settings_snapshot_after_password_update(room_id, actor_user_id, actor_username)
+            .await
     }
 
     /// Core password update logic: atomically set/remove password hash and sync `require_password`.
@@ -4240,6 +4324,18 @@ impl RoomService {
         room_id: &RoomId,
         new_password: Option<&str>,
     ) -> Result<()> {
+        self.admin_set_room_password_as(room_id, new_password, None, "")
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn admin_set_room_password_as(
+        &self,
+        room_id: &RoomId,
+        new_password: Option<&str>,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         // Verify room exists
         let _room = self
             .room_repo
@@ -4255,6 +4351,7 @@ impl RoomService {
         };
 
         self.do_set_password_hash(room_id, hashed_password).await?;
+        self.room_settings_service.invalidate_local(room_id).await;
 
         if password_is_being_set {
             if let Err(e) = self.remove_guest_role_members(room_id).await {
@@ -4266,8 +4363,37 @@ impl RoomService {
         }
 
         self.notify_room_invalidation(room_id).await;
+        self.notify_room_settings_invalidation(room_id).await;
 
-        Ok(())
+        self.emit_room_settings_snapshot_after_password_update(room_id, actor_user_id, actor_username)
+            .await
+    }
+
+    async fn emit_room_settings_snapshot_after_password_update(
+        &self,
+        room_id: &RoomId,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        let snapshot = self
+            .room_settings_service
+            .get_refresh_with_version(room_id)
+            .await?;
+        let resolved_actor_username = match actor_user_id {
+            Some(user_id) if actor_username.is_empty() => self.resolve_actor_username(user_id).await,
+            Some(_) => actor_username.to_string(),
+            None => String::new(),
+        };
+        let settings_json = serde_json::to_value(&snapshot.settings)
+            .internal_with_err("Failed to serialize settings")?;
+        let _ = self.notification_service.notify_settings_updated(
+            room_id,
+            actor_user_id,
+            &resolved_actor_username,
+            settings_json,
+            snapshot.version,
+        );
+        Ok(snapshot)
     }
 
     /// Remove all active `RoomRole::Guest` members from a room.

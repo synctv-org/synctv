@@ -21,16 +21,26 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 use super::client::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
     media_to_proto, media_to_proto_with_availability, member_status_to_proto,
-    playback_result_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
+    playback_snapshot_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
     playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
     room_to_proto_basic, sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
+use crate::impls::client::media::{
+    build_move_media_fanout_plan, publish_move_media_fanout,
+};
 use crate::impls::client::proto_role_to_room_role;
+use crate::impls::playback_snapshot::{
+    dynamic_playback_snapshot_version, playback_snapshot_expires_at,
+    static_playback_snapshot_version,
+};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
+use crate::membership_event_fanout::{
+    default_membership_event_fanout_service, MembershipEventFanoutService,
+};
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
 use crate::realtime_lifecycle::{
     default_realtime_lifecycle_service, DeletedRoomFanoutReservation, RealtimeLifecycleService,
@@ -39,7 +49,7 @@ use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanou
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service, RoomLifecycleFanoutService,
 };
-use crate::runtime::RealtimeConnectionService;
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 /// HTTP request context for audit logging (IP address and User-Agent).
 #[derive(Debug, Clone, Default)]
@@ -243,16 +253,18 @@ pub struct AdminApiImpl {
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub config: Arc<synctv_core::Config>,
     pub cluster_fanout: Arc<dyn ClusterFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
     pub member_fanout: Arc<dyn MemberFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
     pub media_fanout: Arc<dyn MediaFanoutService>,
     pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
     pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
+    pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
 }
@@ -581,7 +593,7 @@ impl AdminApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
-    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
@@ -591,7 +603,10 @@ impl AdminApiImpl {
                 Some(&signing_key),
                 None,
             );
-            return Ok(playback_result_to_proto(&embedded_result));
+            let mut snapshot = playback_snapshot_to_proto(&embedded_result);
+            snapshot.version = static_playback_snapshot_version(&media);
+            snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+            return Ok(snapshot);
         }
 
         let providers_manager = self.room_service.media_service().providers_manager();
@@ -675,7 +690,10 @@ impl AdminApiImpl {
             Some(&signing_key),
             default_mode_expires_at,
         );
-        Ok(playback_result_to_proto(&full_result))
+        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        snapshot.version = static_playback_snapshot_version(&media);
+        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+        Ok(snapshot)
     }
 
     async fn build_dynamic_playlist_playback_result(
@@ -686,7 +704,7 @@ impl AdminApiImpl {
         user_id_model: &UserId,
         playlist_id: &PlaylistId,
         target: &[u8],
-    ) -> Result<crate::proto::client::PlaybackResult, ApiError> {
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let item = self
             .room_service
             .media_service()
@@ -777,7 +795,56 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        Ok(playback_result_to_proto(&full_result))
+        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        snapshot.version = dynamic_playback_snapshot_version(&playlist);
+        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
+        Ok(snapshot)
+    }
+
+    async fn build_playback_snapshot_from_state(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        if let Some(ref media_id) = state.playing_media_id {
+            let media = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+            return self
+                .build_static_media_playback_result(user_id.as_str(), room_id.as_str(), media)
+                .await;
+        }
+
+        if let Some(ref playlist_id) = state.playing_playlist_id {
+            return self
+                .build_dynamic_playlist_playback_result(
+                    user_id.as_str(),
+                    room_id.as_str(),
+                    room_id,
+                    user_id,
+                    playlist_id,
+                    &state.target,
+                )
+                .await;
+        }
+
+        Ok(crate::proto::client::PlaybackSnapshot {
+            media_id: String::new(),
+            playlist_id: String::new(),
+            room_id: room_id.as_str().to_string(),
+            name: String::new(),
+            position: 0.0,
+            playback_infos: std::collections::HashMap::new(),
+            default_mode: String::new(),
+            metadata: std::collections::HashMap::new(),
+            version: state.version.to_string(),
+            expires_at: None,
+        })
     }
 
     fn serialize_admin_settings_group(
@@ -861,15 +928,22 @@ impl AdminApiImpl {
         connection_service: Arc<dyn RealtimeConnectionService>,
         provider_instance_manager: Arc<RemoteProviderManager>,
         live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-        publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+        publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
         config: Arc<synctv_core::Config>,
         audit_service: Arc<AuditService>,
     ) -> Self {
         let cluster_fanout =
             default_cluster_fanout_service(None, config.cluster_runtime_enabled());
-        let room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        let room_settings_fanout =
+            default_room_settings_fanout_service(cluster_fanout.clone(), None);
         let member_fanout = default_member_fanout_service(cluster_fanout.clone());
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        let membership_event_fanout = default_membership_event_fanout_service(
+            cluster_fanout.clone(),
+            room_service.clone(),
+            user_service.clone(),
+            None,
+        );
+        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
         let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -892,11 +966,13 @@ impl AdminApiImpl {
             cluster_fanout,
             room_settings_fanout,
             member_fanout,
+            membership_event_fanout,
             media_fanout,
             playlist_fanout,
             room_cache_fanout,
             realtime_lifecycle,
             room_lifecycle_fanout,
+            realtime_event_service: None,
             audit_service,
             provider_stores: None,
         }
@@ -907,9 +983,21 @@ impl AdminApiImpl {
         mut self,
         cluster_fanout: Arc<dyn ClusterFanoutService>,
     ) -> Self {
-        self.room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        self.room_settings_fanout = default_room_settings_fanout_service(
+            cluster_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.member_fanout = default_member_fanout_service(cluster_fanout.clone());
-        self.media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        self.membership_event_fanout = default_membership_event_fanout_service(
+            cluster_fanout.clone(),
+            self.room_service.clone(),
+            self.user_service.clone(),
+            self.realtime_event_service.clone(),
+        );
+        self.media_fanout = default_media_fanout_service(
+            cluster_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
         self.room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
         self.realtime_lifecycle = default_realtime_lifecycle_service(
@@ -920,6 +1008,29 @@ impl AdminApiImpl {
         self.room_lifecycle_fanout =
             default_room_lifecycle_fanout_service(cluster_fanout.clone());
         self.cluster_fanout = cluster_fanout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_realtime_event_service(
+        mut self,
+        event_service: Arc<dyn RealtimeEventService>,
+    ) -> Self {
+        self.membership_event_fanout = default_membership_event_fanout_service(
+            self.cluster_fanout.clone(),
+            self.room_service.clone(),
+            self.user_service.clone(),
+            Some(event_service.clone()),
+        );
+        self.room_settings_fanout = default_room_settings_fanout_service(
+            self.cluster_fanout.clone(),
+            Some(event_service.clone()),
+        );
+        self.media_fanout = default_media_fanout_service(
+            self.cluster_fanout.clone(),
+            Some(event_service.clone()),
+        );
+        self.realtime_event_service = Some(event_service);
         self
     }
 
@@ -1236,10 +1347,30 @@ impl AdminApiImpl {
         } else {
             Some(req.new_password.as_str())
         };
-        self.room_service
-            .admin_set_room_password(&room_id, new_password)
+        let cache_invalidation = self.reserve_room_cache_invalidation().await?;
+        let room_settings_fanout = self
+            .room_settings_fanout
+            .reserve_settings_changed()
+            .await?;
+        let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
+            |_| admin_user_id.as_str().to_string(),
+            |actor| actor.username,
+        );
+        let snapshot = self
+            .room_service
+            .admin_set_room_password_as(&room_id, new_password, Some(admin_user_id), &admin_username)
             .await
             .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
+        self.room_settings_fanout.publish_settings_changed(
+            room_settings_fanout,
+            &room_id,
+            admin_user_id,
+            &admin_username,
+            settings_json,
+            snapshot.version,
+        );
+        self.publish_room_cache_invalidation(cache_invalidation, &room_id);
 
         // Audit log: room password change is a security-relevant operation (best-effort)
         self.log_admin_action(
@@ -1361,6 +1492,7 @@ impl AdminApiImpl {
         } else {
             proto_role_to_room_role(role)?
         };
+        let changed_by = admin_user_id.clone();
 
         let member = self
             .room_service
@@ -1374,6 +1506,10 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         let username = self
             .user_service
@@ -1432,6 +1568,7 @@ impl AdminApiImpl {
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id);
         let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let changed_by = admin_user_id.clone();
 
         let member = self
             .room_service
@@ -1443,6 +1580,10 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         let username = self
             .user_service
@@ -1505,6 +1646,7 @@ impl AdminApiImpl {
         let rid = crate::impls::proto_validated_room_id(room_id);
         let target_uid = crate::impls::proto_validated_user_id(user_id);
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason.as_str());
+        let changed_by = admin_user_id.clone();
 
         self.room_service
             .admin_reject_member(
@@ -1516,6 +1658,10 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .await?;
 
         self.log_admin_action(
             admin_user_id,
@@ -1558,6 +1704,10 @@ impl AdminApiImpl {
         } else {
             Some(proto_role_to_room_role(role)?)
         };
+        let permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
 
         let admin_username = self
             .load_admin_actor(admin_user_id)
@@ -1581,6 +1731,10 @@ impl AdminApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, admin_user_id, permission_fanout)
+            .await?;
 
         let username = self
             .user_service
@@ -1666,12 +1820,16 @@ impl AdminApiImpl {
         let crate::proto::admin::KickMemberRequest { room_id, user_id } = req;
         let rid = crate::impls::proto_validated_room_id(room_id);
         let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
+        let permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
-        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
 
         self.room_service
             .member_service()
@@ -1690,6 +1848,10 @@ impl AdminApiImpl {
 
         self.member_fanout
             .publish_kick_user_from_room(cluster_event, &rid, &target_uid, "kicked");
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, admin_user_id, permission_fanout)
+            .await?;
 
         self.room_service
             .permission_service()
@@ -1732,14 +1894,18 @@ impl AdminApiImpl {
         } else {
             Some(reason)
         };
+        let persisted_banned_by = (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+            .then(|| admin_user_id.clone());
+        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
+        let permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
-        let persisted_banned_by = (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID)
-            .then(|| admin_user_id.clone());
-        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
 
         self.room_service
             .member_service()
@@ -1760,6 +1926,10 @@ impl AdminApiImpl {
 
         self.member_fanout
             .publish_kick_user_from_room(cluster_event, &rid, &target_uid, "banned");
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, admin_user_id, permission_fanout)
+            .await?;
 
         self.room_service
             .permission_service()
@@ -1793,6 +1963,10 @@ impl AdminApiImpl {
         let crate::proto::admin::UnbanMemberRequest { room_id, user_id } = req;
         let rid = crate::impls::proto_validated_room_id(room_id);
         let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
@@ -1809,6 +1983,10 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &target_uid, admin_user_id, permission_fanout)
+            .await?;
 
         self.room_service
             .permission_service()
@@ -3145,15 +3323,16 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id);
-        let settings = self
+        let (settings, version) = self
             .room_service
-            .get_room_settings(&rid)
+            .get_room_settings_with_version(&rid)
             .await
             .map_err(ApiError::from)?;
         let settings_json = serde_json::to_vec(&settings).map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetRoomSettingsResponse {
             settings: settings_json,
+            version,
         })
     }
 
@@ -3166,14 +3345,17 @@ impl AdminApiImpl {
         let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
+        let cache_invalidation = self.reserve_room_cache_invalidation().await?;
         let room_settings_fanout = self
             .room_settings_fanout
             .reserve_settings_changed()
             .await?;
-        self.room_service
+        let snapshot = self
+            .room_service
             .set_room_settings(&rid, &settings)
             .await
             .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
 
         // Look up admin username for cluster event
         let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
@@ -3187,8 +3369,10 @@ impl AdminApiImpl {
                 &rid,
                 admin_user_id,
                 &admin_username,
-                req.settings.clone(),
+                settings_json,
+                snapshot.version,
             );
+        self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
         let room = self
             .room_service
@@ -3199,7 +3383,7 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::UpdateRoomSettingsResponse {
             room: Some(admin_room_to_proto(
                 &room,
-                Some(&settings),
+                Some(&snapshot.settings),
                 self.connection_service
                     .room_online_user_count_distributed(&rid)
                     .await
@@ -3220,11 +3404,13 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id);
         let default_settings = synctv_core::models::RoomSettings::default();
+        let cache_invalidation = self.reserve_room_cache_invalidation().await?;
         let room_settings_fanout = self
             .room_settings_fanout
             .reserve_settings_changed()
             .await?;
-        self.room_service
+        let snapshot = self
+            .room_service
             .set_room_settings(&rid, &default_settings)
             .await
             .map_err(ApiError::from)?;
@@ -3234,19 +3420,13 @@ impl AdminApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
-        let settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .unwrap_or(default_settings);
-
         // Look up admin username for cluster event
         let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
             |_| admin_user_id.as_str().to_string(),
             |actor| actor.username,
         );
 
-        let settings_json = serde_json::to_vec(&settings).unwrap_or_default();
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_settings_changed(
                 room_settings_fanout,
@@ -3254,12 +3434,14 @@ impl AdminApiImpl {
                 admin_user_id,
                 &admin_username,
                 settings_json,
+                snapshot.version,
             );
+        self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
         Ok(crate::proto::admin::ResetRoomSettingsResponse {
             room: Some(admin_room_to_proto(
                 &room,
-                Some(&settings),
+                Some(&snapshot.settings),
                 self.connection_service
                     .room_online_user_count_distributed(&rid)
                     .await
@@ -3842,43 +4024,25 @@ impl AdminApiImpl {
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-
-        let playback_result = if let Some(ref media_id) = state.playing_media_id {
-            let media = self
-                .room_service
-                .media_service()
-                .get_media(media_id)
-                .await
-                .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-            self.build_static_media_playback_result(admin_user_id.as_str(), room_id, media)
-                .await?
-        } else if let Some(ref playlist_id) = state.playing_playlist_id {
-            self.build_dynamic_playlist_playback_result(
-                admin_user_id.as_str(),
-                room_id,
-                &rid,
-                admin_user_id,
-                playlist_id,
-                &state.target,
-            )
-            .await?
-        } else {
-            crate::proto::client::PlaybackResult {
-                media_id: String::new(),
-                playlist_id: String::new(),
-                room_id: rid.as_str().to_string(),
-                name: String::new(),
-                position: 0.0,
-                playback_infos: std::collections::HashMap::new(),
-                default_mode: String::new(),
-                metadata: std::collections::HashMap::new(),
+        let playback_snapshot = match self
+            .build_playback_snapshot_from_state(admin_user_id, &rid, &state)
+            .await
+        {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %rid.as_str(),
+                    admin_user_id = %admin_user_id.as_str(),
+                    error = %error,
+                    "Admin playback snapshot generation failed; returning playback state only"
+                );
+                None
             }
         };
 
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(playback_state_to_proto(&state)),
-            playback_result: Some(playback_result),
+            playback_snapshot,
         })
     }
 
@@ -4374,7 +4538,7 @@ impl AdminApiImpl {
                 .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
                 .collect();
 
-            return Ok(crate::proto::client::ListPlaylistItemsResponse {
+            let mut response = crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
                 total: usize_to_i32_saturating(total),
@@ -4382,7 +4546,11 @@ impl AdminApiImpl {
                 file_count: usize_to_i32_saturating(file_count),
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
-            });
+                version: String::new(),
+            };
+            response.version =
+                crate::impls::client::media::compute_playlist_items_response_version(&response);
+            return Ok(response);
         };
 
         let playlist = self
@@ -4413,7 +4581,7 @@ impl AdminApiImpl {
             if !crate::impls::client::media::validate_dynamic_playlist_query_support(
                 &playlist, &req,
             )? {
-                return Ok(crate::proto::client::ListPlaylistItemsResponse {
+                let mut response = crate::proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
                     media: Vec::new(),
                     total: 0,
@@ -4421,7 +4589,11 @@ impl AdminApiImpl {
                     file_count: 0,
                     dynamic_items: Vec::new(),
                     current_path,
-                });
+                    version: String::new(),
+                };
+                response.version =
+                    crate::impls::client::media::compute_playlist_items_response_version(&response);
+                return Ok(response);
             }
 
             let page = page_i32_to_usize(req.page);
@@ -4479,7 +4651,7 @@ impl AdminApiImpl {
                 }
             }));
 
-            return Ok(crate::proto::client::ListPlaylistItemsResponse {
+            let mut response = crate::proto::client::ListPlaylistItemsResponse {
                 playlists: Vec::new(),
                 media: Vec::new(),
                 total: -1,
@@ -4487,7 +4659,11 @@ impl AdminApiImpl {
                 file_count: 0,
                 dynamic_items,
                 current_path,
-            });
+                version: String::new(),
+            };
+            response.version =
+                crate::impls::client::media::compute_playlist_items_response_version(&response);
+            return Ok(response);
         }
 
         if !req.target.is_empty() {
@@ -4600,7 +4776,7 @@ impl AdminApiImpl {
             .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
             .collect();
 
-        Ok(crate::proto::client::ListPlaylistItemsResponse {
+        let mut response = crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
             total: usize_to_i32_saturating(total),
@@ -4608,7 +4784,11 @@ impl AdminApiImpl {
             file_count: usize_to_i32_saturating(file_count),
             dynamic_items: Vec::new(),
             current_path,
-        })
+            version: String::new(),
+        };
+        response.version =
+            crate::impls::client::media::compute_playlist_items_response_version(&response);
+        Ok(response)
     }
 
     pub async fn add_media(
@@ -4786,6 +4966,13 @@ impl AdminApiImpl {
         let service_req = crate::impls::client::media::build_move_media_request(req)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
 
+        let media_fanout_plan = build_move_media_fanout_plan(
+            self.room_service.media_service(),
+            &self.media_fanout,
+            &rid,
+            &service_req,
+        )
+        .await?;
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
 
         let media = self
@@ -4799,6 +4986,15 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+
+        publish_move_media_fanout(
+            &self.media_fanout,
+            media_fanout_plan,
+            &rid,
+            admin_user_id,
+            &actor.username,
+            &media,
+        );
 
         self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
@@ -5322,6 +5518,7 @@ fn admin_room_to_proto(
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
         creator_status: user_status_to_proto(creator_status),
+        version: i64::from(room.version),
     }
 }
 
@@ -5471,7 +5668,8 @@ fn check_role_hierarchy(
 mod tests {
     use super::*;
     use crate::impls::ErrorKind;
-    use std::sync::Arc;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
 
     use synctv_cluster::sync::{ClusterEvent, ConnectionLimits, ConnectionManager};
     use synctv_core::models::{
@@ -5496,6 +5694,85 @@ mod tests {
         livestream::{external_publish_manager::ExternalPublishManager, PullStreamManager},
     };
     use tokio::sync::mpsc;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum MembershipEventFanoutCall {
+        ReservePermissionChanged,
+        PublishPermissionChanged {
+            room_id: String,
+            target_user_id: String,
+            changed_by: String,
+        },
+        ReserveUserLeft,
+        PublishUserLeft {
+            room_id: String,
+            user_id: String,
+        },
+    }
+
+    #[derive(Default)]
+    struct RecordingMembershipEventFanout {
+        calls: Mutex<Vec<MembershipEventFanoutCall>>,
+    }
+
+    impl RecordingMembershipEventFanout {
+        fn take_calls(&self) -> Vec<MembershipEventFanoutCall> {
+            let mut calls = self.calls.lock().expect("membership fanout calls lock");
+            std::mem::take(&mut *calls)
+        }
+
+        fn push(&self, call: MembershipEventFanoutCall) {
+            self.calls
+                .lock()
+                .expect("membership fanout calls lock")
+                .push(call);
+        }
+    }
+
+    #[async_trait]
+    impl MembershipEventFanoutService for RecordingMembershipEventFanout {
+        async fn reserve_permission_changed(
+            &self,
+        ) -> Result<Option<crate::impls::ClusterEventPublishReservation>, ApiError> {
+            self.push(MembershipEventFanoutCall::ReservePermissionChanged);
+            Ok(None)
+        }
+
+        async fn publish_permission_changed(
+            &self,
+            room_id: &RoomId,
+            target_user_id: &UserId,
+            changed_by: &UserId,
+            _reservation: Option<crate::impls::ClusterEventPublishReservation>,
+        ) -> Result<(), ApiError> {
+            self.push(MembershipEventFanoutCall::PublishPermissionChanged {
+                room_id: room_id.as_str().to_string(),
+                target_user_id: target_user_id.as_str().to_string(),
+                changed_by: changed_by.as_str().to_string(),
+            });
+            Ok(())
+        }
+
+        async fn reserve_user_left(
+            &self,
+        ) -> Result<Option<crate::impls::ClusterEventPublishReservation>, ApiError> {
+            self.push(MembershipEventFanoutCall::ReserveUserLeft);
+            Ok(None)
+        }
+
+        async fn publish_user_left(
+            &self,
+            room_id: &RoomId,
+            user_id: &UserId,
+            _reservation: Option<crate::impls::ClusterEventPublishReservation>,
+        ) -> Result<(), ApiError> {
+            self.push(MembershipEventFanoutCall::PublishUserLeft {
+                room_id: room_id.as_str().to_string(),
+                user_id: user_id.as_str().to_string(),
+            });
+            Ok(())
+        }
+    }
 
     #[test]
     fn local_management_actor_id_fits_fixed_width_audit_columns() {
@@ -5831,6 +6108,315 @@ mod tests {
             .expect("member should join room");
 
         room
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_add_member_publishes_permission_changed_membership_event() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (mut admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_add_member_fanout".to_string(),
+            email: Some("global_admin_add_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_add_member_fanout".to_string(),
+            email: Some("room_owner_add_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let target = synctv_core::models::User {
+            id: UserId::new(),
+            username: "target_add_member_fanout".to_string(),
+            email: Some("target_add_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        user_repo.create(&owner).await.expect("create owner");
+        user_repo.create(&target).await.expect("create target");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room for add member fanout test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let fanout = Arc::new(RecordingMembershipEventFanout::default());
+        admin_api.membership_event_fanout = fanout.clone();
+
+        let response = admin_api
+            .add_member(
+                crate::proto::admin::AddMemberRequest {
+                    room_id: room.id.as_str().to_string(),
+                    user_id: target.id.as_str().to_string(),
+                    role: synctv_proto::common::RoomMemberRole::Member as i32,
+                    notify: false,
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("admin add member should succeed");
+
+        assert_eq!(
+            response
+                .member
+                .expect("member should be returned")
+                .user_id,
+            target.id.as_str()
+        );
+        assert_eq!(
+            fanout.take_calls(),
+            vec![MembershipEventFanoutCall::PublishPermissionChanged {
+                room_id: room.id.as_str().to_string(),
+                target_user_id: target.id.as_str().to_string(),
+                changed_by: global_admin.id.as_str().to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_update_member_permissions_reserves_and_publishes_membership_event() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (mut admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_update_member_fanout".to_string(),
+            email: Some("global_admin_update_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_update_member_fanout".to_string(),
+            email: Some("room_owner_update_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let target = synctv_core::models::User {
+            id: UserId::new(),
+            username: "target_update_member_fanout".to_string(),
+            email: Some("target_update_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        user_repo.create(&owner).await.expect("create owner");
+        user_repo.create(&target).await.expect("create target");
+
+        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+
+        let fanout = Arc::new(RecordingMembershipEventFanout::default());
+        admin_api.membership_event_fanout = fanout.clone();
+
+        let response = admin_api
+            .update_member_permissions(
+                crate::proto::admin::UpdateMemberPermissionsRequest {
+                    room_id: room.id.as_str().to_string(),
+                    user_id: target.id.as_str().to_string(),
+                    role: synctv_proto::common::RoomMemberRole::Member as i32,
+                    added_permissions: 0b100,
+                    removed_permissions: 0b010,
+                    admin_added_permissions: 0,
+                    admin_removed_permissions: 0,
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("admin update member permissions should succeed");
+
+        assert_eq!(
+            response
+                .member
+                .expect("member should be returned")
+                .user_id,
+            target.id.as_str()
+        );
+        assert_eq!(
+            fanout.take_calls(),
+            vec![
+                MembershipEventFanoutCall::ReservePermissionChanged,
+                MembershipEventFanoutCall::PublishPermissionChanged {
+                    room_id: room.id.as_str().to_string(),
+                    target_user_id: target.id.as_str().to_string(),
+                    changed_by: global_admin.id.as_str().to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_kick_member_reserves_and_publishes_membership_event() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (mut admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_kick_member_fanout".to_string(),
+            email: Some("global_admin_kick_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_kick_member_fanout".to_string(),
+            email: Some("room_owner_kick_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let target = synctv_core::models::User {
+            id: UserId::new(),
+            username: "target_kick_member_fanout".to_string(),
+            email: Some("target_kick_member_fanout@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        user_repo.create(&owner).await.expect("create owner");
+        user_repo.create(&target).await.expect("create target");
+
+        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+
+        let fanout = Arc::new(RecordingMembershipEventFanout::default());
+        admin_api.membership_event_fanout = fanout.clone();
+
+        let response = admin_api
+            .kick_member(
+                crate::proto::admin::KickMemberRequest {
+                    room_id: room.id.as_str().to_string(),
+                    user_id: target.id.as_str().to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("admin kick member should succeed");
+
+        assert!(response.success);
+        assert_eq!(
+            fanout.take_calls(),
+            vec![
+                MembershipEventFanoutCall::ReservePermissionChanged,
+                MembershipEventFanoutCall::PublishPermissionChanged {
+                    room_id: room.id.as_str().to_string(),
+                    target_user_id: target.id.as_str().to_string(),
+                    changed_by: global_admin.id.as_str().to_string(),
+                },
+            ]
+        );
     }
 
     async fn create_room_media(
@@ -9535,11 +10121,112 @@ mod tests {
         assert_eq!(state.playing_media_id, media.id.as_str());
 
         let result = response
-            .playback_result
-            .expect("playback result should be present");
+            .playback_snapshot
+            .expect("playback snapshot should be present");
         assert_eq!(result.media_id, media.id.as_str());
         assert_eq!(result.room_id, room.id.as_str());
         assert_eq!(result.name, media.name);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_playback_returns_state_when_snapshot_generation_fails_for_global_admin() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+        let media_repo = MediaRepository::new(pool.clone());
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_playback_state_only".to_string(),
+            email: Some("global_admin_playback_state_only@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_playback_state_only".to_string(),
+            email: Some("room_owner_playback_state_only@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback degrade test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let media = synctv_core::models::Media::from_provider(
+            None,
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Broken Playback Provider".to_string(),
+            serde_json::json!({ "opaque": true }),
+            "missing_provider",
+            String::new(),
+            0.0,
+        );
+        media_repo.create(&media).await.expect("create media");
+
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(
+                room.id.clone(),
+                owner.id.clone(),
+                Some(media.id.clone()),
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("owner should seed playback state");
+
+        let response = admin_api
+            .get_playback(room.id.as_str(), &global_admin.id)
+            .await
+            .expect("global admin should get playback state even if snapshot generation fails");
+
+        let state = response
+            .playback_state
+            .expect("playback state should be present");
+        assert!(state.is_playing);
+        assert_eq!(state.playing_media_id, media.id.as_str());
+        assert!(
+            response.playback_snapshot.is_none(),
+            "admin playback queries should degrade to state-only responses on snapshot failures"
+        );
     }
 
     #[tokio::test]
@@ -9641,8 +10328,8 @@ mod tests {
             .expect("global admin should get signed provider playback");
 
         let result = response
-            .playback_result
-            .expect("playback result should be present");
+            .playback_snapshot
+            .expect("playback snapshot should be present");
         let direct = result
             .playback_infos
             .get("direct")
@@ -10525,8 +11212,10 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_admin_update_room_settings_fails_closed_when_cluster_fanout_fails() {
         let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
-        drop(redis_publish_rx);
+        let (admin_api, _default_redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+
+        let (redis_publish_tx, _redis_publish_rx) = tokio::sync::mpsc::channel(1);
 
         let mut cluster_config = Config::default();
         cluster_config.cluster.enabled = true;
@@ -10534,7 +11223,11 @@ mod tests {
         let admin_api = AdminApiImpl {
             config: Arc::new(cluster_config),
             ..admin_api
-        };
+        }
+        .with_cluster_fanout_service(crate::cluster_fanout::default_cluster_fanout_service(
+            Some(redis_publish_tx),
+            true,
+        ));
         let user_repo = UserRepository::new(pool.clone());
 
         let owner = synctv_core::models::User {
@@ -10619,7 +11312,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_admin_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
+    async fn test_admin_update_room_settings_fails_closed_when_room_cache_invalidation_fanout_fails()
+    {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
         drop(redis_publish_rx);
@@ -10631,6 +11325,260 @@ mod tests {
             config: Arc::new(cluster_config),
             ..admin_api
         };
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_admin_update_room_settings_cache".to_string(),
+            email: Some("room_owner_admin_update_room_settings_cache@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room settings admin update cache test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let original = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should be readable");
+        let updated = synctv_core::models::RoomSettings {
+            chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+            ..synctv_core::models::RoomSettings::default()
+        };
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let err = admin_api
+            .update_room_settings(
+                crate::proto::admin::UpdateRoomSettingsRequest {
+                    room_id: room.id.as_str().to_string(),
+                    settings: serde_json::to_vec(&updated).expect("serialize settings"),
+                },
+                &management_actor,
+            )
+            .await
+            .expect_err(
+                "cluster mode must fail closed when room cache invalidation fanout fails",
+            );
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(
+            err.message(),
+            "failed to fan out room cache invalidation to cluster replicas"
+        );
+
+        let settings = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should still be readable");
+        assert_eq!(
+            settings.chat_enabled.0, original.chat_enabled.0,
+            "settings update must not commit before room cache invalidation capacity is reserved"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_update_room_password_fails_closed_when_room_settings_fanout_fails() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _default_redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+
+        let (redis_publish_tx, _redis_publish_rx) = tokio::sync::mpsc::channel(1);
+
+        let mut cluster_config = Config::default();
+        cluster_config.cluster.enabled = true;
+        cluster_config.redis.url = "redis://127.0.0.1:6379".to_string();
+        let admin_api = AdminApiImpl {
+            config: Arc::new(cluster_config),
+            ..admin_api
+        }
+        .with_cluster_fanout_service(crate::cluster_fanout::default_cluster_fanout_service(
+            Some(redis_publish_tx),
+            true,
+        ));
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_admin_update_room_password".to_string(),
+            email: Some("room_owner_admin_update_room_password@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room password admin update test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let err = admin_api
+            .update_room_password(
+                crate::proto::admin::UpdateRoomPasswordRequest {
+                    room_id: room.id.as_str().to_string(),
+                    new_password: "NewPassword123".to_string(),
+                },
+                &management_actor,
+                &RequestContext::default(),
+            )
+            .await
+            .expect_err("cluster mode must fail closed when room settings fanout fails");
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(
+            err.message(),
+            "failed to fan out RoomSettingsChanged to cluster replicas"
+        );
+
+        let settings = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should still be readable");
+        assert!(
+            !settings.require_password.0,
+            "room password update must not commit before room settings fanout capacity is reserved"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_update_room_password_fails_closed_when_room_cache_invalidation_fanout_fails()
+    {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+        drop(redis_publish_rx);
+
+        let mut cluster_config = Config::default();
+        cluster_config.cluster.enabled = true;
+        cluster_config.redis.url = "redis://127.0.0.1:6379".to_string();
+        let admin_api = AdminApiImpl {
+            config: Arc::new(cluster_config),
+            ..admin_api
+        };
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_admin_update_room_password_cache".to_string(),
+            email: Some("room_owner_admin_update_room_password_cache@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room password admin cache invalidation test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let err = admin_api
+            .update_room_password(
+                crate::proto::admin::UpdateRoomPasswordRequest {
+                    room_id: room.id.as_str().to_string(),
+                    new_password: "NewPassword123".to_string(),
+                },
+                &management_actor,
+                &RequestContext::default(),
+            )
+            .await
+            .expect_err("cluster mode must fail closed when room cache invalidation fanout fails");
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(
+            err.message(),
+            "failed to fan out room cache invalidation to cluster replicas"
+        );
+
+        let settings = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should still be readable");
+        assert!(
+            !settings.require_password.0,
+            "room password update must not commit before room cache invalidation capacity is reserved"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _default_redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+
+        let (redis_publish_tx, _redis_publish_rx) = tokio::sync::mpsc::channel(1);
+
+        let mut cluster_config = Config::default();
+        cluster_config.cluster.enabled = true;
+        cluster_config.redis.url = "redis://127.0.0.1:6379".to_string();
+        let admin_api = AdminApiImpl {
+            config: Arc::new(cluster_config),
+            ..admin_api
+        }
+        .with_cluster_fanout_service(crate::cluster_fanout::default_cluster_fanout_service(
+            Some(redis_publish_tx),
+            true,
+        ));
         let user_repo = UserRepository::new(pool.clone());
 
         let owner = synctv_core::models::User {
@@ -10700,6 +11648,99 @@ mod tests {
         assert!(
             !settings.chat_enabled.0,
             "settings reset must not commit before cluster fanout capacity is reserved"
+        );
+        assert!(
+            settings.allow_guest_join.0,
+            "customized settings must remain unchanged after failed reset"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_reset_room_settings_fails_closed_when_room_cache_invalidation_fanout_fails()
+    {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+        drop(redis_publish_rx);
+
+        let mut cluster_config = Config::default();
+        cluster_config.cluster.enabled = true;
+        cluster_config.redis.url = "redis://127.0.0.1:6379".to_string();
+        let admin_api = AdminApiImpl {
+            config: Arc::new(cluster_config),
+            ..admin_api
+        };
+        let user_repo = UserRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_admin_reset_room_settings_cache".to_string(),
+            email: Some("room_owner_admin_reset_room_settings_cache@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room settings admin reset cache test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let customized = synctv_core::models::RoomSettings {
+            chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+            allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+            ..synctv_core::models::RoomSettings::default()
+        };
+        admin_api
+            .room_service
+            .set_room_settings(&room.id, &customized)
+            .await
+            .expect("room settings should be updated");
+
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let err = admin_api
+            .reset_room_settings(
+                crate::proto::admin::ResetRoomSettingsRequest {
+                    room_id: room.id.as_str().to_string(),
+                },
+                &management_actor,
+            )
+            .await
+            .expect_err(
+                "cluster mode must fail closed when room cache invalidation fanout fails",
+            );
+
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+        assert_eq!(
+            err.message(),
+            "failed to fan out room cache invalidation to cluster replicas"
+        );
+
+        let settings = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should still be readable");
+        assert!(
+            !settings.chat_enabled.0,
+            "reset must not commit before room cache invalidation capacity is reserved"
         );
         assert!(
             settings.allow_guest_join.0,

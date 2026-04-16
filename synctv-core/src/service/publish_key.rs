@@ -343,6 +343,48 @@ pub struct PublishKeyService {
     jti_store: Arc<dyn JtiStore>,
 }
 
+#[async_trait]
+pub trait StreamingPublishKeyService: Send + Sync {
+    fn generate_publish_key(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
+    ) -> Result<PublishKey>;
+
+    async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims>;
+
+    async fn validate_publish_key_for_stream_claims(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<PublishClaims>;
+
+    async fn verify_publish_key_for_stream(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<UserId>;
+}
+
+/// Build a publish-key service behind the service abstraction.
+///
+/// Callers should depend on the returned trait object instead of selecting the
+/// concrete local or shared single-use backend directly.
+pub fn streaming_publish_key_service_from_shared_state_profile(
+    jwt_service: JwtService,
+    token_ttl_hours: i64,
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn StreamingPublishKeyService>> {
+    Ok(Arc::new(PublishKeyService::from_shared_state_profile(
+        jwt_service,
+        token_ttl_hours,
+        profile,
+    )?))
+}
+
 impl std::fmt::Debug for PublishKeyService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublishKeyService")
@@ -608,6 +650,41 @@ impl PublishKeyService {
     }
 }
 
+#[async_trait]
+impl StreamingPublishKeyService for PublishKeyService {
+    fn generate_publish_key(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
+    ) -> Result<PublishKey> {
+        PublishKeyService::generate_publish_key(self, room_id, media_id, user_id)
+    }
+
+    async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims> {
+        PublishKeyService::validate_publish_key(self, token).await
+    }
+
+    async fn validate_publish_key_for_stream_claims(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<PublishClaims> {
+        PublishKeyService::validate_publish_key_for_stream_claims(self, token, room_id, media_id)
+            .await
+    }
+
+    async fn verify_publish_key_for_stream(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<UserId> {
+        PublishKeyService::verify_publish_key_for_stream(self, token, room_id, media_id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,6 +714,70 @@ mod tests {
         assert!(
             Arc::ptr_eq(&store.redis_runtime, &runtime),
             "Redis JTI store should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_key_service_supports_service_trait_object() {
+        let service: Arc<dyn StreamingPublishKeyService> =
+            Arc::new(PublishKeyService::new(create_jwt_service(), 24));
+        let room_id = RoomId::from_string("trait_room01".to_string());
+        let media_id = MediaId::from_string("trait_media1".to_string());
+        let user_id = UserId::from_string("trait_user01".to_string());
+
+        let key = service
+            .generate_publish_key(&room_id, &media_id, &user_id)
+            .expect("trait-object publish key service should generate key");
+        let claims = service
+            .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
+            .await
+            .expect("trait-object publish key service should validate key");
+
+        assert_eq!(claims.room_id, room_id.as_str());
+        assert_eq!(claims.media_id, media_id.as_str());
+        assert_eq!(claims.user_id, user_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_publish_key_service_from_shared_state_profile_returns_live_trait_object()
+    {
+        let jwt = create_jwt_service();
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
+        let service = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
+            .expect("standalone mode should allow local publish-key service");
+        let room_id = RoomId::from_string("builder_room01".to_string());
+        let media_id = MediaId::from_string("builder_media1".to_string());
+        let user_id = UserId::from_string("builder_user01".to_string());
+
+        let key = service
+            .generate_publish_key(&room_id, &media_id, &user_id)
+            .expect("builder should return a live publish-key service");
+        let claims = service
+            .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
+            .await
+            .expect("generated key should validate through the trait object");
+
+        assert_eq!(claims.room_id, room_id.as_str());
+        assert_eq!(claims.media_id, media_id.as_str());
+        assert_eq!(claims.user_id, user_id.as_str());
+    }
+
+    #[test]
+    fn test_streaming_publish_key_service_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
+    ) {
+        let jwt = create_jwt_service();
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
+        let Err(error) =
+            streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
+        else {
+            panic!("cluster runtime must reject local publish-key deduplication");
+        };
+
+        assert!(
+            error.to_string().contains(
+                "cluster runtime requires shared publish-key deduplication state"
+            ),
+            "unexpected error: {error}"
         );
     }
 

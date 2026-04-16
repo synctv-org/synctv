@@ -173,6 +173,7 @@ message Room {
     int64 updated_at = 9; // Last updated timestamp
     bool is_banned = 10; // Ban flag set by global admin only
     ResourceAvailability availability = 11; // Availability derived from creator state
+    int64 version = 12; // Resource version from database
 }
 
 message Media {
@@ -187,6 +188,7 @@ message Media {
     string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
     bytes source_config = 11; // JSON source config (replaces url for flexibility)
     ResourceAvailability availability = 12; // Availability derived from creator state
+    int64 version = 13; // Resource version from database
 }
 
 message Playlist {
@@ -200,6 +202,7 @@ message Playlist {
     int64 created_at = 8;
     int64 updated_at = 9;
     ResourceAvailability availability = 10; // Availability derived from creator state
+    int64 version = 11; // Resource version from database
 }
 
 enum ResourceAvailability {
@@ -498,6 +501,7 @@ message GetRoomSettingsRequest {}
 
 message GetRoomSettingsResponse {
     bytes settings = 1; // JSON settings
+    int64 version = 2;
 }
 
 enum SortDirection {
@@ -622,6 +626,7 @@ message GetRoomMembersRequest {
 message GetRoomMembersResponse {
     repeated synctv.common.RoomMember members = 1;
     int32 total = 2;
+    string version = 3; // Snapshot version for this member list result
 }
 
 message AddMemberRequest {
@@ -1053,6 +1058,7 @@ message ListPlaylistItemsResponse {
     // For dynamic playlists only
     repeated PlaylistItem dynamic_items = 6; // Remote provider items (used when browsing dynamic folders)
     repeated PlaylistBrowsePathNode current_path = 7; // Breadcrumb path for the current browse location
+    string version = 8; // Snapshot version for this browse result
 }
 
 enum ItemType {
@@ -1220,15 +1226,14 @@ message GetPlaybackRequest {}
 message GetPlaybackResponse {
     // Playback state (current time, speed, is_playing, etc.)
     PlaybackState playback_state = 1;
-    // Complete playback information for currently playing media
-    // Includes URLs, subtitles, danmakus, etc.
-    PlaybackResult playback_result = 2;
+    // Versioned playback snapshot for the current source.
+    PlaybackSnapshot playback_snapshot = 2;
 }
 
 // ==================== Playback Information Structures ====================
 
-// Complete playback information (returned by provider's generate_playback)
-message PlaybackResult {
+// Versioned playback information for the current source.
+message PlaybackSnapshot {
     string media_id = 1; // Media ID
     string playlist_id = 2; // Playlist ID
     string room_id = 3; // Room ID
@@ -1244,6 +1249,10 @@ message PlaybackResult {
 
     // Media-level metadata (duration, thumbnail, title, author, etc.)
     map<string, string> metadata = 8;
+    // Version scoped to playback snapshots.
+    string version = 9;
+    // Earliest URL expiration across the snapshot, if any.
+    optional int64 expires_at = 10;
 }
 
 // Playback information for a single mode
@@ -1368,7 +1377,56 @@ message ClientMessage {
         PauseCommand pause_command = 11;
         SeekCommand seek_command = 12;
         SetPlaybackSpeedCommand set_speed_command = 13;
+        WatchPlaybackState watch_playback_state = 14;
+        WatchPlaybackSnapshot watch_playback_snapshot = 15;
+        WatchRoomSettings watch_room_settings = 16;
+        WatchPlaylistItems watch_playlist_items = 17;
+        WatchRoomMembers watch_room_members = 18;
     }
+}
+
+message WatchPlaybackState {
+    optional int64 version = 1;
+}
+
+message WatchPlaybackSnapshot {
+    // Empty means the client has no local snapshot yet.
+    string version = 1;
+    // Client-side cached playback source identity. Used together with `version`
+    // so reconnects don't suppress required refreshes when the source changed
+    // but the DB-derived version collided.
+    string media_id = 2;
+    string playlist_id = 3;
+    bytes target = 4;
+}
+
+message WatchRoomSettings {
+    optional int64 version = 1;
+}
+
+message WatchPlaylistItems {
+    string playlist_id = 1; // Empty means room root
+    bytes target = 2; // Provider-facing browse target payload
+    int32 page = 3;
+    int32 page_size = 4;
+    string search = 5;
+    string source_provider = 6;
+    string provider_instance_name = 7;
+    MediaListSortBy sort_by = 8 [(buf.validate.field).enum.defined_only = true];
+    SortDirection sort_direction = 9 [(buf.validate.field).enum.defined_only = true];
+    ResourceAvailabilityFilter availability = 10 [(buf.validate.field).enum.defined_only = true];
+    string version = 11; // Empty means the client has no local snapshot yet
+}
+
+message WatchRoomMembers {
+    int32 page = 1;
+    int32 page_size = 2;
+    string search = 3;
+    optional synctv.common.RoomMemberRole role = 4 [(buf.validate.field).enum.defined_only = true];
+    optional synctv.common.MemberStatus status = 5 [(buf.validate.field).enum.defined_only = true];
+    RoomMemberListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
+    SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+    string version = 8; // Empty means the client has no local snapshot yet
 }
 
 // Client -> Server: periodic playback progress heartbeat
@@ -1410,7 +1468,20 @@ message ServerMessage {
         UserNotification notification = 22;
         MediaUpdated media_updated = 23;
         PlaylistReordered playlist_reordered = 24;
+        PlaybackSnapshotChanged playback_snapshot = 26;
+        PlaylistItemsChanged playlist_items = 27;
+        RoomMembersChanged room_members = 28;
     }
+}
+
+message PlaylistItemsChanged {
+    string room_id = 1;
+    ListPlaylistItemsResponse snapshot = 2;
+}
+
+message RoomMembersChanged {
+    string room_id = 1;
+    GetRoomMembersResponse snapshot = 2;
 }
 
 
@@ -1446,6 +1517,11 @@ message PlaybackStateChanged {
     PlaybackState state = 2;
 }
 
+message PlaybackSnapshotChanged {
+    string room_id = 1;
+    PlaybackSnapshot snapshot = 2;
+}
+
 message UserJoinedRoom {
     string room_id = 1;
     synctv.common.RoomMember member = 2;
@@ -1459,6 +1535,7 @@ message UserLeftRoom {
 message RoomSettingsChanged {
     string room_id = 1;
     bytes settings = 2; // JSON settings
+    int64 version = 3;
 }
 
 message ErrorMessage {

@@ -486,6 +486,61 @@ pub struct WsTicketService {
     ticket_ttl_secs: u64,
 }
 
+#[async_trait]
+pub trait WebSocketTicketService: Send + Sync {
+    fn ticket_ttl_secs(&self) -> u64;
+
+    fn supports_cluster_runtime(&self) -> bool;
+
+    async fn create_ticket(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+    ) -> Result<String>;
+
+    async fn validate_and_consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<ValidatedTicket>;
+
+    async fn validate_and_consume_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<ValidatedTicket>;
+
+    async fn validate_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<PendingValidatedTicket>;
+
+    async fn consume_prevalidated(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+    ) -> Result<ValidatedTicket>;
+}
+
+/// Build a WebSocket ticket service behind the service abstraction.
+///
+/// Callers should depend on the returned trait object instead of branching on
+/// the concrete local or shared ticket storage implementation.
+pub fn web_socket_ticket_service_from_shared_state_profile(
+    profile: &SharedStateProfile,
+    ticket_ttl_secs: Option<u64>,
+) -> Result<Arc<dyn WebSocketTicketService>> {
+    Ok(Arc::new(WsTicketService::from_shared_state_profile(
+        profile,
+        ticket_ttl_secs,
+    )?))
+}
+
 impl std::fmt::Debug for WsTicketService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsTicketService")
@@ -820,6 +875,67 @@ impl WsTicketService {
     }
 }
 
+#[async_trait]
+impl WebSocketTicketService for WsTicketService {
+    fn ticket_ttl_secs(&self) -> u64 {
+        self.ticket_ttl_secs()
+    }
+
+    fn supports_cluster_runtime(&self) -> bool {
+        self.supports_cluster_runtime()
+    }
+
+    async fn create_ticket(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+    ) -> Result<String> {
+        WsTicketService::create_ticket(self, user_id, room_id, password_version).await
+    }
+
+    async fn validate_and_consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<ValidatedTicket> {
+        WsTicketService::validate_and_consume(self, ticket, expected_room_id).await
+    }
+
+    async fn validate_and_consume_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<ValidatedTicket> {
+        WsTicketService::validate_and_consume_checked(
+            self,
+            ticket,
+            expected_room_id,
+            user_validator,
+        )
+        .await
+    }
+
+    async fn validate_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<PendingValidatedTicket> {
+        WsTicketService::validate_checked(self, ticket, expected_room_id, user_validator).await
+    }
+
+    async fn consume_prevalidated(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+    ) -> Result<ValidatedTicket> {
+        WsTicketService::consume_prevalidated(self, ticket, expected_room_id, pending).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +988,66 @@ mod tests {
 
         assert!(service.supports_cluster_runtime());
         assert_eq!(service.ticket_ttl_secs(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_ws_ticket_service_supports_service_trait_object() {
+        let service: Arc<dyn WebSocketTicketService> =
+            Arc::new(WsTicketService::local_only(Some(30)));
+        let user_id = create_test_user_id("trait_obj_u01");
+        let room_id = create_test_room_id("trait_obj_r01");
+
+        let ticket = service
+            .create_ticket(&user_id, &room_id, 7)
+            .await
+            .expect("trait-object service should create ticket");
+        let validated = service
+            .validate_and_consume(&ticket, &room_id)
+            .await
+            .expect("trait-object service should validate ticket");
+
+        assert_eq!(validated.user_id, user_id);
+        assert_eq!(validated.password_version, 7);
+        assert!(!service.supports_cluster_runtime());
+        assert_eq!(service.ticket_ttl_secs(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_web_socket_ticket_service_from_shared_state_profile_returns_live_trait_object() {
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
+        let service = web_socket_ticket_service_from_shared_state_profile(&profile, Some(30))
+            .expect("standalone mode should allow local ticket storage");
+        let user_id = create_test_user_id("builder_u01");
+        let room_id = create_test_room_id("builder_r01");
+
+        let ticket = service
+            .create_ticket(&user_id, &room_id, 9)
+            .await
+            .expect("builder should return a live ticket service");
+        let validated = service
+            .validate_and_consume(&ticket, &room_id)
+            .await
+            .expect("ticket created via builder should validate");
+
+        assert_eq!(validated.user_id, user_id);
+        assert_eq!(validated.password_version, 9);
+        assert!(!service.supports_cluster_runtime());
+    }
+
+    #[test]
+    fn test_web_socket_ticket_service_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
+    ) {
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
+        let Err(error) = web_socket_ticket_service_from_shared_state_profile(&profile, None) else {
+            panic!("cluster runtime must reject local WebSocket ticket storage");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared WebSocket ticket storage"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

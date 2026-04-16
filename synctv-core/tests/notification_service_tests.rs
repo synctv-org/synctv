@@ -191,6 +191,7 @@ fn test_event_type_names_all_variants() {
         (
             RoomEvent::SettingsUpdated {
                 settings: serde_json::json!({}),
+                version: 1,
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
             },

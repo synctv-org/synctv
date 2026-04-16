@@ -28,8 +28,8 @@ use synctv_core::{
         chat::{ChatDependencies, ChatRuntime},
         notification::RoomEvent,
         ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
-        PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
-        UserService,
+        PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
+        RoomSettingsService, UserService,
     },
     Error,
 };
@@ -68,7 +68,8 @@ fn make_chat_service_with_config(
     rate_limit_config: RateLimitConfig,
 ) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::local_only("test:chat:".to_string());
+    let rate_limiter: Arc<dyn RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:chat:".to_string()));
     let content_filter = ContentFilter::new();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
 
@@ -287,7 +288,8 @@ async fn test_send_message_rate_limit_triggers() {
 
     // Build chat service with very restrictive rate limit (1 msg/sec, 1 sec window)
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::local_only("test:chatrl:".to_string());
+    let rate_limiter: Arc<dyn RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:chatrl:".to_string()));
     let rate_limit_config = RateLimitConfig {
         chat_per_second: 1,
         danmaku_per_second: 1,
@@ -628,7 +630,8 @@ fn make_chat_service_with_observer(
     _observer: Arc<NotificationObserver>,
 ) -> (ChatService, UsernameCache, NotificationService) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::local_only("test:chat:".to_string());
+    let rate_limiter: Arc<dyn RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:chat:".to_string()));
     let rate_limit_config = RateLimitConfig::default();
     let content_filter = ContentFilter::new();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -690,7 +693,8 @@ async fn test_send_message_broadcasts_to_room_members() {
 
     // Build chat service with the counting broadcaster
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
-    let rate_limiter = RateLimiter::local_only("test:chat_broadcast:".to_string());
+    let rate_limiter: Arc<dyn RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:chat_broadcast:".to_string()));
     let rate_limit_config = RateLimitConfig::default();
     let content_filter = ContentFilter::new();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);

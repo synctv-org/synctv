@@ -63,7 +63,7 @@ use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanou
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service, RoomLifecycleFanoutService,
 };
-use crate::runtime::RealtimeConnectionService;
+use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
 fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
     crate::room_id_validation::parse_room_id(room_id)
@@ -111,7 +111,7 @@ pub struct ClientApiConfig {
     pub room_service: Arc<RoomService>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -128,7 +128,7 @@ pub struct ClientApiImpl {
     pub room_service: Arc<RoomService>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -143,10 +143,11 @@ pub struct ClientApiImpl {
     pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
+    pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
-    pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
+    pub rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
@@ -209,7 +210,7 @@ impl ClientApiImpl {
         room_service: Arc<RoomService>,
         connection_service: Arc<dyn RealtimeConnectionService>,
         config: Arc<synctv_core::Config>,
-        publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+        publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
         jwt_service: synctv_core::service::JwtService,
         live_streaming_infrastructure: Option<
             Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
@@ -222,14 +223,16 @@ impl ClientApiImpl {
         )));
         let cluster_fanout =
             default_cluster_fanout_service(None, config.cluster_runtime_enabled());
-        let room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        let room_settings_fanout =
+            default_room_settings_fanout_service(cluster_fanout.clone(), None);
         let member_fanout = default_member_fanout_service(cluster_fanout.clone());
         let membership_event_fanout = default_membership_event_fanout_service(
             cluster_fanout.clone(),
             room_service.clone(),
             user_service.clone(),
+            None,
         );
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
         let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -257,6 +260,7 @@ impl ClientApiImpl {
             room_cache_fanout,
             realtime_lifecycle,
             room_lifecycle_fanout,
+            realtime_event_service: None,
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -277,14 +281,16 @@ impl ClientApiImpl {
         )));
         let cluster_fanout =
             default_cluster_fanout_service(None, config.config.cluster_runtime_enabled());
-        let room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        let room_settings_fanout =
+            default_room_settings_fanout_service(cluster_fanout.clone(), None);
         let member_fanout = default_member_fanout_service(cluster_fanout.clone());
         let membership_event_fanout = default_membership_event_fanout_service(
             cluster_fanout.clone(),
             config.room_service.clone(),
             config.user_service.clone(),
+            None,
         );
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
         let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
@@ -312,6 +318,7 @@ impl ClientApiImpl {
             room_cache_fanout,
             realtime_lifecycle,
             room_lifecycle_fanout,
+            realtime_event_service: None,
             redis_runtime: None,
             rate_limiter: None,
             builtin_stun_url: None,
@@ -330,14 +337,21 @@ impl ClientApiImpl {
         mut self,
         cluster_fanout: Arc<dyn ClusterFanoutService>,
     ) -> Self {
-        self.room_settings_fanout = default_room_settings_fanout_service(cluster_fanout.clone());
+        self.room_settings_fanout = default_room_settings_fanout_service(
+            cluster_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.member_fanout = default_member_fanout_service(cluster_fanout.clone());
         self.membership_event_fanout = default_membership_event_fanout_service(
             cluster_fanout.clone(),
             self.room_service.clone(),
             self.user_service.clone(),
+            self.realtime_event_service.clone(),
         );
-        self.media_fanout = default_media_fanout_service(cluster_fanout.clone());
+        self.media_fanout = default_media_fanout_service(
+            cluster_fanout.clone(),
+            self.realtime_event_service.clone(),
+        );
         self.playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
         self.room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
         self.realtime_lifecycle = default_realtime_lifecycle_service(
@@ -348,6 +362,29 @@ impl ClientApiImpl {
         self.room_lifecycle_fanout =
             default_room_lifecycle_fanout_service(cluster_fanout.clone());
         self.cluster_fanout = cluster_fanout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_realtime_event_service(
+        mut self,
+        event_service: Arc<dyn RealtimeEventService>,
+    ) -> Self {
+        self.membership_event_fanout = default_membership_event_fanout_service(
+            self.cluster_fanout.clone(),
+            self.room_service.clone(),
+            self.user_service.clone(),
+            Some(event_service.clone()),
+        );
+        self.room_settings_fanout = default_room_settings_fanout_service(
+            self.cluster_fanout.clone(),
+            Some(event_service.clone()),
+        );
+        self.media_fanout = default_media_fanout_service(
+            self.cluster_fanout.clone(),
+            Some(event_service.clone()),
+        );
+        self.realtime_event_service = Some(event_service);
         self
     }
 
@@ -409,11 +446,11 @@ impl ClientApiImpl {
 
     /// Set the rate limiter for per-endpoint rate limiting (password checks, etc.)
     #[must_use]
-    pub fn with_rate_limiter(
-        mut self,
-        rate_limiter: synctv_core::service::rate_limit::RateLimiter,
-    ) -> Self {
-        self.rate_limiter = Some(rate_limiter);
+    pub fn with_rate_limiter<T>(mut self, rate_limiter: T) -> Self
+    where
+        T: synctv_core::service::RequestRateLimiterService + 'static,
+    {
+        self.rate_limiter = Some(Arc::new(rate_limiter));
         self
     }
 

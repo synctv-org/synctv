@@ -1,27 +1,123 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use crate::impls::ApiError;
+use hex::encode as hex_encode;
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use synctv_core::models::{
-    MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy, Playlist,
+    Media, MediaId, MediaListQuery as CoreMediaListQuery,
+    MediaListSortBy as CoreMediaListSortBy, Playlist,
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
-    SortDirection as CoreSortDirection, UserId,
+    RoomId, SortDirection as CoreSortDirection, UserId,
 };
 use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
 use synctv_core::service::room::DeleteEntriesRequest as CoreDeleteEntriesRequest;
+use synctv_core::service::MediaService;
 
 use super::convert::{
     media_to_proto, media_to_proto_with_availability, playlist_path_node_to_proto,
     playlist_to_proto_with_availability,
 };
 use super::ClientApiImpl;
+use crate::impls::ClusterEventPublishReservation;
+use crate::media_fanout::MediaFanoutService;
 
 #[derive(Debug)]
 struct AddMediaBatchBuildResult {
     items: Vec<synctv_core::service::media::AddMediaRequest>,
     playlist_id: Option<synctv_core::models::PlaylistId>,
 }
+
+pub(crate) enum MoveMediaFanoutStep {
+    Updated {
+        media_id: MediaId,
+        reservation: Option<ClusterEventPublishReservation>,
+    },
+    RemovedAndAdded {
+        media_id: MediaId,
+        removed_reservation: Option<ClusterEventPublishReservation>,
+        added_reservation: Option<ClusterEventPublishReservation>,
+    },
+}
+
+pub(crate) enum MoveMediaFanoutPlan {
+    None,
+    Reordered {
+        reservation: Option<ClusterEventPublishReservation>,
+    },
+    PerMedia(Vec<MoveMediaFanoutStep>),
+}
 const DEFAULT_MEDIA_TITLE: &str = "Unknown";
+
+fn finalize_playlist_items_response_version(
+    mut response: crate::proto::client::ListPlaylistItemsResponse,
+) -> crate::proto::client::ListPlaylistItemsResponse {
+    response.version = compute_playlist_items_response_version(&response);
+    response
+}
+
+fn hash_proto_message<M: prost::Message>(hasher: &mut Sha256, message: &M) {
+    let encoded = message.encode_to_vec();
+    hasher.update(u64::try_from(encoded.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(encoded);
+}
+
+fn hash_string(hasher: &mut Sha256, value: &str) {
+    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn hash_bytes(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(value);
+}
+
+fn hash_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hasher.update(value.to_le_bytes());
+        }
+        None => hasher.update([0]),
+    }
+}
+
+pub(crate) fn compute_playlist_items_response_version(
+    response: &crate::proto::client::ListPlaylistItemsResponse,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"playlist-items-snapshot-v1");
+    hasher.update(response.total.to_le_bytes());
+    hasher.update(response.folder_count.to_le_bytes());
+    hasher.update(response.file_count.to_le_bytes());
+
+    for playlist in &response.playlists {
+        hash_proto_message(&mut hasher, playlist);
+    }
+    for media in &response.media {
+        hash_proto_message(&mut hasher, media);
+    }
+    for item in &response.dynamic_items {
+        hash_string(&mut hasher, &item.name);
+        hasher.update(item.item_type.to_le_bytes());
+        hash_bytes(&mut hasher, &item.target);
+        hash_optional_i64(&mut hasher, item.size);
+        match item.thumbnail.as_deref() {
+            Some(thumbnail) => {
+                hasher.update([1]);
+                hash_string(&mut hasher, thumbnail);
+            }
+            None => hasher.update([0]),
+        }
+        hash_optional_i64(&mut hasher, item.modified_at);
+    }
+    for node in &response.current_path {
+        hash_proto_message(&mut hasher, node);
+    }
+
+    hex_encode(hasher.finalize())
+}
 
 fn page_i32_to_usize(value: i32) -> usize {
     usize::try_from(value.max(1)).unwrap_or(usize::MAX)
@@ -59,6 +155,148 @@ fn i64_to_i32_saturating(value: i64) -> i32 {
             i32::MAX
         }
     })
+}
+
+fn reserve_single(
+    mut reservations: Vec<ClusterEventPublishReservation>,
+) -> Option<ClusterEventPublishReservation> {
+    reservations.pop()
+}
+
+pub(crate) async fn build_move_media_fanout_plan(
+    media_service: &MediaService,
+    media_fanout: &Arc<dyn MediaFanoutService>,
+    room_id: &RoomId,
+    request: &CoreMoveMediaRequest,
+) -> Result<MoveMediaFanoutPlan, ApiError> {
+    let original_media = if request.all_from_scope {
+        match request.source_playlist_id.as_ref() {
+            Some(playlist_id) => media_service
+                .get_playlist_media(playlist_id)
+                .await
+                .map_err(ApiError::from)?,
+            None => media_service
+                .get_room_root_media(room_id)
+                .await
+                .map_err(ApiError::from)?,
+        }
+    } else {
+        media_service
+            .get_media_batch(&request.media_ids)
+            .await
+            .map_err(ApiError::from)?
+    };
+
+    if original_media.is_empty() {
+        return Ok(MoveMediaFanoutPlan::None);
+    }
+
+    if !request.all_from_scope && original_media.len() != request.media_ids.len() {
+        return Err(ApiError::NotFound("Media not found".to_string()));
+    }
+
+    let target_scope = request.target_playlist_id.clone();
+    let moved_within_same_scope = original_media
+        .iter()
+        .all(|media| media.playlist_id == target_scope);
+
+    if moved_within_same_scope && original_media.len() > 1 {
+        return Ok(MoveMediaFanoutPlan::Reordered {
+            reservation: media_fanout.reserve_reordered().await?,
+        });
+    }
+
+    let mut steps = Vec::with_capacity(original_media.len());
+    for media in original_media {
+        if media.playlist_id == target_scope {
+            steps.push(MoveMediaFanoutStep::Updated {
+                media_id: media.id,
+                reservation: reserve_single(media_fanout.reserve_updated(1).await?),
+            });
+        } else {
+            steps.push(MoveMediaFanoutStep::RemovedAndAdded {
+                media_id: media.id,
+                removed_reservation: reserve_single(media_fanout.reserve_removed(1).await?),
+                added_reservation: reserve_single(media_fanout.reserve_added(1).await?),
+            });
+        }
+    }
+
+    Ok(MoveMediaFanoutPlan::PerMedia(steps))
+}
+
+pub(crate) fn publish_move_media_fanout(
+    media_fanout: &Arc<dyn MediaFanoutService>,
+    plan: MoveMediaFanoutPlan,
+    room_id: &RoomId,
+    user_id: &UserId,
+    username: &str,
+    moved_media: &[Media],
+) {
+    match plan {
+        MoveMediaFanoutPlan::None => {}
+        MoveMediaFanoutPlan::Reordered { reservation } => {
+            media_fanout.publish_reordered(
+                reservation,
+                room_id,
+                user_id,
+                username,
+                moved_media.iter().map(|media| media.id.clone()).collect(),
+            );
+        }
+        MoveMediaFanoutPlan::PerMedia(steps) => {
+            let moved_by_id: std::collections::HashMap<MediaId, &Media> =
+                moved_media.iter().map(|media| (media.id.clone(), media)).collect();
+            for step in steps {
+                match step {
+                    MoveMediaFanoutStep::Updated {
+                        media_id,
+                        reservation,
+                    } => {
+                        if let (Some(reservation), Some(media)) =
+                            (reservation, moved_by_id.get(&media_id))
+                        {
+                            media_fanout.publish_updated(
+                                reservation,
+                                room_id,
+                                user_id,
+                                username,
+                                &media.id,
+                                &media.name,
+                            );
+                        }
+                    }
+                    MoveMediaFanoutStep::RemovedAndAdded {
+                        media_id,
+                        removed_reservation,
+                        added_reservation,
+                    } => {
+                        if let Some(reservation) = removed_reservation {
+                            media_fanout.publish_removed(
+                                reservation,
+                                room_id,
+                                user_id,
+                                username,
+                                &media_id,
+                            );
+                        }
+                        if let (Some(reservation), Some(media)) =
+                            (added_reservation, moved_by_id.get(&media_id))
+                        {
+                            media_fanout.publish_added(
+                                reservation,
+                                room_id,
+                                user_id,
+                                username,
+                                &media.id,
+                                &media.name,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -692,14 +930,36 @@ impl ClientApiImpl {
             )
             .await
             .map_err(Self::map_room_access_error)?;
+        let media_fanout_plan = build_move_media_fanout_plan(
+            self.room_service.media_service(),
+            &self.media_fanout,
+            &rid,
+            &service_req,
+        )
+        .await?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let media = self
             .room_service
             .media_service()
-            .move_media(rid.clone(), uid, service_req)
+            .move_media(rid.clone(), uid.clone(), service_req)
             .await
             .map_err(ApiError::from)?;
+
+        let actor_username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|user| user.username)
+            .unwrap_or_default();
+        publish_move_media_fanout(
+            &self.media_fanout,
+            media_fanout_plan,
+            &rid,
+            &uid,
+            &actor_username,
+            &media,
+        );
 
         if let Some(cache_invalidation) = cache_invalidation {
             self.room_cache_fanout
@@ -852,15 +1112,18 @@ impl ClientApiImpl {
                 .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
                 .collect();
 
-            return Ok(crate::proto::client::ListPlaylistItemsResponse {
-                playlists: proto_playlists,
-                media: proto_media,
-                total: usize_to_i32_saturating(total),
-                folder_count: usize_to_i32_saturating(folder_count),
-                file_count: usize_to_i32_saturating(file_count),
-                dynamic_items: Vec::new(),
-                current_path: Vec::new(),
-            });
+            return Ok(finalize_playlist_items_response_version(
+                crate::proto::client::ListPlaylistItemsResponse {
+                    playlists: proto_playlists,
+                    media: proto_media,
+                    total: usize_to_i32_saturating(total),
+                    folder_count: usize_to_i32_saturating(folder_count),
+                    file_count: usize_to_i32_saturating(file_count),
+                    dynamic_items: Vec::new(),
+                    current_path: Vec::new(),
+                    version: String::new(),
+                },
+            ));
         };
 
         // Get playlist info to determine if static or dynamic
@@ -888,15 +1151,18 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             if !validate_dynamic_playlist_query_support(&playlist, &req)? {
-                return Ok(crate::proto::client::ListPlaylistItemsResponse {
-                    playlists: Vec::new(),
-                    media: Vec::new(),
-                    total: 0,
-                    folder_count: 0,
-                    file_count: 0,
-                    dynamic_items: Vec::new(),
-                    current_path,
-                });
+                return Ok(finalize_playlist_items_response_version(
+                    crate::proto::client::ListPlaylistItemsResponse {
+                        playlists: Vec::new(),
+                        media: Vec::new(),
+                        total: 0,
+                        folder_count: 0,
+                        file_count: 0,
+                        dynamic_items: Vec::new(),
+                        current_path,
+                        version: String::new(),
+                    },
+                ));
             }
 
             let page = page_i32_to_usize(req.page);
@@ -972,15 +1238,18 @@ impl ClientApiImpl {
             // so the client knows to use has_more / next-page semantics.
             let total: i32 = -1;
 
-            return Ok(crate::proto::client::ListPlaylistItemsResponse {
-                playlists: Vec::new(),
-                media: Vec::new(),
-                total,
-                folder_count: 0,
-                file_count: 0,
-                dynamic_items,
-                current_path,
-            });
+            return Ok(finalize_playlist_items_response_version(
+                crate::proto::client::ListPlaylistItemsResponse {
+                    playlists: Vec::new(),
+                    media: Vec::new(),
+                    total,
+                    folder_count: 0,
+                    file_count: 0,
+                    dynamic_items,
+                    current_path,
+                    version: String::new(),
+                },
+            ));
         }
 
         if !req.target.is_empty() {
@@ -1093,15 +1362,18 @@ impl ClientApiImpl {
             .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
             .collect();
 
-        Ok(crate::proto::client::ListPlaylistItemsResponse {
-            playlists: proto_playlists,
-            media: proto_media,
-            total: usize_to_i32_saturating(total),
-            folder_count: usize_to_i32_saturating(folder_count),
-            file_count: usize_to_i32_saturating(file_count),
-            dynamic_items: Vec::new(),
-            current_path,
-        })
+        Ok(finalize_playlist_items_response_version(
+            crate::proto::client::ListPlaylistItemsResponse {
+                playlists: proto_playlists,
+                media: proto_media,
+                total: usize_to_i32_saturating(total),
+                folder_count: usize_to_i32_saturating(folder_count),
+                file_count: usize_to_i32_saturating(file_count),
+                dynamic_items: Vec::new(),
+                current_path,
+                version: String::new(),
+            },
+        ))
     }
 
     /// Get a single media record from database
@@ -1146,13 +1418,27 @@ impl ClientApiImpl {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService for ClientApiImpl {
+    async fn get_playlist_items_snapshot(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        req: &crate::proto::client::ListPlaylistItemsRequest,
+    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        self.list_playlist_items(user_id.as_str(), room_id.as_str(), req.clone())
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
-        build_delete_media_request, build_edit_media_request, build_move_media_request,
-        resolve_add_media_provider_instance, validate_dynamic_playlist_query_support,
-        DEFAULT_MEDIA_TITLE,
+        build_add_media_batch_request, build_add_media_request,
+        build_delete_entries_request, build_delete_media_request,
+        build_edit_media_request, build_move_media_request,
+        compute_playlist_items_response_version, resolve_add_media_provider_instance,
+        validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
     use serde_json::json;
@@ -1189,6 +1475,39 @@ mod tests {
     fn test_resolve_add_media_provider_instance_uses_explicit_binding() {
         let resolved = resolve_add_media_provider_instance("alist_main");
         assert_eq!(resolved, "alist_main");
+    }
+
+    #[test]
+    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes() {
+        let make_response = |thumbnail: &str| crate::proto::client::ListPlaylistItemsResponse {
+            playlists: Vec::new(),
+            media: Vec::new(),
+            total: 1,
+            folder_count: 0,
+            file_count: 1,
+            dynamic_items: vec![crate::proto::client::PlaylistItem {
+                name: "Episode 1".to_string(),
+                item_type: crate::proto::client::ItemType::Media as i32,
+                target: br#"{"path":"/tv/episode-1"}"#.to_vec(),
+                size: Some(123),
+                thumbnail: Some(thumbnail.to_string()),
+                modified_at: Some(456),
+            }],
+            current_path: Vec::new(),
+            version: String::new(),
+        };
+
+        let original = compute_playlist_items_response_version(&make_response(
+            "https://cdn.example.com/thumb-a.jpg",
+        ));
+        let changed = compute_playlist_items_response_version(&make_response(
+            "https://cdn.example.com/thumb-b.jpg",
+        ));
+
+        assert_ne!(
+            original, changed,
+            "thumbnail-only changes must invalidate playlist item snapshots"
+        );
     }
 
     #[test]

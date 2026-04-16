@@ -143,6 +143,20 @@ pub trait CacheInvalidationRuntime: Send + Sync {
     async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()>;
 }
 
+/// Build a cache invalidation runtime behind the service abstraction.
+///
+/// Callers should depend on the returned trait object instead of selecting the
+/// concrete local or shared implementation directly.
+pub fn cache_invalidation_runtime_from_shared_state_profile(
+    profile: &SharedStateProfile,
+    node_id: String,
+    stream_key: String,
+) -> Result<Arc<dyn CacheInvalidationRuntime>> {
+    Ok(Arc::new(CacheInvalidationService::from_shared_state_profile(
+        profile, node_id, stream_key,
+    )?))
+}
+
 /// Service for broadcasting and receiving cache invalidation messages
 ///
 /// Uses Redis Streams instead of Pub/Sub for reliable message delivery:
@@ -244,13 +258,21 @@ impl CacheInvalidationService {
         }
     }
 
-    #[must_use]
     pub fn from_shared_state_profile(
         profile: &SharedStateProfile,
         node_id: String,
         stream_key: String,
-    ) -> Self {
-        Self::from_optional_runtime(profile.shared_runtime(), node_id, stream_key)
+    ) -> Result<Self> {
+        match profile.state_mode() {
+            crate::SharedStateMode::SharedRequired => Ok(Self::from_runtime(
+                profile.require_shared_runtime("cache invalidation state")?,
+                node_id,
+                stream_key,
+            )),
+            crate::SharedStateMode::SharedBestEffort | crate::SharedStateMode::LocalOnly => Ok(
+                Self::from_optional_runtime(profile.shared_runtime(), node_id, stream_key),
+            ),
+        }
     }
 
     const fn redis_enabled(&self) -> bool {
@@ -1628,7 +1650,8 @@ mod tests {
             &profile,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
-        );
+        )
+        .expect("shared-state profile constructor should accept injected runtime");
 
         assert!(
             service
@@ -1636,6 +1659,52 @@ mod tests {
                 .as_ref()
                 .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
             "shared-state profile constructor should reuse the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidation_runtime_from_shared_state_profile_returns_live_trait_object()
+    {
+        let profile = SharedStateProfile::from_runtime(None, "synctv:test:", false);
+        let runtime = cache_invalidation_runtime_from_shared_state_profile(
+            &profile,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        )
+        .expect("standalone mode should allow local cache invalidation");
+        let mut receiver = runtime.subscribe();
+        let message = InvalidationMessage::Room {
+            room_id: "room-1".to_string(),
+        };
+
+        runtime
+            .broadcast_local(message.clone())
+            .expect("trait-object cache invalidation runtime should broadcast locally");
+
+        let received = receiver
+            .recv()
+            .await
+            .expect("subscriber should receive local broadcast");
+        assert_eq!(received, message);
+    }
+
+    #[test]
+    fn test_cache_invalidation_runtime_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
+    ) {
+        let profile = SharedStateProfile::from_runtime(None, "synctv:test:", true);
+        let Err(error) = cache_invalidation_runtime_from_shared_state_profile(
+            &profile,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        ) else {
+            panic!("cluster runtime must reject local-only cache invalidation");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared cache invalidation state"),
+            "unexpected error: {error}"
         );
     }
 

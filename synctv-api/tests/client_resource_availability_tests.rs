@@ -401,6 +401,63 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn list_playlist_items_root_returns_stable_version_until_contents_change() {
+    let fixture = create_client_api_fixture().await;
+    let ClientApiFixture {
+        client_api,
+        media_repo,
+        owner,
+        room,
+        ..
+    } = &fixture;
+
+    media_repo
+        .create(&make_media(&room.id, &owner.id, "media-one", 1))
+        .await
+        .unwrap();
+
+    let request = synctv_api::proto::client::ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: Vec::new(),
+        page: 1,
+        page_size: 20,
+        search: String::new(),
+        source_provider: String::new(),
+        provider_instance_name: String::new(),
+        sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
+        availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+    };
+
+    let first = client_api
+        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request.clone())
+        .await
+        .unwrap();
+    let second = client_api
+        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request.clone())
+        .await
+        .unwrap();
+
+    assert!(!first.version.is_empty());
+    assert_eq!(first.version, second.version);
+
+    media_repo
+        .create(&make_media(&room.id, &owner.id, "media-two", 2))
+        .await
+        .unwrap();
+
+    let third = client_api
+        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request)
+        .await
+        .unwrap();
+
+    assert_ne!(first.version, third.version);
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn list_playlists_availability_filter_updates_total_and_response_items() {
     let fixture = create_client_api_fixture().await;
     let ClientApiFixture {

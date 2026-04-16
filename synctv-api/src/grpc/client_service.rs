@@ -8,7 +8,7 @@ use crate::impls::messaging::{
 };
 use synctv_core::models::{Room, RoomId, UserId};
 use synctv_core::service::{
-    ContentFilter, RateLimitConfig, RateLimiter, RoomService as CoreRoomService,
+    ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
     UserService as CoreUserService,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
@@ -161,7 +161,7 @@ pub struct ClientServiceConfig {
     pub room_service: CoreRoomService,
     pub chat_service: Arc<synctv_core::service::ChatService>,
     pub event_service: Option<Arc<dyn RealtimeEventService>>,
-    pub rate_limiter: RateLimiter,
+    pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
@@ -181,7 +181,7 @@ pub struct ClientServiceImpl {
     room_service: Arc<CoreRoomService>,
     chat_service: Arc<synctv_core::service::ChatService>,
     event_service: Option<Arc<dyn RealtimeEventService>>,
-    rate_limiter: Arc<RateLimiter>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     connection_service: Arc<dyn RealtimeConnectionService>,
@@ -206,7 +206,7 @@ impl ClientServiceImpl {
         room_service: CoreRoomService,
         chat_service: Arc<synctv_core::service::ChatService>,
         event_service: Option<Arc<dyn RealtimeEventService>>,
-        rate_limiter: RateLimiter,
+        rate_limiter: Arc<dyn RequestRateLimiterService>,
         rate_limit_config: RateLimitConfig,
         content_filter: ContentFilter,
         connection_service: Arc<dyn RealtimeConnectionService>,
@@ -221,7 +221,7 @@ impl ClientServiceImpl {
             room_service: Arc::new(room_service),
             chat_service,
             event_service,
-            rate_limiter: Arc::new(rate_limiter),
+            rate_limiter,
             rate_limit_config: Arc::new(rate_limit_config),
             content_filter: Arc::new(content_filter),
             connection_service,
@@ -241,7 +241,7 @@ impl ClientServiceImpl {
             room_service: Arc::new(config.room_service),
             chat_service: config.chat_service,
             event_service: config.event_service,
-            rate_limiter: Arc::new(config.rate_limiter),
+            rate_limiter: config.rate_limiter,
             rate_limit_config: Arc::new(config.rate_limit_config),
             content_filter: Arc::new(config.content_filter),
             connection_service: config.connection_service,
@@ -801,7 +801,7 @@ impl RoomService for ClientServiceImpl {
             room_id.clone(),
             user_id.clone(),
             username.clone(),
-            self.room_service.clone(),
+            &self.room_service,
             self.chat_service.clone(),
             event_service,
             self.connection_service.clone(),
@@ -810,6 +810,9 @@ impl RoomService for ClientServiceImpl {
             self.content_filter.clone(),
             Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
         )
+        .with_playback_snapshot_service(self.client_api.clone())
+        .with_playlist_items_snapshot_service(self.client_api.clone())
+        .with_room_members_snapshot_service(self.client_api.clone())
         .with_heartbeat_schedule(self.heartbeat_schedule)
         .with_ws_message_rate_limit(
             self.config

@@ -155,6 +155,7 @@ pub(crate) fn room_to_proto_with_availability(
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
         availability: resource_availability_enum_to_proto(availability),
+        version: i64::from(room.version),
     }
 }
 
@@ -208,6 +209,7 @@ pub fn media_to_proto_with_availability(
         provider_instance_name: media.provider_instance_name.clone(),
         source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
         availability: resource_availability_to_proto(is_available),
+        version: i64::from(media.version),
     }
 }
 
@@ -238,6 +240,7 @@ pub(crate) fn playlist_to_proto_with_availability(
         created_at: playlist.created_at.timestamp(),
         updated_at: playlist.updated_at.timestamp(),
         availability: resource_availability_to_proto(is_available),
+        version: i64::from(playlist.version),
     }
 }
 
@@ -512,11 +515,11 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
     }
 }
 
-/// Convert models `PlaybackResult` to proto `PlaybackResult`
+/// Convert models `PlaybackResult` to proto `PlaybackSnapshot`
 #[must_use]
-pub(crate) fn playback_result_to_proto(
+pub(crate) fn playback_snapshot_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
-) -> crate::proto::client::PlaybackResult {
+) -> crate::proto::client::PlaybackSnapshot {
     let playback_infos = result
         .playback_infos
         .iter()
@@ -529,7 +532,7 @@ pub(crate) fn playback_result_to_proto(
         .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
         .collect();
 
-    crate::proto::client::PlaybackResult {
+    crate::proto::client::PlaybackSnapshot {
         media_id: result
             .id
             .as_ref()
@@ -546,6 +549,8 @@ pub(crate) fn playback_result_to_proto(
         playback_infos,
         default_mode: result.default_mode.clone(),
         metadata,
+        version: String::new(),
+        expires_at: None,
     }
 }
 
@@ -635,10 +640,11 @@ fn danmaku_to_proto(
 mod tests {
     use super::{
         bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-        provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
+        media_to_proto, playlist_to_proto, provider_playback_info_to_model, room_to_proto_basic,
+        sign_local_bilibili_danmaku_urls,
     };
     use std::collections::HashMap;
-    use synctv_core::models::{Media, MediaId, RoomId};
+    use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
 
     #[test]
     fn provider_playback_info_to_model_preserves_transport_fields() {
@@ -880,5 +886,68 @@ mod tests {
         assert_eq!(claims.room_id, "room_live");
         assert_eq!(claims.user_id, "user-live");
         assert_eq!(claims.expires_at, expires_at);
+    }
+
+    #[test]
+    fn media_to_proto_includes_resource_version() {
+        let media = Media {
+            id: MediaId::from_string("media_proto".to_string()),
+            playlist_id: None,
+            room_id: RoomId::from_string("room_proto".to_string()),
+            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            name: "Proto Media".to_string(),
+            position: 3.5,
+            source_provider: "direct_url".to_string(),
+            source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
+            provider_instance_name: "direct_url".to_string(),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 42,
+        };
+
+        let proto = media_to_proto(&media);
+        assert_eq!(proto.version, 42);
+    }
+
+    #[test]
+    fn playlist_to_proto_includes_resource_version() {
+        let playlist = synctv_core::models::Playlist {
+            id: PlaylistId::from_string("playlist_proto".to_string()),
+            room_id: RoomId::from_string("room_proto".to_string()),
+            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            name: "Proto Playlist".to_string(),
+            parent_id: None,
+            position: 1.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 7,
+        };
+
+        let proto = playlist_to_proto(&playlist, 3);
+        assert_eq!(proto.version, 7);
+    }
+
+    #[test]
+    fn room_to_proto_includes_resource_version() {
+        let now = chrono::Utc::now();
+        let room = Room {
+            id: RoomId::from_string("room_proto".to_string()),
+            name: "Proto Room".to_string(),
+            description: "Room description".to_string(),
+            created_by: UserId::from_string("user_proto".to_string()),
+            status: synctv_core::models::RoomStatus::Active,
+            is_banned: false,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            version: 9,
+            last_activity_at: now,
+        };
+
+        let proto = room_to_proto_basic(&room, None, Some(0));
+        assert_eq!(proto.version, 9);
     }
 }

@@ -435,6 +435,10 @@ impl ClientApiImpl {
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
 
         let password = if req.password.is_empty() {
             None
@@ -473,9 +477,13 @@ impl ClientApiImpl {
 
         let (_room, member, members) = self
             .room_service
-            .join_room(rid.clone(), uid, password)
+            .join_room(rid.clone(), uid.clone(), password)
             .await
             .map_err(ApiError::from)?;
+
+        self.membership_event_fanout
+            .publish_permission_changed(&rid, &uid, &uid, permission_fanout)
+            .await?;
 
         // Get updated room and playback state
         let room = self
@@ -598,14 +606,17 @@ impl ClientApiImpl {
         }
 
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
         let room_settings_fanout = self
             .room_settings_fanout
             .reserve_settings_changed()
             .await?;
-        self.room_service
+        let snapshot = self
+            .room_service
             .set_settings(rid.clone(), uid.clone(), settings)
             .await
             .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
 
         let username = self
             .user_service
@@ -620,8 +631,11 @@ impl ClientApiImpl {
                 &rid,
                 &uid,
                 &username,
-                req.settings.clone(),
+                settings_json,
+                snapshot.version,
             );
+        self.room_cache_fanout
+            .publish_invalidation(cache_invalidation, &rid);
 
         // Get updated room
         let room = self
@@ -680,9 +694,20 @@ impl ClientApiImpl {
             Some(hash)
         };
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
+        let room_settings_fanout = self
+            .room_settings_fanout
+            .reserve_settings_changed()
+            .await?;
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
 
-        self.room_service
-            .update_room_password(&rid, password_hash)
+        let snapshot = self
+            .room_service
+            .update_room_password_as(&rid, Some(&uid), &username, password_hash)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
@@ -691,6 +716,16 @@ impl ClientApiImpl {
             self.room_cache_fanout
                 .publish_invalidation(Some(cache_invalidation), &rid);
         }
+        let settings_json = serde_json::to_vec(&snapshot.settings)
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize settings: {e}")))?;
+        self.room_settings_fanout.publish_settings_changed(
+            room_settings_fanout,
+            &rid,
+            &uid,
+            &username,
+            settings_json,
+            snapshot.version,
+        );
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
@@ -714,9 +749,9 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let settings = self
+        let (settings, version) = self
             .room_service
-            .get_room_settings(&rid)
+            .get_room_settings_with_version(&rid)
             .await
             .map_err(ApiError::from)?;
 
@@ -725,6 +760,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetRoomSettingsResponse {
             settings: settings_bytes,
+            version,
         })
     }
 
@@ -736,15 +772,17 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
         let room_settings_fanout = self
             .room_settings_fanout
             .reserve_settings_changed()
             .await?;
-        let settings_json = self
+        let snapshot = self
             .room_service
             .reset_room_settings(&rid, &uid)
             .await
             .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
 
         let username = self
             .user_service
@@ -758,11 +796,14 @@ impl ClientApiImpl {
                 &rid,
                 &uid,
                 &username,
-                settings_json.as_bytes().to_vec(),
+                settings_json.clone(),
+                snapshot.version,
             );
+        self.room_cache_fanout
+            .publish_invalidation(cache_invalidation, &rid);
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
-            settings: settings_json.into_bytes(),
+            settings: settings_json,
         })
     }
 
@@ -775,12 +816,39 @@ impl ClientApiImpl {
         let current_owner_id = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req)?;
+        let old_owner_permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
+        let new_owner_permission_fanout = self
+            .membership_event_fanout
+            .reserve_permission_changed()
+            .await?;
+        let room_cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let room = self
             .room_service
-            .transfer_room_ownership(rid.clone(), current_owner_id, new_owner_id)
+            .transfer_room_ownership(rid.clone(), current_owner_id.clone(), new_owner_id.clone())
             .await
             .map_err(Self::map_room_access_error)?;
+        self.membership_event_fanout
+            .publish_permission_changed(
+                &rid,
+                &current_owner_id,
+                &current_owner_id,
+                old_owner_permission_fanout,
+            )
+            .await?;
+        self.membership_event_fanout
+            .publish_permission_changed(
+                &rid,
+                &new_owner_id,
+                &current_owner_id,
+                new_owner_permission_fanout,
+            )
+            .await?;
+        self.room_cache_fanout
+            .publish_invalidation(room_cache_invalidation, &rid);
 
         let member_count = self
             .connection_service

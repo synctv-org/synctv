@@ -18,6 +18,7 @@
 #[prost_reflect(message_name = "buf.validate.Rule")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Rule {
@@ -44,6 +45,7 @@ pub struct Rule {
 #[prost_reflect(message_name = "buf.validate.MessageRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MessageRules {
@@ -126,6 +128,7 @@ pub struct MessageRules {
 #[prost_reflect(message_name = "buf.validate.MessageOneofRule")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MessageOneofRule {
@@ -144,6 +147,7 @@ pub struct MessageOneofRule {
 #[prost_reflect(message_name = "buf.validate.OneofRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OneofRules {
@@ -172,6 +176,7 @@ pub struct OneofRules {
 #[prost_reflect(message_name = "buf.validate.FieldRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FieldRules {
@@ -289,6 +294,7 @@ pub struct FieldRules {
 /// Nested message and enum types in `FieldRules`.
 pub mod field_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Type {
@@ -347,6 +353,7 @@ pub mod field_rules {
 #[prost_reflect(message_name = "buf.validate.PredefinedRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PredefinedRules {
@@ -373,6 +380,7 @@ pub struct PredefinedRules {
 #[prost_reflect(message_name = "buf.validate.FloatRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FloatRules {
@@ -437,6 +445,7 @@ pub struct FloatRules {
 /// Nested message and enum types in `FloatRules`.
 pub mod float_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum LessThan {
@@ -466,6 +475,7 @@ pub mod float_rules {
         Lte(f32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -517,6 +527,7 @@ pub mod float_rules {
 #[prost_reflect(message_name = "buf.validate.DoubleRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoubleRules {
@@ -581,6 +592,7 @@ pub struct DoubleRules {
 /// Nested message and enum types in `DoubleRules`.
 pub mod double_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum LessThan {
@@ -610,6 +622,7 @@ pub mod double_rules {
         Lte(f64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -661,6 +674,7 @@ pub mod double_rules {
 #[prost_reflect(message_name = "buf.validate.Int32Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Int32Rules {
@@ -721,6 +735,7 @@ pub struct Int32Rules {
 /// Nested message and enum types in `Int32Rules`.
 pub mod int32_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -750,6 +765,7 @@ pub mod int32_rules {
         Lte(i32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -801,6 +817,7 @@ pub mod int32_rules {
 #[prost_reflect(message_name = "buf.validate.Int64Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Int64Rules {
@@ -861,6 +878,7 @@ pub struct Int64Rules {
 /// Nested message and enum types in `Int64Rules`.
 pub mod int64_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -890,6 +908,7 @@ pub mod int64_rules {
         Lte(i64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -941,6 +960,7 @@ pub mod int64_rules {
 #[prost_reflect(message_name = "buf.validate.UInt32Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UInt32Rules {
@@ -1001,6 +1021,7 @@ pub struct UInt32Rules {
 /// Nested message and enum types in `UInt32Rules`.
 pub mod u_int32_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1030,6 +1051,7 @@ pub mod u_int32_rules {
         Lte(u32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1081,6 +1103,7 @@ pub mod u_int32_rules {
 #[prost_reflect(message_name = "buf.validate.UInt64Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UInt64Rules {
@@ -1141,6 +1164,7 @@ pub struct UInt64Rules {
 /// Nested message and enum types in `UInt64Rules`.
 pub mod u_int64_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1170,6 +1194,7 @@ pub mod u_int64_rules {
         Lte(u64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1220,6 +1245,7 @@ pub mod u_int64_rules {
 #[prost_reflect(message_name = "buf.validate.SInt32Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SInt32Rules {
@@ -1280,6 +1306,7 @@ pub struct SInt32Rules {
 /// Nested message and enum types in `SInt32Rules`.
 pub mod s_int32_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1309,6 +1336,7 @@ pub mod s_int32_rules {
         Lte(i32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1359,6 +1387,7 @@ pub mod s_int32_rules {
 #[prost_reflect(message_name = "buf.validate.SInt64Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SInt64Rules {
@@ -1419,6 +1448,7 @@ pub struct SInt64Rules {
 /// Nested message and enum types in `SInt64Rules`.
 pub mod s_int64_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1448,6 +1478,7 @@ pub mod s_int64_rules {
         Lte(i64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1498,6 +1529,7 @@ pub mod s_int64_rules {
 #[prost_reflect(message_name = "buf.validate.Fixed32Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Fixed32Rules {
@@ -1558,6 +1590,7 @@ pub struct Fixed32Rules {
 /// Nested message and enum types in `Fixed32Rules`.
 pub mod fixed32_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1587,6 +1620,7 @@ pub mod fixed32_rules {
         Lte(u32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1637,6 +1671,7 @@ pub mod fixed32_rules {
 #[prost_reflect(message_name = "buf.validate.Fixed64Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Fixed64Rules {
@@ -1697,6 +1732,7 @@ pub struct Fixed64Rules {
 /// Nested message and enum types in `Fixed64Rules`.
 pub mod fixed64_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1726,6 +1762,7 @@ pub mod fixed64_rules {
         Lte(u64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1776,6 +1813,7 @@ pub mod fixed64_rules {
 #[prost_reflect(message_name = "buf.validate.SFixed32Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SFixed32Rules {
@@ -1836,6 +1874,7 @@ pub struct SFixed32Rules {
 /// Nested message and enum types in `SFixed32Rules`.
 pub mod s_fixed32_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -1865,6 +1904,7 @@ pub mod s_fixed32_rules {
         Lte(i32),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -1915,6 +1955,7 @@ pub mod s_fixed32_rules {
 #[prost_reflect(message_name = "buf.validate.SFixed64Rules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SFixed64Rules {
@@ -1975,6 +2016,7 @@ pub struct SFixed64Rules {
 /// Nested message and enum types in `SFixed64Rules`.
 pub mod s_fixed64_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -2004,6 +2046,7 @@ pub mod s_fixed64_rules {
         Lte(i64),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -2055,6 +2098,7 @@ pub mod s_fixed64_rules {
 #[prost_reflect(message_name = "buf.validate.BoolRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BoolRules {
@@ -2090,6 +2134,7 @@ pub struct BoolRules {
 #[prost_reflect(message_name = "buf.validate.StringRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StringRules {
@@ -2307,6 +2352,7 @@ pub mod string_rules {
     /// `WellKnown` rules provide advanced rules against common string
     /// patterns.
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum WellKnown {
@@ -2615,6 +2661,7 @@ pub mod string_rules {
 #[prost_reflect(message_name = "buf.validate.BytesRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BytesRules {
@@ -2763,6 +2810,7 @@ pub mod bytes_rules {
     /// WellKnown rules provide advanced rules against common byte
     /// patterns
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum WellKnown {
@@ -2820,6 +2868,7 @@ pub mod bytes_rules {
 #[prost_reflect(message_name = "buf.validate.EnumRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EnumRules {
@@ -2917,6 +2966,7 @@ pub struct EnumRules {
 #[prost_reflect(message_name = "buf.validate.RepeatedRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RepeatedRules {
@@ -2984,6 +3034,7 @@ pub struct RepeatedRules {
 #[prost_reflect(message_name = "buf.validate.MapRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MapRules {
@@ -3051,6 +3102,7 @@ pub struct MapRules {
 #[prost_reflect(message_name = "buf.validate.AnyRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AnyRules {
@@ -3086,6 +3138,7 @@ pub struct AnyRules {
 #[prost_reflect(message_name = "buf.validate.DurationRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DurationRules {
@@ -3148,6 +3201,7 @@ pub struct DurationRules {
 /// Nested message and enum types in `DurationRules`.
 pub mod duration_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -3177,6 +3231,7 @@ pub mod duration_rules {
         Lte(::prost_types::Duration),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -3227,6 +3282,7 @@ pub mod duration_rules {
 #[prost_reflect(message_name = "buf.validate.FieldMaskRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FieldMaskRules {
@@ -3296,6 +3352,7 @@ pub struct FieldMaskRules {
 #[prost_reflect(message_name = "buf.validate.TimestampRules")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TimestampRules {
@@ -3341,6 +3398,7 @@ pub struct TimestampRules {
 /// Nested message and enum types in `TimestampRules`.
 pub mod timestamp_rules {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LessThan {
@@ -3376,6 +3434,7 @@ pub mod timestamp_rules {
         LtNow(bool),
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum GreaterThan {
@@ -3438,6 +3497,7 @@ pub mod timestamp_rules {
 #[prost_reflect(message_name = "buf.validate.Violations")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Violations {
@@ -3492,6 +3552,7 @@ pub struct Violations {
 #[prost_reflect(message_name = "buf.validate.Violation")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Violation {
@@ -3566,6 +3627,7 @@ pub struct Violation {
 #[prost_reflect(message_name = "buf.validate.FieldPath")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FieldPath {
@@ -3582,6 +3644,7 @@ pub struct FieldPath {
 #[prost_reflect(message_name = "buf.validate.FieldPathElement")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FieldPathElement {
@@ -3633,6 +3696,7 @@ pub struct FieldPathElement {
 pub mod field_path_element {
     /// `subscript` contains a repeated index or map key, if this path element nests into a repeated or map field.
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Subscript {
@@ -3656,6 +3720,7 @@ pub mod field_path_element {
 /// Specifies how `FieldRules.ignore` behaves, depending on the field's value, and
 /// whether the field tracks presence.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3768,6 +3833,7 @@ impl Ignore {
 }
 /// KnownRegex contains some well-known patterns.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

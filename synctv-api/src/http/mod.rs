@@ -177,14 +177,14 @@ pub struct RouterConfig {
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub chat_service: Option<Arc<synctv_core::service::ChatService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
+    pub rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
-    pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     /// Shared runtime for playback caching and other shared-state lookups.
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared provider playback store registry reused across transports when available.
@@ -442,6 +442,13 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_provider_stores(provider_stores.clone()),
     );
 
+    let client_api = if let Some(ref event_service) = config.event_service {
+        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+        Arc::new(inner.with_realtime_event_service(event_service.clone()))
+    } else {
+        client_api
+    };
+
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
     let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
         let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
@@ -465,22 +472,28 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
                     .expect("EmailService::new(None) should not fail"),
             )
         });
+        let admin_api = crate::impls::AdminApiImpl::new(
+            config.room_service.clone(),
+            config.user_service.clone(),
+            settings_svc.clone(),
+            config.settings_registry.clone(),
+            email_svc,
+            config.connection_manager.clone(),
+            config.provider_instance_manager.clone(),
+            config.live_streaming_infrastructure.clone(),
+            config.publish_key_service.clone(),
+            config.config.clone(),
+            config.audit_service.clone(),
+        )
+        .with_cluster_fanout_service(config.cluster_fanout_service.clone())
+        .with_provider_stores(provider_stores.clone());
+        let admin_api = if let Some(ref event_service) = config.event_service {
+            admin_api.with_realtime_event_service(event_service.clone())
+        } else {
+            admin_api
+        };
         Arc::new(
-            crate::impls::AdminApiImpl::new(
-                config.room_service.clone(),
-                config.user_service.clone(),
-                settings_svc.clone(),
-                config.settings_registry.clone(),
-                email_svc,
-                config.connection_manager.clone(),
-                config.provider_instance_manager.clone(),
-                config.live_streaming_infrastructure.clone(),
-                config.publish_key_service.clone(),
-                config.config.clone(),
-                config.audit_service.clone(),
-            )
-            .with_cluster_fanout_service(config.cluster_fanout_service.clone())
-            .with_provider_stores(provider_stores.clone()),
+            admin_api,
         )
     });
     let email_api = crate::impls::email::build_shared_email_api(
@@ -1397,7 +1410,7 @@ mod tests {
             chat_service: None,
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: None,
@@ -1625,7 +1638,7 @@ mod tests {
             chat_service: None,
             audit_service: Arc::new(audit_service),
             live_streaming_infrastructure: None,
-            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,
             shared_provider_stores: Some(injected_provider_stores.clone()),

@@ -232,6 +232,116 @@ pub trait RateLimitBackend: Send + Sync {
     async fn health_check(&self) -> std::result::Result<(), String>;
 }
 
+/// Stable service boundary for request/message rate limiting.
+///
+/// Callers should depend on this trait rather than the concrete `RateLimiter`
+/// so the implementation can be swapped transparently (local memory, Redis,
+/// external coordinator, etc.).
+#[async_trait]
+pub trait RequestRateLimiterService: Send + Sync {
+    /// Check if the backend is healthy.
+    async fn health_check(&self) -> std::result::Result<(), String>;
+
+    /// Synchronous rate limit check for sync middleware/interceptors.
+    fn check_rate_limit_sync(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError>;
+
+    /// Async rate limit check using the implementation's normal semantics.
+    async fn check_rate_limit(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError>;
+
+    /// Strict distributed rate limit check that fails closed when the shared
+    /// backend is unavailable.
+    async fn check_rate_limit_distributed(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError>;
+
+    /// Get remaining quota for a rate limit.
+    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64)
+    -> Result<(u32, u64)>;
+
+    /// Reset rate limit state for a key.
+    async fn reset(&self, key: &str) -> Result<()>;
+}
+
+/// Build a request rate limiter behind the service abstraction.
+///
+/// Callers should depend on the returned trait object instead of branching on
+/// the concrete local or shared implementation.
+pub fn request_rate_limiter_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn RequestRateLimiterService>> {
+    Ok(Arc::new(RateLimiter::from_shared_state_profile(profile)?))
+}
+
+#[async_trait]
+impl<T> RequestRateLimiterService for Arc<T>
+where
+    T: RequestRateLimiterService + ?Sized,
+{
+    async fn health_check(&self) -> std::result::Result<(), String> {
+        self.as_ref().health_check().await
+    }
+
+    fn check_rate_limit_sync(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.as_ref()
+            .check_rate_limit_sync(key, max_requests, window_seconds)
+    }
+
+    async fn check_rate_limit(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.as_ref()
+            .check_rate_limit(key, max_requests, window_seconds)
+            .await
+    }
+
+    async fn check_rate_limit_distributed(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.as_ref()
+            .check_rate_limit_distributed(key, max_requests, window_seconds)
+            .await
+    }
+
+    async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)> {
+        self.as_ref()
+            .get_quota(key, max_requests, window_seconds)
+            .await
+    }
+
+    async fn reset(&self, key: &str) -> Result<()> {
+        self.as_ref().reset(key).await
+    }
+}
+
 // ============================================================================
 // Redis implementation
 // ============================================================================
@@ -691,6 +801,53 @@ impl RateLimiter {
     }
 }
 
+#[async_trait]
+impl RequestRateLimiterService for RateLimiter {
+    async fn health_check(&self) -> std::result::Result<(), String> {
+        Self::health_check(self).await
+    }
+
+    fn check_rate_limit_sync(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        Self::check_rate_limit_sync(self, key, max_requests, window_seconds)
+    }
+
+    async fn check_rate_limit(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        Self::check_rate_limit(self, key, max_requests, window_seconds).await
+    }
+
+    async fn check_rate_limit_distributed(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        Self::check_rate_limit_distributed(self, key, max_requests, window_seconds).await
+    }
+
+    async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)> {
+        Self::get_quota(self, key, max_requests, window_seconds).await
+    }
+
+    async fn reset(&self, key: &str) -> Result<()> {
+        Self::reset(self, key).await
+    }
+}
+
 /// Rate limit configuration
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
@@ -755,6 +912,49 @@ mod tests {
         assert!(
             Arc::ptr_eq(&backend.conn, &runtime),
             "rate-limit backend should retain the injected runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_supports_service_trait_object() {
+        let limiter: Arc<dyn RequestRateLimiterService> =
+            Arc::new(RateLimiter::local_only("trait-test:".to_string()));
+
+        limiter
+            .check_rate_limit("user-1", 2, 60)
+            .await
+            .expect("trait-object limiter should allow the first request");
+        limiter
+            .check_rate_limit("user-1", 2, 60)
+            .await
+            .expect("trait-object limiter should allow requests within quota");
+    }
+
+    #[test]
+    fn test_request_rate_limiter_from_shared_state_profile_uses_memory_without_shared_runtime() {
+        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let limiter = request_rate_limiter_from_shared_state_profile(&profile)
+            .expect("standalone mode should allow local rate limiting");
+
+        assert!(
+            limiter.check_rate_limit_sync("test-user", 1, 60).is_ok(),
+            "helper must return a live trait-object-backed rate limiter"
+        );
+    }
+
+    #[test]
+    fn test_request_rate_limiter_from_shared_state_profile_requires_shared_runtime_in_cluster_mode()
+    {
+        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let Err(error) = request_rate_limiter_from_shared_state_profile(&profile) else {
+            panic!("cluster runtime must reject local-only rate limiting");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared rate-limit state"),
+            "unexpected error: {error}"
         );
     }
 

@@ -3,7 +3,7 @@
 use chrono::Utc;
 use std::sync::Arc;
 use synctv_api::impls::{ApiError, ClientApiImpl};
-use synctv_cluster::sync::{ClusterEvent, ConnectionLimits, ConnectionManager};
+use synctv_cluster::sync::{CacheTarget, ClusterEvent, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -181,6 +181,76 @@ async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fan
     assert_eq!(
         err.message(),
         "failed to fan out room cache invalidation to cluster replicas"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_room_password_fails_closed_when_room_settings_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo.create(&make_user("room_owner_settings")).await.unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Protected Room".to_string(),
+            "Room with password".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .set_room_password(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::SetRoomPasswordRequest {
+                password: "NewPassword123".to_string(),
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when room settings fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out RoomSettingsChanged to cluster replicas"
+    );
+
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(
+        !settings.require_password.0,
+        "room password must remain unchanged when room settings fanout reservation fails"
     );
 }
 
@@ -527,6 +597,249 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_fails_closed_when_cluster_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo
+        .create(&make_user("room_owner_transfer_fail_closed"))
+        .await
+        .unwrap();
+    let successor = user_repo
+        .create(&make_user("room_successor_transfer_fail_closed"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Ownership Transfer Room".to_string(),
+            "Room for ownership transfer fail-closed regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .member_service()
+        .add_member(room.id.clone(), successor.id.clone(), RoomRole::Member)
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(2);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .transfer_room_ownership(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::TransferRoomOwnershipRequest {
+                new_owner_user_id: successor.id.as_str().to_string(),
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when ownership transfer fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out room cache invalidation to cluster replicas"
+    );
+
+    let room_after = room_service.get_room(&room.id).await.unwrap();
+    assert_eq!(
+        room_after.created_by, owner.id,
+        "ownership transfer must not commit before all cluster fanout capacity is reserved"
+    );
+
+    let owner_member = room_service
+        .get_member(&room.id, &owner.id)
+        .await
+        .unwrap()
+        .expect("owner membership should still exist");
+    assert_eq!(
+        owner_member.role,
+        RoomRole::Creator,
+        "current owner must keep creator role after failed transfer"
+    );
+
+    let successor_member = room_service
+        .get_member(&room.id, &successor.id)
+        .await
+        .unwrap()
+        .expect("successor membership should still exist");
+    assert_eq!(
+        successor_member.role,
+        RoomRole::Member,
+        "successor role must remain unchanged after failed transfer"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidation_events() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo
+        .create(&make_user("room_owner_transfer_publish"))
+        .await
+        .unwrap();
+    let successor = user_repo
+        .create(&make_user("room_successor_transfer_publish"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Ownership Transfer Publish Room".to_string(),
+            "Room for ownership transfer fanout verification".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .member_service()
+        .add_member(room.id.clone(), successor.id.clone(), RoomRole::Member)
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(3);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service,
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let response = client_api
+        .transfer_room_ownership(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::TransferRoomOwnershipRequest {
+                new_owner_user_id: successor.id.as_str().to_string(),
+            },
+        )
+        .await
+        .expect("ownership transfer should succeed");
+
+    assert_eq!(
+        response.room.expect("room response should exist").created_by,
+        successor.id.as_str()
+    );
+
+    let mut old_owner_permission_changed = false;
+    let mut new_owner_permission_changed = false;
+    let mut cache_invalidated = false;
+
+    for _ in 0..3 {
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("fanout event should arrive promptly")
+            .expect("fanout event should exist");
+
+        match request.event {
+            ClusterEvent::PermissionChanged {
+                room_id,
+                target_user_id,
+                changed_by,
+                role,
+                ..
+            } => {
+                assert_eq!(room_id, room.id);
+                assert_eq!(changed_by, owner.id);
+
+                if target_user_id == owner.id {
+                    assert_eq!(
+                        role,
+                        synctv_proto::common::RoomMemberRole::Admin as i32,
+                        "previous owner must be downgraded to admin"
+                    );
+                    old_owner_permission_changed = true;
+                } else if target_user_id == successor.id {
+                    assert_eq!(
+                        role,
+                        synctv_proto::common::RoomMemberRole::Creator as i32,
+                        "new owner must be upgraded to creator"
+                    );
+                    new_owner_permission_changed = true;
+                } else {
+                    panic!("unexpected permission change target: {target_user_id:?}");
+                }
+            }
+            ClusterEvent::CacheInvalidate { targets, .. } => {
+                assert_eq!(targets.len(), 1);
+                match &targets[0] {
+                    CacheTarget::Room { room_id } => assert_eq!(room_id, room.id.as_str()),
+                    other => panic!("expected room cache invalidation, got {other:?}"),
+                }
+                cache_invalidated = true;
+            }
+            other => panic!("unexpected cluster event for ownership transfer: {other:?}"),
+        }
+    }
+
+    assert!(
+        old_owner_permission_changed,
+        "transfer must publish permission change for the previous owner"
+    );
+    assert!(
+        new_owner_permission_changed,
+        "transfer must publish permission change for the new owner"
+    );
+    assert!(
+        cache_invalidated,
+        "transfer must publish room cache invalidation"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -542,6 +855,169 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Room Settings Room".to_string(),
             "Room for reset regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let customized = synctv_core::models::RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+        ..synctv_core::models::RoomSettings::default()
+    };
+    room_service
+        .set_room_settings(&room.id, &customized)
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .reset_room_settings(owner.id.as_str(), room.id.as_str())
+        .await
+        .expect_err("cluster mode must fail closed when room settings fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out RoomSettingsChanged to cluster replicas"
+    );
+
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(
+        !settings.chat_enabled.0,
+        "reset must not commit before cluster fanout capacity is reserved"
+    );
+    assert!(
+        settings.allow_guest_join.0,
+        "customized settings must remain unchanged after failed reset"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_settings_fails_closed_when_room_cache_invalidation_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo
+        .create(&make_user("room_settings_update_owner"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Room Settings Update Room".to_string(),
+            "Room for update cache invalidation regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let original = room_service.get_room_settings(&room.id).await.unwrap();
+    let updated = synctv_core::models::RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+        ..synctv_core::models::RoomSettings::default()
+    };
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .update_room_settings(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::UpdateRoomSettingsRequest {
+                settings: serde_json::to_vec(&updated).unwrap(),
+            },
+        )
+        .await
+        .expect_err(
+            "cluster mode must fail closed when room cache invalidation fanout fails for settings update",
+        );
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out room cache invalidation to cluster replicas"
+    );
+
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert_eq!(
+        settings.chat_enabled.0, original.chat_enabled.0,
+        "settings update must not commit before room cache invalidation capacity is reserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reset_room_settings_fails_closed_when_room_cache_invalidation_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+    let owner = user_repo
+        .create(&make_user("room_settings_reset_owner"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Room Settings Reset Cache Room".to_string(),
+            "Room for reset cache invalidation regression".to_string(),
             owner.id.clone(),
             None,
             None,
@@ -588,18 +1064,20 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
     let err = client_api
         .reset_room_settings(owner.id.as_str(), room.id.as_str())
         .await
-        .expect_err("cluster mode must fail closed when room settings fanout fails");
+        .expect_err(
+            "cluster mode must fail closed when room cache invalidation fanout fails for settings reset",
+        );
 
     assert!(matches!(err, ApiError::ServiceUnavailable(_)));
     assert_eq!(
         err.message(),
-        "failed to fan out RoomSettingsChanged to cluster replicas"
+        "failed to fan out room cache invalidation to cluster replicas"
     );
 
     let settings = room_service.get_room_settings(&room.id).await.unwrap();
     assert!(
         !settings.chat_enabled.0,
-        "reset must not commit before cluster fanout capacity is reserved"
+        "reset must not commit before room cache invalidation capacity is reserved"
     );
     assert!(
         settings.allow_guest_join.0,
@@ -1317,5 +1795,257 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
             .unwrap(),
         0,
         "batch media add must not commit until all cluster fanout capacity is reserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_builtin_defaults()
+        .await
+        .unwrap();
+
+    let owner = user_repo.create(&make_user("media_reorder_owner")).await.unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Media Reorder Room".to_string(),
+            "Room for move-media fanout regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media_one = room_service
+        .media_service()
+        .add_media(
+            room.id.clone(),
+            owner.id.clone(),
+            AddMediaRequest {
+                playlist_id: None,
+                name: "fanout-reorder-a".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: String::new(),
+                source_config: serde_json::json!({
+                    "url": "https://example.com/reorder-a.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let media_two = room_service
+        .media_service()
+        .add_media(
+            room.id.clone(),
+            owner.id.clone(),
+            AddMediaRequest {
+                playlist_id: None,
+                name: "fanout-reorder-b".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: String::new(),
+                source_config: serde_json::json!({
+                    "url": "https://example.com/reorder-b.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .move_media(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::MoveMediaRequest {
+                media_ids: vec![media_two.id.as_str().to_string()],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: Some(media_one.id.as_str().to_string()),
+                after_media_id: None,
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when move-media fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out MediaUpdated to cluster replicas"
+    );
+
+    let media_after = room_service
+        .media_service()
+        .get_room_root_media(&room.id)
+        .await
+        .unwrap();
+    let ordered_ids: Vec<&str> = media_after.iter().map(|media| media.id.as_str()).collect();
+    assert_eq!(
+        ordered_ids,
+        vec![media_one.id.as_str(), media_two.id.as_str()],
+        "media reorder must not commit before playlist fanout capacity is reserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(pool.clone()));
+    let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_builtin_defaults()
+        .await
+        .unwrap();
+
+    let owner = user_repo
+        .create(&make_user("media_reorder_batch_owner"))
+        .await
+        .unwrap();
+    let (room, _member) = room_service
+        .create_room(
+            "Media Reorder Batch Room".to_string(),
+            "Room for playlist reordered fail-closed regression".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media_one = room_service
+        .media_service()
+        .add_media(
+            room.id.clone(),
+            owner.id.clone(),
+            AddMediaRequest {
+                playlist_id: None,
+                name: "fanout-reorder-batch-a".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: String::new(),
+                source_config: serde_json::json!({
+                    "url": "https://example.com/reorder-batch-a.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let media_two = room_service
+        .media_service()
+        .add_media(
+            room.id.clone(),
+            owner.id.clone(),
+            AddMediaRequest {
+                playlist_id: None,
+                name: "fanout-reorder-batch-b".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: String::new(),
+                source_config: serde_json::json!({
+                    "url": "https://example.com/reorder-batch-b.mp4"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    connection_manager.start();
+
+    let mut config = Config::default();
+    config.cluster.enabled = true;
+    config.redis.url = "redis://127.0.0.1:6379".to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(rx);
+
+    let client_api = ClientApiImpl::new(
+        user_service,
+        room_service.clone(),
+        connection_manager,
+        Arc::new(config),
+        None,
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
+        Some(tx),
+        true,
+    ));
+
+    let err = client_api
+        .move_media(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_api::proto::client::MoveMediaRequest {
+                media_ids: vec![
+                    media_two.id.as_str().to_string(),
+                    media_one.id.as_str().to_string(),
+                ],
+                source_playlist_id: None,
+                target_playlist_id: None,
+                all_from_scope: false,
+                before_media_id: None,
+                after_media_id: None,
+            },
+        )
+        .await
+        .expect_err("cluster mode must fail closed when playlist reordered fanout fails");
+
+    assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    assert_eq!(
+        err.message(),
+        "failed to fan out PlaylistReordered to cluster replicas"
+    );
+
+    let media_after = room_service
+        .media_service()
+        .get_room_root_media(&room.id)
+        .await
+        .unwrap();
+    let ordered_ids: Vec<&str> = media_after.iter().map(|media| media.id.as_str()).collect();
+    assert_eq!(
+        ordered_ids,
+        vec![media_one.id.as_str(), media_two.id.as_str()],
+        "batch media reorder must not commit before playlist reordered fanout capacity is reserved"
     );
 }

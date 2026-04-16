@@ -5,6 +5,7 @@
 #[prost_reflect(message_name = "synctv.client.User")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_User))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -34,6 +35,7 @@ pub struct User {
 #[prost_reflect(message_name = "synctv.client.UserPublicView")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserPublicView))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -52,6 +54,7 @@ pub struct UserPublicView {
 #[prost_reflect(message_name = "synctv.client.Room")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Room))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -85,11 +88,15 @@ pub struct Room {
     /// Availability derived from creator state
     #[prost(enumeration = "ResourceAvailability", tag = "11")]
     pub availability: i32,
+    /// Resource version from database
+    #[prost(int64, tag = "12")]
+    pub version: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.Media")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Media))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -126,11 +133,15 @@ pub struct Media {
     /// Availability derived from creator state
     #[prost(enumeration = "ResourceAvailability", tag = "12")]
     pub availability: i32,
+    /// Resource version from database
+    #[prost(int64, tag = "13")]
+    pub version: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.Playlist")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Playlist))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -160,11 +171,15 @@ pub struct Playlist {
     /// Availability derived from creator state
     #[prost(enumeration = "ResourceAvailability", tag = "10")]
     pub availability: i32,
+    /// Resource version from database
+    #[prost(int64, tag = "11")]
+    pub version: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PlaybackState")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackState))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -199,6 +214,7 @@ pub struct PlaybackState {
 #[prost_reflect(message_name = "synctv.client.RegisterRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RegisterRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -214,6 +230,7 @@ pub struct RegisterRequest {
 #[prost_reflect(message_name = "synctv.client.RegisterResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RegisterResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -232,6 +249,7 @@ pub struct RegisterResponse {
 #[prost_reflect(message_name = "synctv.client.LoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -253,6 +271,7 @@ pub struct LoginRequest {
 #[prost_reflect(message_name = "synctv.client.LoginResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LoginResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -268,6 +287,7 @@ pub struct LoginResponse {
 #[prost_reflect(message_name = "synctv.client.RequestEmailLoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestEmailLoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -279,6 +299,7 @@ pub struct RequestEmailLoginRequest {
 #[prost_reflect(message_name = "synctv.client.RequestEmailLoginResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestEmailLoginResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -290,6 +311,7 @@ pub struct RequestEmailLoginResponse {
 #[prost_reflect(message_name = "synctv.client.RefreshTokenRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RefreshTokenRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -301,6 +323,7 @@ pub struct RefreshTokenRequest {
 #[prost_reflect(message_name = "synctv.client.RefreshTokenResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RefreshTokenResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -314,6 +337,7 @@ pub struct RefreshTokenResponse {
 #[prost_reflect(message_name = "synctv.client.GetProfileRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetProfileRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -322,6 +346,7 @@ pub struct GetProfileRequest {}
 #[prost_reflect(message_name = "synctv.client.GetProfileResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetProfileResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -333,6 +358,7 @@ pub struct GetProfileResponse {
 #[prost_reflect(message_name = "synctv.client.UpdateUserRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateUserRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -351,6 +377,7 @@ pub struct UpdateUserRequest {
 #[prost_reflect(message_name = "synctv.client.UpdateUserResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateUserResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -364,6 +391,7 @@ pub struct UpdateUserResponse {
 #[prost_reflect(message_name = "synctv.client.CreateWebSocketTicketRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreateWebSocketTicketRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -375,6 +403,7 @@ pub struct CreateWebSocketTicketRequest {
 #[prost_reflect(message_name = "synctv.client.CreateWebSocketTicketResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -395,6 +424,7 @@ pub struct CreateWebSocketTicketResponse {
 #[prost_reflect(message_name = "synctv.client.WebSocketConnectRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebSocketConnectRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -407,6 +437,7 @@ pub struct WebSocketConnectRequest {
 #[prost_reflect(message_name = "synctv.client.ProviderInstanceQuery")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderInstanceQuery))]
@@ -420,6 +451,7 @@ pub struct ProviderInstanceQuery {
 #[prost_reflect(message_name = "synctv.client.ListProviderBackendsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListProviderBackendsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -432,6 +464,7 @@ pub struct ListProviderBackendsRequest {
 #[prost_reflect(message_name = "synctv.client.ProviderProxyPathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderProxyPathRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -445,6 +478,7 @@ pub struct ProviderProxyPathRequest {
 #[prost_reflect(message_name = "synctv.client.ProviderInstancesResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderInstancesResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -456,6 +490,7 @@ pub struct ProviderInstancesResponse {
 #[prost_reflect(message_name = "synctv.client.ProviderBackendsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderBackendsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -468,6 +503,7 @@ pub struct ProviderBackendsResponse {
 #[prost_reflect(message_name = "synctv.client.CreateRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreateRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -491,6 +527,7 @@ pub struct CreateRoomRequest {
 #[prost_reflect(message_name = "synctv.client.CreateRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreateRoomResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -503,6 +540,7 @@ pub struct CreateRoomResponse {
 #[prost_reflect(message_name = "synctv.client.GetRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -515,6 +553,7 @@ pub struct GetRoomRequest {
 #[prost_reflect(message_name = "synctv.client.GetRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -528,6 +567,7 @@ pub struct GetRoomResponse {
 #[prost_reflect(message_name = "synctv.client.JoinRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_JoinRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -544,6 +584,7 @@ pub struct JoinRoomRequest {
 #[prost_reflect(message_name = "synctv.client.JoinRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_JoinRoomResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -563,6 +604,7 @@ pub struct JoinRoomResponse {
 #[prost_reflect(message_name = "synctv.client.LeaveRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LeaveRoomRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -571,6 +613,7 @@ pub struct LeaveRoomRequest {}
 #[prost_reflect(message_name = "synctv.client.LeaveRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LeaveRoomResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -582,6 +625,7 @@ pub struct LeaveRoomResponse {
 #[prost_reflect(message_name = "synctv.client.ListRoomsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomsRequest))]
@@ -608,6 +652,7 @@ pub struct ListRoomsRequest {
 #[prost_reflect(message_name = "synctv.client.ListRoomsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -621,6 +666,7 @@ pub struct ListRoomsResponse {
 #[prost_reflect(message_name = "synctv.client.DeleteRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteRoomRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -629,6 +675,7 @@ pub struct DeleteRoomRequest {}
 #[prost_reflect(message_name = "synctv.client.DeleteRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteRoomResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -640,6 +687,7 @@ pub struct DeleteRoomResponse {
 #[prost_reflect(message_name = "synctv.client.UpdateRoomSettingsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(from = "crate::http_serde::ClientUpdateRoomSettingsRequestDef")]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateRoomSettingsRequest))]
@@ -654,6 +702,7 @@ pub struct UpdateRoomSettingsRequest {
 #[prost_reflect(message_name = "synctv.client.UpdateRoomSettingsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -666,6 +715,7 @@ pub struct UpdateRoomSettingsResponse {
 #[prost_reflect(message_name = "synctv.client.GetRoomSettingsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -674,6 +724,7 @@ pub struct GetRoomSettingsRequest {}
 #[prost_reflect(message_name = "synctv.client.GetRoomSettingsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -682,12 +733,15 @@ pub struct GetRoomSettingsResponse {
     #[prost(bytes = "vec", tag = "1")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int64, tag = "2")]
+    pub version: i64,
 }
 /// Reset room settings to default
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.ResetRoomSettingsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResetRoomSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -696,6 +750,7 @@ pub struct ResetRoomSettingsRequest {}
 #[prost_reflect(message_name = "synctv.client.ResetRoomSettingsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResetRoomSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -709,6 +764,7 @@ pub struct ResetRoomSettingsResponse {
 #[prost_reflect(message_name = "synctv.client.TransferRoomOwnershipRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_TransferRoomOwnershipRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -721,6 +777,7 @@ pub struct TransferRoomOwnershipRequest {
 #[prost_reflect(message_name = "synctv.client.TransferRoomOwnershipResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -736,6 +793,7 @@ pub struct TransferRoomOwnershipResponse {
 #[prost_reflect(message_name = "synctv.client.SetRoomPasswordRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetRoomPasswordRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -748,6 +806,7 @@ pub struct SetRoomPasswordRequest {
 #[prost_reflect(message_name = "synctv.client.SetRoomPasswordResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetRoomPasswordResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -761,6 +820,7 @@ pub struct SetRoomPasswordResponse {
 #[prost_reflect(message_name = "synctv.client.GetRoomMembersRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersRequest))]
@@ -792,6 +852,7 @@ pub struct GetRoomMembersRequest {
 #[prost_reflect(message_name = "synctv.client.GetRoomMembersResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetRoomMembersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -800,11 +861,15 @@ pub struct GetRoomMembersResponse {
     pub members: ::prost::alloc::vec::Vec<super::common::RoomMember>,
     #[prost(int32, tag = "2")]
     pub total: i32,
+    /// Snapshot version for this member list result
+    #[prost(string, tag = "3")]
+    pub version: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.AddMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -822,6 +887,7 @@ pub struct AddMemberRequest {
 #[prost_reflect(message_name = "synctv.client.AddMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMemberResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -833,6 +899,7 @@ pub struct AddMemberResponse {
 #[prost_reflect(message_name = "synctv.client.ApproveMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ApproveMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -844,6 +911,7 @@ pub struct ApproveMemberRequest {
 #[prost_reflect(message_name = "synctv.client.ApproveMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ApproveMemberResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -855,6 +923,7 @@ pub struct ApproveMemberResponse {
 #[prost_reflect(message_name = "synctv.client.RejectMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RejectMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -868,6 +937,7 @@ pub struct RejectMemberRequest {
 #[prost_reflect(message_name = "synctv.client.RejectMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RejectMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -879,6 +949,7 @@ pub struct RejectMemberResponse {
 #[prost_reflect(message_name = "synctv.client.UpdateMemberPermissionsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -915,6 +986,7 @@ pub struct UpdateMemberPermissionsRequest {
 #[prost_reflect(message_name = "synctv.client.UpdateMemberPermissionsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -929,6 +1001,7 @@ pub struct UpdateMemberPermissionsResponse {
 #[prost_reflect(message_name = "synctv.client.KickMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_KickMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -942,6 +1015,7 @@ pub struct KickMemberRequest {
 #[prost_reflect(message_name = "synctv.client.KickMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_KickMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -953,6 +1027,7 @@ pub struct KickMemberResponse {
 #[prost_reflect(message_name = "synctv.client.BanMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_BanMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -969,6 +1044,7 @@ pub struct BanMemberRequest {
 #[prost_reflect(message_name = "synctv.client.BanMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_BanMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -980,6 +1056,7 @@ pub struct BanMemberResponse {
 #[prost_reflect(message_name = "synctv.client.UnbanMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UnbanMemberRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -992,6 +1069,7 @@ pub struct UnbanMemberRequest {
 #[prost_reflect(message_name = "synctv.client.UnbanMemberResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UnbanMemberResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1003,6 +1081,7 @@ pub struct UnbanMemberResponse {
 #[prost_reflect(message_name = "synctv.client.CreatePlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1032,6 +1111,7 @@ pub struct CreatePlaylistRequest {
 #[prost_reflect(message_name = "synctv.client.CreatePlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePlaylistResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1043,6 +1123,7 @@ pub struct CreatePlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.UpdatePlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1059,6 +1140,7 @@ pub struct UpdatePlaylistRequest {
 #[prost_reflect(message_name = "synctv.client.UpdatePlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaylistResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1070,6 +1152,7 @@ pub struct UpdatePlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.MovePlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistRequest))]
 #[serde(try_from = "crate::http_serde::MovePlaylistRequestDef")]
@@ -1084,6 +1167,7 @@ pub struct MovePlaylistRequest {
 /// Nested message and enum types in `MovePlaylistRequest`.
 pub mod move_playlist_request {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistRequest))]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
@@ -1098,6 +1182,7 @@ pub mod move_playlist_request {
 #[prost_reflect(message_name = "synctv.client.MovePlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MovePlaylistResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1109,6 +1194,7 @@ pub struct MovePlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.DeletePlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1122,6 +1208,7 @@ pub struct DeletePlaylistRequest {
 #[prost_reflect(message_name = "synctv.client.DeletePlaylistQuery")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePlaylistQuery))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1134,6 +1221,7 @@ pub struct DeletePlaylistQuery {
 #[prost_reflect(message_name = "synctv.client.DeletePlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePlaylistResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1146,6 +1234,7 @@ pub struct DeletePlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.GetPlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaylistRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1157,6 +1246,7 @@ pub struct GetPlaylistRequest {
 #[prost_reflect(message_name = "synctv.client.GetPlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaylistResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1175,6 +1265,7 @@ pub struct GetPlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.ListPlaylistsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistsRequest))]
@@ -1216,6 +1307,7 @@ pub struct ListPlaylistsRequest {
 #[prost_reflect(message_name = "synctv.client.ListPlaylistsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1234,6 +1326,7 @@ pub struct ListPlaylistsResponse {
 #[prost_reflect(message_name = "synctv.client.StartPlaybackRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPlaybackRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1258,6 +1351,7 @@ pub struct StartPlaybackRequest {
 #[prost_reflect(message_name = "synctv.client.StartPlaybackResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPlaybackResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1267,6 +1361,7 @@ pub struct StartPlaybackResponse {}
 #[prost_reflect(message_name = "synctv.client.StopPlaybackRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StopPlaybackRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1277,6 +1372,7 @@ pub struct StopPlaybackRequest {}
 #[prost_reflect(message_name = "synctv.client.StopPlaybackResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StopPlaybackResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1285,6 +1381,7 @@ pub struct StopPlaybackResponse {}
 #[prost_reflect(message_name = "synctv.client.AddMediaRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1313,6 +1410,7 @@ pub struct AddMediaRequest {
 #[prost_reflect(message_name = "synctv.client.AddMediaResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1324,6 +1422,7 @@ pub struct AddMediaResponse {
 #[prost_reflect(message_name = "synctv.client.DeleteMediaRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1337,6 +1436,7 @@ pub struct DeleteMediaRequest {
 #[prost_reflect(message_name = "synctv.client.DeleteMediaQuery")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteMediaQuery))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1349,6 +1449,7 @@ pub struct DeleteMediaQuery {
 #[prost_reflect(message_name = "synctv.client.DeleteMediaResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteMediaResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1360,6 +1461,7 @@ pub struct DeleteMediaResponse {
 #[prost_reflect(message_name = "synctv.client.DeleteEntriesRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteEntriesRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1378,6 +1480,7 @@ pub struct DeleteEntriesRequest {
 #[prost_reflect(message_name = "synctv.client.DeleteEntriesResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteEntriesResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1391,6 +1494,7 @@ pub struct DeleteEntriesResponse {
 #[prost_reflect(message_name = "synctv.client.ListPlaylistItemsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistItemsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1433,6 +1537,7 @@ pub struct ListPlaylistItemsRequest {
 #[prost_reflect(message_name = "synctv.client.ListPlaylistItemsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPlaylistItemsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1460,11 +1565,15 @@ pub struct ListPlaylistItemsResponse {
     /// Breadcrumb path for the current browse location
     #[prost(message, repeated, tag = "7")]
     pub current_path: ::prost::alloc::vec::Vec<PlaylistBrowsePathNode>,
+    /// Snapshot version for this browse result
+    #[prost(string, tag = "8")]
+    pub version: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PlaylistItem")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistItem))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1493,6 +1602,7 @@ pub struct PlaylistItem {
 #[prost_reflect(message_name = "synctv.client.PlaylistBrowsePathNode")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistBrowsePathNode))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1512,6 +1622,7 @@ pub struct PlaylistBrowsePathNode {
 #[prost_reflect(message_name = "synctv.client.MoveMediaRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1542,6 +1653,7 @@ pub struct MoveMediaRequest {
 #[prost_reflect(message_name = "synctv.client.MoveMediaResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MoveMediaResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1556,6 +1668,7 @@ pub struct MoveMediaResponse {
 #[prost_reflect(message_name = "synctv.client.EditMediaRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_EditMediaRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1570,6 +1683,7 @@ pub struct EditMediaRequest {
 #[prost_reflect(message_name = "synctv.client.EditMediaResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_EditMediaResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1582,6 +1696,7 @@ pub struct EditMediaResponse {
 #[prost_reflect(message_name = "synctv.client.ClearPlaylistRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ClearPlaylistRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1590,6 +1705,7 @@ pub struct ClearPlaylistRequest {}
 #[prost_reflect(message_name = "synctv.client.ClearPlaylistResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ClearPlaylistResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1604,6 +1720,7 @@ pub struct ClearPlaylistResponse {
 #[prost_reflect(message_name = "synctv.client.AddMediaBatchRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaBatchRequest))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1616,6 +1733,7 @@ pub struct AddMediaBatchRequest {
 #[prost_reflect(message_name = "synctv.client.AddMediaBatchResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_AddMediaBatchResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1628,6 +1746,7 @@ pub struct AddMediaBatchResponse {
 #[prost_reflect(message_name = "synctv.client.PlayCommand")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayCommand))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1637,6 +1756,7 @@ pub struct PlayCommand {}
 #[prost_reflect(message_name = "synctv.client.PauseCommand")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PauseCommand))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1645,6 +1765,7 @@ pub struct PauseCommand {}
 #[prost_reflect(message_name = "synctv.client.SeekCommand")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SeekCommand))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -1657,6 +1778,7 @@ pub struct SeekCommand {
 #[prost_reflect(message_name = "synctv.client.SetPlaybackSpeedCommand")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPlaybackSpeedCommand))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -1669,6 +1791,7 @@ pub struct SetPlaybackSpeedCommand {
 #[prost_reflect(message_name = "synctv.client.UpdatePlaybackRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaybackRequest))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1700,6 +1823,7 @@ pub struct UpdatePlaybackRequest {
 #[prost_reflect(message_name = "synctv.client.GetPlaybackRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaybackRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1708,6 +1832,7 @@ pub struct GetPlaybackRequest {}
 #[prost_reflect(message_name = "synctv.client.GetPlaybackResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaybackResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1715,20 +1840,20 @@ pub struct GetPlaybackResponse {
     /// Playback state (current time, speed, is_playing, etc.)
     #[prost(message, optional, tag = "1")]
     pub playback_state: ::core::option::Option<PlaybackState>,
-    /// Complete playback information for currently playing media
-    /// Includes URLs, subtitles, danmakus, etc.
+    /// Versioned playback snapshot for the current source.
     #[prost(message, optional, tag = "2")]
-    pub playback_result: ::core::option::Option<PlaybackResult>,
+    pub playback_snapshot: ::core::option::Option<PlaybackSnapshot>,
 }
-/// Complete playback information (returned by provider's generate_playback)
+/// Versioned playback information for the current source.
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.PlaybackResult")]
+#[prost_reflect(message_name = "synctv.client.PlaybackSnapshot")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackResult))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackSnapshot))]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlaybackResult {
+pub struct PlaybackSnapshot {
     /// Media ID
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
@@ -1760,12 +1885,19 @@ pub struct PlaybackResult {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// Version scoped to playback snapshots.
+    #[prost(string, tag = "9")]
+    pub version: ::prost::alloc::string::String,
+    /// Earliest URL expiration across the snapshot, if any.
+    #[prost(int64, optional, tag = "10")]
+    pub expires_at: ::core::option::Option<i64>,
 }
 /// Playback information for a single mode
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PlaybackInfo")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackInfo))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1794,6 +1926,7 @@ pub struct PlaybackInfo {
 #[prost_reflect(message_name = "synctv.client.PlaybackUrl")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUrl))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1822,6 +1955,7 @@ pub struct PlaybackUrl {
 #[prost_reflect(message_name = "synctv.client.PlaybackUrlMetadata")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUrlMetadata))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1850,6 +1984,7 @@ pub struct PlaybackUrlMetadata {
 #[prost_reflect(message_name = "synctv.client.Subtitle")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Subtitle))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1872,6 +2007,7 @@ pub struct Subtitle {
 #[prost_reflect(message_name = "synctv.client.SubtitleUrl")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SubtitleUrl))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1897,6 +2033,7 @@ pub struct SubtitleUrl {
 #[prost_reflect(message_name = "synctv.client.Danmaku")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Danmaku))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1922,19 +2059,21 @@ pub struct Danmaku {
 #[prost_reflect(message_name = "synctv.client.ClientMessage")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ClientMessage))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {
     #[prost(
         oneof = "client_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub message: ::core::option::Option<client_message::Message>,
 }
 /// Nested message and enum types in `ClientMessage`.
 pub mod client_message {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_ClientMessage))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
@@ -1969,7 +2108,125 @@ pub mod client_message {
         SeekCommand(super::SeekCommand),
         #[prost(message, tag = "13")]
         SetSpeedCommand(super::SetPlaybackSpeedCommand),
+        #[prost(message, tag = "14")]
+        WatchPlaybackState(super::WatchPlaybackState),
+        #[prost(message, tag = "15")]
+        WatchPlaybackSnapshot(super::WatchPlaybackSnapshot),
+        #[prost(message, tag = "16")]
+        WatchRoomSettings(super::WatchRoomSettings),
+        #[prost(message, tag = "17")]
+        WatchPlaylistItems(super::WatchPlaylistItems),
+        #[prost(message, tag = "18")]
+        WatchRoomMembers(super::WatchRoomMembers),
     }
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WatchPlaybackState")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaybackState))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchPlaybackState {
+    #[prost(int64, optional, tag = "1")]
+    pub version: ::core::option::Option<i64>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WatchPlaybackSnapshot")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaybackSnapshot))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchPlaybackSnapshot {
+    /// Empty means the client has no local snapshot yet.
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    /// Client-side cached playback source identity. Used together with `version`
+    /// so reconnects don't suppress required refreshes when the source changed
+    /// but the DB-derived version collided.
+    #[prost(string, tag = "2")]
+    pub media_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub playlist_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WatchRoomSettings")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchRoomSettings))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchRoomSettings {
+    #[prost(int64, optional, tag = "1")]
+    pub version: ::core::option::Option<i64>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WatchPlaylistItems")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaylistItems))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchPlaylistItems {
+    /// Empty means room root
+    #[prost(string, tag = "1")]
+    pub playlist_id: ::prost::alloc::string::String,
+    /// Provider-facing browse target payload
+    #[prost(bytes = "vec", tag = "2")]
+    pub target: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int32, tag = "3")]
+    pub page: i32,
+    #[prost(int32, tag = "4")]
+    pub page_size: i32,
+    #[prost(string, tag = "5")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub source_provider: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub provider_instance_name: ::prost::alloc::string::String,
+    #[prost(enumeration = "MediaListSortBy", tag = "8")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "9")]
+    pub sort_direction: i32,
+    #[prost(enumeration = "ResourceAvailabilityFilter", tag = "10")]
+    pub availability: i32,
+    /// Empty means the client has no local snapshot yet
+    #[prost(string, tag = "11")]
+    pub version: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.WatchRoomMembers")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchRoomMembers))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchRoomMembers {
+    #[prost(int32, tag = "1")]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    #[prost(string, tag = "3")]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomMemberRole", optional, tag = "4")]
+    pub role: ::core::option::Option<i32>,
+    #[prost(enumeration = "super::common::MemberStatus", optional, tag = "5")]
+    pub status: ::core::option::Option<i32>,
+    #[prost(enumeration = "RoomMemberListSortBy", tag = "6")]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "7")]
+    pub sort_direction: i32,
+    /// Empty means the client has no local snapshot yet
+    #[prost(string, tag = "8")]
+    pub version: ::prost::alloc::string::String,
 }
 /// Client -> Server: periodic playback progress heartbeat
 /// Sent every few seconds by clients that are actively playing media.
@@ -1979,6 +2236,7 @@ pub mod client_message {
 #[prost_reflect(message_name = "synctv.client.PlaybackProgressReport")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackProgressReport))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -1994,19 +2252,21 @@ pub struct PlaybackProgressReport {
 #[prost_reflect(message_name = "synctv.client.ServerMessage")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ServerMessage))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
 /// Nested message and enum types in `ServerMessage`.
 pub mod server_message {
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_ServerMessage))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
@@ -2064,7 +2324,41 @@ pub mod server_message {
         MediaUpdated(super::MediaUpdated),
         #[prost(message, tag = "24")]
         PlaylistReordered(super::PlaylistReordered),
+        #[prost(message, tag = "26")]
+        PlaybackSnapshot(super::PlaybackSnapshotChanged),
+        #[prost(message, tag = "27")]
+        PlaylistItems(super::PlaylistItemsChanged),
+        #[prost(message, tag = "28")]
+        RoomMembers(super::RoomMembersChanged),
     }
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.PlaylistItemsChanged")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistItemsChanged))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaylistItemsChanged {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub snapshot: ::core::option::Option<ListPlaylistItemsResponse>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.RoomMembersChanged")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomMembersChanged))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoomMembersChanged {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub snapshot: ::core::option::Option<GetRoomMembersResponse>,
 }
 /// Note: room_id extracted from x-room-id metadata in MessageStream context
 /// If position is set, client may display this as a danmaku (bullet comment)
@@ -2072,6 +2366,7 @@ pub mod server_message {
 #[prost_reflect(message_name = "synctv.client.ChatMessageSend")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ChatMessageSend))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2090,6 +2385,7 @@ pub struct ChatMessageSend {
 #[prost_reflect(message_name = "synctv.client.ChatMessageReceive")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ChatMessageReceive))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2118,6 +2414,7 @@ pub struct ChatMessageReceive {
 #[prost_reflect(message_name = "synctv.client.HeartbeatMessage")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_HeartbeatMessage))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2130,6 +2427,7 @@ pub struct HeartbeatMessage {
 #[prost_reflect(message_name = "synctv.client.HeartbeatAck")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_HeartbeatAck))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2142,6 +2440,7 @@ pub struct HeartbeatAck {
 #[prost_reflect(message_name = "synctv.client.PlaybackStateChanged")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackStateChanged))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2152,9 +2451,24 @@ pub struct PlaybackStateChanged {
     pub state: ::core::option::Option<PlaybackState>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.PlaybackSnapshotChanged")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackSnapshotChanged))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackSnapshotChanged {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub snapshot: ::core::option::Option<PlaybackSnapshot>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.UserJoinedRoom")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserJoinedRoom))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2168,6 +2482,7 @@ pub struct UserJoinedRoom {
 #[prost_reflect(message_name = "synctv.client.UserLeftRoom")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserLeftRoom))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2181,6 +2496,7 @@ pub struct UserLeftRoom {
 #[prost_reflect(message_name = "synctv.client.RoomSettingsChanged")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomSettingsChanged))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2190,11 +2506,14 @@ pub struct RoomSettingsChanged {
     /// JSON settings
     #[prost(bytes = "vec", tag = "2")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int64, tag = "3")]
+    pub version: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.ErrorMessage")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ErrorMessage))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2228,6 +2547,7 @@ pub struct ErrorMessage {
 #[prost_reflect(message_name = "synctv.client.UserNotification")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserNotification))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2257,6 +2577,7 @@ pub struct UserNotification {
 #[prost_reflect(message_name = "synctv.client.GetChatHistoryRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetChatHistoryRequest))]
@@ -2275,6 +2596,7 @@ pub struct GetChatHistoryRequest {
 #[prost_reflect(message_name = "synctv.client.GetChatHistoryResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetChatHistoryResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2290,6 +2612,7 @@ pub struct GetChatHistoryResponse {
 #[prost_reflect(message_name = "synctv.client.LogoutRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LogoutRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2298,6 +2621,7 @@ pub struct LogoutRequest {}
 #[prost_reflect(message_name = "synctv.client.LogoutResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LogoutResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2312,6 +2636,7 @@ pub struct LogoutResponse {
 #[prost_reflect(message_name = "synctv.client.SetUsernameRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetUsernameRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2324,6 +2649,7 @@ pub struct SetUsernameRequest {
 #[prost_reflect(message_name = "synctv.client.SetUsernameResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetUsernameResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2336,6 +2662,7 @@ pub struct SetUsernameResponse {
 #[prost_reflect(message_name = "synctv.client.SetPasswordRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2351,6 +2678,7 @@ pub struct SetPasswordRequest {
 #[prost_reflect(message_name = "synctv.client.SetPasswordResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPasswordResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2362,6 +2690,7 @@ pub struct SetPasswordResponse {
 #[prost_reflect(message_name = "synctv.client.ListMyRoomsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListMyRoomsRequest))]
@@ -2396,6 +2725,7 @@ pub struct ListMyRoomsRequest {
 #[prost_reflect(message_name = "synctv.client.ListMyRoomsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListMyRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2409,6 +2739,7 @@ pub struct ListMyRoomsResponse {
 #[prost_reflect(message_name = "synctv.client.MyRoom")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MyRoom))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2429,6 +2760,7 @@ pub struct MyRoom {
 #[prost_reflect(message_name = "synctv.client.CheckRoomRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2440,6 +2772,7 @@ pub struct CheckRoomRequest {
 #[prost_reflect(message_name = "synctv.client.RoomMemberTargetPathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomMemberTargetPathRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2453,6 +2786,7 @@ pub struct RoomMemberTargetPathRequest {
 #[prost_reflect(message_name = "synctv.client.RoomPathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomPathRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2464,6 +2798,7 @@ pub struct RoomPathRequest {
 #[prost_reflect(message_name = "synctv.client.RoomMediaTargetPathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomMediaTargetPathRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2477,6 +2812,7 @@ pub struct RoomMediaTargetPathRequest {
 #[prost_reflect(message_name = "synctv.client.RoomPlaylistTargetPathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -2493,6 +2829,7 @@ pub struct RoomPlaylistTargetPathRequest {
 #[prost_reflect(message_name = "synctv.client.CheckRoomResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CheckRoomResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2510,6 +2847,7 @@ pub struct CheckRoomResponse {
 #[prost_reflect(message_name = "synctv.client.GetHotRoomsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetHotRoomsRequest))]
@@ -2523,6 +2861,7 @@ pub struct GetHotRoomsRequest {
 #[prost_reflect(message_name = "synctv.client.GetHotRoomsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetHotRoomsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2534,6 +2873,7 @@ pub struct GetHotRoomsResponse {
 #[prost_reflect(message_name = "synctv.client.RoomWithStats")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomWithStats))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2553,6 +2893,7 @@ pub struct RoomWithStats {
 #[prost_reflect(message_name = "synctv.client.CreatePublishKeyRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2565,6 +2906,7 @@ pub struct CreatePublishKeyRequest {
 #[prost_reflect(message_name = "synctv.client.CreatePublishKeyResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2587,6 +2929,7 @@ pub struct CreatePublishKeyResponse {
 #[prost_reflect(message_name = "synctv.client.GetStreamInfoRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2598,6 +2941,7 @@ pub struct GetStreamInfoRequest {
 #[prost_reflect(message_name = "synctv.client.StreamPublisherInfo")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamPublisherInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2612,6 +2956,7 @@ pub struct StreamPublisherInfo {
 #[prost_reflect(message_name = "synctv.client.GetStreamInfoResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2627,6 +2972,7 @@ pub struct GetStreamInfoResponse {
 #[prost_reflect(message_name = "synctv.client.ListRoomStreamsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsRequest))]
@@ -2654,6 +3000,7 @@ pub struct ListRoomStreamsRequest {
 #[prost_reflect(message_name = "synctv.client.StreamEntry")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamEntry))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2667,6 +3014,7 @@ pub struct StreamEntry {
 #[prost_reflect(message_name = "synctv.client.ListRoomStreamsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2681,6 +3029,7 @@ pub struct ListRoomStreamsResponse {
 #[prost_reflect(message_name = "synctv.client.GetPublicSettingsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPublicSettingsRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2689,6 +3038,7 @@ pub struct GetPublicSettingsRequest {}
 #[prost_reflect(message_name = "synctv.client.GetPublicSettingsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPublicSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2735,6 +3085,7 @@ pub struct GetPublicSettingsResponse {
 #[prost_reflect(message_name = "synctv.client.SendVerificationEmailRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SendVerificationEmailRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2747,6 +3098,7 @@ pub struct SendVerificationEmailRequest {
 #[prost_reflect(message_name = "synctv.client.SendVerificationEmailResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -2761,6 +3113,7 @@ pub struct SendVerificationEmailResponse {
 #[prost_reflect(message_name = "synctv.client.ConfirmEmailRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmEmailRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2775,6 +3128,7 @@ pub struct ConfirmEmailRequest {
 #[prost_reflect(message_name = "synctv.client.ConfirmEmailResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmEmailResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2788,6 +3142,7 @@ pub struct ConfirmEmailResponse {
 #[prost_reflect(message_name = "synctv.client.RequestPasswordResetRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestPasswordResetRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2799,6 +3154,7 @@ pub struct RequestPasswordResetRequest {
 #[prost_reflect(message_name = "synctv.client.RequestPasswordResetResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestPasswordResetResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2811,6 +3167,7 @@ pub struct RequestPasswordResetResponse {
 #[prost_reflect(message_name = "synctv.client.ConfirmPasswordResetRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmPasswordResetRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2829,6 +3186,7 @@ pub struct ConfirmPasswordResetRequest {
 #[prost_reflect(message_name = "synctv.client.ConfirmPasswordResetResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ConfirmPasswordResetResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2842,6 +3200,7 @@ pub struct ConfirmPasswordResetResponse {
 #[prost_reflect(message_name = "synctv.client.MediaAdded")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaAdded))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2863,6 +3222,7 @@ pub struct MediaAdded {
 #[prost_reflect(message_name = "synctv.client.MediaRemoved")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaRemoved))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2882,6 +3242,7 @@ pub struct MediaRemoved {
 #[prost_reflect(message_name = "synctv.client.MediaRemovedBatch")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaRemovedBatch))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2901,6 +3262,7 @@ pub struct MediaRemovedBatch {
 #[prost_reflect(message_name = "synctv.client.MediaUpdated")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaUpdated))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2922,6 +3284,7 @@ pub struct MediaUpdated {
 #[prost_reflect(message_name = "synctv.client.PermissionChanged")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PermissionChanged))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2954,6 +3317,7 @@ pub struct PermissionChanged {
 #[prost_reflect(message_name = "synctv.client.PlaylistCreated")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistCreated))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2967,6 +3331,7 @@ pub struct PlaylistCreated {
 #[prost_reflect(message_name = "synctv.client.PlaylistUpdated")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistUpdated))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2980,6 +3345,7 @@ pub struct PlaylistUpdated {
 #[prost_reflect(message_name = "synctv.client.PlaylistDeleted")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistDeleted))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2993,6 +3359,7 @@ pub struct PlaylistDeleted {
 #[prost_reflect(message_name = "synctv.client.PlaylistReordered")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistReordered))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3012,6 +3379,7 @@ pub struct PlaylistReordered {
 #[prost_reflect(message_name = "synctv.client.PlayingChanged")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayingChanged))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3030,6 +3398,7 @@ pub struct PlayingChanged {
 #[prost_reflect(message_name = "synctv.client.WebRTCOffer")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCOffer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3050,6 +3419,7 @@ pub struct WebRtcOffer {
 #[prost_reflect(message_name = "synctv.client.WebRTCAnswer")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCAnswer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3070,6 +3440,7 @@ pub struct WebRtcAnswer {
 #[prost_reflect(message_name = "synctv.client.WebRTCIceCandidate")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCIceCandidate))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3090,6 +3461,7 @@ pub struct WebRtcIceCandidate {
 #[prost_reflect(message_name = "synctv.client.WebRTCJoin")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCJoin))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3110,6 +3482,7 @@ pub struct WebRtcJoin {
 #[prost_reflect(message_name = "synctv.client.WebRTCLeave")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCLeave))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3128,6 +3501,7 @@ pub struct WebRtcLeave {
 #[prost_reflect(message_name = "synctv.client.SfuMigrationOffer")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationOffer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3145,6 +3519,7 @@ pub struct SfuMigrationOffer {
 #[prost_reflect(message_name = "synctv.client.SfuMigrationAnswer")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationAnswer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3161,6 +3536,7 @@ pub struct SfuMigrationAnswer {
 #[prost_reflect(message_name = "synctv.client.SfuMigrationStatus")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationStatus))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3188,6 +3564,7 @@ pub struct SfuMigrationStatus {
 #[prost_reflect(message_name = "synctv.client.IceServersConfig")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServersConfig))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3199,6 +3576,7 @@ pub struct IceServersConfig {
 #[prost_reflect(message_name = "synctv.client.IceServer")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3221,6 +3599,7 @@ pub struct IceServer {
 #[prost_reflect(message_name = "synctv.client.GetIceServersRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetIceServersRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3229,6 +3608,7 @@ pub struct GetIceServersRequest {}
 #[prost_reflect(message_name = "synctv.client.GetIceServersResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetIceServersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3240,6 +3620,7 @@ pub struct GetIceServersResponse {
 #[prost_reflect(message_name = "synctv.client.MemoryHealth")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MemoryHealth))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3253,6 +3634,7 @@ pub struct MemoryHealth {
 #[prost_reflect(message_name = "synctv.client.HealthDetails")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_HealthDetails))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3284,6 +3666,7 @@ pub struct HealthDetails {
 #[prost_reflect(message_name = "synctv.client.HealthResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_HealthResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3298,6 +3681,7 @@ pub struct HealthResponse {
 #[prost_reflect(message_name = "synctv.client.GetNetworkQualityRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3306,6 +3690,7 @@ pub struct GetNetworkQualityRequest {}
 #[prost_reflect(message_name = "synctv.client.GetNetworkQualityResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3318,6 +3703,7 @@ pub struct GetNetworkQualityResponse {
 #[prost_reflect(message_name = "synctv.client.PeerNetworkQuality")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PeerNetworkQuality))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3347,6 +3733,7 @@ pub struct PeerNetworkQuality {
 #[prost_reflect(message_name = "synctv.client.NotificationProto")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationProto))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3375,6 +3762,7 @@ pub struct NotificationProto {
 #[prost_reflect(message_name = "synctv.client.ListNotificationsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsRequest))]
@@ -3408,6 +3796,7 @@ pub struct ListNotificationsRequest {
 #[prost_reflect(message_name = "synctv.client.ListNotificationsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ListNotificationsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3423,6 +3812,7 @@ pub struct ListNotificationsResponse {
 #[prost_reflect(message_name = "synctv.client.GetNotificationRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNotificationRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3434,6 +3824,7 @@ pub struct GetNotificationRequest {
 #[prost_reflect(message_name = "synctv.client.GetNotificationResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNotificationResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3445,6 +3836,7 @@ pub struct GetNotificationResponse {
 #[prost_reflect(message_name = "synctv.client.MarkAsReadRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAsReadRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3456,6 +3848,7 @@ pub struct MarkAsReadRequest {
 #[prost_reflect(message_name = "synctv.client.MarkAsReadResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAsReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3464,6 +3857,7 @@ pub struct MarkAsReadResponse {}
 #[prost_reflect(message_name = "synctv.client.MarkAllAsReadRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAllAsReadRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3476,6 +3870,7 @@ pub struct MarkAllAsReadRequest {
 #[prost_reflect(message_name = "synctv.client.MarkAllAsReadResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAllAsReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3484,6 +3879,7 @@ pub struct MarkAllAsReadResponse {}
 #[prost_reflect(message_name = "synctv.client.ApiErrorResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ApiErrorResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3503,6 +3899,7 @@ pub struct ApiErrorResponse {
 #[prost_reflect(message_name = "synctv.client.DeleteNotificationRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteNotificationRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3514,6 +3911,7 @@ pub struct DeleteNotificationRequest {
 #[prost_reflect(message_name = "synctv.client.DeleteNotificationResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteNotificationResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3522,6 +3920,7 @@ pub struct DeleteNotificationResponse {}
 #[prost_reflect(message_name = "synctv.client.DeleteAllReadRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -3530,11 +3929,13 @@ pub struct DeleteAllReadRequest {}
 #[prost_reflect(message_name = "synctv.client.DeleteAllReadResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteAllReadResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteAllReadResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceAvailability))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3567,6 +3968,7 @@ impl ResourceAvailability {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceAvailabilityFilter))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3599,6 +4001,7 @@ impl ResourceAvailabilityFilter {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SortDirection))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3631,6 +4034,7 @@ impl SortDirection {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomStreamListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3660,6 +4064,7 @@ impl RoomStreamListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomMemberListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3698,6 +4103,7 @@ impl RoomMemberListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_RoomListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3736,6 +4142,7 @@ impl RoomListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaylistListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3774,6 +4181,7 @@ impl PlaylistListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MediaListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3820,6 +4228,7 @@ impl MediaListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MyRoomListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3861,6 +4270,7 @@ impl MyRoomListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MyRoomRelation))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3896,6 +4306,7 @@ impl MyRoomRelation {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationListSortBy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3931,6 +4342,7 @@ impl NotificationListSortBy {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_ItemType))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3965,6 +4377,7 @@ impl ItemType {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackPatchState))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -3998,6 +4411,7 @@ impl PlaybackPatchState {
 }
 /// Migration state for status updates
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationState))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -4037,6 +4451,7 @@ impl SfuMigrationState {
 }
 /// Suggested action based on network quality assessment
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_QualityAction))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -4079,6 +4494,7 @@ impl QualityAction {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_NotificationType))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -10558,6 +10974,7 @@ pub mod notification_service_server {
 #[prost_reflect(message_name = "synctv.client.OAuth2ProviderInstancePathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10572,6 +10989,7 @@ pub struct OAuth2ProviderInstancePathRequest {
 #[prost_reflect(message_name = "synctv.client.OAuth2ProviderTypePathRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10586,6 +11004,7 @@ pub struct OAuth2ProviderTypePathRequest {
 #[prost_reflect(message_name = "synctv.client.GetAuthorizationUrlRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetAuthorizationUrlRequest))]
@@ -10606,6 +11025,7 @@ pub struct GetAuthorizationUrlRequest {
 #[prost_reflect(message_name = "synctv.client.GetAuthorizationUrlResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetAuthorizationUrlResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -10624,6 +11044,7 @@ pub struct GetAuthorizationUrlResponse {
 #[prost_reflect(message_name = "synctv.client.GetAuthorizationUrlForBindRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(
@@ -10645,6 +11066,7 @@ pub struct GetAuthorizationUrlForBindRequest {
 #[prost_reflect(message_name = "synctv.client.GetAuthorizationUrlForBindResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10663,6 +11085,7 @@ pub struct GetAuthorizationUrlForBindResponse {
 #[prost_reflect(message_name = "synctv.client.ExchangeAuthorizationCodeRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10686,6 +11109,7 @@ pub struct ExchangeAuthorizationCodeRequest {
 #[prost_reflect(message_name = "synctv.client.ExchangeAuthorizationCodeResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10719,6 +11143,7 @@ pub struct ExchangeAuthorizationCodeResponse {
 #[prost_reflect(message_name = "synctv.client.ListAvailableProvidersRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10730,6 +11155,7 @@ pub struct ListAvailableProvidersRequest {}
 #[prost_reflect(message_name = "synctv.client.ListAvailableProvidersResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -10745,6 +11171,7 @@ pub struct ListAvailableProvidersResponse {
 #[prost_reflect(message_name = "synctv.client.OAuth2ProviderInstance")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_OAuth2ProviderInstance))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -10760,6 +11187,7 @@ pub struct OAuth2ProviderInstance {
 #[prost_reflect(message_name = "synctv.client.UnlinkProviderRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UnlinkProviderRequest))]
@@ -10779,6 +11207,7 @@ pub struct UnlinkProviderRequest {
 #[prost_reflect(message_name = "synctv.client.UnlinkProviderResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UnlinkProviderResponse))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -10795,6 +11224,7 @@ pub struct UnlinkProviderResponse {
 #[prost_reflect(message_name = "synctv.client.GetLinkedProvidersRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetLinkedProvidersRequest))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -10803,6 +11233,7 @@ pub struct GetLinkedProvidersRequest {}
 #[prost_reflect(message_name = "synctv.client.GetLinkedProvidersResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetLinkedProvidersResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -10815,6 +11246,7 @@ pub struct GetLinkedProvidersResponse {
 #[prost_reflect(message_name = "synctv.client.LinkedProvider")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_LinkedProvider))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -10834,6 +11266,7 @@ pub struct LinkedProvider {
 #[prost_reflect(message_name = "synctv.client.OAuth2UserInfo")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_OAuth2UserInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

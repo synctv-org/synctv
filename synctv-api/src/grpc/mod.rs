@@ -535,9 +535,9 @@ use std::sync::Arc;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
-    ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig, RateLimiter,
-    RemoteProviderManager, RoomService as CoreRoomService, SettingsRegistry, SettingsService,
-    UserService as CoreUserService,
+    ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig,
+    RemoteProviderManager, RequestRateLimiterService, RoomService as CoreRoomService,
+    SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
 use synctv_core::Config;
 use crate::cluster_fanout::ClusterFanoutService;
@@ -554,7 +554,7 @@ pub struct GrpcServerConfig<'a> {
     pub room_service: Arc<CoreRoomService>,
     pub event_service: Option<Arc<dyn RealtimeEventService>>,
     pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
-    pub rate_limiter: RateLimiter,
+    pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
@@ -566,10 +566,10 @@ pub struct GrpcServerConfig<'a> {
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Option<Arc<EmailService>>,
     pub email_token_service: Option<Arc<EmailTokenService>>,
-    pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub chat_service: Option<Arc<synctv_core::service::ChatService>>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
@@ -633,7 +633,7 @@ struct FallbackHttpAppStateDeps {
     connection_service: Arc<dyn RealtimeConnectionService>,
     config: Arc<Config>,
     content_filter: ContentFilter,
-    publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
+    publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     jwt_service: JwtService,
     live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -646,10 +646,10 @@ struct FallbackHttpAppStateDeps {
     settings_registry: Option<Arc<SettingsRegistry>>,
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
-    ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
+    ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     cluster_fanout_service: Arc<dyn ClusterFanoutService>,
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
-    rate_limiter: RateLimiter,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
     messaging_rate_limit_config: RateLimitConfig,
     credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
@@ -1337,7 +1337,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use synctv_cluster::sync::{BroadcastResult, ClusterEvent};
-    use synctv_core::cache::{KeyBuilder, UsernameCache};
+    use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
     use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::provider::{
@@ -1345,10 +1345,12 @@ mod tests {
         ProviderSet, RtmpProvider,
     };
     use synctv_core::service::{
-        auth::{BruteForceProtection, JwtService},
-        AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig,
+        auth::JwtService, AuditService, ContentFilter, RateLimitConfig,
         RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
         UserService,
+    };
+    use synctv_core_testing::{
+        create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -1436,9 +1438,9 @@ mod tests {
             jwt_service.clone(),
             username_cache,
             synctv_core::config::PasswordComplexityConfig::default(),
-            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-            KeyBuilder::new("test"),
-            BruteForceProtection::in_memory("test".to_string()),
+            create_test_token_blacklist_store_service(),
+            synctv_core::cache::KeyBuilder::new("test"),
+            create_test_brute_force_protection_service(),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
         let settings_service = Arc::new(SettingsService::new(
@@ -1559,7 +1561,7 @@ mod tests {
                 chat_service: None,
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
-                rate_limiter: RateLimiter::local_only("test:".to_string()),
+                rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
                 ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
                 redis_runtime: None,
                 shared_provider_stores: None,
@@ -1596,7 +1598,9 @@ mod tests {
             Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only(
                 context.config.redis.key_prefix.clone(),
             ));
-        let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
+        let ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService> = Arc::new(
+            synctv_core::service::WsTicketService::local_only(None),
+        );
         let proxy_signing_key = Arc::new(synctv_core::service::ProxySigningKey::derive_from(
             b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
         ));
@@ -1644,7 +1648,7 @@ mod tests {
                 None, false,
             ),
             redis_runtime: None,
-            rate_limiter: RateLimiter::local_only("test:".to_string()),
+            rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
             messaging_rate_limit_config: messaging_rate_limit_config.clone(),
             credential_encryption: None,
             credential_repo: context.credential_repo,

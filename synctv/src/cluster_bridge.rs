@@ -138,6 +138,16 @@ pub fn room_event_to_cluster_event(
             playlist_id: synctv_core::models::PlaylistId::from_string(playlist_id.clone()),
             timestamp,
         }),
+        synctv_core::service::RoomEvent::UserLeft {
+            user_id,
+            username,
+        } => Some(ClusterEvent::UserLeft {
+            event_id: synctv_common::snanoid!(16),
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+            username: username.clone(),
+            timestamp,
+        }),
         synctv_core::service::RoomEvent::PermissionChanged {
             user_id,
             role,
@@ -167,6 +177,7 @@ pub fn room_event_to_cluster_event(
         }),
         synctv_core::service::RoomEvent::SettingsUpdated {
             settings,
+            version,
             user_id,
             username,
         } => Some(ClusterEvent::RoomSettingsChanged {
@@ -175,6 +186,7 @@ pub fn room_event_to_cluster_event(
             user_id: bridge_user_id(user_id.as_ref()),
             username: username.clone(),
             settings_json: serde_json::to_vec(settings).unwrap_or_default(),
+            version: *version,
             timestamp,
         }),
         synctv_core::service::RoomEvent::RoomDeleted => Some(ClusterEvent::RoomDeleted {
@@ -559,6 +571,35 @@ mod tests {
                 assert_eq!(room_id.as_str(), "room-deleted");
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_room_event_to_cluster_event_maps_user_left() {
+        let room_id = RoomId::from_string("room-user-left".to_string());
+        let user_id = UserId::from_string("user-left".to_string());
+
+        let event = room_event_to_cluster_event(
+            &room_id,
+            &synctv_core::service::RoomEvent::UserLeft {
+                user_id: user_id.clone(),
+                username: "left-user".to_string(),
+            },
+        )
+        .expect("UserLeft should bridge to ClusterEvent");
+
+        match event {
+            ClusterEvent::UserLeft {
+                room_id,
+                user_id,
+                username,
+                ..
+            } => {
+                assert_eq!(room_id.as_str(), "room-user-left");
+                assert_eq!(user_id.as_str(), "user-left");
+                assert_eq!(username, "left-user");
+            }
+            other => panic!("expected UserLeft, got {other:?}"),
         }
     }
 

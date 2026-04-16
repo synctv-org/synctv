@@ -126,6 +126,7 @@ pub enum RoomEvent {
     /// Room settings updated
     SettingsUpdated {
         settings: serde_json::Value,
+        version: i64,
         user_id: Option<UserId>,
         username: String,
     },
@@ -473,9 +474,11 @@ impl NotificationService {
         user_id: Option<&UserId>,
         username: &str,
         settings: serde_json::Value,
+        version: i64,
     ) -> Result<()> {
         let event = RoomEvent::SettingsUpdated {
             settings,
+            version,
             user_id: user_id.cloned(),
             username: username.to_string(),
         };
@@ -712,6 +715,7 @@ mod tests {
             },
             RoomEvent::SettingsUpdated {
                 settings: serde_json::json!({"key": "value"}),
+                version: 1,
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
             },

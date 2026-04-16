@@ -13,8 +13,12 @@ pub mod email;
 pub mod messaging;
 pub mod notification;
 pub mod oauth2;
+mod playback_snapshot;
+mod playlist_items_snapshot;
 pub mod provider;
 pub mod providers;
+mod room_members_snapshot;
+pub mod room_settings_snapshot;
 
 // Re-export for convenience
 pub use admin::AdminApiImpl;

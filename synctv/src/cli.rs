@@ -4310,6 +4310,7 @@ struct HumanRoom {
     updated_at: String,
     is_banned: bool,
     availability: String,
+    version: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4326,6 +4327,7 @@ struct HumanAdminRoom {
     updated_at: String,
     description: String,
     is_banned: bool,
+    version: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4376,6 +4378,7 @@ struct HumanPlaylist {
     created_at: String,
     updated_at: String,
     availability: String,
+    version: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4391,6 +4394,7 @@ struct HumanMedia {
     provider_instance_name: String,
     source_config: Value,
     availability: String,
+    version: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4475,6 +4479,8 @@ struct HumanRoomsResponse<T> {
 struct HumanRoomMembersResponse<T> {
     members: Vec<T>,
     total: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4523,12 +4529,13 @@ struct HumanPlaylistItemsResponse<P, M> {
     file_count: i32,
     dynamic_items: Vec<synctv_proto::client::PlaylistItem>,
     current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode>,
+    version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct HumanGetPlaybackResponse<T> {
     playback_state: Option<T>,
-    playback_result: Option<synctv_proto::client::PlaybackResult>,
+    playback_snapshot: Option<synctv_proto::client::PlaybackSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4612,6 +4619,7 @@ impl ToHuman for synctv_proto::client::Room {
             is_banned: self.is_banned,
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
+            version: self.version,
         }
     }
 }
@@ -4635,6 +4643,7 @@ impl ToHuman for synctv_proto::admin::AdminRoom {
             updated_at: humanize_timestamp(self.updated_at),
             description: self.description.clone(),
             is_banned: self.is_banned,
+            version: self.version,
         }
     }
 }
@@ -4726,6 +4735,7 @@ impl ToHuman for synctv_proto::client::Playlist {
             updated_at: humanize_timestamp(self.updated_at),
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
+            version: self.version,
         }
     }
 }
@@ -4747,6 +4757,7 @@ impl ToHuman for synctv_proto::client::Media {
             source_config: parse_json_bytes(&self.source_config),
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
+            version: self.version,
         }
     }
 }
@@ -4964,6 +4975,7 @@ impl ToHuman for synctv_proto::admin::GetRoomMembersResponse {
         HumanRoomMembersResponse {
             members: self.members.to_human(),
             total: self.total,
+            version: None,
         }
     }
 }
@@ -5139,6 +5151,7 @@ impl ToHuman for synctv_proto::client::GetRoomMembersResponse {
         HumanRoomMembersResponse {
             members: self.members.to_human(),
             total: self.total,
+            version: Some(self.version.clone()),
         }
     }
 }
@@ -5249,6 +5262,7 @@ impl ToHuman for synctv_proto::client::ListPlaylistItemsResponse {
             file_count: self.file_count,
             dynamic_items: self.dynamic_items.clone(),
             current_path: self.current_path.clone(),
+            version: self.version.clone(),
         }
     }
 }
@@ -5259,7 +5273,7 @@ impl ToHuman for synctv_proto::client::GetPlaybackResponse {
     fn to_human(&self) -> Self::Human {
         HumanGetPlaybackResponse {
             playback_state: self.playback_state.to_human(),
-            playback_result: self.playback_result.clone(),
+            playback_snapshot: self.playback_snapshot.clone(),
         }
     }
 }
@@ -8256,6 +8270,7 @@ mod tests {
                 updated_at: 1_775_291_071_i64,
                 is_banned: false,
                 availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
+                version: 78,
             }),
             playback_state: None,
             membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -8343,6 +8358,7 @@ mod tests {
                 updated_at: 1_775_291_071_i64,
                 description: "main room".into(),
                 is_banned: false,
+                version: 56,
             }],
             total: 1,
         })
@@ -8350,6 +8366,7 @@ mod tests {
 
         assert_eq!(rendered["rooms"][0]["status"], "active");
         assert_eq!(rendered["rooms"][0]["creator_status"], "banned");
+        assert_eq!(rendered["rooms"][0]["version"], 56);
         assert_eq!(
             rendered["rooms"][0]["created_at"],
             "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
@@ -8370,6 +8387,7 @@ mod tests {
             provider_instance_name: "default".into(),
             source_config: br#"{"url":"https://example.com"}"#.to_vec(),
             availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
+            version: 12,
         })
         .expect("media human output should render");
         let rendered_playlist = render_human_output(&synctv_proto::client::Playlist {
@@ -8383,11 +8401,85 @@ mod tests {
             created_at: 1_775_144_583_i64,
             updated_at: 1_775_291_071_i64,
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
+            version: 34,
         })
         .expect("playlist human output should render");
 
         assert_eq!(rendered_media["availability"], "creator_inactive");
         assert_eq!(rendered_playlist["availability"], "available");
+        assert_eq!(rendered_media["version"], 12);
+        assert_eq!(rendered_playlist["version"], 34);
+    }
+
+    #[test]
+    fn render_human_output_includes_playlist_items_snapshot_version() {
+        let rendered = render_human_output(&synctv_proto::client::ListPlaylistItemsResponse {
+            playlists: vec![synctv_proto::client::Playlist {
+                id: "playlist-1".into(),
+                room_id: "room-1".into(),
+                name: "Folder".into(),
+                parent_id: String::new(),
+                position: 1.0,
+                is_dynamic: false,
+                item_count: 0,
+                created_at: 1,
+                updated_at: 2,
+                availability: synctv_proto::client::ResourceAvailability::Available as i32,
+                version: 10,
+            }],
+            media: vec![synctv_proto::client::Media {
+                id: "media-1".into(),
+                room_id: "room-1".into(),
+                provider: "direct_url".into(),
+                title: "Example".into(),
+                metadata: br#"{"duration":1}"#.to_vec(),
+                position: 1.0,
+                added_at: 3,
+                added_by: "user-1".into(),
+                provider_instance_name: "default".into(),
+                source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+                availability: synctv_proto::client::ResourceAvailability::Available as i32,
+                version: 11,
+            }],
+            total: 2,
+            folder_count: 1,
+            file_count: 1,
+            dynamic_items: Vec::new(),
+            current_path: Vec::new(),
+            version: "items-v42".into(),
+        })
+        .expect("playlist items human output should render");
+
+        assert_eq!(rendered["version"], "items-v42");
+        assert_eq!(rendered["playlists"][0]["version"], 10);
+        assert_eq!(rendered["media"][0]["version"], 11);
+    }
+
+    #[test]
+    fn render_human_output_includes_room_members_snapshot_version() {
+        let rendered = render_human_output(&synctv_proto::client::GetRoomMembersResponse {
+            members: vec![synctv_proto::common::RoomMember {
+                room_id: "room-1".into(),
+                user_id: "user-1".into(),
+                username: "alice".into(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                permissions: 7,
+                status: synctv_proto::common::MemberStatus::Active as i32,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: 0,
+                admin_removed_permissions: 0,
+                joined_at: 123,
+                is_online: true,
+            }],
+            total: 1,
+            version: "members-v7".into(),
+        })
+        .expect("room members human output should render");
+
+        assert_eq!(rendered["version"], "members-v7");
+        assert_eq!(rendered["total"], 1);
+        assert_eq!(rendered["members"][0]["username"], "alice");
     }
 
     #[test]

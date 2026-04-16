@@ -340,6 +340,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             ".",
+            "#[cfg_attr(feature = \"openapi\", allow(clippy::large_stack_arrays))]",
+        )
+        .type_attribute(
+            ".",
             "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
         )
         .type_attribute(
@@ -404,6 +408,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .file_descriptor_set_path("src/providers/descriptor.bin")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(
+            ".",
+            "#[cfg_attr(feature = \"openapi\", allow(clippy::large_stack_arrays))]",
+        )
         .type_attribute(
             ".",
             "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",

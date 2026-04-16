@@ -271,6 +271,7 @@ async fn test_cross_replica_room_settings_changed() {
                 "chat_enabled": false
             }))
             .expect("serialize settings"),
+            version: 3,
             timestamp: Utc::now(),
         },
         |event| matches!(event, ClusterEvent::RoomSettingsChanged { .. }),
@@ -279,10 +280,16 @@ async fn test_cross_replica_room_settings_changed() {
     .await;
 
     assert_eq!(received.event_type(), "room_settings_changed");
-    if let ClusterEvent::RoomSettingsChanged { settings_json, .. } = &received {
+    if let ClusterEvent::RoomSettingsChanged {
+        settings_json,
+        version,
+        ..
+    } = &received
+    {
         let parsed: serde_json::Value = serde_json::from_slice(settings_json).expect("valid JSON");
         assert_eq!(parsed["max_members"], 50);
         assert_eq!(parsed["chat_enabled"], false);
+        assert_eq!(*version, 3);
     } else {
         panic!("Expected RoomSettingsChanged event");
     }

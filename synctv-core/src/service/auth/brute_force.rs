@@ -61,6 +61,62 @@ use crate::{
     RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
+/// Stable service boundary for brute-force protection.
+///
+/// Callers should depend on this trait rather than the concrete
+/// `BruteForceProtection` so the implementation can be replaced transparently.
+#[async_trait]
+pub trait BruteForceProtectionService: Send + Sync {
+    async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()>;
+    async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()>;
+    async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()>;
+    async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()>;
+    async fn reset(&self, username: &str) -> Result<()>;
+    async fn reset_ip(&self, ip: &IpAddr) -> Result<()>;
+}
+
+/// Build a brute-force protection service behind the service abstraction.
+///
+/// Callers should depend on the returned trait object instead of choosing the
+/// concrete local or shared implementation directly.
+pub fn brute_force_protection_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn BruteForceProtectionService>> {
+    Ok(Arc::new(BruteForceProtection::from_shared_state_profile(
+        profile,
+    )?))
+}
+
+#[async_trait]
+impl<T> BruteForceProtectionService for Arc<T>
+where
+    T: BruteForceProtectionService + ?Sized,
+{
+    async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        self.as_ref().check_allowed(username, ip).await
+    }
+
+    async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        self.as_ref().record_failure(username, ip).await
+    }
+
+    async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
+        self.as_ref().record_ip_failure(ip).await
+    }
+
+    async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
+        self.as_ref().check_ip_allowed(ip).await
+    }
+
+    async fn reset(&self, username: &str) -> Result<()> {
+        self.as_ref().reset(username).await
+    }
+
+    async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
+        self.as_ref().reset_ip(ip).await
+    }
+}
+
 /// Stored state for brute-force tracking in Redis.
 /// Serialized as JSON to store both the count and last failure timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1058,6 +1114,33 @@ impl BruteForceProtection {
     }
 }
 
+#[async_trait]
+impl BruteForceProtectionService for BruteForceProtection {
+    async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        Self::check_allowed(self, username, ip).await
+    }
+
+    async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        Self::record_failure(self, username, ip).await
+    }
+
+    async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
+        Self::record_ip_failure(self, ip).await
+    }
+
+    async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
+        Self::check_ip_allowed(self, ip).await
+    }
+
+    async fn reset(&self, username: &str) -> Result<()> {
+        Self::reset(self, username).await
+    }
+
+    async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
+        Self::reset_ip(self, ip).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1168,49 @@ mod tests {
         assert!(
             Arc::ptr_eq(&tracker.conn, &runtime),
             "attempt tracker should retain the injected Redis runtime object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_brute_force_protection_supports_service_trait_object() {
+        let protection: Arc<dyn BruteForceProtectionService> =
+            Arc::new(BruteForceProtection::in_memory("trait-test:".to_string()));
+
+        protection
+            .record_failure("trait-user", None)
+            .await
+            .expect("trait-object brute-force service should record failures");
+        protection
+            .check_allowed("trait-user", None)
+            .await
+            .expect("single failure should stay below the default lockout threshold");
+    }
+
+    #[tokio::test]
+    async fn test_brute_force_protection_from_shared_state_profile_returns_live_trait_object() {
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
+        let protection = brute_force_protection_from_shared_state_profile(&profile)
+            .expect("standalone mode should allow local brute-force protection");
+
+        protection
+            .check_allowed("trait-user", None)
+            .await
+            .expect("trait-object builder should return a live service");
+    }
+
+    #[test]
+    fn test_brute_force_protection_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
+    ) {
+        let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
+        let Err(error) = brute_force_protection_from_shared_state_profile(&profile) else {
+            panic!("cluster runtime must reject local brute-force protection");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cluster runtime requires shared brute-force protection state"),
+            "unexpected error: {error}"
         );
     }
 

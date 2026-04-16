@@ -13,7 +13,7 @@ use crate::{
     repository::ChatRepository,
     service::{
         notification::NotificationService, ContentFilter, PermissionService, RateLimitConfig,
-        RateLimiter, RoomSettingsService,
+        RequestRateLimiterService, RoomSettingsService,
     },
     Error, Result,
 };
@@ -26,7 +26,7 @@ pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
 #[derive(Clone)]
 pub struct ChatService {
     pub(crate) chat_repository: Arc<ChatRepository>,
-    rate_limiter: RateLimiter,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: RateLimitConfig,
     content_filter: ContentFilter,
     username_cache: UsernameCache,
@@ -38,7 +38,7 @@ pub struct ChatService {
 
 #[derive(Clone)]
 pub struct ChatRuntime {
-    pub rate_limiter: RateLimiter,
+    pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub username_cache: UsernameCache,

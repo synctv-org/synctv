@@ -135,8 +135,8 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     let ws_ticket_status = {
         let svc = &state.ws_ticket_service;
         let is_cluster_mode = state.config.cluster_runtime_enabled();
-        let health = check_ws_ticket_health(svc);
-        if ws_ticket_backend_is_safe_for_mode(svc, is_cluster_mode) {
+        let health = check_ws_ticket_health(svc.as_ref());
+        if ws_ticket_backend_is_safe_for_mode(svc.as_ref(), is_cluster_mode) {
             Some(health)
         } else {
             error_messages.push(
@@ -322,7 +322,7 @@ async fn check_redis_health_from_conn(
 /// Check WebSocket ticket service health
 ///
 /// Reports whether the service supports cross-node ticket validation.
-fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String {
+fn check_ws_ticket_health(svc: &dyn synctv_core::service::WebSocketTicketService) -> String {
     if svc.supports_cluster_runtime() {
         "healthy (cross-node capable ticket storage)".to_string()
     } else {
@@ -331,7 +331,7 @@ fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String
 }
 
 fn ws_ticket_backend_is_safe_for_mode(
-    svc: &synctv_core::service::WsTicketService,
+    svc: &dyn synctv_core::service::WebSocketTicketService,
     cluster_mode: bool,
 ) -> bool {
     !cluster_mode || svc.supports_cluster_runtime()

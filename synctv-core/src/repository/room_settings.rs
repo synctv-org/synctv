@@ -193,13 +193,26 @@ impl RoomSettingsRepository {
         &self,
         room_ids: &[&str],
     ) -> Result<std::collections::HashMap<String, RoomSettings>> {
+        Ok(self
+            .get_batch_with_version(room_ids)
+            .await?
+            .into_iter()
+            .map(|(room_id, (settings, _version))| (room_id, settings))
+            .collect())
+    }
+
+    /// Get settings and optimistic-lock versions for multiple rooms in a single query.
+    pub async fn get_batch_with_version(
+        &self,
+        room_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, (RoomSettings, i64)>> {
         if room_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
 
         let rows = sqlx::query(
             r"
-            SELECT room_id, value
+            SELECT room_id, value, version
             FROM room_settings
             WHERE room_id = ANY($1) AND key = '_settings'
             ",
@@ -212,8 +225,9 @@ impl RoomSettingsRepository {
         for row in rows {
             let rid: String = row.try_get("room_id")?;
             let value: String = row.try_get("value")?;
+            let version: i64 = row.try_get("version")?;
             if let Ok(settings) = serde_json::from_str::<RoomSettings>(&value) {
-                result.insert(rid, settings);
+                result.insert(rid, (settings, version));
             }
         }
         Ok(result)

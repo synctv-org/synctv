@@ -69,7 +69,7 @@ pub struct Services {
     pub room_service: Arc<RoomService>,
     pub jwt_service: synctv_core::service::JwtService,
     pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
-    pub rate_limiter: synctv_core::service::RateLimiter,
+    pub rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     pub rate_limit_config: synctv_core::service::RateLimitConfig,
     pub content_filter: synctv_core::service::ContentFilter,
     pub realtime_connection_service: Arc<dyn RealtimeConnectionService>,
@@ -83,8 +83,8 @@ pub struct Services {
     pub settings_registry: Arc<synctv_core::service::SettingsRegistry>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-    pub ws_ticket_service: Arc<synctv_core::service::WsTicketService>,
-    pub publish_key_service: Arc<synctv_core::service::PublishKeyService>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
+    pub publish_key_service: Arc<dyn synctv_core::service::StreamingPublishKeyService>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub chat_service: Arc<synctv_core::service::ChatService>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
@@ -1636,14 +1636,16 @@ mod tests {
     use std::time::Duration;
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::{
-        cache::{KeyBuilder, UsernameCache},
+        cache::UsernameCache,
         config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
         service::{
-            auth::BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
-            RemoteProviderManager, RoomService, UserService,
+            JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService,
         },
         Config,
+    };
+    use synctv_core_testing::{
+        create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use tokio::sync::{oneshot, watch};
     use tokio::task::JoinSet;
@@ -1672,9 +1674,9 @@ mod tests {
             jwt_service,
             username_cache,
             PasswordComplexityConfig::default(),
-            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-            KeyBuilder::new("test"),
-            BruteForceProtection::in_memory("test".to_string()),
+            create_test_token_blacklist_store_service(),
+            synctv_core::cache::KeyBuilder::new("test"),
+            create_test_brute_force_protection_service(),
         )
     }
 
@@ -1749,9 +1751,9 @@ mod tests {
                 chat_service: None,
                 audit_service: Arc::new(audit_service),
                 live_streaming_infrastructure: None,
-                rate_limiter: synctv_core::service::RateLimiter::local_only(
+                rate_limiter: Arc::new(synctv_core::service::RateLimiter::local_only(
                     "test:".to_string(),
-                ),
+                )),
                 ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
                 redis_runtime: None,
                 shared_provider_stores: Some(shared_runtime.provider_stores.clone()),

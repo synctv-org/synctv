@@ -674,6 +674,9 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaylistCreated(_)
                 | Message::PlaylistUpdated(_)
                 | Message::PlaylistDeleted(_)
+                | Message::PlaylistItems(_)
+                | Message::PlaybackSnapshot(_)
+                | Message::RoomMembers(_)
                 | Message::Notification(_)
         )
     )
@@ -699,6 +702,8 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::PlaylistCreated(_)) => "PlaylistCreated",
         Some(Message::PlaylistUpdated(_)) => "PlaylistUpdated",
         Some(Message::PlaylistDeleted(_)) => "PlaylistDeleted",
+        Some(Message::PlaylistItems(_)) => "PlaylistItems",
+        Some(Message::RoomMembers(_)) => "RoomMembers",
         Some(Message::PlayingChanged(_)) => "PlayingChanged",
         Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
         Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",
@@ -708,6 +713,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::SfuMigrationOffer(_)) => "SfuMigrationOffer",
         Some(Message::SfuMigrationStatus(_)) => "SfuMigrationStatus",
         Some(Message::Notification(_)) => "Notification",
+        Some(Message::PlaybackSnapshot(_)) => "PlaybackSnapshot",
         None => "None",
     }
 }
@@ -1070,7 +1076,7 @@ async fn handle_socket(
     let _metrics_guard = MetricsGuard::new();
 
     // Use the shared rate limiter from app state
-    let rate_limiter = Arc::new(state.rate_limiter.clone());
+    let rate_limiter = state.rate_limiter.clone();
     let rate_limit_config = state.messaging_rate_limit_config.clone();
     let content_filter = websocket_content_filter(&state.content_filter);
 
@@ -1100,7 +1106,7 @@ async fn handle_socket(
         room_id.clone(),
         user_id.clone(),
         username.clone(),
-        state.room_service.clone(),
+        &state.room_service,
         chat_service,
         event_service,
         state.connection_manager.clone(),
@@ -1109,6 +1115,9 @@ async fn handle_socket(
         content_filter,
         ws_sender_for_handler,
     )
+    .with_playback_snapshot_service(state.client_api.clone())
+    .with_playlist_items_snapshot_service(state.client_api.clone())
+    .with_room_members_snapshot_service(state.client_api.clone())
     .with_connection_id(connection_id.clone())
     .with_heartbeat_schedule(state.heartbeat_schedule)
     .with_ws_message_rate_limit(
@@ -1308,6 +1317,34 @@ mod tests {
 
         assert!(requires_state_resync(&message));
         assert_eq!(message_type_name(&message), "MediaRemovedBatch");
+    }
+
+    #[test]
+    fn test_playback_snapshot_requires_state_resync() {
+        let message = ServerMessage {
+            message: Some(
+                crate::proto::client::server_message::Message::PlaybackSnapshot(
+                    crate::proto::client::PlaybackSnapshotChanged {
+                        room_id: "room_test".to_string(),
+                        snapshot: Some(crate::proto::client::PlaybackSnapshot {
+                            media_id: String::new(),
+                            playlist_id: String::new(),
+                            room_id: "room_test".to_string(),
+                            name: String::new(),
+                            position: 0.0,
+                            playback_infos: std::collections::HashMap::new(),
+                            default_mode: String::new(),
+                            metadata: std::collections::HashMap::new(),
+                            version: "1".to_string(),
+                            expires_at: Some(4_102_444_800),
+                        }),
+                    },
+                ),
+            ),
+        };
+
+        assert!(requires_state_resync(&message));
+        assert_eq!(message_type_name(&message), "PlaybackSnapshot");
     }
 
     // ========== Auth Priority Logic Tests ==========

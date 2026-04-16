@@ -9,8 +9,8 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     models::{MediaId, PlaylistId, RoomId, SignupMethod, User, UserId, UserStatus},
     repository::{RoomMemberRepository, UserOAuthProviderRepository, UserRepository},
-    service::auth::{BruteForceProtection, JwtService, TokenBlacklistStore, TokenType},
-    service::rate_limit::RateLimiter,
+    service::auth::{BruteForceProtectionService, JwtService, TokenBlacklistStore, TokenType},
+    service::rate_limit::{RateLimiter, RequestRateLimiterService},
     Error, Result,
 };
 
@@ -85,7 +85,7 @@ pub struct UserService {
     /// Password complexity configuration from config file
     password_complexity: PasswordComplexityConfig,
     /// Brute-force protection for login attempts
-    brute_force: BruteForceProtection,
+    brute_force: Arc<dyn BruteForceProtectionService>,
     /// Whether email verification is required for login (true when email service is configured)
     email_verification_required: bool,
     /// Token blacklist store for refresh token rotation (Redis or in-memory)
@@ -93,7 +93,7 @@ pub struct UserService {
     /// Key builder for Redis keys
     key_builder: KeyBuilder,
     /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
-    refresh_rate_limiter: RateLimiter,
+    refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
     refresh_rate_limit_config: RefreshRateLimitConfig,
     /// Optional settings registry for reading signup_need_review and email_whitelist
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
@@ -647,11 +647,33 @@ impl UserService {
         password_complexity: PasswordComplexityConfig,
         token_blacklist: Arc<dyn TokenBlacklistStore>,
         key_builder: KeyBuilder,
-        brute_force: BruteForceProtection,
+        brute_force: impl BruteForceProtectionService + 'static,
+    ) -> Self {
+        Self::new_with_brute_force_service(
+            pool,
+            jwt_service,
+            username_cache,
+            password_complexity,
+            token_blacklist,
+            key_builder,
+            Arc::new(brute_force),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_brute_force_service(
+        pool: PgPool,
+        jwt_service: JwtService,
+        username_cache: UsernameCache,
+        password_complexity: PasswordComplexityConfig,
+        token_blacklist: Arc<dyn TokenBlacklistStore>,
+        key_builder: KeyBuilder,
+        brute_force: Arc<dyn BruteForceProtectionService>,
     ) -> Self {
         // Default to a local limiter; composition roots can inject any
         // distributed or local implementation via set_refresh_rate_limiter().
-        let refresh_rate_limiter = RateLimiter::local_only("synctv:".to_string());
+        let refresh_rate_limiter: Arc<dyn RequestRateLimiterService> =
+            Arc::new(RateLimiter::local_only("synctv:".to_string()));
 
         Self {
             repository: UserRepository::new(pool),
@@ -693,12 +715,18 @@ impl UserService {
         self.email_verification_required = required;
     }
 
-    pub fn set_refresh_rate_limiter(&mut self, limiter: RateLimiter) {
-        self.refresh_rate_limiter = limiter;
+    pub fn set_refresh_rate_limiter<T>(&mut self, limiter: T)
+    where
+        T: RequestRateLimiterService + 'static,
+    {
+        self.refresh_rate_limiter = Arc::new(limiter);
     }
 
-    pub fn set_refresh_rate_limiter_for_tests(&mut self, limiter: RateLimiter) {
-        self.refresh_rate_limiter = limiter;
+    pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)
+    where
+        T: RequestRateLimiterService + 'static,
+    {
+        self.refresh_rate_limiter = Arc::new(limiter);
     }
 
     pub const fn set_refresh_rate_limit_config_for_tests(
@@ -2044,6 +2072,7 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::BruteForceProtection;
 
     // Validation tests use the standalone validators directly since they don't
     // require a full UserService with Redis/brute-force dependencies.
@@ -2261,7 +2290,9 @@ mod tests {
         );
 
         user_service.set_refresh_rate_limiter_for_tests(
-            RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
+            Arc::new(
+                RateLimiter::local_only("test-refresh:".to_string()).with_strict_distributed(),
+            ),
         );
 
         let result = user_service
@@ -2298,7 +2329,8 @@ mod tests {
             key_builder,
             brute_force,
         );
-        user_service.refresh_rate_limiter = RateLimiter::local_only("refresh-nonstrict:".to_string());
+        user_service.refresh_rate_limiter =
+            Arc::new(RateLimiter::local_only("refresh-nonstrict:".to_string()));
 
         let result = user_service
             .refresh_rate_limiter

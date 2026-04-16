@@ -9,7 +9,10 @@ pub mod tiered;
 pub mod user_cache;
 pub mod username_cache;
 
-pub use invalidation::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
+pub use invalidation::{
+    cache_invalidation_runtime_from_shared_state_profile, CacheInvalidationRuntime,
+    CacheInvalidationService, InvalidationMessage,
+};
 pub use key_builder::KeyBuilder;
 pub use l2_backend::{
     build_l2_cache_backend, build_l2_cache_backend_from_profile, local_l2_cache_backend,

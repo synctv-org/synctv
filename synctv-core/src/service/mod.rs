@@ -50,7 +50,8 @@ pub use auth::token_blacklist::{
     RedisSyncableTokenBlacklistStore, SyncStats, TieredTokenBlacklistStore,
 };
 pub use auth::{
-    hash_password, verify_password, AuthenticatedToken, BruteForceProtection, Claims, GuestClaims,
+    brute_force_protection_from_shared_state_profile, hash_password, verify_password,
+    AuthenticatedToken, BruteForceProtection, BruteForceProtectionService, Claims, GuestClaims,
     JwtService, SecurityPipeline, TokenBlacklistStore, TokenType,
 };
 pub use chat::ChatService;
@@ -90,8 +91,14 @@ pub use providers_manager::ProvidersManager;
 pub use proxy_signature::{
     build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
 };
-pub use publish_key::{JtiStore, PublishKey, PublishKeyService};
-pub use rate_limit::{RateLimitBackend, RateLimitConfig, RateLimitError, RateLimiter};
+pub use publish_key::{
+    streaming_publish_key_service_from_shared_state_profile, JtiStore, PublishKey,
+    PublishKeyService, StreamingPublishKeyService,
+};
+pub use rate_limit::{
+    request_rate_limiter_from_shared_state_profile, RateLimitBackend, RateLimitConfig,
+    RateLimitError, RateLimiter, RequestRateLimiterService,
+};
 pub use remote_provider_manager::RemoteProviderManager;
 pub use room::{AuthorizedAdminActor, RoomService};
 pub use room_settings::{CacheStats, RoomSettingsService};
@@ -104,8 +111,8 @@ pub use turn_server::{resolve_external_ip, validate_external_addr, StunServer, S
 pub use user::UserService;
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{
-    PendingValidatedTicket, TicketStore, UserValidationResult, UserValidator, WsTicketData,
-    WsTicketService,
+    web_socket_ticket_service_from_shared_state_profile, PendingValidatedTicket, TicketStore,
+    UserValidationResult, UserValidator, WebSocketTicketService, WsTicketData, WsTicketService,
 };
 
 /// Trait for checking if the current node is the cluster leader.

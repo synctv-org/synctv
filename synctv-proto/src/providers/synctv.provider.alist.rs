@@ -2,6 +2,7 @@
 /// Login request
 /// SECURITY: Prefer hashed_password over password when possible to reduce plaintext exposure.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LoginRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -25,6 +26,7 @@ pub struct LoginRequest {
 }
 /// Login response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LoginResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -37,6 +39,7 @@ pub struct LoginResponse {
 }
 /// List directory request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_ListRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -67,6 +70,7 @@ pub struct ListRequest {
 }
 /// List directory response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_ListResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -78,6 +82,7 @@ pub struct ListResponse {
 }
 /// File/directory item
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_FileItem))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -99,6 +104,7 @@ pub struct FileItem {
 }
 /// Get user info request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetMeRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -113,6 +119,7 @@ pub struct GetMeRequest {
 }
 /// Get user info response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetMeResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -124,6 +131,7 @@ pub struct GetMeResponse {
 }
 /// Logout request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LogoutRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -138,6 +146,7 @@ pub struct LogoutRequest {
 }
 /// Logout response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_LogoutResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -147,6 +156,7 @@ pub struct LogoutResponse {
 }
 /// Get binds request
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetBindsRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -158,6 +168,7 @@ pub struct GetBindsRequest {
 }
 /// Get binds response
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_GetBindsResponse))]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -167,6 +178,7 @@ pub struct GetBindsResponse {
 }
 /// Saved credential information
 #[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_BindInfo))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

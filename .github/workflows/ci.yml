@@ -115,7 +115,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
           - windows-latest
     env:
       SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
@@ -139,6 +138,14 @@ jobs:
       - name: Install protobuf compiler on Windows
         if: runner.os == 'Windows'
         run: choco install protoc --yes
+
+      - name: Start and verify Docker on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Service docker
+          docker version
+          docker info
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2

@@ -1,10 +1,10 @@
-name: CI/CD Pipeline
+name: CI Pipeline
 
 on:
   push:
-    branches: [ main, next, develop ]
+    branches: ['*']
   pull_request:
-    branches: [ main, next ]
+    branches: ['*']
   schedule:
     # Run security audit daily at 00:00 UTC
     - cron: '0 0 * * *'
@@ -65,29 +65,45 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets
 
-  # Build and test
-  build-and-test:
-    name: Build and Test
+  # Build
+  build:
+    name: Build
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: synctv
-          POSTGRES_PASSWORD: synctv
-          POSTGRES_DB: synctv
-        options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
 
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 6379:6379
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --verbose --all
+
+  # Test
+  test:
+    name: Test
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -119,27 +135,9 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Generate JWT keys for tests
-        run: |
-          mkdir -p keys
-          openssl genrsa -out keys/jwt_private.pem 2048
-          openssl rsa -in keys/jwt_private.pem -pubout -out keys/jwt_public.pem
-
-      - name: Build
-        run: cargo build --verbose --all
-
       - name: Run tests with nextest
-        env:
-          SYNCTV_DATABASE_URL: postgresql://synctv:synctv@localhost:5432/synctv
-          SYNCTV_REDIS_URL: redis://localhost:6379
         run: |
-          timeout 3600 cargo nextest run --workspace --run-ignored all --nff > /tmp/nextest-ci.log 2>&1
-
-      - name: Print nextest log on failure
-        if: failure()
-        run: |
-          tail -n 200 /tmp/nextest-ci.log || true
-          grep -E "(FAIL|SLOW|panic|timed out|FAILED)" /tmp/nextest-ci.log || true
+          timeout 3600 cargo nextest run --workspace --run-ignored all --nff
 
   # Security audit
   security-audit:
@@ -226,62 +224,6 @@ jobs:
       - name: Check for unused dependencies
         run: cargo +nightly udeps --all-targets
         continue-on-error: true # Don't fail the build, just report
-
-  # Code coverage
-  coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: synctv
-          POSTGRES_PASSWORD: synctv
-          POSTGRES_DB: synctv
-        options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 5432:5432
-
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-        ports:
-          - 6379:6379
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
-
-      - name: Generate JWT keys for tests
-        run: |
-          mkdir -p keys
-          openssl genrsa -out keys/jwt_private.pem 2048
-          openssl rsa -in keys/jwt_private.pem -pubout -out keys/jwt_public.pem
-
-      - name: Generate coverage
-        env:
-          SYNCTV_DATABASE_URL: postgresql://synctv:synctv@localhost:5432/synctv
-          SYNCTV_REDIS_URL: redis://localhost:6379
-        run: cargo llvm-cov--workspace --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # Build Docker image
   docker-build:

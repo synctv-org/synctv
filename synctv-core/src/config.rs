@@ -4161,8 +4161,9 @@ jwt:
         )
         .expect("write config");
 
-        let config = Config::from_file(path.to_str().expect("utf-8 path"))
-            .expect("partial config should merge with defaults");
+        let config =
+            Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &HashMap::new())
+                .expect("partial config should merge with defaults");
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(config.server.port, 50051);

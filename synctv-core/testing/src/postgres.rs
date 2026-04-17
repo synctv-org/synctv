@@ -17,6 +17,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
+use url::Url;
 
 /// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "18";
@@ -574,11 +575,25 @@ fn named_postgres_request(
         .with_ready_conditions(postgres_ready_conditions())
 }
 
+pub fn postgres_connection_url_with_credentials(
+    host: &str,
+    port: u16,
+    db_name: &str,
+    username: &str,
+    password: &str,
+) -> String {
+    let mut url = Url::parse(&format!("postgresql://{}:{port}", format_socket_host(host)))
+        .expect("postgres connection URL base should be valid");
+    url.set_username(username)
+        .expect("postgres username should be encoded into URL");
+    url.set_password(Some(password))
+        .expect("postgres password should be encoded into URL");
+    url.set_path(&format!("/{db_name}"));
+    url.to_string()
+}
+
 fn postgres_connection_url(host: &str, port: u16, db_name: &str) -> String {
-    format!(
-        "postgresql://synctv:synctv_test@{}:{port}/{db_name}",
-        format_socket_host(host)
-    )
+    postgres_connection_url_with_credentials(host, port, db_name, "synctv", "synctv_test")
 }
 
 fn format_socket_host(host: &str) -> String {
@@ -1388,6 +1403,39 @@ mod tests {
         assert_eq!(
             url,
             "postgresql://synctv:synctv_test@[::1]:5432/synctv_test"
+        );
+    }
+
+    #[test]
+    fn postgres_connection_url_with_credentials_brackets_ipv6_literals() {
+        let url = postgres_connection_url_with_credentials(
+            "::1",
+            5432,
+            "synctv_test",
+            "readonly",
+            "secret",
+        );
+
+        assert_eq!(url, "postgresql://readonly:secret@[::1]:5432/synctv_test");
+    }
+
+    #[test]
+    fn postgres_connection_url_with_credentials_percent_encodes_reserved_characters() {
+        let url = postgres_connection_url_with_credentials(
+            "127.0.0.1",
+            5432,
+            "synctv_test",
+            "read@only",
+            "sec/re?t#value",
+        );
+        let parsed = Url::parse(&url).expect("connection URL should remain parseable");
+
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.port(), Some(5432));
+        assert_eq!(parsed.path(), "/synctv_test");
+        assert!(
+            url.contains("read%40only") && url.contains("sec%2Fre%3Ft%23value"),
+            "reserved credentials should be percent-encoded in URL: {url}"
         );
     }
 

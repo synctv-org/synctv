@@ -15,7 +15,8 @@ pub mod services;
 pub use fixtures::{TestRoom, TestUser};
 pub use postgres::{
     create_test_database_url_with_label, create_test_pool, create_test_pool_with_db,
-    create_test_pool_with_db_and_label, create_test_pool_with_options_and_label, TestContainer,
+    create_test_pool_with_db_and_label, create_test_pool_with_options_and_label,
+    postgres_connection_url_with_credentials, TestContainer,
 };
 pub use redis::{
     start_dedicated_redis, start_dedicated_redis_url_with_label, start_redis, start_redis_handle,

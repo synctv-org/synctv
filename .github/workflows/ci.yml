@@ -2,12 +2,20 @@ name: CI Pipeline
 
 on:
   push:
-    branches: ['*']
+    branches: ['**']
   pull_request:
-    branches: ['*']
+    branches: ['**']
   schedule:
     # Run security audit daily at 00:00 UTC
     - cron: '0 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,23 +52,8 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Print Rust environment
         run: |
@@ -70,7 +63,7 @@ jobs:
           uname -a
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked
 
   # Build
   build:
@@ -86,32 +79,25 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --verbose --all
+        run: cargo build --workspace --verbose --locked
 
-  # Test
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-
+  # Test non-ignored cases
+  test-default:
+    name: Test Default (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    env:
+      SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
     steps:
       - uses: actions/checkout@v4
 
@@ -121,30 +107,72 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Install protobuf compiler
+      - name: Install protobuf compiler on Linux
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install protobuf compiler on macOS
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install protobuf compiler on Windows
+        if: runner.os == 'Windows'
+        run: choco install protoc --yes
 
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
-      - name: Run tests with nextest
+      - name: Run non-ignored checks
+        timeout-minutes: 60
         run: |
-          timeout 3600 cargo nextest run --workspace --run-ignored all --nff -j$(nproc)
+          cargo check --workspace --locked
+
+      - name: Run non-ignored tests with nextest
+        timeout-minutes: 60
+        run: |
+          cargo nextest run --workspace --locked --run-ignored default --nff
+
+  # Test ignored cases
+  test-ignored:
+    name: Test Ignored (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    env:
+      SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install protobuf compiler on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler on macOS
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler on Windows
+        if: runner.os == 'Windows'
+        run: choco install protoc --yes
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run ignored tests with nextest
+        timeout-minutes: 60
+        run: |
+          cargo nextest run --workspace --locked --run-ignored only --nff
 
   # Security audit
   security-audit:
@@ -157,7 +185,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit --locked
 
       - name: Run security audit
         run: cargo audit --deny warnings
@@ -229,7 +257,7 @@ jobs:
         run: cargo install cargo-udeps --locked
 
       - name: Check for unused dependencies
-        run: cargo +nightly udeps --all-targets
+        run: cargo +nightly udeps --locked --all-targets
         continue-on-error: true # Don't fail the build, just report
 
   # Prepare Docker image publishing inputs

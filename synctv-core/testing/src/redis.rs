@@ -1051,13 +1051,22 @@ mod tests {
 
     #[test]
     fn resolve_host_port_uses_ipv6_port_for_ipv6_hosts() {
-        assert_eq!(
-            candidate_endpoints_for_host("[::1]", Some(6379), Some(16379)),
-            vec![
-                ("[::1]".to_string(), 16379),
-                ("127.0.0.1".to_string(), 6379)
-            ]
+        let candidates = candidate_endpoints_for_host("[::1]", Some(6379), Some(16379));
+
+        assert!(
+            candidates.contains(&("[::1]".to_string(), 16379)),
+            "IPv6 host candidates should preserve the IPv6 endpoint: {candidates:?}"
         );
+        assert!(
+            candidates.contains(&("127.0.0.1".to_string(), 6379)),
+            "IPv6 host candidates should include loopback IPv4 fallback: {candidates:?}"
+        );
+        if let Some(local_ipv4) = detect_primary_ipv4_address() {
+            assert!(
+                candidates.contains(&(local_ipv4, 6379)),
+                "IPv6 host candidates should include the primary IPv4 fallback when available: {candidates:?}"
+            );
+        }
     }
 
     #[test]

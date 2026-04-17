@@ -14,8 +14,8 @@ use synctv::app::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
 use synctv_core::service::auth::TestPasswordHasher;
 use synctv_core_testing::{
-    create_test_database_url_with_label, start_redis_url_with_label, test_redis_key_prefix,
-    RedisContainer, TestContainer,
+    create_test_database_url_with_label, postgres_connection_url_with_credentials,
+    start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
 };
 use synctv_management::proto as management_proto;
 use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
@@ -143,10 +143,12 @@ fn write_cli_test_config(path: &std::path::Path, config: &Config) {
 }
 
 async fn recreate_test_database_as_empty(container: &TestContainer) {
-    let admin_url = format!(
-        "postgresql://synctv:synctv_test@{}:{}/postgres",
-        container.host(),
-        container.port_ipv4(5432)
+    let admin_url = postgres_connection_url_with_credentials(
+        &container.host(),
+        container.port_ipv4(5432),
+        "postgres",
+        "synctv",
+        "synctv_test",
     );
     let admin_pool = sqlx::PgPool::connect(&admin_url)
         .await
@@ -208,13 +210,13 @@ fn isolated_default_management_socket_impl(
 fn isolated_default_management_socket_impl(
     root: &std::path::Path,
 ) -> (std::path::PathBuf, Vec<(String, String)>) {
-    let runtime_dir = root.join("runtime");
-    std::fs::create_dir_all(&runtime_dir).expect("isolated runtime dir should be created");
+    let state_home = root.join("state");
+    std::fs::create_dir_all(&state_home).expect("isolated state dir should be created");
     (
-        runtime_dir.join("synctv").join("synctv.sock"),
+        state_home.join("synctv").join("run").join("synctv.sock"),
         vec![(
-            "XDG_RUNTIME_DIR".to_string(),
-            runtime_dir.display().to_string(),
+            "XDG_STATE_HOME".to_string(),
+            state_home.display().to_string(),
         )],
     )
 }
@@ -5500,11 +5502,12 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
     .expect("test should grant schema usage without table reads");
     admin_pool.close().await;
 
-    let limited_database_url = format!(
-        "postgresql://{limited_role}:{limited_password}@{}:{}/{}",
-        postgres.host(),
+    let limited_database_url = postgres_connection_url_with_credentials(
+        &postgres.host(),
         postgres.port_ipv4(5432),
-        postgres.database_name()
+        postgres.database_name(),
+        &limited_role,
+        limited_password,
     );
     let limited_config = test_config(
         limited_database_url,

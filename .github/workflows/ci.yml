@@ -72,7 +72,6 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets
 
-
   # Build
   build:
     name: Build
@@ -145,7 +144,7 @@ jobs:
 
       - name: Run tests with nextest
         run: |
-          timeout 3600 cargo nextest run --workspace --run-ignored all --nff -j$(nproc) --test-threads 1
+          timeout 3600 cargo nextest run --workspace --run-ignored all --nff -j$(nproc)
 
   # Security audit
   security-audit:

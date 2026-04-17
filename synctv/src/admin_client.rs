@@ -1,9 +1,9 @@
 use anyhow::{bail, Context, Result};
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use synctv_core::bootstrap::{load_config_with_options, load_dotenv, LoadConfigOptions};
 use synctv_management::proto::management_service_client::ManagementServiceClient;
-use tokio::net::UnixStream;
 use tonic::transport::Channel;
 use tonic::{metadata::MetadataValue, service::Interceptor, Request, Status};
 
@@ -247,35 +247,50 @@ async fn connect_channel(endpoint: &str) -> Result<Channel> {
             .connect()
             .await
             .with_context(|| format!("failed to connect to admin endpoint {endpoint}")),
-        AdminEndpoint::Unix(path) => {
-            let error_path = path.clone();
-            tonic::transport::Endpoint::try_from("http://[::]:50052")
-                .context("invalid synthetic unix endpoint")?
-                .connect_timeout(MANAGEMENT_CONNECT_TIMEOUT)
-                .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                    let path = path.clone();
-                    async move {
-                        let stream = UnixStream::connect(path).await?;
-                        Ok::<_, std::io::Error>(TokioIo::new(stream))
-                    }
-                }))
-                .await
-                .with_context(|| format!("failed to connect to admin unix socket {error_path}"))
-        }
+        AdminEndpoint::Unix(path) => connect_unix_channel(&path).await,
     }
+}
+
+#[cfg(unix)]
+async fn connect_unix_channel(path: &str) -> Result<Channel> {
+    let socket_path = path.to_owned();
+    let error_path = socket_path.clone();
+    tonic::transport::Endpoint::try_from("http://[::]:50052")
+        .context("invalid synthetic unix endpoint")?
+        .connect_timeout(MANAGEMENT_CONNECT_TIMEOUT)
+        .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+            let path = socket_path.clone();
+            async move {
+                let stream = tokio::net::UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(TokioIo::new(stream))
+            }
+        }))
+        .await
+        .with_context(|| format!("failed to connect to admin unix socket {error_path}"))
+}
+
+#[cfg(not(unix))]
+fn connect_unix_channel(_path: &str) -> std::future::Ready<Result<Channel>> {
+    std::future::ready(Err(anyhow::anyhow!(
+        "unix management endpoints are not supported on this platform"
+    )))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions, RemoteAdminSession,
-    };
+    use super::{normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions};
+    #[cfg(unix)]
+    use super::RemoteAdminSession;
+    #[cfg(unix)]
     use std::pin::Pin;
     use synctv_core::config::default_management_unix_socket_path;
     use tempfile::tempdir;
 
+    #[cfg(unix)]
     use futures_util::stream;
+    #[cfg(unix)]
     use std::sync::{Arc, Mutex};
+    #[cfg(unix)]
     use synctv_management::proto::{
         management_service_server::{ManagementService, ManagementServiceServer},
         AddAdminRequest, AddDirectUrlMediaRequest, AddMediaRequest, AddProviderInstanceRequest,
@@ -299,8 +314,11 @@ mod tests {
         UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
     };
+    #[cfg(unix)]
     use synctv_proto::{admin as admin_proto, client as client_proto};
+    #[cfg(unix)]
     use tonic::transport::Server;
+    #[cfg(unix)]
     use tonic::{Request, Response, Status};
 
     struct EnvVarGuard {
@@ -318,6 +336,7 @@ mod tests {
             }
         }
 
+        #[cfg(unix)]
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::set_var(key, value);
@@ -356,11 +375,13 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[derive(Clone, Default)]
     struct TestManagementService {
         seen_authorization: Option<Arc<Mutex<Vec<Option<String>>>>>,
     }
 
+    #[cfg(unix)]
     #[tonic::async_trait]
     impl ManagementService for TestManagementService {
         type StopServerStream =
@@ -974,6 +995,7 @@ management:
         let _ = serve_handle.await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_injects_management_bearer_token_from_config() {
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
@@ -1040,6 +1062,7 @@ management:
         let _ = serve_handle.await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_does_not_inherit_config_token_for_explicit_endpoint() {
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
@@ -1107,6 +1130,7 @@ management:
         let _ = serve_handle.await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_can_opt_in_to_config_token_for_explicit_endpoint() {
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
@@ -1174,6 +1198,7 @@ management:
         let _ = serve_handle.await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_uses_env_token_for_explicit_endpoint() {
         let _env_guard =
@@ -1227,6 +1252,7 @@ management:
         let _ = serve_handle.await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_with_explicit_endpoint_ignores_missing_config_file() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");

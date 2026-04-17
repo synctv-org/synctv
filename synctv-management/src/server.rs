@@ -5,7 +5,9 @@ use anyhow::Context;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 
 use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
 use synctv_core::{
@@ -31,7 +33,17 @@ pub async fn spawn_management_server(
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     match config.config.management.transport {
         ManagementTransport::Tcp => spawn_management_tcp_server(config).await,
-        ManagementTransport::Unix => spawn_management_unix_server(config),
+        ManagementTransport::Unix => {
+            #[cfg(unix)]
+            {
+                spawn_management_unix_server(config)
+            }
+
+            #[cfg(not(unix))]
+            {
+                spawn_management_unix_server(&config)
+            }
+        }
     }
 }
 
@@ -52,42 +64,41 @@ async fn spawn_management_tcp_server(
     Ok(handle)
 }
 
+#[cfg(unix)]
 fn spawn_management_unix_server(
     config: ManagementServerConfig,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-    #[cfg(not(unix))]
-    {
-        let _ = config;
-        Err(anyhow::anyhow!(
-            "management.transport=unix is not supported on this platform"
-        ))
-    }
-
-    #[cfg(unix)]
-    {
-        let socket_path = config.config.management.unix_socket_path.clone();
-        prepare_management_unix_socket(&socket_path)?;
-        let listener = tokio::net::UnixListener::bind(&socket_path).with_context(|| {
-            format!(
-                "failed to bind management unix socket {}",
-                absolute_display_path(Path::new(&socket_path))
-            )
-        })?;
-        restrict_management_unix_socket_permissions(Path::new(&socket_path))?;
-        info!(
-            "Management gRPC server listening on unix://{}",
+    let socket_path = config.config.management.unix_socket_path.clone();
+    prepare_management_unix_socket(&socket_path)?;
+    let listener = tokio::net::UnixListener::bind(&socket_path).with_context(|| {
+        format!(
+            "failed to bind management unix socket {}",
             absolute_display_path(Path::new(&socket_path))
-        );
+        )
+    })?;
+    restrict_management_unix_socket_permissions(Path::new(&socket_path))?;
+    info!(
+        "Management gRPC server listening on unix://{}",
+        absolute_display_path(Path::new(&socket_path))
+    );
 
-        let handle = tokio::spawn(async move {
-            let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-            let result = serve_management(config, incoming, Some(socket_path.clone())).await;
-            cleanup_management_unix_socket(&socket_path);
-            result
-        });
+    let handle = tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+        let result = serve_management(config, incoming, Some(socket_path.clone())).await;
+        cleanup_management_unix_socket(&socket_path);
+        result
+    });
 
-        Ok(handle)
-    }
+    Ok(handle)
+}
+
+#[cfg(not(unix))]
+fn spawn_management_unix_server(
+    _: &ManagementServerConfig,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    Err(anyhow::anyhow!(
+        "management.transport=unix is not supported on this platform"
+    ))
 }
 
 async fn serve_management<I, IO>(

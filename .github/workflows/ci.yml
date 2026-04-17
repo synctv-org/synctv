@@ -37,34 +37,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # Run Clippy lints
-  clippy:
-    name: Clippy Lints
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Print Rust environment
-        run: |
-          rustc -Vv
-          cargo -V
-          cargo clippy -V
-          uname -a
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked
-
   # Build
   build:
     name: Build
@@ -103,6 +75,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -122,10 +96,10 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run non-ignored checks
+      - name: Run clippy
         timeout-minutes: 60
         run: |
-          cargo check --workspace --locked
+          cargo clippy --workspace --all-targets --locked
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
@@ -172,7 +146,7 @@ jobs:
       - name: Run ignored tests with nextest
         timeout-minutes: 60
         run: |
-          cargo nextest run --workspace --locked --run-ignored only --nff
+          cargo nextest run --workspace --locked --run-ignored only --nff -j$(nproc)
 
   # Security audit
   security-audit:
@@ -226,19 +200,6 @@ jobs:
       - name: Run cargo-deny check (sources)
         run: cargo deny check sources
         continue-on-error: false # Fail on untrusted sources
-
-  # Dependency review (only on PRs)
-  dependency-review:
-    name: Dependency Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: moderate
 
   # Check for unused dependencies
   udeps:

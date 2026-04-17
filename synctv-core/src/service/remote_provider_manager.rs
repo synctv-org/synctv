@@ -941,15 +941,10 @@ impl RemoteProviderManager {
             }
         }
 
-        let provider = rustls::crypto::CryptoProvider::get_default()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
         let guard = synctv_common::ssrf::SsrfGuard::default_policy();
         let address_overrides = Arc::clone(&self.address_overrides);
 
-        let tls_config = ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map_err(|e| format!("TLS protocol version error: {e}"))?
+        let tls_config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();

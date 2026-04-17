@@ -355,6 +355,7 @@ fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
 /// additional traffic to prevent OOM or performance degradation.
 const MEMORY_UNHEALTHY_THRESHOLD_PERCENT: f64 = 90.0;
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn memory_usage_percent(used_bytes: u64, total_bytes: u64) -> Option<f64> {
     if total_bytes == 0 {
         return None;

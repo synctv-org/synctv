@@ -63,11 +63,7 @@ impl ConfiguredIceServer {
     }
 
     #[must_use]
-    pub fn with_auth(
-        mut self,
-        username: impl Into<String>,
-        credential: impl Into<String>,
-    ) -> Self {
+    pub fn with_auth(mut self, username: impl Into<String>, credential: impl Into<String>) -> Self {
         self.username = Some(username.into());
         self.credential = Some(credential.into());
         self

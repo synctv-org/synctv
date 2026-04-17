@@ -230,9 +230,8 @@ fn build_binding_success_response(transaction_id: [u8; 12], mapped_addr: SocketA
 }
 
 fn build_binding_response(packet: &[u8], mapped_addr: SocketAddr) -> Option<Vec<u8>> {
-    parse_binding_request(packet).map(|transaction_id| {
-        build_binding_success_response(transaction_id, mapped_addr)
-    })
+    parse_binding_request(packet)
+        .map(|transaction_id| build_binding_success_response(transaction_id, mapped_addr))
 }
 
 pub struct StunServer {
@@ -253,9 +252,9 @@ impl StunServer {
 
         let std_socket = std::net::UdpSocket::bind(listen)
             .map_err(|e| anyhow::anyhow!("Failed to bind STUN UDP socket on {listen}: {e}"))?;
-        std_socket
-            .set_nonblocking(true)
-            .map_err(|e| anyhow::anyhow!("Failed to enable nonblocking mode for STUN socket: {e}"))?;
+        std_socket.set_nonblocking(true).map_err(|e| {
+            anyhow::anyhow!("Failed to enable nonblocking mode for STUN socket: {e}")
+        })?;
         let socket = UdpSocket::from_std(std_socket)
             .map_err(|e| anyhow::anyhow!("Failed to create async STUN socket: {e}"))?;
         let local_addr = socket
@@ -401,9 +400,7 @@ mod tests {
 
     #[test]
     fn build_binding_response_rejects_non_stun_packets() {
-        assert!(
-            build_binding_response(b"not-stun", "203.0.113.7:3478".parse().unwrap()).is_none()
-        );
+        assert!(build_binding_response(b"not-stun", "203.0.113.7:3478".parse().unwrap()).is_none());
     }
 
     #[test]

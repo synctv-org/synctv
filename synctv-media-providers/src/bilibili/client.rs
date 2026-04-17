@@ -60,7 +60,10 @@ fn shared_client() -> Result<Client, BilibiliError> {
 async fn connect_live_danmaku_websocket(
     ws_url: &str,
     socket: TcpStream,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, BilibiliError> {
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    BilibiliError,
+> {
     client_async_tls_with_config(ws_url, socket, None, None)
         .await
         .map(|(stream, _response)| stream)
@@ -71,7 +74,10 @@ async fn connect_live_danmaku_websocket(
 async fn connect_live_danmaku_websocket(
     _ws_url: &str,
     _socket: TcpStream,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, BilibiliError> {
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    BilibiliError,
+> {
     Err(BilibiliError::InvalidConfig(
         "Bilibili live danmaku requires a TLS root feature".to_string(),
     ))

@@ -126,7 +126,10 @@ mod ice_servers {
             "turn:turn.example.com:3478?transport=udp"
         );
         assert_eq!(response.servers[0].username.as_deref(), Some("turn-user"));
-        assert_eq!(response.servers[0].credential.as_deref(), Some("turn-password"));
+        assert_eq!(
+            response.servers[0].credential.as_deref(),
+            Some("turn-password")
+        );
     }
 
     #[test]
@@ -205,13 +208,13 @@ mod permissions {
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::repository::SettingsRepository;
     use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, SettingsRegistry,
         SettingsService, UserService,
     };
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
-    use synctv_core::repository::SettingsRepository;
     use synctv_core_testing::{
         create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
@@ -324,13 +327,11 @@ mod permissions {
         fixture
             .settings_registry
             .external_ice_servers
-            .set(IceServerList(vec![
-                ConfiguredIceServer::new(vec![
-                    "turn:turn.example.com:3478?transport=udp".to_string(),
-                    "turns:turn.example.com:5349".to_string(),
-                ])
-                .with_auth("turn-user", "turn-password"),
-            ]))
+            .set(IceServerList(vec![ConfiguredIceServer::new(vec![
+                "turn:turn.example.com:3478?transport=udp".to_string(),
+                "turns:turn.example.com:5349".to_string(),
+            ])
+            .with_auth("turn-user", "turn-password")]))
             .await
             .expect("set external ice servers");
 
@@ -401,7 +402,10 @@ mod permissions {
             ]
         );
         assert_eq!(response.servers[1].username.as_deref(), Some("turn-user"));
-        assert_eq!(response.servers[1].credential.as_deref(), Some("turn-password"));
+        assert_eq!(
+            response.servers[1].credential.as_deref(),
+            Some("turn-password")
+        );
     }
 
     #[tokio::test]

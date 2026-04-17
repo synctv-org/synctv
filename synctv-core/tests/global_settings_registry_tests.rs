@@ -288,8 +288,10 @@ fn test_stun_server_list_updates() {
     // Update to custom list
     let custom = IceServerList(vec![
         ConfiguredIceServer::new(vec!["stun:custom1.example.com:19302".to_string()]),
-        ConfiguredIceServer::new(vec!["turn:custom2.example.com:3478?transport=udp".to_string()])
-            .with_auth("turn-user", "turn-secret"),
+        ConfiguredIceServer::new(vec![
+            "turn:custom2.example.com:3478?transport=udp".to_string()
+        ])
+        .with_auth("turn-user", "turn-secret"),
         ConfiguredIceServer::new(vec!["turns:custom3.example.com:5349".to_string()])
             .with_auth("turn-user-2", "turn-secret-2"),
     ]);

@@ -373,7 +373,7 @@ async fn start_test_server() -> TestServer {
                 tracing::warn!(
                     attempt,
                     error = %error,
-                    result = ?join_result.as_ref().map(|_| ()),
+                    result = ?join_result.as_ref(),
                     "retrying full-stack test server startup after transient bind failure"
                 );
             }
@@ -532,8 +532,8 @@ where
         let _ = exit_tx.send(Some(
             result
                 .as_ref()
-                .map(|_| ())
-                .map_err(|error| format!("{error:#}")),
+                .map_err(|error| format!("{error:#}"))
+                .copied(),
         ));
         result
     });

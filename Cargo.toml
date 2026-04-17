@@ -28,13 +28,13 @@ license = "MIT OR Apache-2.0"
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 style = { level = "deny", priority = -1 }
 complexity = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 todo = "deny"
-unwrap_used = "warn"
+unwrap_used = "deny"
 doc_markdown = "allow"
 struct_excessive_bools = "allow"
 case_sensitive_file_extension_comparisons = "allow"

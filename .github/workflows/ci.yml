@@ -99,7 +99,7 @@ jobs:
       - name: Run clippy
         timeout-minutes: 60
         run: |
-          cargo clippy --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
@@ -136,7 +136,7 @@ jobs:
       - name: Run ignored tests with nextest
         timeout-minutes: 60
         run: |
-          cargo nextest run --workspace --locked --run-ignored only --nff -j num-cpus
+          cargo nextest run --workspace --locked --run-ignored only --nff
 
   # Security audit
   security-audit:

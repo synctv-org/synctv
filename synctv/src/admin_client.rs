@@ -278,9 +278,9 @@ fn connect_unix_channel(_path: &str) -> std::future::Ready<Result<Channel>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions};
     #[cfg(unix)]
     use super::RemoteAdminSession;
+    use super::{normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions};
     #[cfg(unix)]
     use std::pin::Pin;
     use synctv_core::config::default_management_unix_socket_path;

@@ -4,12 +4,21 @@
 //! This crate provides common test utilities to reduce code duplication
 //! across integration tests.
 
+use std::path::PathBuf;
+
 pub mod assertions;
 pub mod constants;
 pub mod fixtures;
 pub mod postgres;
 pub mod redis;
 pub mod services;
+
+pub(crate) fn test_temp_dir() -> PathBuf {
+    let path = std::env::temp_dir();
+    std::fs::create_dir_all(&path)
+        .unwrap_or_else(|e| panic!("failed to create test temp dir {}: {e}", path.display()));
+    path
+}
 
 // Re-export commonly used items
 pub use fixtures::{TestRoom, TestUser};

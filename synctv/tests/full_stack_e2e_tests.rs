@@ -522,12 +522,7 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
     }
 }
 
-fn spawn_server_task<F>(
-    future: F,
-) -> (
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-    StartupExitRx,
-)
+fn spawn_server_task<F>(future: F) -> (tokio::task::JoinHandle<anyhow::Result<()>>, StartupExitRx)
 where
     F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
@@ -546,10 +541,13 @@ where
 }
 
 fn server_startup_exit_error(startup_exit_rx: &StartupExitRx) -> Option<String> {
-    startup_exit_rx.borrow().as_ref().map(|result| match result {
-        Ok(()) => "server exited before becoming ready".to_string(),
-        Err(error) => format!("server exited before becoming ready: {error}"),
-    })
+    startup_exit_rx
+        .borrow()
+        .as_ref()
+        .map(|result| match result {
+            Ok(()) => "server exited before becoming ready".to_string(),
+            Err(error) => format!("server exited before becoming ready: {error}"),
+        })
 }
 
 fn startup_error_is_retryable(error: &str) -> bool {
@@ -659,7 +657,9 @@ async fn wait_until_grpc_ready_or_server_exit(
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Ok(status) => {
-                return Err(format!("gRPC health never became serving, last status: {status}"));
+                return Err(format!(
+                    "gRPC health never became serving, last status: {status}"
+                ));
             }
             Err(error) => return Err(format!("gRPC health never became ready: {error}")),
         }

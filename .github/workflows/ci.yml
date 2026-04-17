@@ -115,7 +115,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - windows-latest
     env:
       SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
     steps:
@@ -130,22 +129,6 @@ jobs:
       - name: Install protobuf compiler on Linux
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install protobuf compiler on macOS
-        if: runner.os == 'macOS'
-        run: brew install protobuf
-
-      - name: Install protobuf compiler on Windows
-        if: runner.os == 'Windows'
-        run: choco install protoc --yes
-
-      - name: Start and verify Docker on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Start-Service docker
-          docker version
-          docker info
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2

@@ -135,8 +135,7 @@ pub struct TestContainer {
 
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
-        let mut path = PathBuf::from("/tmp");
-        path.push(format!("synctv-{name}.lock"));
+        let path = lock_file_path(name);
         Self::try_acquire_path(&path)
     }
 
@@ -149,6 +148,14 @@ impl ProcessLock {
     }
 
     fn open_lock_file(path: &Path) -> File {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                panic!(
+                    "failed to create lock file directory {}: {e}",
+                    parent.display()
+                )
+            });
+        }
         OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -165,6 +172,10 @@ impl Drop for ProcessLock {
             .unlock()
             .expect("failed to release process lock for postgres test startup");
     }
+}
+
+fn lock_file_path(name: &str) -> PathBuf {
+    crate::test_temp_dir().join(format!("synctv-{name}.lock"))
 }
 
 impl SharedPostgresServer {
@@ -389,8 +400,7 @@ fn run_lock_file_prefix(run_id: &str) -> String {
 }
 
 fn acquire_run_lock(run_id: &str) -> ProcessLock {
-    let mut path = PathBuf::from("/tmp");
-    path.push(format!(
+    let path = crate::test_temp_dir().join(format!(
         "{}{}.lock",
         run_lock_file_prefix(run_id),
         current_process_id()
@@ -400,7 +410,7 @@ fn acquire_run_lock(run_id: &str) -> ProcessLock {
 }
 
 fn run_has_active_lock(run_id: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir("/tmp") else {
+    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
         return false;
     };
 
@@ -524,7 +534,7 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
 }
 
 fn cleanup_orphaned_run_lock_files(prefix: &str) {
-    let Ok(entries) = std::fs::read_dir("/tmp") else {
+    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
         return;
     };
 
@@ -1338,6 +1348,36 @@ mod tests {
             !run_has_active_lock(&run_id),
             "released run lock must no longer mark the run as active"
         );
+    }
+
+    #[test]
+    fn lock_file_path_uses_platform_temp_directory() {
+        let path = lock_file_path("postgres-startup-test");
+
+        assert!(
+            path.starts_with(crate::test_temp_dir()),
+            "postgres lock files should live under the platform temp directory: {path:?}"
+        );
+    }
+
+    #[test]
+    fn open_lock_file_creates_missing_parent_directories() {
+        let nested_dir = crate::test_temp_dir().join(format!(
+            "synctv-postgres-lock-test-{}",
+            synctv_common::snanoid!(8).to_lowercase()
+        ));
+        let path = nested_dir.join("nested").join("postgres.lock");
+
+        let file = ProcessLock::open_lock_file(&path);
+        drop(file);
+
+        assert!(
+            path.exists(),
+            "opening a postgres lock file should create missing parent directories: {path:?}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(nested_dir);
     }
 
     #[test]

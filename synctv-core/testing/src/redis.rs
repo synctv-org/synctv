@@ -88,8 +88,7 @@ pub struct RedisContainer {
 
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
-        let mut path = PathBuf::from("/tmp");
-        path.push(format!("synctv-{name}.lock"));
+        let path = lock_file_path(name);
         Self::try_acquire_path(&path)
     }
 
@@ -102,6 +101,14 @@ impl ProcessLock {
     }
 
     fn open_lock_file(path: &Path) -> File {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                panic!(
+                    "failed to create lock file directory {}: {e}",
+                    parent.display()
+                )
+            });
+        }
         OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -118,6 +125,10 @@ impl Drop for ProcessLock {
             .unlock()
             .expect("failed to release process lock for redis test startup");
     }
+}
+
+fn lock_file_path(name: &str) -> PathBuf {
+    crate::test_temp_dir().join(format!("synctv-{name}.lock"))
 }
 
 fn redis_active_parallelism() -> usize {
@@ -566,7 +577,7 @@ fn cleanup_orphaned_testcontainers(prefix: &str) {
 }
 
 fn cleanup_orphaned_run_lock_files(prefix: &str) {
-    let Ok(entries) = std::fs::read_dir("/tmp") else {
+    let Ok(entries) = std::fs::read_dir(crate::test_temp_dir()) else {
         return;
     };
 
@@ -1106,6 +1117,36 @@ mod tests {
 
         assert!(warning.is_none());
         assert!(cleaned_up);
+    }
+
+    #[test]
+    fn lock_file_path_uses_platform_temp_directory() {
+        let path = lock_file_path("redis-startup-test");
+
+        assert!(
+            path.starts_with(crate::test_temp_dir()),
+            "redis lock files should live under the platform temp directory: {path:?}"
+        );
+    }
+
+    #[test]
+    fn open_lock_file_creates_missing_parent_directories() {
+        let nested_dir = crate::test_temp_dir().join(format!(
+            "synctv-redis-lock-test-{}",
+            synctv_common::snanoid!(8).to_lowercase()
+        ));
+        let path = nested_dir.join("nested").join("redis.lock");
+
+        let file = ProcessLock::open_lock_file(&path);
+        drop(file);
+
+        assert!(
+            path.exists(),
+            "opening a redis lock file should create missing parent directories: {path:?}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(nested_dir);
     }
 
     #[test]

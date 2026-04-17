@@ -5,6 +5,31 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-proto/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "reqwest/rustls",
+]
+tls-ring = [
+    "synctv-proto/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "reqwest/rustls-no-provider",
+]
+tls-webpki-roots = [
+    "synctv-proto/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-proto/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+]
+
 [lints]
 workspace = true
 
@@ -18,9 +43,9 @@ anyhow.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
-synctv-proto.workspace = true
-synctv-media-providers.workspace = true
-synctv-common.workspace = true
+synctv-proto = { workspace = true, default-features = false }
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 moka.workspace = true
 dashmap.workspace = true
 sha2.workspace = true

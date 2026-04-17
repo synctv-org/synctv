@@ -774,7 +774,6 @@ impl MediaProvider for EmbyProvider {
 // Supported sub_paths:
 // - `{version}/stream` — proxy the video stream
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
-// - `{version}/subtitle/{index}` — proxy a subtitle track by index
 // - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
 #[async_trait]
 impl super::proxy::ProviderProxy for EmbyProvider {
@@ -787,47 +786,22 @@ impl super::proxy::ProviderProxy for EmbyProvider {
         if let Some((version, rest)) = sub_path.split_once('/') {
             let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
 
-            // `{version}/subtitle/{mode}/{index}` or legacy `{version}/subtitle/{index}`
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
-                let (subtitle, playback_info) =
-                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
-                        let playback_info = versioned
-                            .result
-                            .playback_infos
-                            .get(mode_name)
-                            .ok_or(ProviderError::NotFound)?;
-                        let index: usize = index_str.parse().map_err(|_| {
-                            ProviderError::ApiError("Invalid subtitle index".into())
-                        })?;
-                        (
-                            playback_info
-                                .subtitles
-                                .get(index)
-                                .ok_or(ProviderError::NotFound)?,
-                            playback_info,
-                        )
-                    } else {
-                        let index: usize = subtitle_path.parse().map_err(|_| {
-                            ProviderError::ApiError("Invalid subtitle index".into())
-                        })?;
-
-                        let default_playback_info = versioned
-                            .result
-                            .playback_infos
-                            .get(&versioned.result.default_mode)
-                            .ok_or(ProviderError::NotFound)?;
-                        let all_subtitles: Vec<_> = versioned
-                            .result
-                            .playback_infos
-                            .values()
-                            .flat_map(|pi| &pi.subtitles)
-                            .collect();
-
-                        (
-                            *all_subtitles.get(index).ok_or(ProviderError::NotFound)?,
-                            default_playback_info,
-                        )
-                    };
+                let (mode_name, index_str) = subtitle_path
+                    .split_once('/')
+                    .ok_or(ProviderError::NotFound)?;
+                let playback_info = versioned
+                    .result
+                    .playback_infos
+                    .get(mode_name)
+                    .ok_or(ProviderError::NotFound)?;
+                let index: usize = index_str
+                    .parse()
+                    .map_err(|_| ProviderError::ApiError("Invalid subtitle index".into()))?;
+                let subtitle = playback_info
+                    .subtitles
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
 
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: subtitle.url.clone(),

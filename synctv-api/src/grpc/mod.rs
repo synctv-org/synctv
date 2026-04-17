@@ -586,8 +586,6 @@ pub struct GrpcServerConfig<'a> {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// TURN health checker for filtering unhealthy TURN servers
-    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Pre-bound TCP listener for the gRPC server.
@@ -655,7 +653,6 @@ struct FallbackHttpAppStateDeps {
     proxy_signing_key: Arc<synctv_core::service::ProxySigningKey>,
     provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     builtin_stun_url: Option<String>,
-    turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     audit_service: Arc<synctv_core::service::AuditService>,
 }
 
@@ -710,7 +707,6 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             shared_provider_stores: Some(deps.provider_stores),
             shared_proxy_signing_key: Some(deps.proxy_signing_key),
             builtin_stun_url: deps.builtin_stun_url,
-            turn_health_checker: deps.turn_health_checker,
             credential_encryption: deps.credential_encryption,
             proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
@@ -756,7 +752,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         shared_http_app_state,
         shutdown_rx,
         builtin_stun_url,
-        turn_health_checker,
         credential_encryption,
         grpc_listener: _,
     } = grpc_config;
@@ -798,7 +793,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             proxy_signing_key: proxy_signing_key.clone(),
             provider_stores: provider_stores.clone(),
             builtin_stun_url,
-            turn_health_checker: turn_health_checker.clone(),
             audit_service: audit_service.clone(),
         }))
     });
@@ -1568,7 +1562,6 @@ mod tests {
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
                 builtin_stun_url: None,
-                turn_health_checker: None,
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),
@@ -1648,7 +1641,6 @@ mod tests {
             proxy_signing_key: proxy_signing_key.clone(),
             provider_stores: provider_stores.clone(),
             builtin_stun_url: None,
-            turn_health_checker: None,
             audit_service: context.audit_service,
         });
 

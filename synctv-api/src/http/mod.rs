@@ -194,8 +194,6 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// TURN health checker for filtering unhealthy TURN servers
-    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
@@ -453,14 +451,6 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
         let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
         Arc::new(inner.with_builtin_stun_url(stun_url.clone()))
-    } else {
-        client_api
-    };
-
-    // Wire in the TURN health checker
-    let client_api = if config.turn_health_checker.is_some() {
-        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_turn_health_checker(config.turn_health_checker.clone()))
     } else {
         client_api
     };
@@ -1409,7 +1399,6 @@ mod tests {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
-            turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
             proxy_http_client: synctv_proxy::build_proxy_http_client()
@@ -1631,7 +1620,6 @@ mod tests {
             shared_provider_stores: Some(injected_provider_stores.clone()),
             shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),
             builtin_stun_url: None,
-            turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache: injected_cache.clone(),
             proxy_http_client: injected_proxy_http_client,
@@ -1770,7 +1758,7 @@ mod tests {
         assert_eq!(
             response.status(),
             StatusCode::NOT_FOUND,
-            "legacy room password verify route must stay removed from the latest API surface"
+            "removed room password verify route must stay absent from the latest API surface"
         );
     }
 
@@ -1843,7 +1831,7 @@ mod tests {
             .expect("response");
         assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
 
-        let legacy_route_response = app
+        let removed_route_response = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
@@ -1853,7 +1841,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(legacy_route_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(removed_route_response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -1874,7 +1862,7 @@ mod tests {
             .expect("response");
         assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
 
-        let legacy_route_response = app
+        let removed_route_response = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
@@ -1885,7 +1873,7 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(
-            legacy_route_response.status(),
+            removed_route_response.status(),
             StatusCode::METHOD_NOT_ALLOWED
         );
     }

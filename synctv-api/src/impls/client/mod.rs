@@ -154,8 +154,6 @@ pub struct ClientApiImpl {
     pub builtin_stun_url: Option<String>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
-    /// TURN health checker for filtering unhealthy servers
-    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential repository for resolving stored provider credentials
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
@@ -264,7 +262,6 @@ impl ClientApiImpl {
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: None,
-            turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
             provider_stores: None,
@@ -322,7 +319,6 @@ impl ClientApiImpl {
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: config.credential_encryption,
-            turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
             provider_stores: config.provider_stores,
@@ -455,16 +451,6 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_builtin_stun_url(mut self, url: String) -> Self {
         self.builtin_stun_url = Some(url);
-        self
-    }
-
-    /// Set the TURN health checker for filtering unhealthy TURN servers.
-    #[must_use]
-    pub fn with_turn_health_checker(
-        mut self,
-        checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
-    ) -> Self {
-        self.turn_health_checker = checker;
         self
     }
 }

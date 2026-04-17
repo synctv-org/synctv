@@ -5,12 +5,52 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-cluster/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "synctv-xiu/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "reqwest/rustls",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-cluster/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "synctv-xiu/tls-ring",
+    "tonic/tls-ring",
+    "reqwest/rustls-no-provider",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-cluster/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "synctv-xiu/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-cluster/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "synctv-xiu/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+]
+
 [dependencies]
 # Internal
-synctv-core.workspace = true
-synctv-cluster.workspace = true
-synctv-media-providers.workspace = true
-synctv-common.workspace = true
+synctv-core = { workspace = true, default-features = false }
+synctv-cluster = { workspace = true, default-features = false }
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true
@@ -29,7 +69,7 @@ prost-types.workspace = true
 tokio-stream.workspace = true
 
 # Streaming
-synctv-xiu = { workspace = true, features = ["oss"] }
+synctv-xiu = { workspace = true, default-features = false, features = ["oss"] }
 
 # Redis
 redis.workspace = true

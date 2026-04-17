@@ -1,8 +1,17 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
+
 //! Shared media proxy utilities
 //!
 //! Provides reusable functions for proxying media streams and rewriting M3U8
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
+
+#[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
+compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
+
+#[cfg(all(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+compile_error!(
+    "features \"tls-webpki-roots\" and \"tls-native-roots\" are mutually exclusive — use only one"
+);
 
 pub mod slice_cache;
 

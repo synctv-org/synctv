@@ -78,20 +78,14 @@ jobs:
           POSTGRES_PASSWORD: synctv
           POSTGRES_DB: synctv
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
           - 5432:5432
 
       redis:
         image: redis:7
         options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
           - 6379:6379
 
@@ -139,7 +133,7 @@ jobs:
           SYNCTV_DATABASE_URL: postgresql://synctv:synctv@localhost:5432/synctv
           SYNCTV_REDIS_URL: redis://localhost:6379
         run: |
-          timeout 900 cargo nextest run --workspace --run-ignored all --nff -j20 > /tmp/nextest-ci.log 2>&1
+          timeout 3600 cargo nextest run --workspace --run-ignored all --nff > /tmp/nextest-ci.log 2>&1
 
       - name: Print nextest log on failure
         if: failure()
@@ -166,7 +160,7 @@ jobs:
 
       - name: Run security audit (advisories)
         run: cargo audit
-        continue-on-error: true  # Informational output
+        continue-on-error: true # Informational output
 
   # Dependency policy enforcement with cargo-deny
   cargo-deny:
@@ -190,15 +184,15 @@ jobs:
 
       - name: Run cargo-deny check (licenses)
         run: cargo deny check licenses
-        continue-on-error: true  # Warn but don't fail
+        continue-on-error: true # Warn but don't fail
 
       - name: Run cargo-deny check (bans)
         run: cargo deny check bans
-        continue-on-error: true  # Warn about multiple versions
+        continue-on-error: true # Warn about multiple versions
 
       - name: Run cargo-deny check (sources)
         run: cargo deny check sources
-        continue-on-error: false  # Fail on untrusted sources
+        continue-on-error: false # Fail on untrusted sources
 
   # Dependency review (only on PRs)
   dependency-review:
@@ -231,7 +225,7 @@ jobs:
 
       - name: Check for unused dependencies
         run: cargo +nightly udeps --all-targets
-        continue-on-error: true  # Don't fail the build, just report
+        continue-on-error: true # Don't fail the build, just report
 
   # Code coverage
   coverage:
@@ -246,20 +240,14 @@ jobs:
           POSTGRES_PASSWORD: synctv
           POSTGRES_DB: synctv
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
           - 5432:5432
 
       redis:
         image: redis:7-alpine
         options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
           - 6379:6379
 
@@ -334,22 +322,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # Notify on success/failure
-  notify:
-    name: Notify
-    runs-on: ubuntu-latest
-    needs: [format, clippy, build-and-test, security-audit, cargo-deny]
-    if: always()
-    steps:
-      - name: Check job status
-        run: |
-          if [ "${{ needs.format.result }}" != "success" ] || \
-             [ "${{ needs.clippy.result }}" != "success" ] || \
-             [ "${{ needs.build-and-test.result }}" != "success" ] || \
-             [ "${{ needs.security-audit.result }}" != "success" ] || \
-             [ "${{ needs.cargo-deny.result }}" != "success" ]; then
-            echo "CI pipeline failed"
-            exit 1
-          fi
-          echo "CI pipeline succeeded"

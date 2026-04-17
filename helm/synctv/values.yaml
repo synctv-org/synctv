@@ -367,11 +367,7 @@ config:
     stunPort: 3478
     stunHost: "0.0.0.0"
     stunExternalAddr: ""
-    ## Raw SyncTV config files support turn_shared_secret_file.
-    ## In this chart, prefer Secret/env injection or an external ConfigMap you manage yourself.
-    turnSharedSecret: ""
-    turnServerUrls: []
-    turnCredentialTtlSeconds: 86400
+    ## External ICE servers are configured dynamically via the settings API.
     filterPrivateIceCandidates: true
 
   ## ConnectionLimitsConfig

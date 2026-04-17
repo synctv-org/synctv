@@ -126,14 +126,6 @@ data:
       {{- if .Values.config.webrtc.stunExternalAddr }}
       stun_external_addr: {{ .Values.config.webrtc.stunExternalAddr | quote }}
       {{- end }}
-      turn_shared_secret: {{ .Values.config.webrtc.turnSharedSecret | default "" | quote }}
-      {{- if .Values.config.webrtc.turnServerUrls }}
-      turn_server_urls:
-        {{- range .Values.config.webrtc.turnServerUrls }}
-        - {{ . | quote }}
-        {{- end }}
-      {{- end }}
-      turn_credential_ttl_seconds: {{ .Values.config.webrtc.turnCredentialTtlSeconds | default 86400 }}
       filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates | default true }}
 
     connection_limits:

@@ -16,7 +16,7 @@ async-trait.workspace = true
 
 # HTTP Client
 reqwest.workspace = true
-tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+tokio-tungstenite.workspace = true
 futures-util.workspace = true
 
 # gRPC
@@ -42,7 +42,7 @@ md-5.workspace = true
 uuid.workspace = true
 
 # SSRF Protection
-synctv-common.workspace = true
+synctv-common = { workspace = true, default-features = false }
 
 # Compression
 flate2.workspace = true
@@ -61,7 +61,27 @@ base64.workspace = true
 hex.workspace = true
 
 [features]
-default = []
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-common/tls-aws-lc",
+    "reqwest/rustls",
+    "tonic/tls-aws-lc",
+]
+tls-ring = [
+    "synctv-common/tls-ring",
+    "reqwest/rustls-no-provider",
+    "tonic/tls-ring",
+]
+tls-webpki-roots = [
+    "synctv-common/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-common/tls-native-roots",
+    "tonic/tls-native-roots",
+    "tokio-tungstenite/rustls-tls-native-roots",
+]
 
 [lints]
 workspace = true

@@ -90,7 +90,6 @@ pub struct Services {
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
-    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     pub node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
     pub health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
     pub(crate) cluster_activation: Option<Arc<dyn ClusterNodeActivator>>,
@@ -1306,7 +1305,6 @@ impl SyncTvServer {
                 let addr = s.external_addr();
                 format!("stun:{}:{}", addr.ip(), addr.port())
             }),
-            turn_health_checker: self.services.turn_health_checker.clone(),
             credential_encryption: self.services.credential_encryption.clone(),
             grpc_listener: None,
         })
@@ -1361,7 +1359,6 @@ impl SyncTvServer {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
-                turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
                 proxy_slice_cache,
                 proxy_http_client,
@@ -1760,7 +1757,6 @@ mod tests {
                 shared_provider_stores: Some(shared_runtime.provider_stores.clone()),
                 shared_proxy_signing_key: Some(shared_runtime.signing_key.clone()),
                 builtin_stun_url: None,
-                turn_health_checker: None,
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),

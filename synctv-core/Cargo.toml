@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 # Internal
-synctv-proto.workspace = true
-synctv-media-providers.workspace = true
-synctv-common.workspace = true
+synctv-proto = { workspace = true, default-features = false }
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true
@@ -112,12 +112,44 @@ hostname.workspace = true
 urlencoding.workspace = true
 
 
-# STUN server (turn-rs with STUN-only config)
-turn-server.workspace = true
-
 [features]
-default = []
+default = ["tls-aws-lc", "tls-webpki-roots"]
 k8s = []
+tls-aws-lc = [
+    "synctv-proto/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "reqwest/rustls",
+    "rustls/aws_lc_rs",
+    "tokio-rustls/aws_lc_rs",
+    "jsonwebtoken/aws_lc_rs",
+]
+tls-ring = [
+    "synctv-proto/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "tonic/tls-ring",
+    "reqwest/rustls-no-provider",
+    "rustls/ring",
+    "tokio-rustls/ring",
+    "jsonwebtoken/rust_crypto",
+]
+tls-webpki-roots = [
+    "synctv-proto/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-proto/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+]
 
 [lints]
 workspace = true

@@ -5552,7 +5552,6 @@ fn redact_known_secret_fields(map: &mut Map<String, Value>) {
         "auth_token",
         "bearer_token",
         "basic_password",
-        "turn_shared_secret",
         "smtp_password",
         "root_password",
         "client_secret",
@@ -5653,7 +5652,6 @@ mod tests {
         config.metrics.auth.bearer_token = "metrics-bearer-token".into();
         config.metrics.auth.basic_password = "metrics-basic-password".into();
         config.email.smtp_password = "smtp-secret".into();
-        config.webrtc.turn_shared_secret = "turn-secret".into();
         config.bootstrap.root_password = "RootPass12345".into();
         config.oauth2.providers = json!({
             "github": {
@@ -8196,7 +8194,6 @@ mod tests {
             "metrics-bearer-token",
             "metrics-basic-password",
             "smtp-secret",
-            "turn-secret",
             "RootPass12345",
             "oauth-client-secret",
         ] {

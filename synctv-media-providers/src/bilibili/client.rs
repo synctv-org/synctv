@@ -16,7 +16,9 @@ use synctv_common::ssrf::SsrfGuard;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{client_async_tls_with_config, tungstenite::Message};
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+use tokio_tungstenite::client_async_tls_with_config;
+use tokio_tungstenite::tungstenite::Message;
 
 use super::error::{check_response, json_with_limit, BilibiliError};
 use super::types::{
@@ -52,6 +54,27 @@ fn shared_client() -> Result<Client, BilibiliError> {
         .as_ref()
         .map(Clone::clone)
         .map_err(|err| BilibiliError::Network(err.to_string()))
+}
+
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+async fn connect_live_danmaku_websocket(
+    ws_url: &str,
+    socket: TcpStream,
+) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, BilibiliError> {
+    client_async_tls_with_config(ws_url, socket, None, None)
+        .await
+        .map(|(stream, _response)| stream)
+        .map_err(|e| BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}")))
+}
+
+#[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+async fn connect_live_danmaku_websocket(
+    _ws_url: &str,
+    _socket: TcpStream,
+) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, BilibiliError> {
+    Err(BilibiliError::InvalidConfig(
+        "Bilibili live danmaku requires a TLS root feature".to_string(),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1967,17 +1990,13 @@ impl BilibiliClient {
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);
-        let (ws_stream, _) = tokio::time::timeout(ws_connect_timeout, async {
+        let ws_stream = tokio::time::timeout(ws_connect_timeout, async {
             let socket = TcpStream::connect(validated_addr).await.map_err(|e| {
                 BilibiliError::Network(format!(
                     "Failed to connect to danmaku WebSocket socket {validated_addr}: {e}"
                 ))
             })?;
-            client_async_tls_with_config(ws_url.as_str(), socket, None, None)
-                .await
-                .map_err(|e| {
-                    BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}"))
-                })
+            connect_live_danmaku_websocket(ws_url.as_str(), socket).await
         })
         .await
         .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))??;

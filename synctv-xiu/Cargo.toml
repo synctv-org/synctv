@@ -6,11 +6,15 @@ edition.workspace = true
 license = "MIT"
 
 [features]
-default = []
+default = ["tls-aws-lc", "tls-webpki-roots"]
 oss = ["dep:opendal"]
+tls-aws-lc = ["synctv-common/tls-aws-lc"]
+tls-ring = ["synctv-common/tls-ring"]
+tls-webpki-roots = ["synctv-common/tls-webpki-roots"]
+tls-native-roots = ["synctv-common/tls-native-roots"]
 
 [dependencies]
-synctv-common.workspace = true
+synctv-common = { workspace = true, default-features = false }
 # Byte manipulation
 byteorder.workspace = true
 bytes.workspace = true

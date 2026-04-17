@@ -1,7 +1,7 @@
 //! WebRTC Integration Tests
 //!
 //! Comprehensive tests for WebRTC functionality including:
-//! - ICE servers configuration (STUN/TURN)
+//! - ICE servers configuration (STUN)
 //! - WebRTC signaling (Offer/Answer/ICE candidate exchange)
 //! - Permission checks (`USE_WEBRTC` permission required)
 //! - Multi-user peer-to-peer scenarios
@@ -24,9 +24,6 @@ fn test_webrtc_config() -> Config {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            turn_shared_secret: String::new(), // No TURN for basic tests
-            turn_server_urls: vec![],
-            turn_credential_ttl_seconds: 86400,
             filter_private_ice_candidates: true,
         },
         ..Config::default()
@@ -37,6 +34,7 @@ fn test_webrtc_config() -> Config {
 
 mod ice_servers {
     use super::*;
+    use synctv_core::service::{ConfiguredIceServer, IceServerList};
     use synctv_proto::client::{GetIceServersResponse, IceServer};
 
     #[test]
@@ -58,7 +56,6 @@ mod ice_servers {
             urls: vec!["stun:stun.example.com:3478".to_string()],
             username: None,
             credential: None,
-            expiry_time: 0,
         };
 
         let json = serde_json::to_string(&server).expect("Should serialize");
@@ -68,23 +65,20 @@ mod ice_servers {
     }
 
     #[test]
-    fn test_ice_server_serialization_turn() {
+    fn test_ice_server_serialization_multiple_stun_urls() {
         let server = IceServer {
             urls: vec![
-                "turn:turn.example.com:3478".to_string(),
-                "turns:turn.example.com:5349".to_string(),
+                "stun:stun1.example.com:3478".to_string(),
+                "stun:stun2.example.com:3478".to_string(),
             ],
-            username: Some("1234567890:user123".to_string()),
-            credential: Some("secret_credential_here".to_string()),
-            expiry_time: 1_640_995_200,
+            username: None,
+            credential: None,
         };
 
         let json = serde_json::to_string(&server).expect("Should serialize");
-        assert!(json.contains("turn:turn.example.com:3478"));
-        assert!(json.contains("turns:turn.example.com:5349"));
-        assert!(json.contains("username"));
-        assert!(json.contains("credential"));
-        assert!(json.contains("1640995200"));
+        assert!(json.contains("stun:stun1.example.com:3478"));
+        assert!(json.contains("stun:stun2.example.com:3478"));
+        assert_eq!(server.urls.len(), 2);
     }
 
     #[test]
@@ -95,21 +89,21 @@ mod ice_servers {
                     urls: vec!["stun:stun1.example.com:3478".to_string()],
                     username: None,
                     credential: None,
-                    expiry_time: 0,
                 },
                 IceServer {
-                    urls: vec!["turn:turn.example.com:3478".to_string()],
-                    username: Some("user:pass".to_string()),
-                    credential: Some("cred123".to_string()),
-                    expiry_time: 1_640_995_200,
+                    urls: vec!["turn:turn.example.com:3478?transport=udp".to_string()],
+                    username: Some("turn-user".to_string()),
+                    credential: Some("turn-password".to_string()),
                 },
             ],
         };
 
         let json = serde_json::to_string(&response).expect("Should serialize");
         assert!(json.contains("stun:stun1.example.com:3478"));
-        assert!(json.contains("turn:turn.example.com:3478"));
-        assert!(json.contains("user:pass"));
+        assert!(json.contains("turn:turn.example.com:3478?transport=udp"));
+        assert!(json.contains("turn-user"));
+        assert!(json.contains("turn-password"));
+        assert_eq!(response.servers.len(), 2);
     }
 
     #[test]
@@ -117,10 +111,9 @@ mod ice_servers {
         let json = r#"{
             "servers": [
                 {
-                    "urls": ["stun:stun.example.com:3478"],
-                    "username": null,
-                    "credential": null,
-                    "expiry_time": 0
+                    "urls": ["turn:turn.example.com:3478?transport=udp"],
+                    "username": "turn-user",
+                    "credential": "turn-password"
                 }
             ]
         }"#;
@@ -128,8 +121,28 @@ mod ice_servers {
         let response: GetIceServersResponse =
             serde_json::from_str(json).expect("Should deserialize");
         assert_eq!(response.servers.len(), 1);
-        assert_eq!(response.servers[0].urls[0], "stun:stun.example.com:3478");
-        assert!(response.servers[0].username.is_none());
+        assert_eq!(
+            response.servers[0].urls[0],
+            "turn:turn.example.com:3478?transport=udp"
+        );
+        assert_eq!(response.servers[0].username.as_deref(), Some("turn-user"));
+        assert_eq!(response.servers[0].credential.as_deref(), Some("turn-password"));
+    }
+
+    #[test]
+    fn test_external_ice_server_settings_roundtrip_supports_turn_credentials() {
+        let servers = IceServerList(vec![
+            ConfiguredIceServer::new(vec!["stun:stun.example.com:3478".to_string()]),
+            ConfiguredIceServer::new(vec!["turn:turn.example.com:3478?transport=udp".to_string()])
+                .with_auth("turn-user", "turn-password"),
+        ]);
+
+        let json = servers.to_string();
+        let parsed: IceServerList = json.parse().expect("Should deserialize");
+
+        assert_eq!(parsed, servers);
+        assert_eq!(parsed.0[1].username.as_deref(), Some("turn-user"));
+        assert_eq!(parsed.0[1].credential.as_deref(), Some("turn-password"));
     }
 }
 
@@ -144,9 +157,6 @@ mod webrtc_modes {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
-            turn_shared_secret: String::new(),
-            turn_server_urls: vec![],
-            turn_credential_ttl_seconds: 86400,
             filter_private_ice_candidates: true,
         };
 
@@ -162,9 +172,6 @@ mod webrtc_modes {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            turn_shared_secret: String::new(),
-            turn_server_urls: vec![],
-            turn_credential_ttl_seconds: 86400,
             filter_private_ice_candidates: true,
         };
 
@@ -174,109 +181,19 @@ mod webrtc_modes {
     }
 
     #[test]
-    fn test_turn_configuration() {
+    fn test_builtin_stun_configuration() {
         let config = WebRTCConfig {
             mode: WebRTCMode::PeerToPeer,
             enable_builtin_stun: true,
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            turn_shared_secret: "my-turn-secret".to_string(),
-            turn_server_urls: vec![
-                "turn:turn.example.com:3478".to_string(),
-                "turns:turn.example.com:5349".to_string(),
-            ],
-            turn_credential_ttl_seconds: 86400,
             filter_private_ice_candidates: true,
         };
 
-        assert!(!config.turn_shared_secret.is_empty());
-        assert_eq!(config.turn_server_urls.len(), 2);
-        assert_eq!(config.turn_credential_ttl_seconds, 86400);
-    }
-}
-
-mod turn_credentials {
-    use synctv_core::service::turn_server;
-
-    #[test]
-    fn test_generate_turn_credentials() {
-        let secret = "my-turn-shared-secret";
-        let username = "user123";
-        let ttl = 3600;
-
-        let creds = turn_server::generate_turn_credentials(secret, username, ttl);
-
-        // Username format: timestamp:username
-        assert!(creds.username.contains(':'));
-        assert!(creds.username.ends_with(username));
-
-        // Password should be base64 encoded HMAC
-        assert!(!creds.password.is_empty());
-        assert!(creds
-            .password
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
-
-        // Expiry should be in the future
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        assert!(creds.expiry_timestamp > now);
-        assert!(creds.expiry_timestamp <= now + ttl);
-    }
-
-    #[test]
-    fn test_turn_credentials_deterministic_for_same_input() {
-        let secret = "shared-secret";
-        let user = "user";
-        let ttl = 3600;
-
-        // Generate two credentials with same params
-        let creds1 = turn_server::generate_turn_credentials(secret, user, ttl);
-        let creds2 = turn_server::generate_turn_credentials(secret, user, ttl);
-
-        // Timestamps should be within 1 second of each other (near simultaneous generation)
-        assert!(creds1.expiry_timestamp.abs_diff(creds2.expiry_timestamp) <= 1);
-
-        // If usernames match (same timestamp), passwords should also match
-        if creds1.username == creds2.username {
-            assert_eq!(creds1.password, creds2.password);
-        }
-    }
-
-    #[test]
-    fn test_turn_password_changes_with_secret() {
-        let user = "user123";
-        let ttl = 3600;
-
-        let creds1 = turn_server::generate_turn_credentials("secret1", user, ttl);
-        let creds2 = turn_server::generate_turn_credentials("secret2", user, ttl);
-
-        // Different secrets should produce different passwords
-        // (even if timestamps happen to match)
-        if creds1.username == creds2.username {
-            assert_ne!(
-                creds1.password, creds2.password,
-                "Different secrets should produce different passwords"
-            );
-        }
-    }
-
-    #[test]
-    fn test_turn_password_changes_with_username() {
-        let secret = "my-secret";
-        let ttl = 3600;
-
-        let creds1 = turn_server::generate_turn_credentials(secret, "user1", ttl);
-        let creds2 = turn_server::generate_turn_credentials(secret, "user2", ttl);
-
-        // Different usernames should produce different username strings
-        assert_ne!(
-            creds1.username, creds2.username,
-            "Different users should have different usernames"
-        );
+        assert!(config.enable_builtin_stun);
+        assert_eq!(config.stun_port, 3478);
+        assert_eq!(config.stun_host, "0.0.0.0");
     }
 }
 
@@ -290,12 +207,16 @@ mod permissions {
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::{
-        BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, SettingsRegistry,
+        SettingsService, UserService,
     };
+    use synctv_core::service::{ConfiguredIceServer, IceServerList};
+    use synctv_core::repository::SettingsRepository;
     use synctv_core_testing::{
         create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
         RedisContainer, TestContainer,
     };
+    use tokio_util::sync::CancellationToken;
 
     struct ClientApiFixture {
         _postgres: TestContainer,
@@ -303,6 +224,7 @@ mod permissions {
         pool: sqlx::PgPool,
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
+        settings_registry: Arc<SettingsRegistry>,
         client_api: ClientApiImpl,
     }
 
@@ -359,6 +281,17 @@ mod permissions {
             brute_force,
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+        let settings_repo = SettingsRepository::new(pool.clone());
+        let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+        settings_registry
+            .init(CancellationToken::new())
+            .expect("initialize settings registry");
+        let builtin_stun_url = format!(
+            "stun:{}:{}",
+            test_webrtc_config().server.advertise_host,
+            test_webrtc_config().webrtc.stun_port
+        );
         let client_api = ClientApiImpl::new(
             user_service.clone(),
             room_service.clone(),
@@ -368,8 +301,9 @@ mod permissions {
             jwt_service,
             None,
             None,
-            None,
-        );
+            Some(settings_registry.clone()),
+        )
+        .with_builtin_stun_url(builtin_stun_url);
 
         ClientApiFixture {
             _postgres: postgres,
@@ -377,8 +311,97 @@ mod permissions {
             pool,
             user_service,
             room_service,
+            settings_registry,
             client_api,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_ice_servers_includes_configured_turn_servers_with_credentials() {
+        let fixture = build_client_api_fixture("api-webrtc-custom-ice").await;
+
+        fixture
+            .settings_registry
+            .external_ice_servers
+            .set(IceServerList(vec![
+                ConfiguredIceServer::new(vec![
+                    "turn:turn.example.com:3478?transport=udp".to_string(),
+                    "turns:turn.example.com:5349".to_string(),
+                ])
+                .with_auth("turn-user", "turn-password"),
+            ]))
+            .await
+            .expect("set external ice servers");
+
+        let (creator, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_turn_creator".to_string(),
+                Some("webrtc_turn_creator@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register creator");
+        let (member, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_turn_member".to_string(),
+                Some("webrtc_turn_member@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register member");
+
+        let (room, _) = fixture
+            .room_service
+            .create_room(
+                "WebRTC Custom ICE Room".to_string(),
+                String::new(),
+                creator.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+        fixture
+            .room_service
+            .join_room(room.id.clone(), member.id.clone(), None)
+            .await
+            .expect("join room");
+        fixture
+            .room_service
+            .grant_permission(
+                room.id.clone(),
+                creator.id.clone(),
+                member.id.clone(),
+                PermissionBits::USE_WEBRTC,
+            )
+            .await
+            .expect("grant USE_WEBRTC");
+
+        let response = fixture
+            .client_api
+            .get_ice_servers(&room.id, &member.id)
+            .await
+            .expect("get ice servers");
+
+        assert_eq!(response.servers.len(), 2);
+        assert_eq!(
+            response.servers[0].urls,
+            vec!["stun:test.example.com:3478".to_string()]
+        );
+        assert_eq!(
+            response.servers[1].urls,
+            vec![
+                "turn:turn.example.com:3478?transport=udp".to_string(),
+                "turns:turn.example.com:5349".to_string(),
+            ]
+        );
+        assert_eq!(response.servers[1].username.as_deref(), Some("turn-user"));
+        assert_eq!(response.servers[1].credential.as_deref(), Some("turn-password"));
     }
 
     #[tokio::test]

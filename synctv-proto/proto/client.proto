@@ -2021,17 +2021,15 @@ message SfuMigrationStatus {
 
 // ICE Servers Configuration
 // Server sends this to client upon request or connection
-// Contains STUN/TURN server URLs for NAT traversal
+// Contains ICE server URLs for NAT traversal
 message IceServersConfig {
     repeated IceServer servers = 1;
 }
 
 message IceServer {
-    repeated string urls = 1;     // ["stun:stun.example.com:3478", "turn:turn.example.com:3478"]
-    optional string username = 2;  // For TURN authentication
-    optional string credential = 3; // For TURN authentication (temporary password)
-    int64 expiry_time = 4;        // Unix timestamp (seconds) when TURN credentials expire. 0 = no expiry (STUN-only).
-                                   // Clients MUST request fresh credentials before this time.
+    repeated string urls = 1;     // ["stun:stun.example.com:3478", "stun:stun-backup.example.com:3478"]
+    optional string username = 2;
+    optional string credential = 3;
 }
 
 // Request/Response for GetIceServers RPC

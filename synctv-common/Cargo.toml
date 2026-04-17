@@ -5,6 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = ["reqwest/rustls"]
+tls-ring = ["reqwest/rustls-no-provider"]
+tls-webpki-roots = []
+tls-native-roots = []
+
 [dependencies]
 http-acl.workspace = true
 http-acl-reqwest.workspace = true

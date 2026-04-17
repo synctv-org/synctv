@@ -25,9 +25,21 @@ use synctv_media_providers::grpc::{
     emby::{emby_client::EmbyClient, MeReq as EmbyMeReq},
 };
 use tokio::task::JoinHandle;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+use tonic::transport::{Certificate, ClientTlsConfig};
+use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::{Request, Status};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
+
+#[cfg(feature = "tls-webpki-roots")]
+fn apply_default_grpc_roots(tls_config: ClientTlsConfig) -> ClientTlsConfig {
+    tls_config.with_webpki_roots()
+}
+
+#[cfg(all(not(feature = "tls-webpki-roots"), feature = "tls-native-roots"))]
+fn apply_default_grpc_roots(tls_config: ClientTlsConfig) -> ClientTlsConfig {
+    tls_config.with_native_roots()
+}
 
 /// Default channel cache TTL (5 minutes)
 const CHANNEL_CACHE_TTL_SECS: u64 = 300;
@@ -765,7 +777,7 @@ impl RemoteProviderManager {
 
         // Create endpoint
         let transport_endpoint = Self::normalized_transport_endpoint(config)?;
-        let mut endpoint = Endpoint::from_shared(transport_endpoint)
+        let endpoint = Endpoint::from_shared(transport_endpoint)
             .map_err(|error| {
                 Self::provider_connection_setup_error(
                     "Remote provider endpoint configuration is invalid.",
@@ -776,6 +788,8 @@ impl RemoteProviderManager {
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10));
+        #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+        let mut endpoint = endpoint;
 
         // Configure TLS if enabled
         if config.tls {
@@ -806,23 +820,32 @@ impl RemoteProviderManager {
                 return Ok(channel);
             }
 
-            let mut tls_config = ClientTlsConfig::new();
+            #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+            {
+                let mut tls_config = ClientTlsConfig::new();
 
-            // Use custom CA certificate if provided
-            if let Some(ref ca_pem) = config.custom_ca {
-                let cert = Certificate::from_pem(ca_pem);
-                tls_config = tls_config.ca_certificate(cert);
-            } else {
-                // Use system CA certificates
-                tls_config = tls_config.with_native_roots();
+                // Use custom CA certificate if provided
+                if let Some(ref ca_pem) = config.custom_ca {
+                    let cert = Certificate::from_pem(ca_pem);
+                    tls_config = tls_config.ca_certificate(cert);
+                } else {
+                    tls_config = apply_default_grpc_roots(tls_config);
+                }
+
+                endpoint = endpoint.tls_config(tls_config).map_err(|error| {
+                    Self::provider_connection_setup_error(
+                        "Remote provider TLS connection setup failed.",
+                        error,
+                    )
+                })?;
             }
 
-            endpoint = endpoint.tls_config(tls_config).map_err(|error| {
-                Self::provider_connection_setup_error(
-                    "Remote provider TLS connection setup failed.",
-                    error,
-                )
-            })?;
+            #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+            {
+                return Err(crate::Error::InvalidInput(
+                    "Remote provider TLS requires a TLS root feature".to_string(),
+                ));
+            }
         }
 
         let guard = synctv_common::ssrf::SsrfGuard::default_policy();

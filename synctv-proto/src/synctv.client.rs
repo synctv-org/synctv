@@ -3559,7 +3559,7 @@ pub struct SfuMigrationStatus {
 }
 /// ICE Servers Configuration
 /// Server sends this to client upon request or connection
-/// Contains STUN/TURN server URLs for NAT traversal
+/// Contains ICE server URLs for NAT traversal
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.IceServersConfig")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -3581,18 +3581,13 @@ pub struct IceServersConfig {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_IceServer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IceServer {
-    /// \["stun:stun.example.com:3478", "turn:turn.example.com:3478"\]
+    /// \["stun:stun.example.com:3478", "stun:stun-backup.example.com:3478"\]
     #[prost(string, repeated, tag = "1")]
     pub urls: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// For TURN authentication
     #[prost(string, optional, tag = "2")]
     pub username: ::core::option::Option<::prost::alloc::string::String>,
-    /// For TURN authentication (temporary password)
     #[prost(string, optional, tag = "3")]
     pub credential: ::core::option::Option<::prost::alloc::string::String>,
-    /// Unix timestamp (seconds) when TURN credentials expire. 0 = no expiry (STUN-only).
-    #[prost(int64, tag = "4")]
-    pub expiry_time: i64,
 }
 /// Request/Response for GetIceServers RPC
 #[derive(::prost_reflect::ReflectMessage)]

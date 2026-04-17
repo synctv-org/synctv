@@ -275,7 +275,6 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "metrics.auth.bearer_token"
             | "jwt.secret"
             | "email.smtp_password"
-            | "webrtc.turn_shared_secret"
             | "bootstrap.root_password"
     ) || ((current_path.starts_with("oauth2.providers.")
         || current_path.starts_with("media_providers.providers."))
@@ -1164,7 +1163,7 @@ pub struct WebRTCConfig {
     pub mode: WebRTCMode,
 
     // STUN Configuration
-    /// Enable built-in STUN server (powered by turn-rs)
+    /// Enable built-in STUN server
     pub enable_builtin_stun: bool,
     /// STUN server port
     pub stun_port: u16,
@@ -1175,21 +1174,6 @@ pub struct WebRTCConfig {
     /// (e.g., pod IP or service IP). If empty, falls back to
     /// `advertise_host:stun_port`.
     pub stun_external_addr: String,
-
-    // TURN Configuration
-    /// TURN shared secret for generating time-limited HMAC-SHA1 credentials.
-    /// When set, the server generates ephemeral credentials compatible with
-    /// coturn's `use-auth-secret` mode (RFC 5389 long-term credentials).
-    /// If empty, TURN credentials are taken from the dynamic settings registry as-is.
-    pub turn_shared_secret: String,
-    /// TURN server URLs to include in ICE server responses when `turn_shared_secret`
-    /// is set. Example: `["turn:turn.example.com:3478", "turns:turn.example.com:5349"]`
-    /// Ignored when `turn_shared_secret` is empty.
-    pub turn_server_urls: Vec<String>,
-    /// TURN credential time-to-live in seconds.
-    /// After this duration, clients must refresh their ICE servers.
-    /// Default: 86400 (24 hours). Set to 0 for credentials that never expire.
-    pub turn_credential_ttl_seconds: u64,
 
     /// Filter private/internal ICE candidates before sending to clients.
     /// When true (default), host candidates with private IPs (RFC 1918,
@@ -1204,17 +1188,16 @@ pub struct WebRTCConfig {
 #[serde(rename_all = "snake_case")]
 pub enum WebRTCMode {
     /// Pure P2P mode (zero server cost)
-    /// - Signaling only, no STUN/TURN
+    /// - Signaling only, no STUN
     /// - Best for: personal deployments
     /// - Connection success rate: ~70-75%
     SignalingOnly,
 
-    /// P2P with STUN/TURN support (recommended for most deployments)
+    /// P2P with STUN support (recommended for most deployments)
     /// - P2P connections with NAT traversal
     /// - STUN for reflexive candidates
-    /// - TURN fallback for difficult NAT scenarios
     /// - Best for: small to medium deployments
-    /// - Connection success rate: ~99%
+    /// - Connection success rate depends on peer NAT compatibility
     PeerToPeer,
 }
 
@@ -1224,17 +1207,11 @@ impl Default for WebRTCConfig {
             // Default to PeerToPeer mode (recommended for most deployments)
             mode: WebRTCMode::PeerToPeer,
 
-            // STUN enabled by default (powered by turn-rs)
+            // STUN enabled by default
             enable_builtin_stun: true,
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
-
-            // TURN shared secret (empty = disabled, use static settings)
-            turn_shared_secret: String::new(),
-            turn_server_urls: Vec::new(),
-            // TURN credentials expire after 24 hours by default
-            turn_credential_ttl_seconds: 86400,
 
             filter_private_ice_candidates: true,
         }
@@ -2032,18 +2009,6 @@ impl Config {
             "SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR",
             &mut self.webrtc.stun_external_addr,
         );
-        env_override_str(
-            "SYNCTV_WEBRTC_TURN_SHARED_SECRET",
-            &mut self.webrtc.turn_shared_secret,
-        );
-        env_override_json_or_csv(
-            "SYNCTV_WEBRTC_TURN_SERVER_URLS",
-            &mut self.webrtc.turn_server_urls,
-        );
-        env_override_parse(
-            "SYNCTV_WEBRTC_TURN_CREDENTIAL_TTL_SECONDS",
-            &mut self.webrtc.turn_credential_ttl_seconds,
-        )?;
         env_override_bool(
             "SYNCTV_WEBRTC_FILTER_PRIVATE_ICE_CANDIDATES",
             &mut self.webrtc.filter_private_ice_candidates,
@@ -4241,11 +4206,6 @@ jwt:
             "smtp-password-from-file\n",
         )
         .expect("smtp password file should be written");
-        std::fs::write(
-            config_dir.join("turn.secret"),
-            "turn-shared-secret-from-file\n",
-        )
-        .expect("turn secret file should be written");
         std::fs::write(config_dir.join("root.password"), "StrongPwd12345!\n")
             .expect("root password file should be written");
 
@@ -4269,8 +4229,6 @@ jwt:
 email:
   smtp_host: "smtp.example.com"
   smtp_password_file: "./smtp.password"
-webrtc:
-  turn_shared_secret_file: "./turn.secret"
 bootstrap:
   create_root_user: true
   root_username: "admin"
@@ -4295,10 +4253,6 @@ bootstrap:
         assert_eq!(config.management.auth_token, "management-token-from-file");
         assert_eq!(config.metrics.auth.basic_password, "metrics-basic-password");
         assert_eq!(config.email.smtp_password, "smtp-password-from-file");
-        assert_eq!(
-            config.webrtc.turn_shared_secret,
-            "turn-shared-secret-from-file"
-        );
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
     }
 

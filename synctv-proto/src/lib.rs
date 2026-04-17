@@ -1,8 +1,17 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
+
 //! `SyncTV` Protocol Definitions
 //!
 //! This crate contains all protobuf definitions and generated code for `SyncTV`'s
 //! external APIs.
+
+#[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
+compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
+
+#[cfg(all(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+compile_error!(
+    "features \"tls-webpki-roots\" and \"tls-native-roots\" are mutually exclusive — use only one"
+);
 
 pub mod http_serde;
 pub mod serde_defaults;
@@ -239,12 +248,14 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_ice_server_with_expiry() {
+    fn roundtrip_ice_server() {
         let server = crate::client::IceServer {
-            urls: vec!["turn:turn.example.com:3478".into()],
-            username: Some("user".into()),
-            credential: Some("pass".into()),
-            expiry_time: 1_700_003_600,
+            urls: vec![
+                "stun:stun.example.com:3478".into(),
+                "stun:stun-backup.example.com:3478".into(),
+            ],
+            username: Some("turn-user".into()),
+            credential: Some("turn-secret".into()),
         };
         let bytes = server.encode_to_vec();
         let decoded = crate::client::IceServer::decode(bytes.as_slice()).unwrap();

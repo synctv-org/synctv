@@ -855,7 +855,7 @@ mod tests {
                 &json!({ "url": "http://localhost/video.mp4" }),
             )
             .await
-            .expect_err("DirectUrl playback must reject blocked hosts even for legacy data");
+            .expect_err("DirectUrl playback must reject blocked hosts");
 
         assert!(matches!(
             err,

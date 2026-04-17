@@ -516,7 +516,6 @@ mod tests {
             shared_provider_stores: None,
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
-            turn_health_checker: None,
             credential_encryption: None,
             proxy_slice_cache,
             proxy_http_client: synctv_proxy::build_proxy_http_client()
@@ -630,7 +629,6 @@ mod tests {
                 shared_provider_stores: None,
                 shared_proxy_signing_key: None,
                 builtin_stun_url: None,
-                turn_health_checker: None,
                 credential_encryption: None,
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     SliceCacheConfig::default(),

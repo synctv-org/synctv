@@ -93,7 +93,6 @@ struct ServerComponents {
     livestream_state: Option<LivestreamState>,
     live_infra: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
-    turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     providers: synctv_core::provider::ProviderSet,
 }
 
@@ -1240,9 +1239,8 @@ impl Application {
             );
         }
 
-        // WebRTC (STUN server and TURN health checker)
-        let webrtc_cancel = shutdown.register_token("webrtc");
-        let webrtc_components = init_webrtc(&infra.config, webrtc_cancel).await;
+        // WebRTC (STUN server)
+        let webrtc_components = init_webrtc(&infra.config).await;
 
         // Media providers
         let pim = core.services.provider_instance_manager.clone();
@@ -1259,7 +1257,6 @@ impl Application {
             livestream_state,
             live_infra,
             stun_server: webrtc_components.stun_server,
-            turn_health_checker: webrtc_components.turn_health_checker,
             providers,
         })
     }
@@ -1301,7 +1298,6 @@ impl Application {
             user_cache: core.services.user_cache.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
-            turn_health_checker: servers.turn_health_checker,
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
             cluster_activation: cluster.cluster_activation,

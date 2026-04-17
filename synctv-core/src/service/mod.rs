@@ -30,8 +30,7 @@ pub mod room;
 pub mod room_settings;
 pub mod settings;
 pub mod settings_vars;
-pub mod turn_health;
-pub mod turn_server;
+pub mod stun_server;
 pub mod user;
 pub mod user_notification;
 pub mod ws_ticket;
@@ -69,9 +68,7 @@ pub use distributed_lock::{
 pub use email::{mask_email, EmailConfig, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::{EmailTokenService, EmailTokenType};
-pub use global_settings::{
-    PublicSettings, SettingsRegistry, StunServerList, TurnServer, TurnServerList,
-};
+pub use global_settings::{ConfiguredIceServer, IceServerList, PublicSettings, SettingsRegistry};
 pub use media::MediaService;
 pub use member::{AddMemberOptions, MemberEventBroadcaster, MemberService};
 pub use notification::{NotificationService, RoomEvent};
@@ -104,10 +101,7 @@ pub use room::{AuthorizedAdminActor, RoomService};
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};
 pub use settings_vars::{Setting, SettingsStorage};
-pub use turn_health::{
-    HealthCheckResult, TurnHealthCheckConfig, TurnHealthChecker, TurnServerHealth,
-};
-pub use turn_server::{resolve_external_ip, validate_external_addr, StunServer, StunServerConfig};
+pub use stun_server::{resolve_external_ip, validate_external_addr, StunServer, StunServerConfig};
 pub use user::UserService;
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{

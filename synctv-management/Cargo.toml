@@ -5,6 +5,33 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["tls-aws-lc", "tls-webpki-roots"]
+tls-aws-lc = [
+    "synctv-api/tls-aws-lc",
+    "synctv-core/tls-aws-lc",
+    "synctv-proto/tls-aws-lc",
+    "tonic/tls-aws-lc",
+]
+tls-ring = [
+    "synctv-api/tls-ring",
+    "synctv-core/tls-ring",
+    "synctv-proto/tls-ring",
+    "tonic/tls-ring",
+]
+tls-webpki-roots = [
+    "synctv-api/tls-webpki-roots",
+    "synctv-core/tls-webpki-roots",
+    "synctv-proto/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-api/tls-native-roots",
+    "synctv-core/tls-native-roots",
+    "synctv-proto/tls-native-roots",
+    "tonic/tls-native-roots",
+]
+
 [lints]
 workspace = true
 
@@ -24,9 +51,9 @@ tonic-health.workspace = true
 tonic-prost.workspace = true
 tonic-reflection.workspace = true
 tracing.workspace = true
-synctv-api.workspace = true
-synctv-core.workspace = true
-synctv-proto.workspace = true
+synctv-api = { workspace = true, default-features = false }
+synctv-core = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false }
 
 [build-dependencies]
 tonic-prost-build.workspace = true

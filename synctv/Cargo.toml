@@ -10,7 +10,7 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
-default = ["k8s", "mimalloc", "openapi"]
+default = ["k8s", "mimalloc", "openapi", "tls-aws-lc", "tls-webpki-roots"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
@@ -21,20 +21,83 @@ k8s = ["synctv-cluster/k8s", "synctv-core/k8s", "synctv-api/k8s"]
 mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:tikv-jemallocator"]
 openapi = ["synctv-api/openapi"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-api/tls-aws-lc",
+    "synctv-livestream/tls-aws-lc",
+    "synctv-cluster/tls-aws-lc",
+    "synctv-proxy/tls-aws-lc",
+    "synctv-proto/tls-aws-lc",
+    "synctv-management/tls-aws-lc",
+    "synctv-media-providers/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "synctv-xiu/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "reqwest/rustls",
+    "rustls/aws_lc_rs",
+    "tokio-rustls/aws_lc_rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-api/tls-ring",
+    "synctv-livestream/tls-ring",
+    "synctv-cluster/tls-ring",
+    "synctv-proxy/tls-ring",
+    "synctv-proto/tls-ring",
+    "synctv-management/tls-ring",
+    "synctv-media-providers/tls-ring",
+    "synctv-common/tls-ring",
+    "synctv-xiu/tls-ring",
+    "tonic/tls-ring",
+    "reqwest/rustls-no-provider",
+    "rustls/ring",
+    "tokio-rustls/ring",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-api/tls-webpki-roots",
+    "synctv-livestream/tls-webpki-roots",
+    "synctv-cluster/tls-webpki-roots",
+    "synctv-proxy/tls-webpki-roots",
+    "synctv-proto/tls-webpki-roots",
+    "synctv-management/tls-webpki-roots",
+    "synctv-media-providers/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "synctv-xiu/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-api/tls-native-roots",
+    "synctv-livestream/tls-native-roots",
+    "synctv-cluster/tls-native-roots",
+    "synctv-proxy/tls-native-roots",
+    "synctv-proto/tls-native-roots",
+    "synctv-management/tls-native-roots",
+    "synctv-media-providers/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "synctv-xiu/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+    "tokio-tungstenite/rustls-tls-native-roots",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
 # Internal workspace libraries
-synctv-core.workspace = true
-synctv-api.workspace = true
-synctv-livestream.workspace = true
+synctv-core = { workspace = true, default-features = false }
+synctv-api = { workspace = true, default-features = false }
+synctv-livestream = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
-synctv-proxy.workspace = true
-synctv-proto.workspace = true
-synctv-management.workspace = true
-synctv-common.workspace = true
+synctv-proxy = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false }
+synctv-management = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true
@@ -84,10 +147,10 @@ mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
-synctv-media-providers.workspace = true
-synctv-common.workspace = true
+synctv-media-providers = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 synctv-core-testing.workspace = true
-synctv-xiu.workspace = true
+synctv-xiu = { workspace = true, default-features = false }
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers.workspace = true

@@ -526,8 +526,8 @@ oauth2:
 # ============================================================================
 #
 # WebRTC supports 2 operation modes:
-#   - signaling_only: Pure signaling relay (zero cost, ~70% success rate)
-#   - peer_to_peer:   P2P with STUN/TURN (recommended, ~99% success rate)
+#   - signaling_only: Pure signaling relay without ICE bootstrap
+#   - peer_to_peer:   P2P with built-in STUN plus optional external ICE servers
 
 webrtc:
   mode: "peer_to_peer"
@@ -540,30 +540,21 @@ webrtc:
   # the pod IP or service IP (e.g., via SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR).
   # If empty, falls back to advertise_host:stun_port.
   # stun_external_addr: ""
-  # turn_shared_secret: ""
-  # turn_shared_secret_file: "/run/secrets/turn_shared_secret"
-
-  # --- External STUN & TURN Servers ---
+  # --- External ICE Servers ---
   # Configured dynamically via the settings API (no restart required):
-  #   "webrtc.external_stun_servers" - JSON array of STUN URLs, e.g.:
-  #       ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]
-  #   "webrtc.turn_servers" - JSON array of TURN server objects, e.g.:
-  #       [{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+  #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
+  #       [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
 
 # ============================================================================
 # Dynamic ICE Servers Configuration
 # ============================================================================
 #
-# External STUN and TURN servers are managed via the settings API at runtime.
+# External ICE servers are managed via the settings API at runtime.
 #
-# Setting key: "webrtc.external_stun_servers"
-# Value: JSON array of STUN URL strings
-#   Default: ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]
-#
-# Setting key: "webrtc.turn_servers"
-# Value: JSON array of TURN server objects
-#   [{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
-#   Default: [] (no TURN servers)
+# Setting key: "webrtc.external_ice_servers"
+# Value: JSON array of ICE server objects
+#   Default:
+#   [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["stun:stun1.l.google.com:19302"]}]
 #
 # Changes take effect immediately without restarting the server.
 

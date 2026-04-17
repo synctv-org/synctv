@@ -40,15 +40,11 @@ use std::sync::Arc;
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 
-// WebRTC dynamic setting types
-
-/// A single TURN server entry.
+/// A statically configured ICE server entry exposed to native clients.
 ///
-/// ```json
-/// {"urls": ["turn:turn.example.com:3478"], "username": "u", "credential": "p"}
-/// ```
+/// Supports STUN-only entries and TURN/TURNS entries with optional credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TurnServer {
+pub struct ConfiguredIceServer {
     pub urls: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -56,90 +52,68 @@ pub struct TurnServer {
     pub credential: Option<String>,
 }
 
-/// A list of TURN servers, stored as a JSON array in the settings database.
-///
-/// Implements `Display` (→ JSON) and `FromStr` (← JSON) so it can be used
-/// directly with `Setting<TurnServerList>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct TurnServerList(pub Vec<TurnServer>);
-
-impl TurnServerList {
+impl ConfiguredIceServer {
     #[must_use]
-    pub const fn new() -> Self {
-        Self(Vec::new())
-    }
-}
-
-impl Default for TurnServerList {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for TurnServerList {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Serialize to JSON; unwrap is safe because the type is always serializable
-        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
-        f.write_str(&json)
-    }
-}
-
-impl std::str::FromStr for TurnServerList {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Ok(Self::new());
+    pub fn new(urls: Vec<String>) -> Self {
+        Self {
+            urls,
+            username: None,
+            credential: None,
         }
-        let servers: Vec<TurnServer> = serde_json::from_str(s)?;
-        Ok(Self(servers))
+    }
+
+    #[must_use]
+    pub fn with_auth(
+        mut self,
+        username: impl Into<String>,
+        credential: impl Into<String>,
+    ) -> Self {
+        self.username = Some(username.into());
+        self.credential = Some(credential.into());
+        self
     }
 }
 
-/// A list of external STUN server URLs, stored as a JSON array in the settings
-/// database.
-///
-/// Each entry is a STUN URL string, e.g. `"stun:stun.l.google.com:19302"`.
+/// A list of user-configured external ICE servers stored as JSON in the settings database.
 ///
 /// Implements `Display` (→ JSON) and `FromStr` (← JSON) so it can be used
-/// directly with `Setting<StunServerList>`.
+/// directly with `Setting<IceServerList>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct StunServerList(pub Vec<String>);
+pub struct IceServerList(pub Vec<ConfiguredIceServer>);
 
-impl StunServerList {
+impl IceServerList {
     #[must_use]
     pub fn new() -> Self {
         Self(vec![
-            "stun:stun.l.google.com:19302".to_string(),
-            "stun:stun1.l.google.com:19302".to_string(),
+            ConfiguredIceServer::new(vec!["stun:stun.l.google.com:19302".to_string()]),
+            ConfiguredIceServer::new(vec!["stun:stun1.l.google.com:19302".to_string()]),
         ])
     }
 }
 
-impl Default for StunServerList {
+impl Default for IceServerList {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Display for StunServerList {
+impl fmt::Display for IceServerList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
         f.write_str(&json)
     }
 }
 
-impl std::str::FromStr for StunServerList {
+impl std::str::FromStr for IceServerList {
     type Err = serde_json::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
             return Ok(Self(Vec::new()));
         }
-        let urls: Vec<String> = serde_json::from_str(s)?;
-        Ok(Self(urls))
+        let servers: Vec<ConfiguredIceServer> = serde_json::from_str(s)?;
+        Ok(Self(servers))
     }
 }
 
@@ -293,10 +267,8 @@ pub struct SettingsRegistry {
     pub email_whitelist: Setting<String>,
 
     // WebRTC settings
-    /// External STUN server URLs
-    pub external_stun_servers: Setting<StunServerList>,
-    /// TURN servers (dynamic, managed via settings API)
-    pub turn_servers: Setting<TurnServerList>,
+    /// External ICE servers exposed to native clients.
+    pub external_ice_servers: Setting<IceServerList>,
 
     // Chat message retention settings
     /// Maximum number of messages to keep per room (0 = unlimited)
@@ -479,17 +451,11 @@ impl SettingsRegistry {
             email_whitelist: setting!(String, "email.whitelist", storage.clone(), String::new()),
 
             // WebRTC settings
-            external_stun_servers: setting!(
-                StunServerList,
-                "webrtc.external_stun_servers",
+            external_ice_servers: setting!(
+                IceServerList,
+                "webrtc.external_ice_servers",
                 storage.clone(),
-                StunServerList::new()
-            ),
-            turn_servers: setting!(
-                TurnServerList,
-                "webrtc.turn_servers",
-                storage.clone(),
-                TurnServerList::new()
+                IceServerList::new()
             ),
 
             // Chat message retention settings
@@ -665,106 +631,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_turn_server_list_display_with_servers() {
-        let list = TurnServerList(vec![TurnServer {
-            urls: vec!["turn:turn.example.com:3478".to_string()],
-            username: Some("user".to_string()),
-            credential: Some("pass".to_string()),
-        }]);
-        let json = list.to_string();
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0]["urls"][0], "turn:turn.example.com:3478");
-        assert_eq!(parsed[0]["username"], "user");
-        assert_eq!(parsed[0]["credential"], "pass");
-    }
-
-    #[test]
-    fn test_turn_server_list_from_str_empty_string() {
-        let list: TurnServerList = "".parse().unwrap();
-        assert!(list.0.is_empty());
-    }
-
-    #[test]
-    fn test_turn_server_list_from_str_valid_json() {
-        let json = r#"[{"urls":["turn:turn.example.com:3478"],"username":"u","credential":"p"}]"#;
-        let list: TurnServerList = json.parse().unwrap();
-        assert_eq!(list.0.len(), 1);
-        assert_eq!(list.0[0].urls[0], "turn:turn.example.com:3478");
-        assert_eq!(list.0[0].username, Some("u".to_string()));
-        assert_eq!(list.0[0].credential, Some("p".to_string()));
-    }
-
-    #[test]
-    fn test_turn_server_list_from_str_invalid_json() {
-        let result = "not valid json".parse::<TurnServerList>();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_turn_server_list_roundtrip() {
-        let original = TurnServerList(vec![
-            TurnServer {
-                urls: vec!["turn:a.com:3478".to_string(), "turn:b.com:3478".to_string()],
-                username: Some("user1".to_string()),
-                credential: None,
-            },
-            TurnServer {
-                urls: vec!["turn:c.com:3478".to_string()],
-                username: None,
-                credential: None,
-            },
+    fn test_ice_server_list_display() {
+        let list = IceServerList(vec![
+            ConfiguredIceServer::new(vec!["stun:example.com:19302".to_string()]),
+            ConfiguredIceServer::new(vec!["turn:turn.example.com:3478".to_string()])
+                .with_auth("alice", "secret"),
         ]);
-        let serialized = original.to_string();
-        let deserialized: TurnServerList = serialized.parse().unwrap();
-        assert_eq!(original, deserialized);
-    }
-
-    #[test]
-    fn test_turn_server_without_optional_fields() {
-        let json = r#"[{"urls":["turn:example.com:3478"]}]"#;
-        let list: TurnServerList = json.parse().unwrap();
-        assert_eq!(list.0.len(), 1);
-        assert_eq!(list.0[0].username, None);
-        assert_eq!(list.0[0].credential, None);
-    }
-
-    #[test]
-    fn test_stun_server_list_display() {
-        let list = StunServerList(vec!["stun:example.com:19302".to_string()]);
         let json = list.to_string();
-        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, vec!["stun:example.com:19302"]);
+        let parsed: Vec<ConfiguredIceServer> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, list.0);
     }
 
     #[test]
-    fn test_stun_server_list_from_str_empty_string() {
-        let list: StunServerList = "".parse().unwrap();
+    fn test_ice_server_list_from_str_empty_string() {
+        let list: IceServerList = "".parse().unwrap();
         assert!(list.0.is_empty());
     }
 
     #[test]
-    fn test_stun_server_list_from_str_valid_json() {
-        let json = r#"["stun:a.com:19302","stun:b.com:19302"]"#;
-        let list: StunServerList = json.parse().unwrap();
+    fn test_ice_server_list_from_str_valid_json() {
+        let json = r#"[{"urls":["stun:a.com:19302"]},{"urls":["turn:b.com:3478"],"username":"bob","credential":"secret"}]"#;
+        let list: IceServerList = json.parse().unwrap();
         assert_eq!(list.0.len(), 2);
-        assert_eq!(list.0[0], "stun:a.com:19302");
+        assert_eq!(list.0[0].urls, vec!["stun:a.com:19302"]);
+        assert_eq!(list.0[1].username.as_deref(), Some("bob"));
+        assert_eq!(list.0[1].credential.as_deref(), Some("secret"));
     }
 
     #[test]
-    fn test_stun_server_list_from_str_invalid_json() {
-        let result = "not json".parse::<StunServerList>();
+    fn test_ice_server_list_from_str_invalid_json() {
+        let result = "not json".parse::<IceServerList>();
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_stun_server_list_roundtrip() {
-        let original = StunServerList(vec![
-            "stun:a.com:19302".to_string(),
-            "stun:b.com:19302".to_string(),
+    fn test_ice_server_list_roundtrip() {
+        let original = IceServerList(vec![
+            ConfiguredIceServer::new(vec!["stun:a.com:19302".to_string()]),
+            ConfiguredIceServer::new(vec!["turn:b.com:3478".to_string()])
+                .with_auth("bob", "secret"),
         ]);
         let serialized = original.to_string();
-        let deserialized: StunServerList = serialized.parse().unwrap();
+        let deserialized: IceServerList = serialized.parse().unwrap();
         assert_eq!(original, deserialized);
     }
 
@@ -799,56 +707,8 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_server_serde_with_all_fields() {
-        let server = TurnServer {
-            urls: vec!["turn:a.com:3478".to_string()],
-            username: Some("u".to_string()),
-            credential: Some("c".to_string()),
-        };
-        let json = serde_json::to_string(&server).unwrap();
-        let back: TurnServer = serde_json::from_str(&json).unwrap();
-        assert_eq!(server, back);
-    }
-
-    #[test]
-    fn test_turn_server_serde_without_optional_fields() {
-        let server = TurnServer {
-            urls: vec!["turn:a.com:3478".to_string()],
-            username: None,
-            credential: None,
-        };
-        let json = serde_json::to_string(&server).unwrap();
-        // None fields should be skipped
-        assert!(!json.contains("username"));
-        assert!(!json.contains("credential"));
-        let back: TurnServer = serde_json::from_str(&json).unwrap();
-        assert_eq!(server, back);
-    }
-
-    #[test]
-    fn test_turn_server_list_multiple_servers() {
-        let list = TurnServerList(vec![
-            TurnServer {
-                urls: vec!["turn:a.com:3478".to_string()],
-                username: Some("u1".to_string()),
-                credential: Some("c1".to_string()),
-            },
-            TurnServer {
-                urls: vec!["turn:b.com:3478".to_string()],
-                username: Some("u2".to_string()),
-                credential: Some("c2".to_string()),
-            },
-        ]);
-        let s = list.to_string();
-        let back: TurnServerList = s.parse().unwrap();
-        assert_eq!(back.0.len(), 2);
-        assert_eq!(back.0[0].username, Some("u1".to_string()));
-        assert_eq!(back.0[1].username, Some("u2".to_string()));
-    }
-
-    #[test]
-    fn test_stun_server_list_from_str_empty_array() {
-        let list: StunServerList = "[]".parse().unwrap();
+    fn test_ice_server_list_from_str_empty_array() {
+        let list: IceServerList = "[]".parse().unwrap();
         assert!(list.0.is_empty());
     }
 

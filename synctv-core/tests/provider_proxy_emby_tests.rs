@@ -13,7 +13,7 @@ use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext, ProxyServices},
     sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
-    EmbyProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
+    EmbyProvider, PlaybackInfo, PlaybackResult, ProviderError, SubtitleTrack,
 };
 
 fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
@@ -178,7 +178,7 @@ async fn test_m3u8_proxy() {
 }
 
 #[tokio::test]
-async fn test_subtitle_by_index_0() {
+async fn test_subtitle_path_without_mode_is_rejected() {
     let store = new_store();
     let vp = make_versioned(
         "e3",
@@ -214,21 +214,12 @@ async fn test_subtitle_by_index_0() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { url, headers } => {
-            assert_eq!(
-                url,
-                "https://emby.example.com/Videos/123/Subtitles/0/Stream.srt"
-            );
-            assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    assert!(matches!(err, ProviderError::NotFound));
 }
 
 #[tokio::test]
-async fn test_subtitle_by_index_1() {
+async fn test_subtitle_by_mode_and_index() {
     let store = new_store();
     let vp = make_versioned(
         "e4",
@@ -257,7 +248,7 @@ async fn test_subtitle_by_index_1() {
     let p = provider();
     let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
-        sub_path: "e4/subtitle/1",
+        sub_path: "e4/subtitle/direct/1",
         store: Some(&store),
         query_string: None,
         services: &fake_services,
@@ -297,7 +288,7 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
     let p = provider();
     let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
-        sub_path: "ehdr/subtitle/0",
+        sub_path: "ehdr/subtitle/direct/0",
         store: Some(&store),
         query_string: None,
         services: &fake_services,
@@ -476,7 +467,7 @@ async fn test_subtitle_invalid_index() {
     let p = provider();
     let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
-        sub_path: "e6/subtitle/abc",
+        sub_path: "e6/subtitle/direct/abc",
         store: Some(&store),
         query_string: None,
         services: &fake_services,

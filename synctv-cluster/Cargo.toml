@@ -6,13 +6,41 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["k8s"]
+default = ["k8s", "tls-aws-lc", "tls-webpki-roots"]
 k8s = ["kube", "k8s-openapi"]
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "synctv-common/tls-aws-lc",
+    "tonic/tls-aws-lc",
+    "kube?/aws-lc-rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "synctv-common/tls-ring",
+    "tonic/tls-ring",
+    "kube?/ring",
+]
+tls-webpki-roots = [
+    "synctv-core/tls-webpki-roots",
+    "synctv-common/tls-webpki-roots",
+    "tonic/tls-webpki-roots",
+    "redis/tokio-rustls-comp",
+    "redis/tls-rustls-webpki-roots",
+    "kube?/rustls-tls",
+    "kube?/webpki-roots",
+]
+tls-native-roots = [
+    "synctv-core/tls-native-roots",
+    "synctv-common/tls-native-roots",
+    "tonic/tls-native-roots",
+    "redis/tokio-rustls-comp",
+    "kube?/rustls-tls",
+]
 
 [dependencies]
 # Internal
-synctv-core.workspace = true
-synctv-common.workspace = true
+synctv-core = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true

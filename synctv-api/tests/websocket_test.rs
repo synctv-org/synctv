@@ -953,7 +953,6 @@ mod websocket_e2e {
         let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
         let router_config = synctv_api::http::RouterConfig {
-            turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(
@@ -3992,7 +3991,6 @@ mod websocket_connection_limit_timing {
         ));
 
         let router_config = synctv_api::http::RouterConfig {
-            turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
             user_cache: Arc::new(

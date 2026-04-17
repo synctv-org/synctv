@@ -1,7 +1,7 @@
 //! WebRTC signaling tests
 //!
 //! Tests for WebRTC signaling events: ICE candidate exchange, SDP offer/answer,
-//! TURN credential acquisition, and signaling timeouts.
+//! and signaling timeouts.
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;

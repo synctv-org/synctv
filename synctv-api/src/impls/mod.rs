@@ -714,39 +714,6 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
     }
 }
 
-/// Parse an `ApiError`-style display string into a semantic kind and a
-/// user-facing message with any structured prefix removed.
-#[must_use]
-pub fn parse_api_error_string(err: &str) -> (ErrorKind, &str) {
-    let trimmed = err.trim();
-
-    if let Some(message) = trimmed.strip_prefix("Not found: ") {
-        (ErrorKind::NotFound, message)
-    } else if let Some(message) = trimmed.strip_prefix("Authentication error: ") {
-        (ErrorKind::Unauthenticated, message)
-    } else if let Some(message) = trimmed.strip_prefix("Authorization error: ") {
-        (ErrorKind::PermissionDenied, message)
-    } else if let Some(message) = trimmed.strip_prefix("Already exists: ") {
-        (ErrorKind::AlreadyExists, message)
-    } else if let Some(message) = trimmed.strip_prefix("Invalid input: ") {
-        (ErrorKind::InvalidArgument, message)
-    } else if let Some(message) = trimmed.strip_prefix("Rate limited: ") {
-        (ErrorKind::RateLimited, message)
-    } else if let Some(message) = trimmed.strip_prefix("Service unavailable: ") {
-        (ErrorKind::ServiceUnavailable, message)
-    } else if let Some(message) = trimmed.strip_prefix("Internal error: ") {
-        (ErrorKind::Internal, message)
-    } else if let Some(message) = trimmed.strip_prefix("Database error: ") {
-        (ErrorKind::Internal, message)
-    } else if let Some(message) = trimmed.strip_prefix("Redis error: ") {
-        (ErrorKind::Internal, message)
-    } else if let Some(message) = trimmed.strip_prefix("Serialization error: ") {
-        (ErrorKind::Internal, message)
-    } else {
-        (classify_error(trimmed), trimmed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,31 +1044,6 @@ mod tests {
         for api_err in cases {
             assert_eq!(api_err.to_string(), api_err.message());
         }
-    }
-
-    #[test]
-    fn test_parse_api_error_string_keeps_plain_message() {
-        let (kind, message) = parse_api_error_string("realtime room capacity exceeded");
-        assert!(matches!(kind, ErrorKind::RateLimited));
-        assert_eq!(message, "realtime room capacity exceeded");
-
-        let (kind, message) = parse_api_error_string("distributed room capacity check unavailable");
-        assert!(matches!(kind, ErrorKind::ServiceUnavailable));
-        assert_eq!(message, "distributed room capacity check unavailable");
-    }
-
-    #[test]
-    fn test_parse_api_error_string_still_accepts_legacy_prefixed_messages() {
-        let (kind, message) =
-            parse_api_error_string("Rate limited: realtime room capacity exceeded");
-        assert!(matches!(kind, ErrorKind::RateLimited));
-        assert_eq!(message, "realtime room capacity exceeded");
-
-        let (kind, message) = parse_api_error_string(
-            "Service unavailable: distributed room capacity check unavailable",
-        );
-        assert!(matches!(kind, ErrorKind::ServiceUnavailable));
-        assert_eq!(message, "distributed room capacity check unavailable");
     }
 
     #[tokio::test]

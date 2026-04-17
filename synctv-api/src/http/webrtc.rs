@@ -1,7 +1,7 @@
 //! WebRTC HTTP REST API endpoints
 //!
 //! Provides HTTP/JSON API for WebRTC configuration and control:
-//! - `/api/rooms/{room_id}/webrtc/ice-servers` - Get ICE servers (built-in STUN + dynamic STUN/TURN)
+//! - `/api/rooms/{room_id}/webrtc/ice-servers` - Get ICE servers (built-in STUN + dynamic ICE)
 
 use axum::{
     extract::{Path, State},
@@ -17,8 +17,7 @@ use crate::proto::client::GetIceServersResponse;
 
 /// Get ICE servers configuration for WebRTC
 ///
-/// Returns a list of STUN/TURN servers configured for this deployment.
-/// For TURN servers, temporary credentials are generated for the authenticated user.
+/// Returns a list of ICE servers configured for this deployment.
 ///
 /// Path: `GET /api/rooms/{room_id}/webrtc/ice-servers`
 /// Auth: Required (JWT)
@@ -79,26 +78,38 @@ mod tests {
             urls: vec!["stun:stun.example.com:3478".to_string()],
             username: None,
             credential: None,
-            expiry_time: 0,
         };
 
-        let json = serde_json::to_string(&server).expect("IceServer should serialize");
-        assert!(json.contains("stun:stun.example.com:3478"));
+        let json = serde_json::to_value(&server).expect("IceServer should serialize");
+        assert_eq!(
+            json["urls"],
+            serde_json::json!(["stun:stun.example.com:3478"])
+        );
+        assert_eq!(json["username"], serde_json::Value::Null);
+        assert_eq!(json["credential"], serde_json::Value::Null);
     }
 
     #[test]
-    fn test_turn_server_serialization() {
+    fn test_stun_ice_server_serialization_never_exposes_auth_fields() {
         let server = IceServer {
-            urls: vec!["turn:turn.example.com:3478".to_string()],
-            username: Some("1234567890:user123".to_string()),
-            credential: Some("secret123".to_string()),
-            expiry_time: 0,
+            urls: vec![
+                "stun:stun-auth.example.com:3478".to_string(),
+                "stun:stun-auth-backup.example.com:3478".to_string(),
+            ],
+            username: None,
+            credential: None,
         };
 
-        let json = serde_json::to_string(&server).expect("IceServer should serialize");
-        assert!(json.contains("turn:turn.example.com:3478"));
-        assert!(json.contains("username"));
-        assert!(json.contains("credential"));
+        let json = serde_json::to_value(&server).expect("IceServer should serialize");
+        assert_eq!(
+            json["urls"],
+            serde_json::json!([
+                "stun:stun-auth.example.com:3478",
+                "stun:stun-auth-backup.example.com:3478"
+            ])
+        );
+        assert_eq!(json["username"], serde_json::Value::Null);
+        assert_eq!(json["credential"], serde_json::Value::Null);
     }
 
     #[test]

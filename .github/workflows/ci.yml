@@ -62,8 +62,16 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Print Rust environment
+        run: |
+          rustc -Vv
+          cargo -V
+          cargo clippy -V
+          uname -a
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets
+
 
   # Build
   build:
@@ -137,7 +145,7 @@ jobs:
 
       - name: Run tests with nextest
         run: |
-          timeout 3600 cargo nextest run --workspace --run-ignored all --nff
+          timeout 3600 cargo nextest run --workspace --run-ignored all --nff -j$(nproc) --test-threads 1
 
   # Security audit
   security-audit:
@@ -267,7 +275,7 @@ jobs:
     uses: docker/github-builder/.github/workflows/build.yml@v1
     with:
       output: image
-      push: ${{ github.ref == 'refs/heads/main' }}
+      push: true
       runner: auto
       distribute: true
       platforms: linux/amd64,linux/arm64
@@ -292,7 +300,6 @@ jobs:
     name: Docker Publish Additional Registries
     if: >-
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
       needs.docker-prepare.outputs.dockerhub_enabled == 'true'
     needs:
       - docker-prepare

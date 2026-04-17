@@ -454,7 +454,6 @@ fn check_proc_meminfo() -> Option<MemoryHealth> {
             total_kb = line
                 .split(':')
                 .nth(1)?
-                .trim()
                 .split_whitespace()
                 .next()?
                 .parse()
@@ -463,7 +462,6 @@ fn check_proc_meminfo() -> Option<MemoryHealth> {
             available_kb = line
                 .split(':')
                 .nth(1)?
-                .trim()
                 .split_whitespace()
                 .next()?
                 .parse()

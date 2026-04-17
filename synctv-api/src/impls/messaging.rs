@@ -5378,6 +5378,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_start_cancels_and_cleans_up_when_initial_send_fails() {
         let sender = FailingMessageSender::immediate();
         let fixture = create_start_handler_fixture("start_initial_send_fail", sender).await;
@@ -5402,6 +5403,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails() {
         let sender = FailingMessageSender::immediate();
         let fixture =
@@ -5442,6 +5444,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
@@ -5493,6 +5496,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
         let sender = FailingMessageSender::fail_after(1);
         let sender_for_assert = Arc::clone(&sender);
@@ -5661,6 +5665,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playback_state_without_version_sends_current_state_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -5730,6 +5735,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playback_snapshot_without_version_sends_snapshot_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -5824,6 +5830,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playback_state_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -5874,6 +5881,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playback_snapshot_with_current_version_and_matching_source_skips_immediate_resend(
     ) {
         let message_sender = RecordingMessageSender::new();
@@ -5946,6 +5954,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playback_snapshot_with_current_version_but_different_source_resends_immediately(
     ) {
         let message_sender = RecordingMessageSender::new();
@@ -6016,6 +6025,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_playback_snapshot_receives_future_playback_state_updates() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -6133,6 +6143,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_playback_snapshot_refreshes_when_current_media_is_updated() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6293,6 +6304,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_playback_snapshot_refreshes_when_current_playlist_is_updated() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6452,6 +6464,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_playback_snapshot_refreshes_when_target_changes_at_same_version() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -6570,6 +6583,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_playback_snapshot_refresh_failure_disables_watch_without_closing_connection() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6703,6 +6717,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_playback_snapshot_watch_refreshes_when_snapshot_expires_without_state_change() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6798,6 +6813,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_room_settings_without_version_sends_current_settings_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6875,6 +6891,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playlist_items_without_version_sends_snapshot_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -6987,6 +7004,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_playlist_items_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -7065,6 +7083,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_playlist_items_receive_future_media_updates() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -7190,6 +7209,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_room_members_without_version_sends_snapshot_immediately() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -7294,6 +7314,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_room_members_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
         let fixture =
@@ -7362,6 +7383,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_room_members_receive_future_permission_updates() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -7479,6 +7501,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_room_members_receive_future_room_settings_updates() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -7593,6 +7616,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watch_room_settings_with_current_version_skips_immediate_resend() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -7653,6 +7677,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_watched_room_settings_receive_future_updates() {
         let message_sender = RecordingMessageSender::new();
         let fixture = create_start_handler_fixture(
@@ -9225,6 +9250,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidation() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let event_service =
@@ -9311,6 +9337,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let event_service =
@@ -9403,6 +9430,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidation() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let event_service =

@@ -146,7 +146,7 @@ jobs:
       - name: Run ignored tests with nextest
         timeout-minutes: 60
         run: |
-          cargo nextest run --workspace --locked --run-ignored only --nff -j$(nproc)
+          cargo nextest run --workspace --locked --run-ignored only --nff -j num-cpus
 
   # Security audit
   security-audit:

@@ -241,11 +241,13 @@ struct TestServer {
     provider_probe_endpoint: String,
     provider_probe_secret: String,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    server_handle: Option<tokio::task::JoinHandle<()>>,
+    server_handle: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
     provider_probe_handle: Option<tokio::task::JoinHandle<()>>,
     _postgres: TestContainer,
     _redis: RedisContainer,
 }
+
+type StartupExitRx = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
 
 type TestWebSocketStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -296,65 +298,98 @@ async fn start_test_server() -> TestServer {
     let (postgres, database_url) =
         create_test_database_url_with_label(&database_name, &container_label).await;
     let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
     let (provider_probe_addr, provider_probe_handle) =
         spawn_authenticated_provider_server(PROVIDER_PROBE_SECRET).await;
-    let config = test_config(
-        database_url,
-        redis_url,
-        api_port,
-        management_port,
-        rtmp_port,
-    );
-
-    let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
-    let app = Box::pin(Application::build_with_options(
-        config,
-        ApplicationBuildOptions {
-            provider_test_address_overrides: HashMap::from([(
-                provider_probe_host,
-                provider_probe_addr,
-            )]),
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
-            password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
-        },
-    ))
-    .await
-    .expect("test application build");
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_handle = tokio::spawn(async move {
-        let _ = Box::pin(app.run_with_shutdown_signal(async move {
-            let _ = shutdown_rx.await;
-        }))
-        .await;
-    });
-
-    let api_base_url = format!("http://127.0.0.1:{api_port}");
-    let management_base_url = format!("http://127.0.0.1:{management_port}");
     let provider_probe_endpoint = format!(
         "http://{PROVIDER_PROBE_HOST}:{}",
         provider_probe_addr.port()
     );
 
-    wait_until_live(&api_base_url).await;
-    wait_until_grpc_ready(&api_base_url).await;
-    wait_until_grpc_ready(&management_base_url).await;
+    for attempt in 1..=3 {
+        let api_port = reserve_local_port();
+        let management_port = reserve_local_port();
+        let rtmp_port = reserve_local_port();
+        let config = test_config(
+            database_url.clone(),
+            redis_url.clone(),
+            api_port,
+            management_port,
+            rtmp_port,
+        );
 
-    TestServer {
-        api_base_url,
-        management_base_url,
-        provider_probe_endpoint,
-        provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
-        shutdown_tx: Some(shutdown_tx),
-        server_handle: Some(server_handle),
-        provider_probe_handle: Some(provider_probe_handle),
-        _postgres: postgres,
-        _redis: redis,
+        let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
+        let app = Box::pin(Application::build_with_options(
+            config,
+            ApplicationBuildOptions {
+                provider_test_address_overrides: HashMap::from([(
+                    provider_probe_host,
+                    provider_probe_addr,
+                )]),
+                credential_encryption_hex_key_override: Some(
+                    TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
+                ),
+                password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
+            },
+        ))
+        .await
+        .expect("test application build");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (server_handle, startup_exit_rx) = spawn_server_task(async move {
+            Box::pin(app.run_with_shutdown_signal(async move {
+                let _ = shutdown_rx.await;
+            }))
+            .await
+        });
+
+        let api_base_url = format!("http://127.0.0.1:{api_port}");
+        let management_base_url = format!("http://127.0.0.1:{management_port}");
+
+        let startup_result: Result<(), String> = async {
+            wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx).await?;
+            wait_until_grpc_ready_or_server_exit(&api_base_url, &startup_exit_rx).await?;
+            wait_until_grpc_ready_or_server_exit(&management_base_url, &startup_exit_rx).await
+        }
+        .await;
+
+        match startup_result {
+            Ok(()) => {
+                return TestServer {
+                    api_base_url,
+                    management_base_url,
+                    provider_probe_endpoint,
+                    provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
+                    shutdown_tx: Some(shutdown_tx),
+                    server_handle: Some(server_handle),
+                    provider_probe_handle: Some(provider_probe_handle),
+                    _postgres: postgres,
+                    _redis: redis,
+                };
+            }
+            Err(error) if attempt < 3 && startup_error_is_retryable(&error) => {
+                let _ = shutdown_tx.send(());
+                let join_result = server_handle
+                    .await
+                    .expect("retryable startup failure task should join");
+                tracing::warn!(
+                    attempt,
+                    error = %error,
+                    result = ?join_result.as_ref().map(|_| ()),
+                    "retrying full-stack test server startup after transient bind failure"
+                );
+            }
+            Err(error) => {
+                let _ = shutdown_tx.send(());
+                let join_result = server_handle
+                    .await
+                    .expect("failed startup task should join");
+                panic!(
+                    "full-stack test server failed to start on attempt {attempt}: {error}\nrun result: {join_result:?}"
+                );
+            }
+        }
     }
+
+    unreachable!("full-stack test server startup loop should return or panic")
 }
 
 async fn spawn_authenticated_provider_server(
@@ -487,27 +522,73 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
     }
 }
 
-async fn wait_until_live(http_base_url: &str) {
+fn spawn_server_task<F>(
+    future: F,
+) -> (
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    StartupExitRx,
+)
+where
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(None);
+    let handle = tokio::spawn(async move {
+        let result = future.await;
+        let _ = exit_tx.send(Some(
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| format!("{error:#}")),
+        ));
+        result
+    });
+    (handle, exit_rx)
+}
+
+fn server_startup_exit_error(startup_exit_rx: &StartupExitRx) -> Option<String> {
+    startup_exit_rx.borrow().as_ref().map(|result| match result {
+        Ok(()) => "server exited before becoming ready".to_string(),
+        Err(error) => format!("server exited before becoming ready: {error}"),
+    })
+}
+
+fn startup_error_is_retryable(error: &str) -> bool {
+    error.contains("Failed to bind HTTP address")
+        || error.contains("failed to bind management TCP address")
+        || error.contains("Address already in use")
+        || error.contains("address already in use")
+}
+
+async fn wait_until_live_or_server_exit(
+    http_base_url: &str,
+    startup_exit_rx: &StartupExitRx,
+) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
-        .expect("HTTP client");
+        .map_err(|error| format!("failed to build HTTP client: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let url = format!("{http_base_url}/health/live");
 
     loop {
+        if let Some(error) = server_startup_exit_error(startup_exit_rx) {
+            return Err(error);
+        }
+
         match client.get(&url).send().await {
-            Ok(response) if response.status() == StatusCode::OK => return,
+            Ok(response) if response.status() == StatusCode::OK => return Ok(()),
             Ok(_) | Err(_) if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Ok(response) => {
-                panic!(
+                return Err(format!(
                     "health endpoint never became live, last status: {}",
                     response.status()
-                )
+                ));
             }
-            Err(error) => panic!("health endpoint never became live: {error}"),
+            Err(error) => {
+                return Err(format!("health endpoint never became live: {error}"));
+            }
         }
     }
 }
@@ -540,6 +621,98 @@ async fn wait_until_grpc_ready(grpc_base_url: &str) {
             }
             Ok(status) => panic!("gRPC health never became serving, last status: {status}"),
             Err(error) => panic!("gRPC health never became ready: {error}"),
+        }
+    }
+}
+
+async fn wait_until_grpc_ready_or_server_exit(
+    grpc_base_url: &str,
+    startup_exit_rx: &StartupExitRx,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if let Some(error) = server_startup_exit_error(startup_exit_rx) {
+            return Err(error);
+        }
+
+        let status = match tonic::transport::Endpoint::from_shared(grpc_base_url.to_string())
+            .map_err(|error| format!("invalid gRPC endpoint {grpc_base_url}: {error}"))?
+            .connect()
+            .await
+        {
+            Ok(channel) => {
+                let mut health = HealthClient::new(channel);
+                health
+                    .check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .map(|response| response.into_inner().status)
+            }
+            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
+        };
+
+        match status {
+            Ok(status) if status == ServingStatus::Serving as i32 => return Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(status) => {
+                return Err(format!("gRPC health never became serving, last status: {status}"));
+            }
+            Err(error) => return Err(format!("gRPC health never became ready: {error}")),
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_until_unix_grpc_ready_or_server_exit(
+    socket_path: &std::path::Path,
+    startup_exit_rx: &StartupExitRx,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if let Some(error) = server_startup_exit_error(startup_exit_rx) {
+            return Err(error);
+        }
+
+        let path = socket_path.to_path_buf();
+        let status = match tonic::transport::Endpoint::try_from("http://[::]:50052")
+            .map_err(|error| format!("invalid synthetic unix gRPC endpoint: {error}"))?
+            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let path = path.clone();
+                async move {
+                    let stream = tokio::net::UnixStream::connect(path).await?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                }
+            }))
+            .await
+        {
+            Ok(channel) => {
+                let mut health = HealthClient::new(channel);
+                health
+                    .check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .map(|response| response.into_inner().status)
+            }
+            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
+        };
+
+        match status {
+            Ok(status) if status == ServingStatus::Serving as i32 => return Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(status) => {
+                return Err(format!(
+                    "unix gRPC health never became serving, last status: {status}"
+                ));
+            }
+            Err(error) => return Err(format!("unix gRPC health never became ready: {error}")),
         }
     }
 }
@@ -4751,7 +4924,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     .expect("unix management application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_handle = tokio::spawn(async move {
+    let (server_handle, startup_exit_rx) = spawn_server_task(async move {
         Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
         }))
@@ -4759,8 +4932,12 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("unix management server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
+        .await
+        .expect("unix management server should become ready over unix socket");
 
     let management_endpoint = format!("unix://{}", socket_path.display());
     let system_stats = run_synctv_cli_with_env_async(
@@ -4839,7 +5016,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     .expect("default unix management application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_handle = tokio::spawn(async move {
+    let (server_handle, startup_exit_rx) = spawn_server_task(async move {
         Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
         }))
@@ -4847,8 +5024,12 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&default_socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("default unix management server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&default_socket_path, &startup_exit_rx)
+        .await
+        .expect("default unix management server should become ready over unix socket");
 
     let cli_env_refs = cli_envs
         .iter()
@@ -4932,7 +5113,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     .expect("unix management auth application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_handle = tokio::spawn(async move {
+    let (server_handle, startup_exit_rx) = spawn_server_task(async move {
         Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
         }))
@@ -4940,8 +5121,12 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("unix management auth server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
+        .await
+        .expect("unix management auth server should become ready over unix socket");
 
     let system_stats = run_synctv_cli_with_env_async(
         &[
@@ -5028,7 +5213,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     .expect("unix management auth application should build");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_handle = tokio::spawn(async move {
+    let (server_handle, startup_exit_rx) = spawn_server_task(async move {
         Box::pin(app.run_with_shutdown_signal(async move {
             let _ = shutdown_rx.await;
         }))
@@ -5036,8 +5221,12 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("unix management explicit-endpoint server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
+        .await
+        .expect("unix management explicit-endpoint server should become ready over unix socket");
 
     let management_endpoint = format!("unix://{}", socket_path.display());
     let system_stats = run_synctv_cli_with_env_async(
@@ -5113,11 +5302,16 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     .await
     .expect("stop test application should build");
 
-    let server_handle = tokio::spawn(async move { Box::pin(app.run()).await });
+    let (server_handle, startup_exit_rx) =
+        spawn_server_task(async move { Box::pin(app.run()).await });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("graceful stop test server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
+        .await
+        .expect("graceful stop test server should become ready over unix socket");
 
     let management_endpoint = format!("unix://{}", socket_path.display());
     let stop_output = run_synctv_cli_with_env_async(
@@ -5788,11 +5982,16 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     .await
     .expect("force stop test application should build");
 
-    let server_handle = tokio::spawn(async move { Box::pin(app.run()).await });
+    let (server_handle, startup_exit_rx) =
+        spawn_server_task(async move { Box::pin(app.run()).await });
 
     let api_base_url = format!("http://127.0.0.1:{api_port}");
-    wait_until_live(&api_base_url).await;
-    wait_until_unix_grpc_ready(&socket_path).await;
+    wait_until_live_or_server_exit(&api_base_url, &startup_exit_rx)
+        .await
+        .expect("force stop test server should become live");
+    wait_until_unix_grpc_ready_or_server_exit(&socket_path, &startup_exit_rx)
+        .await
+        .expect("force stop test server should become ready over unix socket");
 
     let management_endpoint = format!("unix://{}", socket_path.display());
     let stop_output = run_synctv_cli_with_env_async(

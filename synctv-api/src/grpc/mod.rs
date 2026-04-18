@@ -338,6 +338,27 @@ const fn grpc_unary_request_timeout() -> std::time::Duration {
     synctv_core::resilience::timeout::GRPC_CALL_TIMEOUT
 }
 
+fn request_targets_grpc_transport(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/grpc"))
+}
+
+async fn grpc_transport_only_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if request_targets_grpc_transport(request.headers()) {
+        next.run(request).await
+    } else {
+        axum::response::IntoResponse::into_response(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
 async fn set_registered_grpc_services_serving(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
@@ -536,6 +557,7 @@ use crate::runtime::{
     RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
 };
 use std::sync::Arc;
+use synctv_core::Config;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
@@ -543,7 +565,6 @@ use synctv_core::service::{
     RemoteProviderManager, RequestRateLimiterService, RoomService as CoreRoomService,
     SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
-use synctv_core::Config;
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -1257,12 +1278,16 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         tracing::info!("gRPC reflection service registered");
     }
 
-    let router = routes.routes().into_axum_router().layer(
-        tower::ServiceBuilder::new()
-            .layer(blacklist_layer)
-            .layer(distributed_rate_limit_layer)
-            .layer(unary_timeout_layer),
-    );
+    let router = routes
+        .routes()
+        .into_axum_router()
+        .layer(
+            tower::ServiceBuilder::new()
+                .layer(blacklist_layer)
+                .layer(distributed_rate_limit_layer)
+                .layer(unary_timeout_layer),
+        )
+        .layer(axum::middleware::from_fn(grpc_transport_only_middleware));
 
     let _ = health_reporter;
     Ok(router)
@@ -1314,16 +1339,16 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fallback_http_app_state, cluster_node_id, effective_grpc_request_timeout,
-        extract_client_ip, grpc_service_registration_plan, grpc_unary_request_timeout,
-        map_provider_error, resolve_provider_proxy_runtime,
-        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_mark_cluster_service_serving, should_mark_email_service_serving,
-        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
-        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
-        should_register_cluster_grpc_service, should_register_email_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
-        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState, build_fallback_http_app_state,
+        cluster_node_id, effective_grpc_request_timeout, extract_client_ip,
+        grpc_service_registration_plan, grpc_unary_request_timeout, map_provider_error,
+        resolve_provider_proxy_runtime, set_registered_grpc_services_not_serving,
+        set_registered_grpc_services_serving, should_mark_cluster_service_serving,
+        should_mark_email_service_serving, should_mark_livestream_relay_serving,
+        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
+        should_mark_provider_services_serving, should_register_cluster_grpc_service,
+        should_register_email_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements,
     };
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -1341,18 +1366,19 @@ mod tests {
     };
     use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::service::{
-        auth::JwtService, AuditService, ContentFilter, RateLimitConfig, RateLimiter,
-        RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
+        AuditService, ContentFilter, RateLimitConfig, RateLimiter, RemoteProviderManager,
+        RoomService, SettingsRegistry, SettingsService, UserService, auth::JwtService,
     };
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use tokio::sync::{broadcast, mpsc};
     use tonic::metadata::{MetadataKey, MetadataValue};
+    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health;
-    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::server::HealthService;
+    use tower::ServiceExt;
 
     struct FallbackGrpcTestContext {
         config: Arc<synctv_core::Config>,
@@ -1577,6 +1603,74 @@ mod tests {
         Arc::new(state)
     }
 
+    #[test]
+    fn test_request_targets_grpc_transport_requires_grpc_content_type() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(
+            !super::request_targets_grpc_transport(&headers),
+            "requests without Content-Type must not be treated as gRPC"
+        );
+
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        );
+        assert!(
+            !super::request_targets_grpc_transport(&headers),
+            "plain HTTP JSON requests must not be treated as gRPC"
+        );
+
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/grpc"),
+        );
+        assert!(
+            super::request_targets_grpc_transport(&headers),
+            "canonical gRPC requests must be routed to tonic"
+        );
+
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/grpc+proto; charset=utf-8"),
+        );
+        assert!(
+            super::request_targets_grpc_transport(&headers),
+            "gRPC content-type variants must still be routed to tonic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_transport_gate_returns_not_found_for_non_grpc_requests() {
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "grpc route" }))
+            .layer(axum::middleware::from_fn(
+                super::grpc_transport_only_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "non-gRPC requests must fall through instead of being handled as tonic responses"
+        );
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .is_none_or(|value| value != "application/grpc"),
+            "non-gRPC responses must not advertise a gRPC content-type"
+        );
+    }
+
     #[tokio::test]
     async fn test_build_fallback_http_app_state_reuses_shared_runtime_instances() {
         let context = fallback_grpc_test_context();
@@ -1645,7 +1739,10 @@ mod tests {
         });
 
         assert!(
-            Arc::ptr_eq(&http_state.client_api.connection_service, &connection_service),
+            Arc::ptr_eq(
+                &http_state.client_api.connection_service,
+                &connection_service
+            ),
             "standalone gRPC fallback HTTP state must reuse the injected connection service for client APIs"
         );
         assert!(
@@ -1705,7 +1802,10 @@ mod tests {
             "fallback HTTP state must preserve configured rate-limit windows"
         );
         assert!(
-            Arc::ptr_eq(&http_state.shared_api_runtime.client_api, &http_state.client_api),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.client_api,
+                &http_state.client_api
+            ),
             "fallback HTTP state must expose the same shared ClientApiImpl instance across transports"
         );
         assert!(
@@ -1723,15 +1823,24 @@ mod tests {
             "fallback HTTP state must expose the same shared AdminApiImpl instance across transports"
         );
         assert!(
-            Arc::ptr_eq(&http_state.shared_api_runtime.alist_api, &http_state.alist_api),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.alist_api,
+                &http_state.alist_api
+            ),
             "fallback HTTP state must expose the same shared AlistApiImpl instance across transports"
         );
         assert!(
-            Arc::ptr_eq(&http_state.shared_api_runtime.bilibili_api, &http_state.bilibili_api),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.bilibili_api,
+                &http_state.bilibili_api
+            ),
             "fallback HTTP state must expose the same shared BilibiliApiImpl instance across transports"
         );
         assert!(
-            Arc::ptr_eq(&http_state.shared_api_runtime.emby_api, &http_state.emby_api),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.emby_api,
+                &http_state.emby_api
+            ),
             "fallback HTTP state must expose the same shared EmbyApiImpl instance across transports"
         );
     }
@@ -1993,27 +2102,33 @@ mod tests {
     fn test_user_notification_fanout_requires_distributed_delivery_only_when_available() {
         let requirement = RealtimeDeliveryRequirement::DistributedIfAvailable;
 
-        assert!(!RealtimeDeliveryOutcome::from_publish_only(
-            false,
-            RealtimeMetrics {
-                distributed_enabled: true,
-            },
-        )
-        .satisfies(requirement));
-        assert!(RealtimeDeliveryOutcome::from_publish_only(
-            true,
-            RealtimeMetrics {
-                distributed_enabled: true,
-            },
-        )
-        .satisfies(requirement));
-        assert!(RealtimeDeliveryOutcome::from_publish_only(
-            false,
-            RealtimeMetrics {
-                distributed_enabled: false,
-            },
-        )
-        .satisfies(requirement));
+        assert!(
+            !RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                true,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: false,
+                },
+            )
+            .satisfies(requirement)
+        );
     }
 
     #[test]

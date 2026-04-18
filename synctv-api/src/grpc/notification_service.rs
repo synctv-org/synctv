@@ -8,16 +8,17 @@ use tonic::{Request, Response, Status};
 
 use synctv_core::models::id::UserId;
 
+use crate::impls::NotificationApiImpl;
 use crate::impls::notification::{
     build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
     notification_counts_to_proto, notification_to_proto,
 };
-use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
-    notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
-    DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
-    GetNotificationResponse, ListNotificationsRequest, ListNotificationsResponse,
-    MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
+    DeleteAllReadRequest, DeleteAllReadResponse, DeleteNotificationRequest,
+    DeleteNotificationResponse, GetNotificationRequest, GetNotificationResponse,
+    ListNotificationsRequest, ListNotificationsResponse, MarkAllAsReadRequest,
+    MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
+    notification_service_server::NotificationService,
 };
 
 /// gRPC `NotificationService` implementation

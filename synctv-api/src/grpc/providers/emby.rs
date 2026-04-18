@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::http::SharedApiRuntime;
-use crate::impls::providers::{extract_instance_name, get_provider_binds};
 use crate::impls::EmbyApiImpl;
+use crate::impls::providers::{extract_instance_name, get_provider_binds};
 
 // Import generated proto types from synctv_proto
 use crate::proto::providers::emby::emby_provider_service_server::EmbyProviderService;

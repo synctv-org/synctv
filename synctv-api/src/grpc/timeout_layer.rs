@@ -145,17 +145,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{append_streaming_paths_from_set, is_streaming_grpc_path, GrpcRequestTimeoutLayer};
+    use super::{GrpcRequestTimeoutLayer, append_streaming_paths_from_set, is_streaming_grpc_path};
     use axum::body::Body as AxumBody;
     use axum::http;
     use prost_types::{
         FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto, ServiceDescriptorProto,
     };
     use std::convert::Infallible;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use tower::{service_fn, Layer, Service, ServiceExt};
+    use tower::{Layer, Service, ServiceExt, service_fn};
 
     fn request(path: &str) -> http::Request<AxumBody> {
         http::Request::builder()

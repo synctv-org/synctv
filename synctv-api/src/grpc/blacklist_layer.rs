@@ -28,11 +28,11 @@ use tower::{Layer, Service};
 
 use super::interceptors::SecurityCheckPassed;
 use synctv_core::{
-    service::{
-        auth::{AuthErrorCategory, JwtService},
-        AuthenticatedToken, SecurityPipeline,
-    },
     Error as CoreError,
+    service::{
+        AuthenticatedToken, SecurityPipeline,
+        auth::{AuthErrorCategory, JwtService},
+    },
 };
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;

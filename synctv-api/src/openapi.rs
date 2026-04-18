@@ -4,53 +4,12 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::providers::{alist, bilibili, emby, live};
 use crate::http::{
-    admin, auth, email_verification, health, notifications, oauth2, provider_common, public,
-    publish_key, room, room_extra, ticket, user, webrtc, AppState,
+    AppState, admin, auth, email_verification, health, notifications, oauth2, provider_common,
+    public, publish_key, room, room_extra, ticket, user, webrtc, websocket,
 };
 use crate::proto::client;
 
 pub type ErrorResponseDoc = client::ApiErrorResponse;
-
-#[allow(dead_code)]
-#[utoipa::path(
-    get,
-    path = "/api/providers/live_proxy/rooms/{room_id}/info/{media_id}",
-    tag = "Provider",
-    params(
-        ("room_id" = String, Path, description = "Room ID"),
-        ("media_id" = String, Path, description = "Media ID"),
-    ),
-    responses(
-        (status = 200, description = "Live stream information", body = client::GetStreamInfoResponse),
-        (status = 400, description = "Invalid request", body = ErrorResponseDoc),
-        (status = 401, description = "Authentication required", body = ErrorResponseDoc),
-        (status = 404, description = "Stream not found", body = ErrorResponseDoc)
-    ),
-    security(
-        ("bearer_auth" = [])
-    )
-)]
-const fn live_proxy_stream_info_doc() {}
-
-#[allow(dead_code)]
-#[utoipa::path(
-    get,
-    path = "/api/providers/live_proxy/rooms/{room_id}/streams",
-    tag = "Provider",
-    params(
-        ("room_id" = String, Path, description = "Room ID"),
-        client::ListRoomStreamsRequest
-    ),
-    responses(
-        (status = 200, description = "Room live streams", body = client::ListRoomStreamsResponse),
-        (status = 400, description = "Invalid request", body = ErrorResponseDoc),
-        (status = 401, description = "Authentication required", body = ErrorResponseDoc)
-    ),
-    security(
-        ("bearer_auth" = [])
-    )
-)]
-const fn live_proxy_room_streams_doc() {}
 
 #[derive(OpenApi)]
 #[openapi(
@@ -108,8 +67,9 @@ const fn live_proxy_room_streams_doc() {}
         bilibili::logout,
         live::handle_stream_info,
         live::handle_room_streams,
-        live_proxy_stream_info_doc,
-        live_proxy_room_streams_doc,
+        live::live_proxy_stream_info_doc,
+        live::live_proxy_room_streams_doc,
+        websocket::websocket_room_connect_doc,
         room::create_room,
         room::list_or_get_rooms,
         room::get_hot_rooms,
@@ -402,7 +362,7 @@ const fn live_proxy_room_streams_doc() {}
         (name = "Health", description = "Health and readiness endpoints"),
         (name = "Public", description = "Unauthenticated public endpoints"),
         (name = "Auth", description = "Authentication and session lifecycle"),
-        (name = "WebSocket", description = "WebSocket ticket bootstrap endpoints"),
+        (name = "WebSocket", description = "WebSocket handshake and ticket bootstrap endpoints"),
         (name = "WebRTC", description = "WebRTC transport bootstrap endpoints"),
         (name = "Streaming", description = "Publish-key and live-stream bootstrap endpoints"),
         (name = "Email", description = "Email verification and password reset endpoints"),
@@ -497,6 +457,59 @@ mod tests {
             required,
             Some(true),
             "mark-all-as-read should not document its request body as required"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_websocket_handshake_endpoint() {
+        let doc = openapi_json();
+        let operation = &doc["paths"]["/ws/rooms/{room_id}"]["get"];
+
+        assert!(
+            operation.is_object(),
+            "WebSocket route should be present in OpenAPI"
+        );
+        assert_eq!(operation["operationId"], "connectRoomWebSocket");
+
+        let params = operation["parameters"]
+            .as_array()
+            .expect("WebSocket route should describe handshake parameters");
+        assert!(
+            params.iter().any(|param| {
+                param["name"] == "room_id" && param["in"] == "path" && param["required"] == true
+            }),
+            "room_id path parameter should be documented"
+        );
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == "ticket" && param["in"] == "query"),
+            "ticket query parameter should be documented"
+        );
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == "Authorization" && param["in"] == "header"),
+            "Authorization header should be documented"
+        );
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == "Origin" && param["in"] == "header"),
+            "Origin header should be documented"
+        );
+
+        assert!(
+            operation["responses"]["101"].is_object(),
+            "successful WebSocket upgrade should be documented"
+        );
+        assert!(
+            operation["responses"]["401"].is_object(),
+            "authentication failures should be documented"
+        );
+        assert!(
+            operation["responses"]["503"].is_object(),
+            "runtime dependency failures should be documented"
         );
     }
 }

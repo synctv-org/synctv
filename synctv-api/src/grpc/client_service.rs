@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::impls::messaging::{
@@ -15,22 +15,19 @@ use synctv_core::service::{
 
 // Use synctv_proto for all gRPC traits and types
 use crate::proto::client::{
-    auth_service_server::AuthService, email_service_server::EmailService,
-    public_service_server::PublicService, room_service_server::RoomService,
-    user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
-    AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveMemberRequest,
-    ApproveMemberResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
-    CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
-    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse,
-    CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest, CreateRoomResponse,
-    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
-    DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse,
-    EditMediaRequest, EditMediaResponse, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest, AddMediaResponse,
+    AddMemberRequest, AddMemberResponse, ApproveMemberRequest, ApproveMemberResponse,
+    BanMemberRequest, BanMemberResponse, CheckRoomRequest, CheckRoomResponse, ClearPlaylistRequest,
+    ClearPlaylistResponse, ClientMessage, ConfirmEmailRequest, ConfirmEmailResponse,
+    ConfirmPasswordResetRequest, ConfirmPasswordResetResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest,
+    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
+    DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
+    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, GetStreamInfoRequest, GetStreamInfoResponse, JoinRoomRequest,
     JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse,
@@ -48,6 +45,9 @@ use crate::proto::client::{
     TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
     UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    auth_service_server::AuthService, email_service_server::EmailService,
+    public_service_server::PublicService, room_service_server::RoomService,
+    user_service_server::UserService,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.

@@ -19,14 +19,14 @@
 
 use axum::{
     extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use std::future::Future;
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc,
+    atomic::{AtomicU32, Ordering},
 };
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -799,6 +799,34 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// Example:
 /// - Native clients: `ws://host/ws/rooms/{room_id}` with `Authorization: Bearer <token>`
 /// - Browser clients: `ws://host/ws/rooms/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
+#[allow(dead_code)]
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/ws/rooms/{room_id}",
+        tag = "WebSocket",
+        operation_id = "connectRoomWebSocket",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("ticket" = Option<String>, Query, description = "Short-lived one-time ticket returned by POST /api/tickets. Optional when the Authorization header is provided."),
+            ("Authorization" = Option<String>, Header, description = "Bearer access token in the form `Bearer <jwt>`. Optional when the ticket query parameter is provided."),
+            ("Origin" = Option<String>, Header, description = "Browser origin header. When WebSocket origin checks are enabled, this header must match an allowed origin.")
+        ),
+        responses(
+            (status = 101, description = "Switching Protocols. The HTTP connection is upgraded to a WebSocket stream after authentication, room membership, origin, and runtime checks pass."),
+            (status = 400, description = "Invalid room_id or ticket format", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Missing authentication, invalid or expired token, or invalid or expired ticket", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Origin rejected, room banned, or caller is not allowed to connect to the room", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 408, description = "WebSocket handshake timed out", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited or connection limit exceeded", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Realtime runtime or ticket backend unavailable", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub(crate) const fn websocket_room_connect_doc() {}
+
 pub async fn websocket_handler(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
@@ -1195,9 +1223,9 @@ mod tests {
         config::PasswordComplexityConfig,
         models::{RoomId, UserId, UserStatus},
         service::{
-            auth::{BruteForceProtection, JwtService},
             InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult,
             UserValidator,
+            auth::{BruteForceProtection, JwtService},
         },
     };
 
@@ -2216,7 +2244,7 @@ mod tests {
     #[test]
     fn test_state_resync_messages_disconnect_slow_client_immediately() {
         use crate::impls::messaging::MessageSender;
-        use crate::proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
+        use crate::proto::client::{ServerMessage, UserJoinedRoom, server_message::Message};
 
         let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -2244,7 +2272,7 @@ mod tests {
     #[test]
     fn test_critical_messages_bypass_full_normal_queue() {
         use crate::impls::messaging::MessageSender;
-        use crate::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
+        use crate::proto::client::{ErrorMessage, ServerMessage, server_message::Message};
 
         let (critical_tx, mut critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);

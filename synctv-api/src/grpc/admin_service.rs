@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::impls::admin::RequestContext;
-use synctv_core::service::UserService;
 use synctv_core::Config;
+use synctv_core::service::UserService;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{

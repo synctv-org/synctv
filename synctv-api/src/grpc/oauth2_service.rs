@@ -32,18 +32,18 @@
 //! endpoints perform inline JWT validation using `AuthInterceptor` directly.
 
 use synctv_proto::client::{
-    o_auth2_service_server::OAuth2Service, ExchangeAuthorizationCodeRequest,
-    ExchangeAuthorizationCodeResponse, GetAuthorizationUrlForBindRequest,
-    GetAuthorizationUrlForBindResponse, GetAuthorizationUrlRequest, GetAuthorizationUrlResponse,
-    GetLinkedProvidersRequest, GetLinkedProvidersResponse, ListAvailableProvidersRequest,
-    ListAvailableProvidersResponse, UnlinkProviderRequest, UnlinkProviderResponse,
+    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
+    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
+    GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersRequest,
+    GetLinkedProvidersResponse, ListAvailableProvidersRequest, ListAvailableProvidersResponse,
+    UnlinkProviderRequest, UnlinkProviderResponse, o_auth2_service_server::OAuth2Service,
 };
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
 use std::sync::Arc;
-use synctv_core::models::UserId;
 use synctv_core::Config;
+use synctv_core::models::UserId;
 
 use super::map_api_error;
 

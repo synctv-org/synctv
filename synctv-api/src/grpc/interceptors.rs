@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use synctv_core::service::{auth::JwtService, AuthenticatedToken};
+use synctv_core::service::{AuthenticatedToken, auth::JwtService};
 use tonic::{Request, Status};
 use tracing::warn;
 

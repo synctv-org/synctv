@@ -21,9 +21,9 @@ use tower::{Layer, Service};
 use tracing::warn;
 
 use super::interceptors::GrpcRateLimitTier;
+use synctv_core::Config;
 use synctv_core::service::auth::JwtValidator;
 use synctv_core::service::{RateLimitError, RequestRateLimiterService};
-use synctv_core::Config;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -528,10 +528,10 @@ mod tests {
     use std::convert::Infallible;
     use std::net::SocketAddr;
     use std::sync::Arc;
-    use synctv_core::models::UserId;
-    use synctv_core::service::auth::{jwt::TokenType, JwtService};
-    use synctv_core::service::RateLimitBackend;
     use synctv_core::Result as CoreResult;
+    use synctv_core::models::UserId;
+    use synctv_core::service::RateLimitBackend;
+    use synctv_core::service::auth::{JwtService, jwt::TokenType};
     use tower::service_fn;
 
     fn request_with_headers(headers: http::HeaderMap) -> http::Request<AxumBody> {

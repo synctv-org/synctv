@@ -5,12 +5,12 @@
 //! provider proxy trait path.
 
 use axum::{
+    Json, Router,
     body::Body,
     extract::{Path, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::Response,
     routing::get,
-    Json, Router,
 };
 use bytes::Bytes;
 use serde::Deserialize;
@@ -19,8 +19,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
 use crate::http::{
-    error::map_api_error, middleware::AuthUser, validation::StrictQuery, AppError, AppResult,
-    AppState,
+    AppError, AppResult, AppState, error::map_api_error, middleware::AuthUser,
+    validation::StrictQuery,
 };
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::id::RoomId;
@@ -126,6 +126,30 @@ pub(crate) async fn handle_stream_info(
     Ok(Json(resp))
 }
 
+#[allow(dead_code)]
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/live_proxy/rooms/{room_id}/info/{media_id}",
+        tag = "Provider",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID"),
+        ),
+        responses(
+            (status = 200, description = "Live stream information", body = crate::proto::client::GetStreamInfoResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) const fn live_proxy_stream_info_doc() {}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -164,6 +188,29 @@ pub(crate) async fn handle_room_streams(
 
     Ok(Json(resp))
 }
+
+#[allow(dead_code)]
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/live_proxy/rooms/{room_id}/streams",
+        tag = "Provider",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            crate::proto::client::ListRoomStreamsRequest
+        ),
+        responses(
+            (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) const fn live_proxy_room_streams_doc() {}
 
 pub(crate) async fn execute_live_proxy_action(
     state: &AppState,
@@ -412,7 +459,9 @@ fn build_hls_segment_path(
         .unwrap_or_default();
     let extension = if disguised_as_png { "png" } else { "ts" };
 
-    format!("/api/providers/proxy/{provider_name}/{version}/segment/{ts_name}.{extension}{query_suffix}")
+    format!(
+        "/api/providers/proxy/{provider_name}/{version}/segment/{ts_name}.{extension}{query_suffix}"
+    )
 }
 
 async fn execute_hls_segment(

@@ -62,7 +62,7 @@ jobs:
       platforms: linux/amd64,linux/arm64
       output: ${{ github.event_name == 'push' && 'image' || 'local' }}
       push: ${{ github.event_name == 'push' }}
-      artifact-upload: true
+      artifact-upload: ${{ github.event_name != 'push' }}
       cache: true
       cache-mode: max
       cache-scope: synctv-image

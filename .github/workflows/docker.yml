@@ -12,35 +12,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+
 jobs:
-  docker-prepare:
-    name: Docker Prepare
-    runs-on: ubuntu-slim
-    outputs:
-      meta_images: ${{ steps.images.outputs.meta_images }}
-    env:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-    steps:
-      - name: Compute image targets
-        id: images
-        shell: bash
-        run: |
-          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          repo="$(printf '%s' "${GITHUB_EVENT_REPOSITORY_NAME}" | tr '[:upper:]' '[:lower:]')"
-
-          {
-            echo "meta_images<<EOF"
-            echo "ghcr.io/${owner}/${repo}"
-
-            if [ -n "${DOCKER_USERNAME}" ] && [ -n "${DOCKER_PASSWORD}" ]; then
-              dockerhub_user="$(printf '%s' "${DOCKER_USERNAME}" | tr '[:upper:]' '[:lower:]')"
-              echo "docker.io/${dockerhub_user}/${repo}"
-            fi
-
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
-
   docker-build:
     name: Docker Build
     needs: docker-prepare
@@ -57,7 +32,9 @@ jobs:
       platforms: linux/amd64,linux/arm64
       cache: true
       cache-scope: synctv-image
-      meta-images: ${{ needs.docker-prepare.outputs.meta_images }}
+      meta-images: |
+        ghcr.io/${{ github.repository }}
+        ${{ env.DOCKER_USERNAME != '' && format('docker.io/{0}/{1}', env.DOCKER_USERNAME, github.event.repository.name) || '' }}
       meta-tags: |
         type=ref,event=branch
         type=ref,event=pr
@@ -68,7 +45,7 @@ jobs:
     secrets:
       registry-auths: |
         - registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
         ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' && format('- registry: docker.io
           username: {0}

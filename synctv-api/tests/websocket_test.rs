@@ -1297,6 +1297,24 @@ mod websocket_e2e {
         }
     }
 
+    async fn recv_matching_server_message(
+        ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
+        timeout: std::time::Duration,
+        mut predicate: impl FnMut(&ServerMessage) -> bool,
+        label: &str,
+    ) -> ServerMessage {
+        tokio::time::timeout(timeout, async {
+            loop {
+                let msg = recv_server_message(ws).await.expect("stream ended");
+                if predicate(&msg) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timeout waiting for {label}"))
+    }
+
     /// Encode a `ClientMessage` and send it as binary over the WebSocket.
     async fn send_client_message(
         ws: &mut (impl SinkExt<tungstenite::Message, Error = tungstenite::Error> + Unpin),
@@ -2395,6 +2413,735 @@ mod websocket_e2e {
             .close(None)
             .await
             .expect("close replica-2 user");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_cross_replica_room_realtime_message_matrix_via_cluster_events() {
+        let infra = TestInfra::new().await;
+
+        let server1 = setup_e2e_server_with_node(&infra, "matrix_replica_1").await;
+        let server2 = setup_e2e_server_with_node(&infra, "matrix_replica_2").await;
+
+        let (owner_id, owner_token) =
+            register_test_user(&server1.user_service, &server1.jwt_service, "matrix_owner").await;
+        let room_id = create_test_room(&server1.room_service, &owner_id, "Matrix Room").await;
+
+        let (member_id, member_token) =
+            register_test_user(&server1.user_service, &server1.jwt_service, "matrix_member").await;
+        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        server1
+            .room_service
+            .join_room(room.clone(), member_id.clone(), None)
+            .await
+            .expect("member join");
+
+        let mut ws_owner = ws_connect(&server1.addr, &room_id, &owner_token).await;
+        let mut ws_member = ws_connect(&server2.addr, &room_id, &member_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_member, 1500),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let media_one = synctv_core::models::MediaId::new();
+        let media_two = synctv_core::models::MediaId::new();
+        let playlist_id = synctv_core::models::PlaylistId::new();
+
+        let playlist = synctv_core::models::Playlist {
+            id: playlist_id.clone(),
+            room_id: room.clone(),
+            creator_id: Some(owner_id.clone()),
+            name: "Realtime Playlist".to_string(),
+            parent_id: None,
+            position: 1024.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 0,
+        };
+        let updated_playlist = synctv_core::models::Playlist {
+            name: "Realtime Playlist Renamed".to_string(),
+            version: 1,
+            ..playlist.clone()
+        };
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::ChatMessage {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                message: "cross-replica danmaku".to_string(),
+                timestamp: chrono::Utc::now(),
+                position: Some(12.5),
+                color: Some("#ff6600".to_string()),
+            });
+        let danmaku_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::Chat(chat))
+                        if chat.content == "cross-replica danmaku"
+                            && chat.user_id == owner_id.as_str()
+                            && chat.position.is_some_and(|position| (position - 12.5).abs() < 0.01)
+                            && chat.color.as_deref() == Some("#ff6600")
+                )
+            },
+            "cross-replica danmaku",
+        )
+        .await;
+        assert!(
+            matches!(danmaku_msg.message, Some(server_message::Message::Chat(_))),
+            "danmaku event should arrive as Chat message"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::MediaAdded {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                media_id: media_one.clone(),
+                media_title: "Matrix Media One".to_string(),
+                timestamp: chrono::Utc::now(),
+            });
+        let media_added_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::MediaAdded(media))
+                        if media.media_id == media_one.as_str()
+                            && media.title == "Matrix Media One"
+                            && media.added_by_user_id == owner_id.as_str()
+                )
+            },
+            "cross-replica media added",
+        )
+        .await;
+        assert!(
+            matches!(
+                media_added_msg.message,
+                Some(server_message::Message::MediaAdded(_))
+            ),
+            "MediaAdded event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::MediaUpdated {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                media_id: media_one.clone(),
+                media_title: "Matrix Media One Renamed".to_string(),
+                timestamp: chrono::Utc::now(),
+            });
+        let media_updated_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::MediaUpdated(media))
+                        if media.media_id == media_one.as_str()
+                            && media.title == "Matrix Media One Renamed"
+                            && media.updated_by_user_id == owner_id.as_str()
+                )
+            },
+            "cross-replica media updated",
+        )
+        .await;
+        assert!(
+            matches!(
+                media_updated_msg.message,
+                Some(server_message::Message::MediaUpdated(_))
+            ),
+            "MediaUpdated event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistReordered {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                media_ids: vec![media_two.clone(), media_one.clone()],
+                timestamp: chrono::Utc::now(),
+            });
+        let playlist_reordered_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaylistReordered(reordered))
+                        if reordered.media_ids
+                            == vec![
+                                media_two.as_str().to_string(),
+                                media_one.as_str().to_string()
+                            ]
+                            && reordered.reordered_by_user_id == owner_id.as_str()
+                )
+            },
+            "cross-replica playlist reordered",
+        )
+        .await;
+        assert!(
+            matches!(
+                playlist_reordered_msg.message,
+                Some(server_message::Message::PlaylistReordered(_))
+            ),
+            "PlaylistReordered event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                media_id: media_one.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        let media_removed_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::MediaRemoved(media))
+                        if media.media_id == media_one.as_str()
+                            && media.removed_by_user_id == owner_id.as_str()
+                )
+            },
+            "cross-replica media removed",
+        )
+        .await;
+        assert!(
+            matches!(
+                media_removed_msg.message,
+                Some(server_message::Message::MediaRemoved(_))
+            ),
+            "MediaRemoved event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                media_ids: vec![media_one.clone(), media_two.clone()],
+                timestamp: chrono::Utc::now(),
+            });
+        let media_removed_batch_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::MediaRemovedBatch(batch))
+                        if batch.media_ids
+                            == vec![
+                                media_one.as_str().to_string(),
+                                media_two.as_str().to_string()
+                            ]
+                            && batch.removed_by_user_id == owner_id.as_str()
+                )
+            },
+            "cross-replica media removed batch",
+        )
+        .await;
+        assert!(
+            matches!(
+                media_removed_batch_msg.message,
+                Some(server_message::Message::MediaRemovedBatch(_))
+            ),
+            "MediaRemovedBatch event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistCreated {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                playlist: playlist.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        let playlist_created_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaylistCreated(created))
+                        if created
+                            .playlist
+                            .as_ref()
+                            .is_some_and(|playlist| {
+                                playlist.id == playlist_id.as_str()
+                                    && playlist.name == "Realtime Playlist"
+                            })
+                )
+            },
+            "cross-replica playlist created",
+        )
+        .await;
+        assert!(
+            matches!(
+                playlist_created_msg.message,
+                Some(server_message::Message::PlaylistCreated(_))
+            ),
+            "PlaylistCreated event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistUpdated {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                playlist: updated_playlist,
+                timestamp: chrono::Utc::now(),
+            });
+        let playlist_updated_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaylistUpdated(updated))
+                        if updated
+                            .playlist
+                            .as_ref()
+                            .is_some_and(|playlist| {
+                                playlist.id == playlist_id.as_str()
+                                    && playlist.name == "Realtime Playlist Renamed"
+                            })
+                )
+            },
+            "cross-replica playlist updated",
+        )
+        .await;
+        assert!(
+            matches!(
+                playlist_updated_msg.message,
+                Some(server_message::Message::PlaylistUpdated(_))
+            ),
+            "PlaylistUpdated event should be forwarded"
+        );
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistDeleted {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                playlist_id: playlist_id.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        let playlist_deleted_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaylistDeleted(deleted))
+                        if deleted.playlist_id == playlist_id.as_str()
+                )
+            },
+            "cross-replica playlist deleted",
+        )
+        .await;
+        assert!(
+            matches!(
+                playlist_deleted_msg.message,
+                Some(server_message::Message::PlaylistDeleted(_))
+            ),
+            "PlaylistDeleted event should be forwarded"
+        );
+
+        let permission_bits = synctv_core::models::PermissionBits::START_LIVE
+            | synctv_core::models::PermissionBits::PLAY_CONTROL;
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::PermissionChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                target_user_id: member_id.clone(),
+                target_username: "matrix_member".to_string(),
+                changed_by: owner_id.clone(),
+                changed_by_username: "matrix_owner".to_string(),
+                new_permissions: synctv_core::models::PermissionBits(permission_bits),
+                role: synctv_proto::common::RoomMemberRole::Admin as i32,
+                added_permissions: synctv_core::models::PermissionBits(0),
+                removed_permissions: synctv_core::models::PermissionBits(0),
+                admin_added_permissions: synctv_core::models::PermissionBits(permission_bits),
+                admin_removed_permissions: synctv_core::models::PermissionBits(0),
+                timestamp: chrono::Utc::now(),
+            });
+        let permission_changed_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PermissionChanged(permission))
+                        if permission.user_id == member_id.as_str()
+                            && permission.role == synctv_proto::common::RoomMemberRole::Admin as i32
+                            && permission.effective_permissions == permission_bits
+                            && permission.admin_added_permissions == permission_bits
+                            && permission.updated_by == "matrix_owner"
+                )
+            },
+            "cross-replica permission changed",
+        )
+        .await;
+        assert!(
+            matches!(
+                permission_changed_msg.message,
+                Some(server_message::Message::PermissionChanged(_))
+            ),
+            "PermissionChanged event should be forwarded"
+        );
+
+        let updated_settings = serde_json::json!({
+            "chat_enabled": false,
+            "allow_guest_join": true,
+        });
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                settings_json: serde_json::to_vec(&updated_settings).expect("encode room settings"),
+                version: 7,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let room_settings_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::RoomSettings(settings))
+                        if settings.version == 7
+                )
+            },
+            "cross-replica room settings changed",
+        )
+        .await;
+        match room_settings_msg.message {
+            Some(server_message::Message::RoomSettings(settings)) => {
+                let decoded: serde_json::Value =
+                    serde_json::from_slice(&settings.settings).expect("decode room settings");
+                assert_eq!(decoded["chat_enabled"], false);
+                assert_eq!(decoded["allow_guest_join"], true);
+                assert_eq!(settings.version, 7);
+            }
+            other => panic!("expected RoomSettings message, got: {other:?}"),
+        }
+
+        let default_settings = serde_json::json!({
+            "chat_enabled": true,
+            "allow_guest_join": false,
+        });
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "matrix_owner".to_string(),
+                settings_json: serde_json::to_vec(&default_settings).expect("encode room settings"),
+                version: 8,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let room_settings_reset_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::RoomSettings(settings))
+                        if settings.version == 8
+                )
+            },
+            "cross-replica room settings reset",
+        )
+        .await;
+        match room_settings_reset_msg.message {
+            Some(server_message::Message::RoomSettings(settings)) => {
+                let decoded: serde_json::Value =
+                    serde_json::from_slice(&settings.settings).expect("decode room settings");
+                assert_eq!(decoded["chat_enabled"], true);
+                assert_eq!(decoded["allow_guest_join"], false);
+                assert_eq!(settings.version, 8);
+            }
+            other => panic!("expected RoomSettings reset message, got: {other:?}"),
+        }
+
+        server1
+            .cluster_manager
+            .broadcast(synctv_cluster::sync::ClusterEvent::RoomDeleted {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room,
+                deleted_by: owner_id.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        let room_deleted_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::Error(error))
+                        if error.message.contains("deleted")
+                )
+            },
+            "cross-replica room deleted error",
+        )
+        .await;
+        assert!(
+            matches!(
+                room_deleted_msg.message,
+                Some(server_message::Message::Error(_))
+            ),
+            "RoomDeleted event should be forwarded as terminal error"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_member.close(None).await.expect("close member");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_cross_replica_playback_operation_matrix_via_cluster_events() {
+        let infra = TestInfra::new().await;
+
+        let server1 = setup_e2e_server_with_node(&infra, "playback_matrix_replica_1").await;
+        let server2 = setup_e2e_server_with_node(&infra, "playback_matrix_replica_2").await;
+
+        let (owner_id, owner_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "playback_matrix_owner",
+        )
+        .await;
+        let room_id =
+            create_test_room(&server1.room_service, &owner_id, "Playback Matrix Room").await;
+
+        let (member_id, member_token) = register_test_user(
+            &server1.user_service,
+            &server1.jwt_service,
+            "playback_matrix_member",
+        )
+        .await;
+        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        server1
+            .room_service
+            .join_room(room.clone(), member_id, None)
+            .await
+            .expect("member join");
+
+        let mut ws_owner = ws_connect(&server1.addr, &room_id, &owner_token).await;
+        let mut ws_member = ws_connect(&server2.addr, &room_id, &member_token).await;
+
+        tokio::join!(
+            drain_until_quiet(&mut ws_owner, 1500),
+            drain_until_quiet(&mut ws_member, 1500),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let media_id = synctv_core::models::MediaId::new();
+
+        let mut started_state = synctv_core::models::RoomPlaybackState::new(room.clone());
+        started_state.playing_media_id = Some(media_id.clone());
+        started_state.is_playing = true;
+        started_state.version = 1;
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "playback_matrix_owner".to_string(),
+                state: started_state,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let started_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaybackState(playback))
+                        if playback.state.as_ref().is_some_and(|state| {
+                            state.is_playing
+                                && state.playing_media_id == media_id.as_str()
+                                && (state.current_time - 0.0).abs() < f64::EPSILON
+                                && (state.speed - 1.0).abs() < f64::EPSILON
+                                && state.version == 1
+                        })
+                )
+            },
+            "cross-replica playback start",
+        )
+        .await;
+        assert!(
+            matches!(
+                started_msg.message,
+                Some(server_message::Message::PlaybackState(_))
+            ),
+            "Playback start should be forwarded"
+        );
+
+        let mut paused_state = synctv_core::models::RoomPlaybackState::new(room.clone());
+        paused_state.playing_media_id = Some(media_id.clone());
+        paused_state.current_time = 17.5;
+        paused_state.is_playing = false;
+        paused_state.version = 2;
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "playback_matrix_owner".to_string(),
+                state: paused_state,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let paused_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaybackState(playback))
+                        if playback.state.as_ref().is_some_and(|state| {
+                            !state.is_playing
+                                && state.playing_media_id == media_id.as_str()
+                                && (state.current_time - 17.5).abs() < 0.01
+                                && (state.speed - 1.0).abs() < f64::EPSILON
+                                && state.version == 2
+                        })
+                )
+            },
+            "cross-replica playback pause and seek",
+        )
+        .await;
+        assert!(
+            matches!(
+                paused_msg.message,
+                Some(server_message::Message::PlaybackState(_))
+            ),
+            "Playback pause/seek should be forwarded"
+        );
+
+        let mut resumed_state = synctv_core::models::RoomPlaybackState::new(room.clone());
+        resumed_state.playing_media_id = Some(media_id.clone());
+        resumed_state.current_time = 17.5;
+        resumed_state.speed = 1.5;
+        resumed_state.is_playing = true;
+        resumed_state.version = 3;
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.clone(),
+                user_id: owner_id.clone(),
+                username: "playback_matrix_owner".to_string(),
+                state: resumed_state,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let resumed_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaybackState(playback))
+                        if playback.state.as_ref().is_some_and(|state| {
+                            state.is_playing
+                                && state.playing_media_id == media_id.as_str()
+                                && (state.current_time - 17.5).abs() < 0.01
+                                && (state.speed - 1.5).abs() < f64::EPSILON
+                                && state.version == 3
+                        })
+                )
+            },
+            "cross-replica playback resume with speed",
+        )
+        .await;
+        assert!(
+            matches!(
+                resumed_msg.message,
+                Some(server_message::Message::PlaybackState(_))
+            ),
+            "Playback resume/speed should be forwarded"
+        );
+
+        let mut stopped_state = synctv_core::models::RoomPlaybackState::new(room);
+        stopped_state.version = 4;
+        server1.cluster_manager.broadcast(
+            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: synctv_core::models::RoomId::from_string(room_id),
+                user_id: owner_id,
+                username: "playback_matrix_owner".to_string(),
+                state: stopped_state,
+                timestamp: chrono::Utc::now(),
+            },
+        );
+        let stopped_msg = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::PlaybackState(playback))
+                        if playback.state.as_ref().is_some_and(|state| {
+                            !state.is_playing
+                                && state.playing_media_id.is_empty()
+                                && (state.current_time - 0.0).abs() < f64::EPSILON
+                                && (state.speed - 1.0).abs() < f64::EPSILON
+                                && state.version == 4
+                        })
+                )
+            },
+            "cross-replica playback stop",
+        )
+        .await;
+        assert!(
+            matches!(
+                stopped_msg.message,
+                Some(server_message::Message::PlaybackState(_))
+            ),
+            "Playback stop should be forwarded"
+        );
+
+        ws_owner.close(None).await.expect("close owner");
+        ws_member.close(None).await.expect("close member");
     }
 
     #[tokio::test]

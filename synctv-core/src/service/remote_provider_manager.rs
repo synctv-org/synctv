@@ -31,14 +31,19 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::{Request, Status};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
-#[cfg(feature = "tls-webpki-roots")]
-fn apply_default_grpc_roots(tls_config: ClientTlsConfig) -> ClientTlsConfig {
-    tls_config.with_webpki_roots()
-}
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+fn apply_default_grpc_roots(mut tls_config: ClientTlsConfig) -> ClientTlsConfig {
+    #[cfg(feature = "tls-webpki-roots")]
+    {
+        tls_config = tls_config.with_webpki_roots();
+    }
 
-#[cfg(all(not(feature = "tls-webpki-roots"), feature = "tls-native-roots"))]
-fn apply_default_grpc_roots(tls_config: ClientTlsConfig) -> ClientTlsConfig {
-    tls_config.with_native_roots()
+    #[cfg(feature = "tls-native-roots")]
+    {
+        tls_config = tls_config.with_native_roots();
+    }
+
+    tls_config
 }
 
 /// Default channel cache TTL (5 minutes)

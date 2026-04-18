@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["tls-aws-lc", "tls-webpki-roots"]
+default = []
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
     "synctv-cluster/tls-aws-lc",
@@ -14,6 +14,9 @@ tls-aws-lc = [
     "synctv-common/tls-aws-lc",
     "synctv-xiu/tls-aws-lc",
     "tonic/tls-aws-lc",
+    "synctv-core-testing/tls-aws-lc",
+    "testcontainers/aws-lc-rs",
+    "testcontainers-modules/aws-lc-rs",
     "reqwest/rustls",
 ]
 tls-ring = [
@@ -23,6 +26,9 @@ tls-ring = [
     "synctv-common/tls-ring",
     "synctv-xiu/tls-ring",
     "tonic/tls-ring",
+    "synctv-core-testing/tls-ring",
+    "testcontainers/ring",
+    "testcontainers-modules/ring",
     "reqwest/rustls-no-provider",
 ]
 tls-webpki-roots = [

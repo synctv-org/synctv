@@ -6,7 +6,7 @@ edition.workspace = true
 license = "MIT"
 
 [features]
-default = ["tls-aws-lc", "tls-webpki-roots"]
+default = []
 oss = ["dep:opendal"]
 tls-aws-lc = ["synctv-common/tls-aws-lc"]
 tls-ring = ["synctv-common/tls-ring"]

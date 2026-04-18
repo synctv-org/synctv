@@ -1,0 +1,48 @@
+name: Docker
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build:
+    name: Docker Build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    with:
+      output: image
+      push: ${{ github.event_name == 'push' }}
+      runner: auto
+      distribute: true
+      platforms: linux/amd64,linux/arm64
+      cache: true
+      cache-scope: synctv-image
+      meta-images: |
+        ${{ format('ghcr.io/{0}/{1}', github.repository_owner, github.event.repository.name) }}
+        ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' && format('docker.io/{0}/{1}', secrets.DOCKER_USERNAME, github.event.repository.name) || '' }}
+      meta-tags: |
+        type=ref,event=branch
+        type=ref,event=pr
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=sha
+      set-meta-labels: true
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' && format('- registry: docker.io
+          username: {0}
+          password: {1}', secrets.DOCKER_USERNAME, secrets.DOCKER_PASSWORD) || '' }}

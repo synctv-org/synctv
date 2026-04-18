@@ -113,13 +113,19 @@ urlencoding.workspace = true
 
 
 [features]
-default = ["tls-aws-lc", "tls-webpki-roots"]
+default = []
 k8s = []
 tls-aws-lc = [
     "synctv-proto/tls-aws-lc",
     "synctv-media-providers/tls-aws-lc",
     "synctv-common/tls-aws-lc",
     "tonic/tls-aws-lc",
+    "sqlx/tls-rustls-aws-lc-rs",
+    "lettre/aws-lc-rs",
+    "lettre/webpki-roots",
+    "synctv-core-testing/tls-aws-lc",
+    "testcontainers/aws-lc-rs",
+    "testcontainers-modules/aws-lc-rs",
     "reqwest/rustls",
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
@@ -130,6 +136,11 @@ tls-ring = [
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
     "tonic/tls-ring",
+    "lettre/ring",
+    "lettre/webpki-roots",
+    "synctv-core-testing/tls-ring",
+    "testcontainers/ring",
+    "testcontainers-modules/ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
     "tokio-rustls/ring",
@@ -140,6 +151,8 @@ tls-webpki-roots = [
     "synctv-media-providers/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
     "tonic/tls-webpki-roots",
+    "sqlx/tls-rustls-ring-webpki",
+    "lettre/webpki-roots",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
 ]
@@ -148,6 +161,8 @@ tls-native-roots = [
     "synctv-media-providers/tls-native-roots",
     "synctv-common/tls-native-roots",
     "tonic/tls-native-roots",
+    "sqlx/tls-rustls-ring-native-roots",
+    "lettre/rustls-native-certs",
     "redis/tokio-rustls-comp",
 ]
 

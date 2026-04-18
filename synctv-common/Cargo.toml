@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["tls-aws-lc", "tls-webpki-roots"]
+default = []
 tls-aws-lc = ["reqwest/rustls"]
 tls-ring = ["reqwest/rustls-no-provider"]
 tls-webpki-roots = []

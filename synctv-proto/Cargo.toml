@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["tls-aws-lc", "tls-webpki-roots"]
+default = []
 openapi = ["dep:utoipa"]
 tls-aws-lc = ["tonic/tls-aws-lc"]
 tls-ring = ["tonic/tls-ring"]

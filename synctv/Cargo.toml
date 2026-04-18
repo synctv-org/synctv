@@ -10,7 +10,7 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
-default = ["k8s", "mimalloc", "openapi", "tls-aws-lc", "tls-webpki-roots"]
+default = ["k8s", "mimalloc", "openapi", "tls-aws-lc", "tls-webpki-roots", "tls-native-roots"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
@@ -33,6 +33,10 @@ tls-aws-lc = [
     "synctv-common/tls-aws-lc",
     "synctv-xiu/tls-aws-lc",
     "tonic/tls-aws-lc",
+    "sqlx/tls-rustls-aws-lc-rs",
+    "synctv-core-testing/tls-aws-lc",
+    "testcontainers/aws-lc-rs",
+    "testcontainers-modules/aws-lc-rs",
     "reqwest/rustls",
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
@@ -49,6 +53,9 @@ tls-ring = [
     "synctv-common/tls-ring",
     "synctv-xiu/tls-ring",
     "tonic/tls-ring",
+    "synctv-core-testing/tls-ring",
+    "testcontainers/ring",
+    "testcontainers-modules/ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
     "tokio-rustls/ring",
@@ -65,6 +72,7 @@ tls-webpki-roots = [
     "synctv-common/tls-webpki-roots",
     "synctv-xiu/tls-webpki-roots",
     "tonic/tls-webpki-roots",
+    "sqlx/tls-rustls-ring-webpki",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
     "tokio-tungstenite/rustls-tls-webpki-roots",
@@ -81,6 +89,7 @@ tls-native-roots = [
     "synctv-common/tls-native-roots",
     "synctv-xiu/tls-native-roots",
     "tonic/tls-native-roots",
+    "sqlx/tls-rustls-ring-native-roots",
     "redis/tokio-rustls-comp",
     "tokio-tungstenite/rustls-tls-native-roots",
 ]

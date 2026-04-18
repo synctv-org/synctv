@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-synctv-core = { path = ".." }
+synctv-core = { path = "..", default-features = false }
 synctv-common.workspace = true
 
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
@@ -22,6 +22,16 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 default = []
 docker = []
+tls-aws-lc = [
+    "synctv-core/tls-aws-lc",
+    "testcontainers/aws-lc-rs",
+    "testcontainers-modules/aws-lc-rs",
+]
+tls-ring = [
+    "synctv-core/tls-ring",
+    "testcontainers/ring",
+    "testcontainers-modules/ring",
+]
 
 [lib]
 name = "synctv_core_testing"

@@ -122,7 +122,6 @@ reqwest = { version = "0.13", default-features = false, features = [
 # Database
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
-    "tls-rustls-aws-lc-rs",
     "postgres",
     "migrate",
     "uuid",
@@ -249,8 +248,6 @@ ipnet = "2.12.0"
 lettre = { version = "0.11", default-features = false, features = [
     "tokio1-rustls",
     "rustls-no-provider",
-    "aws-lc-rs",
-    "webpki-roots",
     "builder",
     "smtp-transport",
     "hostname",
@@ -283,11 +280,8 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 mockall = "0.14.0"
 wiremock = "0.6.5"
 tempfile = "3.27.0"
-testcontainers = { version = "0.27.3", default-features = false, features = [
-    "aws-lc-rs",
-] }
+testcontainers = { version = "0.27.3", default-features = false }
 testcontainers-modules = { version = "0.15.0", default-features = false, features = [
-    "aws-lc-rs",
     "postgres",
     "redis",
 ] }
@@ -303,7 +297,7 @@ mimalloc = { version = "0.1.48", features = ["v3"] }
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto", default-features = false }
 synctv-core = { path = "synctv-core", default-features = false }
-synctv-core-testing = { path = "synctv-core/testing" }
+synctv-core-testing = { path = "synctv-core/testing", default-features = false }
 synctv-api = { path = "synctv-api", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers", default-features = false }

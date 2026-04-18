@@ -13,7 +13,7 @@ spec:
       {{- if .Values.postgresql.kubeblocks.serviceVersion }}
       serviceVersion: {{ .Values.postgresql.kubeblocks.serviceVersion | quote }}
       {{- end }}
-      disableExporter: {{ .Values.postgresql.kubeblocks.disableExporter | default true }}
+      disableExporter: {{ .Values.postgresql.kubeblocks.disableExporter }}
       replicas: {{ .Values.postgresql.kubeblocks.replicas | default 2 }}
       podUpdatePolicy: PreferInPlace
       env:

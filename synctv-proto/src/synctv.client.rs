@@ -1989,7 +1989,7 @@ pub struct PlaybackUrlMetadata {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Subtitle))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Subtitle {
-    /// Display name (e.g., "简体中文", "English")
+    /// Display name (e.g., "Chinese (Simplified)", "English")
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Language code (e.g., "zh-CN", "en-US")
@@ -2012,7 +2012,7 @@ pub struct Subtitle {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_SubtitleUrl))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SubtitleUrl {
-    /// Display name (e.g., "原始", "AI翻译")
+    /// Display name (e.g., "Original", "AI Translation")
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Subtitle file URL
@@ -2038,7 +2038,7 @@ pub struct SubtitleUrl {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_Danmaku))]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Danmaku {
-    /// Display name (e.g., "Bilibili弹幕", "本地弹幕")
+    /// Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Danmaku API URL or file URL

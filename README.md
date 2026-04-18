@@ -26,7 +26,6 @@ A production-grade real-time synchronized video watching platform built in Rust.
 - Rust 1.75+ (2021 edition)
 - PostgreSQL 14+
 - Redis 7+
-- OpenSSL
 
 ### 1. Start with Docker Compose
 
@@ -36,17 +35,18 @@ Development build from the local source tree:
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-This variant builds with the local [Dockerfile](/Volumes/workspace/rust/synctv/Dockerfile) and ships fixed working development defaults for JWT and cluster secrets.
+This variant builds with the local [Dockerfile](./Dockerfile) and ships fixed working development defaults for JWT and cluster secrets.
 
 Prebuilt image deployment:
 
 ```bash
 export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
+export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
 export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 docker compose up -d
 ```
 
-This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](/Volumes/workspace/rust/synctv/docker-compose.yml) and intentionally keeps the environment surface small.
+This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](./docker-compose.yml) and intentionally keeps the environment surface small.
 
 Once the daemon is up, management CLI commands can run inside the container and use the
 default Unix socket without extra flags:
@@ -61,6 +61,7 @@ docker compose exec synctv synctv system stats
 export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
 export SYNCTV_REDIS_URL="redis://localhost:6379"
 export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
+export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
 export SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true
 export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 export SYNCTV_SERVER_PORT=8080
@@ -187,7 +188,7 @@ docker compose up -d
 ### Run Tests
 
 ```bash
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ### Run with Logging
@@ -209,11 +210,24 @@ cargo build --release --workspace
 
 ### gRPC API
 
-Use gRPC reflection to explore the API:
+By default, public gRPC reflection is disabled. Enable it when you want to explore the API interactively with `grpcurl`:
 
 ```bash
+export SYNCTV_SERVER_ENABLE_REFLECTION=true
+cargo run --bin synctv -- serve
+
 grpcurl -plaintext localhost:8080 list
 grpcurl -plaintext localhost:8080 list synctv.client.ClientService
+```
+
+If you keep reflection disabled, use the checked-in protobuf definitions instead:
+
+```bash
+grpcurl -plaintext \
+  -import-path synctv-proto/proto \
+  -proto client.proto \
+  localhost:8080 \
+  synctv.client.ClientService/Login
 ```
 
 ### Example: Register User
@@ -270,9 +284,9 @@ A complete example config with documented options is provided in the repository.
 - Livestream RTMP/HLS/FLV settings
 - Connection limits and security options
 - Production vs development guidance
-- 417 lines of documented configuration
+- Hundreds of lines of documented configuration
 
-View the complete file: [`synctv.example.yaml`](/Volumes/workspace/rust/synctv/synctv.example.yaml)
+View the complete file: [`synctv.example.yaml`](./synctv.example.yaml)
 
 **Quick Example** (minimal configuration):
 
@@ -304,8 +318,6 @@ logging:
   # filter: "info,synctv=debug"
   backtrace: false
 ```
-
-📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)** for environment variable reference
 
 ### Configuration Validation
 

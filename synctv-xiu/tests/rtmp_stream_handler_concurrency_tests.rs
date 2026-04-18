@@ -225,7 +225,7 @@ fn test_parking_lot_rwlock_basic() {
 
 /// Test RwLock upgrade/downgrade semantics
 #[test]
-fn test_rwlock_read_write交替() {
+fn test_rwlock_read_write_alternation() {
     let cache = SplitCacheSim::new();
 
     // Write then read

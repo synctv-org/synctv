@@ -61,7 +61,7 @@ Ingress is enabled. Access the application at:
   Enabled (min: {{ .Values.autoscaling.minReplicas }}, max: {{ .Values.autoscaling.maxReplicas }})
 {{- end }}
 
-{{- if .Values.headlessService.enabled }}
+{{- if and .Values.headlessService.enabled (.Values.config.cluster.enabled | default false) }}
 
 ## Cluster discovery
 

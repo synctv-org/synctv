@@ -203,7 +203,7 @@ impl BilibiliProvider {
             .map_err(std::convert::Into::into)
     }
 
-    /// Get live danmu (弹幕) server info for WebSocket connection
+    /// Get live danmaku server info for the WebSocket connection
     pub async fn get_live_danmu_info(
         &self,
         room_id: u64,

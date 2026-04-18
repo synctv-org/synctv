@@ -3,7 +3,7 @@
 //! Provides methods for managing settings groups with change notifications
 //! Uses `PostgreSQL` LISTEN/NOTIFY for hot reload across multiple replicas
 //!
-//! Design reference: /Volumes/workspace/rust/synctv-rs-design/19-配置管理系统.md §6.3
+//! Design reference: external design doc 19-configuration-management.md §6.3
 
 use dashmap::DashMap;
 use sqlx::{PgPool, Row};

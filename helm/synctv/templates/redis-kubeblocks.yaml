@@ -13,7 +13,7 @@ spec:
       {{- if .Values.redis.kubeblocks.serviceVersion }}
       serviceVersion: {{ .Values.redis.kubeblocks.serviceVersion | quote }}
       {{- end }}
-      disableExporter: {{ .Values.redis.kubeblocks.disableExporter | default true }}
+      disableExporter: {{ .Values.redis.kubeblocks.disableExporter }}
       replicas: {{ .Values.redis.kubeblocks.replicas | default 2 }}
       podUpdatePolicy: PreferInPlace
       resources:

@@ -279,6 +279,6 @@ registry.register_factory("my_provider", Box::new(|id, cfg| {
 
 ## Reference
 
-- Design Doc: `/Volumes/workspace/rust/synctv-rs-design/08-视频内容管理.md`
+- Design Doc: `08-video-content-management.md` (external project design doc)
 - Go Implementation: `/Users/zjr/workspace/go/synctv/vendors/`
 - Core Traits: `synctv-core/src/provider/`

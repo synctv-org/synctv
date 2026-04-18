@@ -193,7 +193,7 @@ mod tests {
         assert!(validate_path_for_traversal("single.dot").is_ok());
         assert!(validate_path_for_traversal("file.tar.gz").is_ok());
         assert!(validate_path_for_traversal("/path/with.dots/in/middle").is_ok());
-        assert!(validate_path_for_traversal("日本語/ファイル").is_ok());
+        assert!(validate_path_for_traversal("unicode-file/résumé.txt").is_ok());
     }
 
     #[test]

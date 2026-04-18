@@ -504,7 +504,7 @@ mod tests {
                     )]),
                     subtitles: vec![SubtitleTrack {
                         language: "zh-CN".to_string(),
-                        name: "中文".to_string(),
+                        name: "Chinese".to_string(),
                         url: "https://cdn.example.com/subtitle.json".to_string(),
                         headers: std::collections::HashMap::new(),
                         format: "json".to_string(),

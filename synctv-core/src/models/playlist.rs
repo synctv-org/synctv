@@ -1,6 +1,6 @@
 //! Playlist model (directory/folder in tree structure)
 //!
-//! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.1
+//! Design reference: external design doc 04-database-design.md §2.4.1
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

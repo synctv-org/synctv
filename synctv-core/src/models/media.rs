@@ -424,7 +424,7 @@ pub struct PlaybackUrlMetadata {
 /// Subtitle information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subtitle {
-    /// Display name (e.g., "简体中文", "English")
+    /// Display name (e.g., "Chinese (Simplified)", "English")
     pub name: String,
 
     /// Language code (e.g., "zh-CN", "en-US")
@@ -441,7 +441,7 @@ pub struct Subtitle {
 /// Subtitle URL
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleUrl {
-    /// Display name (e.g., "原始", "AI翻译")
+    /// Display name (e.g., "Original", "AI Translation")
     pub name: String,
 
     /// Subtitle file URL
@@ -459,7 +459,7 @@ pub struct SubtitleUrl {
 /// Danmaku (bullet comments) information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Danmaku {
-    /// Display name (e.g., "Bilibili弹幕", "本地弹幕")
+    /// Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
     pub name: String,
 
     /// Danmaku API URL or file URL

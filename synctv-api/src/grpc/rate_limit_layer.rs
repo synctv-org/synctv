@@ -1395,7 +1395,7 @@ mod tests {
     fn test_security_multiple_tokens_cannot_bypass_rate_limit() {
         // SECURITY TEST: Verify that the same user with multiple tokens
         // cannot bypass rate limiting by rotating through tokens.
-        // This is the core fix for the "Rate Limit Key 可伪造漏洞" issue.
+        // This is the core fix for the "Rate Limit Key spoofing vulnerability" issue.
         // Before the fix, each token had its own rate limit quota.
         // After the fix, all tokens for the same user share one quota.
 

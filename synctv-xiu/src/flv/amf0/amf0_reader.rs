@@ -356,14 +356,14 @@ mod tests {
     }
 
     // fn uint32_to_int24(num: u32) -> i32 {
-    //     // 截取低24位
+    //     // Keep only the lower 24 bits
     //     let mut result = num & 0xFFFFFF;
 
     //     let mut result2: i32 = result as i32;
 
-    //     // 判断最高位是否为1
+    //     // Check whether the highest bit is set
     //     if (result & 0x800000) == 0x800000 {
-    //         // 获取补码表示
+    //         // Convert from two's complement form
     //         result = (result ^ 0xFFFFFF) + 1;
 
     //         result2 = result as i32 * -1;

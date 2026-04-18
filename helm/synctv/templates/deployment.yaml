@@ -241,6 +241,10 @@ spec:
               mountPath: /run/synctv
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.config.livestream.hlsStoragePath }}
+            - name: hls-storage
+              mountPath: {{ .Values.config.livestream.hlsStoragePath | quote }}
+            {{- end }}
             {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
             - name: metrics-tls
               mountPath: /etc/synctv/metrics/tls
@@ -254,6 +258,10 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.config.livestream.hlsStoragePath }}
+        - name: hls-storage
+          emptyDir: {}
+        {{- end }}
         {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
         - name: metrics-tls
           secret:

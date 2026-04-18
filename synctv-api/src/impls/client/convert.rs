@@ -466,7 +466,7 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
     );
 
     Some(synctv_core::models::media::Danmaku {
-        name: "Bilibili弹幕".to_string(),
+        name: "Bilibili Danmaku".to_string(),
         url,
         format: Some("bilibili".to_string()),
         headers: std::collections::HashMap::new(),
@@ -657,7 +657,7 @@ mod tests {
             ]),
             subtitles: vec![synctv_core::provider::traits::SubtitleTrack {
                 language: "zh-CN".to_string(),
-                name: "中文".to_string(),
+                name: "Chinese".to_string(),
                 url: "https://cdn.example.com/subtitle.ass".to_string(),
                 headers: HashMap::from([(
                     "X-Subtitle-Token".to_string(),
@@ -729,7 +729,7 @@ mod tests {
                         default_url_index: 0,
                         subtitles: vec![
                             synctv_core::models::media::Subtitle {
-                                name: "中文".to_string(),
+                                name: "Chinese".to_string(),
                                 language: "zh-CN".to_string(),
                                 urls: vec![
                                     synctv_core::models::media::SubtitleUrl {
@@ -748,7 +748,7 @@ mod tests {
                         default_subtitle_index: Some(0),
                         danmakus: vec![
                             synctv_core::models::media::Danmaku {
-                                name: "Bilibili弹幕".to_string(),
+                                name: "Bilibili Danmaku".to_string(),
                                 url: "/api/providers/proxy/bilibili/room-1/media-1/danmu".to_string(),
                                 format: Some("bilibili".to_string()),
                                 headers: HashMap::from([(
@@ -870,7 +870,7 @@ mod tests {
         )
         .expect("bilibili live should expose danmaku");
 
-        assert_eq!(danmaku.name, "Bilibili弹幕");
+        assert_eq!(danmaku.name, "Bilibili Danmaku");
         assert_eq!(danmaku.format.as_deref(), Some("bilibili"));
         assert!(danmaku
             .url

@@ -1314,7 +1314,7 @@ message PlaybackUrlMetadata {
 
 // Subtitle information
 message Subtitle {
-    // Display name (e.g., "简体中文", "English")
+    // Display name (e.g., "Chinese (Simplified)", "English")
     string name = 1;
 
     // Language code (e.g., "zh-CN", "en-US")
@@ -1329,7 +1329,7 @@ message Subtitle {
 
 // Subtitle URL
 message SubtitleUrl {
-    // Display name (e.g., "原始", "AI翻译")
+    // Display name (e.g., "Original", "AI Translation")
     string name = 1;
 
     // Subtitle file URL
@@ -1344,7 +1344,7 @@ message SubtitleUrl {
 
 // Danmaku (bullet comments) information
 message Danmaku {
-    // Display name (e.g., "Bilibili弹幕", "本地弹幕")
+    // Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
     string name = 1;
 
     // Danmaku API URL or file URL

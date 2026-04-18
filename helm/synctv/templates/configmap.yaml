@@ -55,7 +55,7 @@ data:
         {{- end }}
 
     management:
-      enabled: {{ .Values.config.management.enabled | default true }}
+      enabled: {{ .Values.config.management.enabled }}
       transport: {{ .Values.config.management.transport | default "unix" | quote }}
       unix_socket_path: {{ .Values.config.management.unixSocketPath | default "/run/synctv/synctv.sock" | quote }}
       port: {{ .Values.config.management.port | default 50052 }}
@@ -103,16 +103,16 @@ data:
       pull_max_retries: {{ .Values.config.livestream.pullMaxRetries | default 10 }}
       pull_initial_backoff_ms: {{ .Values.config.livestream.pullInitialBackoffMs | default 1000 }}
       pull_max_backoff_ms: {{ .Values.config.livestream.pullMaxBackoffMs | default 30000 }}
-      max_flv_tag_size_bytes: {{ .Values.config.livestream.maxFlvTagSizeBytes | default 10485760 }}
-      gop_cache_max_memory_mb: {{ .Values.config.livestream.gopCacheMaxMemoryMb | default 100 }}
-      hls_memory_max_mb: {{ .Values.config.livestream.hlsMemoryMaxMb | default 0 }}
+      max_flv_tag_size_bytes: {{ printf "%d" (int64 (.Values.config.livestream.maxFlvTagSizeBytes | default 10485760)) }}
+      gop_cache_max_memory_mb: {{ printf "%d" (int64 (.Values.config.livestream.gopCacheMaxMemoryMb | default 100)) }}
+      hls_memory_max_mb: {{ printf "%d" (int64 (.Values.config.livestream.hlsMemoryMaxMb | default 0)) }}
       hls_shared_storage: {{ .Values.config.livestream.hlsSharedStorage | default false }}
       hls_storage_path: {{ .Values.config.livestream.hlsStoragePath | default "" | quote }}
       flv_max_connection_duration_seconds: {{ .Values.config.livestream.flvMaxConnectionDurationSeconds | default 86400 }}
       flv_write_timeout_seconds: {{ .Values.config.livestream.flvWriteTimeoutSeconds | default 30 }}
 
     cluster:
-      enabled: {{ .Values.config.cluster.enabled | default true }}
+      enabled: {{ .Values.config.cluster.enabled }}
       critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity }}
       publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
@@ -120,13 +120,13 @@ data:
 
     webrtc:
       mode: {{ .Values.config.webrtc.mode | default "peer_to_peer" | quote }}
-      enable_builtin_stun: {{ .Values.config.webrtc.enableBuiltinStun | default true }}
+      enable_builtin_stun: {{ .Values.config.webrtc.enableBuiltinStun }}
       stun_port: {{ .Values.config.webrtc.stunPort | default 3478 }}
       stun_host: {{ .Values.config.webrtc.stunHost | default "0.0.0.0" | quote }}
       {{- if .Values.config.webrtc.stunExternalAddr }}
       stun_external_addr: {{ .Values.config.webrtc.stunExternalAddr | quote }}
       {{- end }}
-      filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates | default true }}
+      filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates }}
 
     connection_limits:
       max_per_user: {{ $connectionLimits.maxPerUser | default 5 }}
@@ -151,7 +151,7 @@ data:
       smtp_port: {{ .Values.config.email.smtpPort | default 587 }}
       from_email: {{ .Values.config.email.fromEmail | quote }}
       from_name: {{ .Values.config.email.fromName | default "SyncTV" | quote }}
-      use_tls: {{ .Values.config.email.useTls | default true }}
+      use_tls: {{ .Values.config.email.useTls }}
     {{- end }}
 
     {{- if .Values.config.mediaProviders }}

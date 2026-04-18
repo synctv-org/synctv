@@ -6,7 +6,7 @@
 // NOTE: Publisher registration to Redis happens in the authentication phase
 // (SyncTvRtmpAuth::on_publish) before the RTMP session is established.
 // This component only maintains heartbeat for already-registered publishers.
-// Based on design doc 17-数据流设计.md § 11.1
+// Based on design doc 17-data-flow-design.md §11.1
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};

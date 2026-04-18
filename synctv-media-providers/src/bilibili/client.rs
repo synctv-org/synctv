@@ -3757,7 +3757,7 @@ mod tests {
         // before hashing, matching Go's url.Values.Encode() behavior.
         let params = vec![
             ("keyword", "hello world".to_string()),
-            ("name", "\u{4f60}\u{597d}".to_string()), // 你好
+            ("name", "hello".to_string()),
         ];
         let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
         let signed = wbi_sign(&params, mixin_key);
@@ -3775,7 +3775,7 @@ mod tests {
 
         // Reconstruct the expected hash using URL-encoded query string
         let mut expected_params: Vec<(&str, &str)> =
-            vec![("keyword", "hello world"), ("name", "\u{4f60}\u{597d}")];
+            vec![("keyword", "hello world"), ("name", "hello")];
         expected_params.push(("wts", wts));
         expected_params.sort_by(|a, b| a.0.cmp(b.0));
 

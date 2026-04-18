@@ -1,4 +1,4 @@
-//! Unified Redis Key Builder (Design Document 05-缓存设计.md)
+//! Unified Redis Key Builder (Design Document 05-cache-design.md)
 //!
 //! This module provides a unified way to construct all Redis keys used in the system.
 //!

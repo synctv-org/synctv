@@ -1104,12 +1104,12 @@ fn test_m3u8_no_double_encode_space() {
     );
 }
 
-/// Test that already-encoded CJK characters are not double-encoded
+/// Test that already-encoded Unicode characters are not double-encoded
 #[test]
 fn test_m3u8_no_double_encode_cjk() {
-    // URL with already-encoded Chinese characters
-    // %E4%B8%96%E7%95%8C = 世界 (world in Chinese)
-    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/%E4%B8%96%E7%95%8C/seg.ts\n";
+    // URL with already-encoded non-ASCII characters
+    // %C3%A9 = é
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/%C3%A9/seg.ts\n";
     let rewritten = rewrite_m3u8(
         m3u8,
         "https://cdn.example.com/hls/master.m3u8",

@@ -75,7 +75,7 @@ mod tests {
         assert!(parse_room_id("room\t123").is_err());
 
         // Unicode characters (shared nanoid alphabet is ASCII-only)
-        assert!(parse_room_id("房间123").is_err());
+        assert!(parse_room_id("room🙂123").is_err());
         assert!(parse_room_id("roomééé").is_err());
     }
 

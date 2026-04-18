@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn test_validate_auth_secret_rejects_non_ascii_secret() {
-        let error = validate_auth_secret(Some("密钥")).expect_err("non-ASCII secret must fail");
+        let error = validate_auth_secret(Some("sëcret")).expect_err("non-ASCII secret must fail");
         assert!(matches!(
             error,
             ProviderError::InvalidConfig(message)

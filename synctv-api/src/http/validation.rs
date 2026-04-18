@@ -1054,7 +1054,7 @@ mod tests {
         assert!(validate_username("user123").is_ok());
         assert!(validate_username("user_name").is_ok());
         assert!(validate_username("user-name").is_ok());
-        assert!(validate_username("用户名").is_ok()); // CJK characters
+        assert!(validate_username("josé").is_ok()); // Unicode letters
         assert!(validate_username("a").is_err()); // Too short
         assert!(validate_username("ab").is_err()); // Still too short (min=3)
         assert!(validate_username(&"a".repeat(limits::USERNAME_MAX + 1)).is_err()); // Too long
@@ -1561,7 +1561,7 @@ mod tests {
         assert!(validate_oauth2_state(injection_attempt).is_err());
 
         // 3. State must not contain unicode (prevents encoding attacks)
-        let unicode_attempt = "abc日本語12345678901234567890ab";
+        let unicode_attempt = "abcRésumé12345678901234567890ab";
         assert!(validate_oauth2_state(unicode_attempt).is_err());
     }
 
@@ -1600,7 +1600,7 @@ mod tests {
         // Valid titles
         assert!(validate_media_title("My Video").is_ok());
         assert!(validate_media_title("Movie 2024").is_ok());
-        assert!(validate_media_title("视频标题").is_ok()); // CJK characters
+        assert!(validate_media_title("Café Video").is_ok()); // Unicode characters
 
         // Empty title is allowed (defaults will be used)
         assert!(validate_media_title("").is_ok());

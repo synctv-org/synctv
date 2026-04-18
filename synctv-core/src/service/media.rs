@@ -1,6 +1,6 @@
 //! Media and playlist management service
 //!
-//! Design reference: /Volumes/workspace/rust/design/08-视频内容管理.md
+//! Design reference: external design doc 08-video-content-management.md
 //!
 //! Three-stage workflow:
 //! 1. Parse - Parse user input to get options

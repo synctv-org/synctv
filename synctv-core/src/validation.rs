@@ -630,7 +630,7 @@ mod tests {
         assert!(validator.validate("-invalid").is_err());
 
         // Unicode characters (should be valid as they are alphanumeric)
-        assert!(validator.validate("用户名").is_ok());
+        assert!(validator.validate("josé").is_ok());
 
         // Mixed valid characters
         assert!(validator.validate("User-Name_123").is_ok());
@@ -907,7 +907,7 @@ mod tests {
         assert!(validate_path_for_traversal("single.dot").is_ok()); // single dot is ok
         assert!(validate_path_for_traversal("file.tar.gz").is_ok()); // dots in filename
         assert!(validate_path_for_traversal("/path/with.dots/in/middle").is_ok());
-        assert!(validate_path_for_traversal("日本語/ファイル").is_ok()); // Unicode
+        assert!(validate_path_for_traversal("unicode-file/résumé.txt").is_ok()); // Unicode
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Playlist management service
 //!
-//! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.1
+//! Design reference: external design doc 04-database-design.md §2.4.1
 //!
 //! Manages playlist/folder operations including:
 //! - Creating folders (static and dynamic)
@@ -888,14 +888,14 @@ mod tests {
     #[test]
     fn test_playlist_name_unicode_length() {
         // Unicode characters may take multiple bytes but validation uses char count.
-        // "\u{4f60}\u{597d}" = "你好" (2 chars, 6 bytes per repetition)
-        let name = "\u{4f60}\u{597d}".repeat(50);
+        // "\u{00e9}" = "é" (1 char, 2 bytes per repetition in UTF-8)
+        let name = "\u{00e9}".repeat(100);
         // 100 chars, 300 bytes: within the 200-character limit
         assert_eq!(name.chars().count(), 100);
-        assert!(name.len() > 200); // byte count is larger
+        assert!(name.len() > 100); // byte count is larger than char count
 
         // 201 chars exceeds the limit
-        let name_too_long = "\u{4f60}".repeat(201);
+        let name_too_long = "\u{00f8}".repeat(201);
         assert_eq!(name_too_long.chars().count(), 201);
     }
 

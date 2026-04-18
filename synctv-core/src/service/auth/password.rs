@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_password_unicode() {
-        let password = "密码测试🔐🔒123";
+        let password = "password-test-🔐🔒123";
         let hash = hash_password_for_tests(password);
         assert!(verify_password_with_argon2(password, &hash, &build_test_argon2()).unwrap());
     }

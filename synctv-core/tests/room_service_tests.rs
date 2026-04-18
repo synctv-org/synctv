@@ -965,9 +965,9 @@ async fn test_room_description_unicode_500_chars_accepted() {
 
     let owner = user_repo.create(&make_user("unicode_owner")).await.unwrap();
 
-    // 500 Unicode characters (mix of ASCII and CJK)
-    let desc = "Hello世界".repeat(50); // 7 chars * 50 = 350 chars
-    let desc = format!("{}{}", desc, "a".repeat(150)); // 350 + 150 = 500 chars
+    // 500 Unicode characters (mix of ASCII and accented Latin)
+    let desc = "Helloß".repeat(50); // 6 chars * 50 = 300 chars
+    let desc = format!("{}{}", desc, "a".repeat(200)); // 300 + 200 = 500 chars
     assert_eq!(desc.chars().count(), 500);
 
     let result = room_service

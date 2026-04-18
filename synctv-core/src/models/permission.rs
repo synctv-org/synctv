@@ -1,4 +1,4 @@
-//! Permission System (Design Document 07-权限系统设计.md)
+//! Permission System (Design Document 07-permission-system-design.md)
 //!
 //! This module implements the 64-bit permission bitmask system as specified in the design document.
 //!

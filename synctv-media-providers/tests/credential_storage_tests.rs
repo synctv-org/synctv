@@ -475,7 +475,7 @@ async fn test_list_credentials_for_ui() {
     storage
         .set(
             "user123",
-            Some("我的B站"),
+            Some("My Bilibili"),
             CredentialData::bilibili(HashMap::new()),
         )
         .await
@@ -484,7 +484,7 @@ async fn test_list_credentials_for_ui() {
     storage
         .set(
             "user123",
-            Some("个人Alist"),
+            Some("Personal Alist"),
             CredentialData::alist(
                 "https://alist.example.com".into(),
                 "admin".into(),
@@ -497,7 +497,7 @@ async fn test_list_credentials_for_ui() {
     storage
         .set(
             "user123",
-            Some("家庭Emby"),
+            Some("Family Emby"),
             CredentialData::emby(
                 "https://emby.example.com".into(),
                 "key".into(),
@@ -522,9 +522,9 @@ async fn test_list_credentials_for_ui() {
         .iter()
         .map(|c| c.provider_instance_name.clone().unwrap_or_default())
         .collect();
-    assert!(instance_names.contains("我的B站"));
-    assert!(instance_names.contains("个人Alist"));
-    assert!(instance_names.contains("家庭Emby"));
+    assert!(instance_names.contains("My Bilibili"));
+    assert!(instance_names.contains("Personal Alist"));
+    assert!(instance_names.contains("Family Emby"));
 }
 
 /// Test that `StoredCredential` is Clone and can be shared across threads.

@@ -1,6 +1,6 @@
 //! Distributed lock service using Redis
 //!
-//! Design reference: /Volumes/workspace/rust/synctv-rs-design/21-关键实现.md §12.2.3
+//! Design reference: external design doc 21-key-implementation.md §12.2.3
 //!
 //! Provides distributed locking mechanism for multi-replica deployments.
 //! Uses Redis SET NX EX for atomic lock acquisition.

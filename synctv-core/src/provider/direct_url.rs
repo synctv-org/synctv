@@ -744,7 +744,7 @@ mod tests {
                     ],
                     default_url_index: 1,
                     subtitles: vec![crate::models::media::Subtitle {
-                        name: "中文".to_string(),
+                        name: "Chinese".to_string(),
                         language: "zh-CN".to_string(),
                         urls: vec![
                             crate::models::media::SubtitleUrl {

@@ -104,7 +104,7 @@ fullnameOverride: ""
 ## ============================================================================
 ## SyncTV Deployment (Single binary: HTTP + gRPC + RTMP in one process)
 ## ============================================================================
-replicaCount: 3
+replicaCount: 1
 
 image:
   registry: docker.io
@@ -114,7 +114,7 @@ image:
 
 ## Headless Service (for inter-node gRPC discovery)
 headlessService:
-  enabled: true
+  enabled: false
 
 ## Service Configuration
 service:
@@ -173,7 +173,7 @@ resources:
 
 ## Autoscaling
 autoscaling:
-  enabled: true
+  enabled: false
   minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
@@ -181,13 +181,13 @@ autoscaling:
 
 ## Pod Disruption Budget
 podDisruptionBudget:
-  enabled: true
+  enabled: false
   minAvailable: 2
 
 ## Health Checks
 startupProbe:
   httpGet:
-    path: /health
+    path: /health/ready
     port: api
   initialDelaySeconds: 5
   periodSeconds: 5
@@ -196,7 +196,7 @@ startupProbe:
 
 livenessProbe:
   httpGet:
-    path: /health
+    path: /health/live
     port: api
   initialDelaySeconds: 0
   periodSeconds: 10
@@ -340,22 +340,28 @@ config:
     maxFlvTagSizeBytes: 10485760
     gopCacheMaxMemoryMb: 100
     hlsMemoryMaxMb: 0
-    hlsSharedStorage: false
-    hlsStoragePath: ""
+    ## The chart defaults to cluster mode, so HLS output is written to a
+    ## dedicated writable mount path from the deployment template.
+    ## Replace this default storage with a real shared filesystem before
+    ## scaling beyond one replica.
+    hlsSharedStorage: true
+    hlsStoragePath: "/var/lib/synctv/hls"
     flvMaxConnectionDurationSeconds: 86400
     flvWriteTimeoutSeconds: 30
 
   ## ClusterChannelConfig (matches code defaults)
   cluster:
-    ## The Helm chart is designed for clustered Kubernetes deployments and
-    ## manages Redis for cross-replica coordination, so cluster mode is enabled
-    ## by default here.
+    ## Cluster mode is enabled by default so Redis-backed coordination,
+    ## invalidation, and inter-node contracts are wired consistently from the
+    ## start. The chart still defaults to a single replica; before scaling out,
+    ## replace the default HLS storage with a real shared filesystem.
     enabled: true
     criticalChannelCapacity: 1000
     publishChannelCapacity: 10000
     ## Discovery mode: "redis" (default) or "k8s_dns" (uses headless service DNS)
-    ## In K8s deployments, "k8s_dns" is recommended as it uses native DNS discovery
-    discoveryMode: "k8s_dns"
+    ## The chart defaults to Redis discovery so config validation does not
+    ## depend on pod-local DNS environment variables.
+    discoveryMode: "redis"
     ## Leader election mode: "redis" (default) or "k8s_lease" (uses Kubernetes Lease)
     leaderElectionMode: "redis"
 
@@ -562,10 +568,18 @@ alerting:
 
 ## Network Policy
 networkPolicy:
-  enabled: true
+  enabled: false
   policyTypes:
     - Ingress
     - Egress
+  ## Namespaces allowed to reach the HTTP API through an ingress controller.
+  ## Default matches the common ingress-nginx deployment namespace.
+  ingressControllerNamespaces:
+    - ingress-nginx
+  ## Namespaces allowed to scrape the metrics listener when metrics are enabled.
+  ## Adjust this when your Prometheus/vmagent runs outside the default monitoring namespace.
+  metricsSourceNamespaces:
+    - monitoring
   ## CIDR ranges allowed to send RTMP traffic. Defaults to 0.0.0.0/0 (all) if empty.
   rtmpSourceCIDRs: []
   # rtmpSourceCIDRs:

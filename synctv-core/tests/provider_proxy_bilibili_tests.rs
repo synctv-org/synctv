@@ -114,7 +114,7 @@ async fn test_subtitle_proxy() {
         vec![
             SubtitleTrack {
                 language: "zh-CN".to_string(),
-                name: "中文".to_string(),
+                name: "Chinese".to_string(),
                 url: "https://cdn.bilibili.com/subtitle_zh.srt".to_string(),
                 headers: HashMap::new(),
                 format: "srt".to_string(),
@@ -134,7 +134,7 @@ async fn test_subtitle_proxy() {
     let p = provider();
     let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
-        sub_path: "v1/subtitle/中文",
+        sub_path: "v1/subtitle/Chinese",
         store: Some(&store),
         query_string: None,
         services: &fake_services,
@@ -235,7 +235,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
                 subtitles: vec![
                     SubtitleTrack {
                         language: "zh-CN".to_string(),
-                        name: "中文".to_string(),
+                        name: "Chinese".to_string(),
                         url: "https://cdn.bilibili.com/subtitle_zh.json".to_string(),
                         headers: HashMap::new(),
                         format: "json".to_string(),

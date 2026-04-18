@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_validate_provider_name_unicode() {
-        let unicode_names = vec!["测试provider", "провайдер", "プロバイダー", "provider🎉"];
+        let unicode_names = vec!["provider-é", "провайдер", "プロバイダー", "provider🎉"];
         for invalid_name in unicode_names {
             let result = validate_provider_name(invalid_name);
             assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");

@@ -322,7 +322,7 @@ fn test_dash_video_resp_deserialize() {
                 ]
             },
             "support_formats": [
-                {"quality": 80, "new_description": "1080P 高清"}
+                {"quality": 80, "new_description": "1080P HD"}
             ]
         }
     });

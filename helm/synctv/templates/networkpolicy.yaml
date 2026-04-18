@@ -14,16 +14,17 @@ spec:
   {{- if has "Ingress" .Values.networkPolicy.policyTypes }}
   ingress:
     # Allow ingress controller (API + WebSocket)
+    {{- if and .Values.ingress.enabled .Values.networkPolicy.ingressControllerNamespaces }}
     - from:
+        {{- range .Values.networkPolicy.ingressControllerNamespaces }}
         - namespaceSelector:
             matchLabels:
-              name: ingress-nginx
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: ingress-nginx
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.config.server.port }}
+    {{- end }}
     # Allow internal cluster API traffic (inter-node communication)
     - from:
         - podSelector:
@@ -56,11 +57,13 @@ spec:
           port: {{ .Values.config.webrtc.stunPort }}
     {{- end }}
     # Allow Prometheus scraping
-    {{- if .Values.metrics.enabled }}
+    {{- if and .Values.metrics.enabled .Values.networkPolicy.metricsSourceNamespaces }}
     - from:
+        {{- range .Values.networkPolicy.metricsSourceNamespaces }}
         - namespaceSelector:
             matchLabels:
-              name: monitoring
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.metrics.port | default 9090 }}

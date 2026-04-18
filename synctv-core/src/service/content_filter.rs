@@ -665,8 +665,8 @@ mod tests {
         assert_eq!(result, "Hello, this is a normal message!");
 
         // Unicode should be preserved
-        let result = filter.filter_chat("Hello 你好 مرحبا 🌍").unwrap();
-        assert_eq!(result, "Hello 你好 مرحبا 🌍");
+        let result = filter.filter_chat("Hello bonjour مرحبا 🌍").unwrap();
+        assert_eq!(result, "Hello bonjour مرحبا 🌍");
 
         // Numbers and special chars
         let result = filter.filter_chat("Price: $100 (20% off) + tax!").unwrap();

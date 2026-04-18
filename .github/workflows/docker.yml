@@ -12,10 +12,29 @@ on:
 permissions:
   contents: read
 
-env:
-  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-
 jobs:
+  docker-prepare:
+    name: Docker Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      meta-images: ${{ steps.meta-images.outputs.value }}
+    steps:
+      - name: Build image metadata inputs
+        id: meta-images
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          {
+            echo 'value<<EOF'
+            echo "ghcr.io/$REPOSITORY"
+            if [ -n "$DOCKER_USERNAME" ]; then
+              echo "docker.io/$DOCKER_USERNAME/$REPOSITORY_NAME"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
   docker-build:
     name: Docker Build
     needs: docker-prepare
@@ -32,9 +51,7 @@ jobs:
       platforms: linux/amd64,linux/arm64
       cache: true
       cache-scope: synctv-image
-      meta-images: |
-        ghcr.io/${{ github.repository }}
-        ${{ env.DOCKER_USERNAME != '' && format('docker.io/{0}/{1}', env.DOCKER_USERNAME, github.event.repository.name) || '' }}
+      meta-images: ${{ needs.docker-prepare.outputs.meta-images }}
       meta-tags: |
         type=ref,event=branch
         type=ref,event=pr

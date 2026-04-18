@@ -1043,7 +1043,7 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     #[test]
@@ -1117,6 +1117,31 @@ mod tests {
         })
     }
 
+    async fn read_http_request_headers(stream: &mut tokio::net::TcpStream) -> anyhow::Result<()> {
+        let mut buffer = [0_u8; 1024];
+        let mut received = Vec::new();
+
+        loop {
+            let read = tokio::time::timeout(StdDuration::from_secs(2), stream.read(&mut buffer))
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out waiting for HTTP request headers"))??;
+            if read == 0 {
+                break;
+            }
+
+            received.extend_from_slice(&buffer[..read]);
+            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+
+            if received.len() >= 16 * 1024 {
+                anyhow::bail!("HTTP request headers exceeded test server limit");
+            }
+        }
+
+        Ok(())
+    }
+
     async fn spawn_http_response_server(
         response: Vec<u8>,
     ) -> anyhow::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
@@ -1124,6 +1149,7 @@ mod tests {
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = read_http_request_headers(&mut stream).await;
                 let _ = stream.write_all(&response).await;
                 let _ = stream.shutdown().await;
             }
@@ -1139,6 +1165,7 @@ mod tests {
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = read_http_request_headers(&mut stream).await;
                 tokio::time::sleep(delay).await;
                 let _ = stream.write_all(&response).await;
                 let _ = stream.shutdown().await;

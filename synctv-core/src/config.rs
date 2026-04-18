@@ -3940,7 +3940,10 @@ mod tests {
             },
             time: TimeConfig::default(),
             metrics: MetricsConfig::default(),
-            management: ManagementConfig::default(),
+            management: ManagementConfig {
+                auth_token: "test-management-auth-token".to_string(),
+                ..ManagementConfig::default()
+            },
             database: DatabaseConfig::default(),
             redis: RedisConfig {
                 url: "redis://localhost:6379".to_string(),

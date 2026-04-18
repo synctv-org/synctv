@@ -237,6 +237,10 @@ mod tests {
         }
     }
 
+    fn management_auth_token_guard() -> EnvVarGuard {
+        EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN", "test-management-auth-token")
+    }
+
     #[test]
     fn test_load_config_fails_for_invalid_auto_discovered_file() {
         let _lock = acquire_process_config_test_lock();
@@ -260,6 +264,7 @@ mod tests {
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
+        let _management_auth = management_auth_token_guard();
 
         std::fs::write(
             dir.path().join("synctv.yml"),
@@ -305,6 +310,7 @@ mod tests {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _management_auth = management_auth_token_guard();
         let config_path = dir.path().join("explicit-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -330,6 +336,7 @@ jwt:
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _config_path = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
+        let _management_auth = management_auth_token_guard();
         let _jwt = EnvVarGuard::remove("SYNCTV_JWT_SECRET");
         let _port = EnvVarGuard::remove("SYNCTV_SERVER_PORT");
         std::fs::write(
@@ -348,6 +355,7 @@ jwt:
     fn test_load_config_with_options_accepts_explicit_cli_config_path() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
+        let _management_auth = management_auth_token_guard();
         let config_path = dir.path().join("cli-synctv.yaml");
         std::fs::write(
             &config_path,

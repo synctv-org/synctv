@@ -20,6 +20,13 @@ fn skip_bind_test(error: &std::io::Error) {
     eprintln!("skipping bind test: local TCP listen is not permitted in this environment: {error}");
 }
 
+fn is_addr_in_use_error_message(message: &str) -> bool {
+    message.contains("AddrInUse")
+        || message.contains("in use")
+        || message.contains("os error 10048")
+        || message.contains("Only one usage of each socket address")
+}
+
 /// Helper to find an available port
 async fn find_available_port() -> Option<SocketAddr> {
     match TcpListener::bind("127.0.0.1:0").await {
@@ -160,7 +167,7 @@ async fn test_oneshot_startup_signal_failure() {
     assert!(startup_result.is_err(), "Startup should fail");
     let error_msg = startup_result.unwrap_err();
     assert!(
-        error_msg.contains("AddrInUse") || error_msg.contains("in use"),
+        is_addr_in_use_error_message(&error_msg),
         "Error message should indicate address in use: {error_msg}"
     );
 }
@@ -283,7 +290,7 @@ async fn test_startup_failure_aborts_server() {
 
     let error = startup_result.unwrap_err();
     assert!(
-        error.contains("AddrInUse") || error.contains("in use"),
+        is_addr_in_use_error_message(&error),
         "Error should indicate port conflict: {error}"
     );
 

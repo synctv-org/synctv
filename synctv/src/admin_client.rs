@@ -283,6 +283,8 @@ mod tests {
     use super::{normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions};
     #[cfg(unix)]
     use std::pin::Pin;
+
+    #[cfg(unix)]
     use synctv_core::config::default_management_unix_socket_path;
     use tempfile::tempdir;
 
@@ -844,6 +846,7 @@ mod tests {
         assert_eq!(normalized, "https://example.com/api");
     }
 
+    #[cfg(unix)]
     #[test]
     fn normalize_endpoint_preserves_unix_socket_scheme() {
         let raw = format!("unix://{}", default_management_unix_socket_path().display());
@@ -867,6 +870,7 @@ mod tests {
             allow_config_auth_for_explicit_endpoint: false,
         })
         .expect("default admin endpoints should resolve");
+        #[cfg(unix)]
         assert_eq!(
             endpoints,
             vec![format!(
@@ -874,6 +878,9 @@ mod tests {
                 default_management_unix_socket_path().display()
             )]
         );
+
+        #[cfg(not(unix))]
+        assert_eq!(endpoints, vec!["http://127.0.0.1:50052/".to_string()]);
     }
 
     #[cfg(unix)]

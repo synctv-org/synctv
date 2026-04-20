@@ -9,7 +9,7 @@ use crate::proto::providers::alist::{
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserProviderCredential};
-use synctv_core::provider::AlistProvider;
+use synctv_core::provider::{AlistProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::resolve_bound_instance_name;
@@ -43,6 +43,7 @@ impl AlistApiImpl {
         &self,
         caller_user_id: &str,
         server_id: &str,
+        request_context: Option<&ExecutionControl>,
     ) -> Result<(String, String, Option<String>), synctv_core::provider::ProviderError> {
         let cred = self
             .credential_repo
@@ -85,7 +86,7 @@ impl AlistApiImpl {
 
                 let token = self
                     .provider
-                    .login(login_req, instance_name.as_deref())
+                    .login_with_context(login_req, instance_name.as_deref(), request_context)
                     .await?;
 
                 Ok((host, token, instance_name))
@@ -104,6 +105,17 @@ impl AlistApiImpl {
         req: LoginRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
+        self.login_with_context(caller_user_id, req, instance_name, None)
+            .await
+    }
+
+    pub async fn login_with_context(
+        &self,
+        caller_user_id: &str,
+        req: LoginRequest,
+        instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
         let (password, hashed) = Self::resolve_login_credential(&req)?;
 
@@ -114,7 +126,10 @@ impl AlistApiImpl {
             hashed,
         };
 
-        let token = self.provider.login(login_req, instance_name).await?;
+        let token = self
+            .provider
+            .login_with_context(login_req, instance_name, request_context)
+            .await?;
 
         // Generate server_id and persist credential
         let server_id =
@@ -201,8 +216,19 @@ impl AlistApiImpl {
         req: ListRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        self.list_with_context(caller_user_id, req, requested_instance_name, None)
+            .await
+    }
+
+    pub async fn list_with_context(
+        &self,
+        caller_user_id: &str,
+        req: ListRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
         let (host, token, credential_instance_name) = self
-            .resolve_credentials(caller_user_id, &req.server_id)
+            .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
         let effective_instance_name = resolve_bound_instance_name(
             requested_instance_name,
@@ -221,7 +247,11 @@ impl AlistApiImpl {
 
         let resp = self
             .provider
-            .fs_list(list_req, effective_instance_name.as_deref())
+            .fs_list_with_context(
+                list_req,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
             .await?;
 
         let content: Vec<FileItem> = resp
@@ -251,8 +281,19 @@ impl AlistApiImpl {
         req: GetMeRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
+        self.get_me_with_context(caller_user_id, req, requested_instance_name, None)
+            .await
+    }
+
+    pub async fn get_me_with_context(
+        &self,
+        caller_user_id: &str,
+        req: GetMeRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
         let (host, token, credential_instance_name) = self
-            .resolve_credentials(caller_user_id, &req.server_id)
+            .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
         let effective_instance_name = resolve_bound_instance_name(
             requested_instance_name,
@@ -263,7 +304,7 @@ impl AlistApiImpl {
 
         let resp = self
             .provider
-            .me(me_req, effective_instance_name.as_deref())
+            .me_with_context(me_req, effective_instance_name.as_deref(), request_context)
             .await?;
 
         Ok(GetMeResponse {

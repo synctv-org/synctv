@@ -3483,8 +3483,8 @@ impl Default for CacheConfig {
 ///
 /// This is separate from the domain-level `RateLimitConfig` in
 /// `synctv_core::service::rate_limit` (which controls chat/danmaku rates).
-/// This struct configures the per-category request rate limits applied by
-/// the HTTP middleware layer.
+/// This struct configures the per-category request rate limits applied by the
+/// shared HTTP request execution path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HttpRateLimitConfig {

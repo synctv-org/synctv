@@ -1,13 +1,12 @@
 //! Guest token validation tests for synctv-api
 //!
-//! Tests that the HTTP middleware GuestUser extractor properly validates:
+//! Tests the shared guest-token validation behavior relied on by transports:
 //! 1. JWT signature verification (existing behavior)
 //! 2. Token blacklist check (for individually revoked tokens)
 //! 3. Room guest version check (for room-wide revocation)
 //!
-//! These tests verify the fix for the issue where the GuestUser extractor
-//! only verified JWT signatures, allowing kicked guests to continue accessing
-//! the room until their token expired naturally.
+//! These tests document the validation guarantees that replaced the old
+//! transport-specific guest-auth flow.
 
 #![allow(clippy::unwrap_used)]
 
@@ -18,24 +17,13 @@ use synctv_core::models::RoomId;
 use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 
-// HTTP Middleware Integration Requirement Tests
-// extractor. The middleware SHOULD use GuestTokenValidator to check both
-// the blacklist and the room's guest version.
-// The tests below document the security requirements and will be used to
-// verify the fix once implemented.
+// Shared guest-token validation requirement tests.
 
-/// Document the security requirement: HTTP middleware must check blacklist.
+/// Document the security requirement: guest-token validation must check blacklist.
 ///
 /// This test verifies that when the GuestTokenValidator is used correctly,
 /// a blacklisted guest token is rejected. This is the expected behavior
-/// that the HTTP middleware should implement.
-///
-/// Security Issue: The current GuestUser extractor in middleware.rs only
-/// calls `jwt_service.verify_guest_token()` which does NOT check the blacklist.
-/// A kicked guest can continue to access the room until their token expires.
-///
-/// Fix: The GuestUser extractor should use GuestTokenValidator::validate_async()
-/// instead of direct JWT verification.
+/// that the shared validation path must implement.
 #[tokio::test]
 async fn test_security_requirement_blacklisted_token_must_be_rejected() {
     let validator = create_test_validator_with_blacklist();
@@ -50,25 +38,19 @@ async fn test_security_requirement_blacklisted_token_must_be_rejected() {
     validator.blacklist_token(&claims.jti, 3600).await.unwrap();
 
     // SECURITY REQUIREMENT: This MUST fail
-    // The HTTP middleware should reject this token
+    // Any transport path relying on shared guest-token validation should reject this token.
     let result = validator.validate_async(&token).await;
     assert!(
         result.is_err(),
-        "SECURITY REQUIREMENT: Blacklisted guest tokens MUST be rejected by the middleware"
+        "SECURITY REQUIREMENT: Blacklisted guest tokens MUST be rejected by the shared validation path"
     );
 }
 
-/// Document the security requirement: HTTP middleware must check guest version.
+/// Document the security requirement: guest-token validation must check guest version.
 ///
 /// This test verifies that when the room's guest version is incremented,
 /// old guest tokens are invalidated. This allows room-wide revocation
 /// (e.g., when room settings change).
-///
-/// Security Issue: The current GuestUser extractor does not check the room's
-/// guest version, so old tokens remain valid even after settings change.
-///
-/// Fix: The GuestUser extractor should call validate_with_version_async()
-/// with the room's current guest version.
 #[tokio::test]
 async fn test_security_requirement_outdated_version_must_be_rejected() {
     let validator = create_test_validator_with_blacklist();
@@ -79,7 +61,7 @@ async fn test_security_requirement_outdated_version_must_be_rejected() {
     let token = jwt.sign_guest_token_with_version(&room_id, 1).unwrap();
 
     // SECURITY REQUIREMENT: When room version is 5, token with version 1 MUST fail
-    // The HTTP middleware should check the room's current guest version
+    // Shared validation should check the room's current guest version.
     let result = validator.validate_with_version_async(&token, 5).await;
     assert!(
         result.is_err(),
@@ -97,7 +79,7 @@ async fn test_security_requirement_policy_change_revokes_default_guest_tokens() 
     let token = jwt.sign_guest_token(&room_id).unwrap();
 
     // Once room guest version is bumped after a policy change, the old token
-    // must be rejected by the same validation path the middleware uses.
+    // must be rejected by the same shared validation path used by transports.
     let result = validator.validate_with_version_async(&token, 1).await;
     assert!(
         result.is_err(),
@@ -105,9 +87,9 @@ async fn test_security_requirement_policy_change_revokes_default_guest_tokens() 
     );
 }
 
-/// Document the security requirement: Both checks must be performed together.
+/// Document the security requirement: both checks must be performed together.
 ///
-/// The HTTP middleware must perform BOTH checks in the correct order:
+/// The shared validation path must perform BOTH checks in the correct order:
 /// 1. JWT signature verification
 /// 2. Blacklist check
 /// 3. Guest version check (if room has guest versioning enabled)

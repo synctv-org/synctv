@@ -66,15 +66,18 @@ impl EmbyProvider {
         }
     }
 
-    /// Get Emby client for the given instance name (remote if available, local fallback)
-    async fn get_client(
+    async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<EmbyClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(instance_name, create_remote_emby_client, || {
-                self.client_manager.local_emby_client()
-            })
+            .resolve_client_required_with_context(
+                instance_name,
+                request_context,
+                create_remote_emby_client,
+                || self.client_manager.local_emby_client(),
+            )
             .await
     }
 
@@ -85,7 +88,20 @@ impl EmbyProvider {
         api_key: String,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.login_with_context(host, api_key, instance_name, None)
+            .await
+    }
+
+    pub async fn login_with_context(
+        &self,
+        host: String,
+        api_key: String,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
 
         let me_req = synctv_media_providers::grpc::emby::MeReq {
             host,
@@ -102,7 +118,18 @@ impl EmbyProvider {
         req: synctv_media_providers::grpc::emby::FsListReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::FsListResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.fs_list_with_context(req, instance_name, None).await
+    }
+
+    pub async fn fs_list_with_context(
+        &self,
+        req: synctv_media_providers::grpc::emby::FsListReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::emby::FsListResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.fs_list(req).await.map_err(std::convert::Into::into)
     }
 
@@ -112,7 +139,18 @@ impl EmbyProvider {
         req: synctv_media_providers::grpc::emby::MeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.me_with_context(req, instance_name, None).await
+    }
+
+    pub async fn me_with_context(
+        &self,
+        req: synctv_media_providers::grpc::emby::MeReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
@@ -152,9 +190,10 @@ impl EmbyProvider {
         &self,
         resolved: &ResolvedEmbyConfig,
         item_id: &str,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<synctv_media_providers::grpc::emby::Item, ProviderError> {
         let client = self
-            .get_client(resolved.provider_instance_name.as_deref())
+            .get_client_with_context(resolved.provider_instance_name.as_deref(), request_context)
             .await?;
         let request = synctv_media_providers::grpc::emby::GetItemReq {
             host: resolved.host.clone(),
@@ -211,6 +250,7 @@ impl EmbyProvider {
             repo,
             Self::NAME,
             &config.credential_ref,
+            ctx.request_context(),
         )
         .await?;
 
@@ -234,10 +274,11 @@ impl EmbyProvider {
     async fn resolve_from_api(
         &self,
         config: &ResolvedEmbyConfig,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<PlaybackResult, ProviderError> {
         // Get appropriate client based on instance_name from config
         let client = self
-            .get_client(config.provider_instance_name.as_deref())
+            .get_client_with_context(config.provider_instance_name.as_deref(), request_context)
             .await?;
 
         // Get item details first
@@ -537,6 +578,7 @@ impl MediaProvider for EmbyProvider {
             repo,
             Self::NAME,
             &config.credential_ref,
+            _ctx.request_context(),
         )
         .await?;
 
@@ -597,7 +639,9 @@ impl MediaProvider for EmbyProvider {
         }
 
         // Call provider API
-        let result = self.resolve_from_api(&resolved).await?;
+        let result = self
+            .resolve_from_api(&resolved, _ctx.request_context())
+            .await?;
 
         // Generate version and store result
         super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
@@ -629,7 +673,10 @@ impl MediaProvider for EmbyProvider {
             }
         };
         let client = self
-            .get_client(config.provider_instance_name.as_deref())
+            .get_client_with_context(
+                config.provider_instance_name.as_deref(),
+                _ctx.request_context(),
+            )
             .await?;
 
         let item_id = config.item_id.clone();
@@ -673,7 +720,10 @@ impl MediaProvider for EmbyProvider {
             }
         };
         let client = self
-            .get_client(config.provider_instance_name.as_deref())
+            .get_client_with_context(
+                config.provider_instance_name.as_deref(),
+                _ctx.request_context(),
+            )
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
@@ -739,7 +789,10 @@ impl MediaProvider for EmbyProvider {
             }
         };
         let client = self
-            .get_client(config.provider_instance_name.as_deref())
+            .get_client_with_context(
+                config.provider_instance_name.as_deref(),
+                _ctx.request_context(),
+            )
             .await?;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
@@ -784,7 +837,8 @@ impl super::proxy::ProviderProxy for EmbyProvider {
         let sub_path = ctx.sub_path;
 
         if let Some((version, rest)) = sub_path.split_once('/') {
-            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+            let versioned =
+                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (mode_name, index_str) = subtitle_path
@@ -899,7 +953,10 @@ impl DynamicFolder for EmbyProvider {
         let target_item_id =
             Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
         let client = self
-            .get_client(resolved.provider_instance_name.as_deref())
+            .get_client_with_context(
+                resolved.provider_instance_name.as_deref(),
+                ctx.request_context(),
+            )
             .await?;
 
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
@@ -957,7 +1014,9 @@ impl DynamicFolder for EmbyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let base_config = EmbySourceConfig::try_from(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
-        let item = self.fetch_item(&resolved, &item_id).await?;
+        let item = self
+            .fetch_item(&resolved, &item_id, ctx.request_context())
+            .await?;
         let Some(item_type) = Self::item_type_from_listing(&item) else {
             return Ok(None);
         };
@@ -996,7 +1055,9 @@ impl DynamicFolder for EmbyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let base_config = EmbySourceConfig::try_from(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
-        let current_item = self.fetch_item(&resolved, &item_id).await?;
+        let current_item = self
+            .fetch_item(&resolved, &item_id, ctx.request_context())
+            .await?;
         let sibling_parent_id = if current_item.parent_id.is_empty() {
             base_config.item_id.clone()
         } else {
@@ -1211,7 +1272,9 @@ impl DynamicFolder for EmbyProvider {
                 break;
             }
 
-            let item = self.fetch_item(&resolved, &current_id).await?;
+            let item = self
+                .fetch_item(&resolved, &current_id, ctx.request_context())
+                .await?;
             segments.push(DynamicBrowsePathSegment {
                 name: item.name,
                 target: Self::encode_target(&current_id)?,

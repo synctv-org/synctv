@@ -29,7 +29,6 @@ use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use axum::{
     http::{HeaderValue, Method},
     middleware as axum_middleware,
-    response::IntoResponse,
     routing::{get, post},
     Router,
 };
@@ -46,9 +45,6 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub use error::{AppError, AppResult};
-
-const HTTP_REQUEST_TIMEOUT: std::time::Duration =
-    synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 pub(crate) trait WithUserId: Sized {
     fn with_user_id(self, user_id: String) -> Self;
@@ -201,7 +197,8 @@ pub struct RouterConfig {
     /// Shared outbound HTTP client used by proxy handlers and cache fills.
     pub proxy_http_client: reqwest::Client,
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
-    /// This is separate from the HTTP rate limit config used by middleware.
+    /// This is separate from the HTTP request rate limit config used by the
+    /// shared request execution path.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
     /// Heartbeat/cache timing for real-time messaging. Production defaults are
     /// conservative; tests may inject a shorter schedule.
@@ -231,8 +228,8 @@ pub struct SharedApiRuntime {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// Shared guest token validator (JWT + blacklist check)
-    pub guest_token_validator: Arc<synctv_core::service::auth::GuestTokenValidator>,
+    /// Shared impl-level request executor for auth, rate limiting, and timeout.
+    pub request_executor: Arc<crate::impls::RequestExecutor>,
     // Unified API implementation layer
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
@@ -274,8 +271,8 @@ pub struct AppState {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// Shared guest token validator (JWT + blacklist check)
-    pub guest_token_validator: Arc<synctv_core::service::auth::GuestTokenValidator>,
+    /// Shared impl-level request executor for auth, rate limiting, and timeout.
+    pub request_executor: Arc<crate::impls::RequestExecutor>,
     // Unified API implementation layer
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
@@ -341,8 +338,8 @@ pub fn create_app_state_from_config(config: RouterConfig) -> AppState {
 /// Create the HTTP router from an already constructed shared `AppState`.
 pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum::Router> {
     let state = state.clone();
-    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state.clone());
-    apply_global_layers(timeout_router, no_timeout_router, upgrade_router, &state)
+    let router = register_all_routes(&state);
+    apply_global_layers(router, &state)
 }
 
 /// Create the HTTP router and the shared application state from configuration.
@@ -370,7 +367,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         heartbeat_schedule: shared_api_runtime.heartbeat_schedule,
         jwt_validator: shared_api_runtime.jwt_validator.clone(),
         security_pipeline: shared_api_runtime.security_pipeline.clone(),
-        guest_token_validator: shared_api_runtime.guest_token_validator.clone(),
+        request_executor: shared_api_runtime.request_executor.clone(),
         client_api: shared_api_runtime.client_api.clone(),
         admin_api: shared_api_runtime.admin_api.clone(),
         email_api: shared_api_runtime.email_api.clone(),
@@ -419,6 +416,16 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             .expect("HTTP security pipeline wiring must be complete at startup"),
     );
 
+    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+        config.jwt_service.clone(),
+    )));
+    let request_executor = Arc::new(crate::impls::RequestExecutor::new(
+        config.config.clone(),
+        jwt_validator.clone(),
+        security_pipeline.clone(),
+        config.rate_limiter.clone(),
+    ));
+
     let client_api = Arc::new(
         crate::impls::ClientApiImpl::new(
             config.user_service.clone(),
@@ -437,7 +444,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_credential_encryption(config.credential_encryption.clone())
         .with_credential_repo(config.user_provider_credential_repository.clone())
         .with_signing_key(proxy_signing_key.clone())
-        .with_provider_stores(provider_stores.clone()),
+        .with_provider_stores(provider_stores.clone())
+        .with_request_executor(request_executor.clone()),
     );
 
     let client_api = if let Some(ref event_service) = config.event_service {
@@ -476,7 +484,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             config.audit_service.clone(),
         )
         .with_cluster_fanout_service(config.cluster_fanout_service.clone())
-        .with_provider_stores(provider_stores.clone());
+        .with_provider_stores(provider_stores.clone())
+        .with_request_executor(request_executor.clone());
         let admin_api = if let Some(ref event_service) = config.event_service {
             admin_api.with_realtime_event_service(event_service.clone())
         } else {
@@ -511,11 +520,6 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     // Create shared messaging rate limit config for WebSocket (chat/danmaku)
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
 
-    // H-5: Create shared JwtValidator once at startup (not per-request)
-    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-        config.jwt_service.clone(),
-    )));
-
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
     let credential_repo = config.user_provider_credential_repository.clone();
     let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(
@@ -530,17 +534,6 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         config.providers.emby.clone(),
         credential_repo.clone(),
     ));
-
-    // B1: Create shared GuestTokenValidator with blacklist support
-    // This ensures guest tokens are checked against the blacklist (for kicked guests)
-    // instead of only verifying the JWT signature.
-    let guest_token_validator = Arc::new(
-        synctv_core::service::auth::GuestTokenValidator::new(Arc::new(config.jwt_service.clone()))
-            .with_blacklist(
-                config.user_service.token_blacklist_store(),
-                config.user_service.key_builder().clone(),
-            ),
-    );
 
     // Build proxy provider registry from ProviderSet (single source of truth)
     let proxy_provider_registry = Arc::new(config.providers.build_proxy_registry());
@@ -561,7 +554,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         heartbeat_schedule: config.heartbeat_schedule,
         jwt_validator,
         security_pipeline,
-        guest_token_validator,
+        request_executor,
         client_api,
         admin_api,
         email_api,
@@ -595,7 +588,7 @@ pub fn start_proxy_cache_lifecycle(
 /// These are applied as `route_layer`s INSIDE the rate-limit route groups so that
 /// the limit is enforced before the handler reads the body, and the global 10 MB
 /// safety net remains as a fallback for routes not explicitly limited here.
-mod body_limits {
+pub(crate) mod body_limits {
     /// Auth endpoints (login, register, refresh, OAuth2 exchange): 64 KB.
     /// A typical login JSON body is under 512 bytes; 64 KB is generous.
     pub const AUTH: usize = 64 * 1024;
@@ -610,27 +603,28 @@ mod body_limits {
 
 /// Authentication routes (register, login, refresh, `OAuth2` exchange).
 /// Strict rate limiting: 5 req/min. Body limit: 64 KB.
-fn register_auth_routes(state: &AppState) -> Router<AppState> {
+fn register_auth_routes(_state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/oauth2/{provider}/exchange",
+            post(oauth2::exchange_authorization_code),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
+}
+
+fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/email/request", post(auth::request_email_login))
         .route("/api/auth/refresh", post(auth::refresh_token))
-        .route(
-            "/api/oauth2/{provider}/exchange",
-            post(oauth2::exchange_authorization_code),
-        )
         // Tighter body limit for authentication endpoints (64 KB)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::auth_rate_limit,
-        ))
 }
 
 /// Media mutation routes (add, delete, reorder, edit, batch operations).
 /// Moderate rate limiting: 20 req/min. Body limit: 512 KB.
-fn register_media_routes(state: &AppState) -> Router<AppState> {
+fn register_media_routes(_state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms/{room_id}/media", post(room::add_media))
         .route(
@@ -652,16 +646,12 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
         )
         // Media metadata bodies are small (URLs, titles, subtitles)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::MEDIA))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::media_rate_limit,
-        ))
 }
 
 /// Write routes (room CRUD, membership, playback control, playlists, user updates).
 /// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB.
-fn register_write_routes(state: &AppState) -> Router<AppState> {
-    let mut router = Router::new()
+fn register_write_routes(_state: &AppState) -> Router<AppState> {
+    let router = Router::new()
         .route("/api/rooms", post(room::create_room))
         .route(
             "/api/rooms/{room_id}",
@@ -674,15 +664,6 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/members/@me",
             axum::routing::delete(room::leave_room),
-        )
-        .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
-        .route(
-            "/api/rooms/{room_id}/members/{user_id}/approve",
-            post(room_extra::approve_member),
-        )
-        .route(
-            "/api/rooms/{room_id}/members/{user_id}/reject",
-            post(room_extra::reject_member),
         )
         .route(
             "/api/rooms/{room_id}/settings",
@@ -707,22 +688,6 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/playback",
             axum::routing::patch(room::update_playback),
-        )
-        .route("/api/user/logout", post(auth::logout))
-        .route("/api/user", axum::routing::patch(user::update_user))
-        .route("/api/user/me", axum::routing::delete(user::delete_me))
-        .route(
-            "/api/rooms/{room_id}/members/{user_id}",
-            axum::routing::delete(room_extra::kick_member),
-        )
-        .route(
-            "/api/rooms/{room_id}/members/{user_id}",
-            axum::routing::patch(room_extra::set_member_permissions),
-        )
-        .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
-        .route(
-            "/api/rooms/{room_id}/bans/{user_id}",
-            axum::routing::delete(room_extra::unban_member),
         )
         .route(
             "/api/rooms/{room_id}/playlists",
@@ -749,41 +714,15 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             post(room::reset_room_settings),
         );
 
-    router = router.merge(
-        Router::new()
-            .route("/api/tickets", post(ticket::create_ticket))
-            .route_layer(axum_middleware::from_fn_with_state(
-                state.clone(),
-                middleware::websocket_runtime_required,
-            )),
-    );
-
-    router = router
-        .route(
-            "/api/oauth2/{provider}/bind",
-            get(oauth2::get_bind_authorize_url),
-        )
-        .route(
-            "/api/oauth2/type/{provider}/unlink",
-            axum::routing::delete(oauth2::unlink_provider),
-        )
-        .route("/api/oauth2/linked", get(oauth2::get_linked_providers));
-
     router
         // Room/user write bodies should be small (room metadata, settings, passwords)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::ROOM))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::write_rate_limit,
-        ))
 }
 
 /// Read routes (user info, room discovery, room details, playlists, chat, media, playback).
 /// Rate limited: 100 req/min.
-fn register_read_routes(state: &AppState) -> Router<AppState> {
+fn register_read_routes(_state: &AppState) -> Router<AppState> {
     Router::new()
-        .route("/api/user", get(user::get_me))
-        .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/rooms", get(room::list_or_get_rooms))
         .route("/api/rooms/hot", get(room::get_hot_rooms))
         .route("/api/rooms/{room_id}/check", get(room::check_room))
@@ -812,106 +751,106 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
             get(room::get_media),
         )
         .route("/api/rooms/{room_id}/playback", get(room::get_playback))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::read_rate_limit,
-        ))
+}
+
+fn register_extracted_user_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/user", get(user::get_me))
+        .route("/api/user/rooms", get(user::list_my_rooms))
+        .route("/api/user", axum::routing::patch(user::update_user))
+        .route("/api/user/me", axum::routing::delete(user::delete_me))
+        .route("/api/user/logout", post(auth::logout))
 }
 
 /// Assemble all route groups into a single router.
-fn register_websocket_routes(state: &AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/ws/rooms/{room_id}",
-            axum::routing::get(websocket::websocket_handler),
-        )
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::websocket_runtime_required,
-        ))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::websocket_rate_limit,
-        ))
+fn register_websocket_routes(_state: &AppState) -> Router<AppState> {
+    Router::new().route(
+        "/ws/rooms/{room_id}",
+        axum::routing::get(websocket::websocket_handler),
+    )
 }
 
 #[cfg(test)]
-fn register_all_routes_for_test(state: AppState) -> Router<AppState> {
-    let (timeout_router, no_timeout_router, upgrade_router) = register_all_routes(state);
-    timeout_router
-        .merge(no_timeout_router)
-        .merge(upgrade_router)
+fn register_all_routes_for_test(state: &AppState) -> Router<AppState> {
+    register_all_routes(state)
 }
 
-fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, Router<AppState>) {
-    let mut timeout_router = Router::new()
+fn register_all_routes(state: &AppState) -> Router<AppState> {
+    let mut router = Router::new()
         .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())
-        .merge(publish_key::create_publish_key_router().route_layer(
-            axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
-        ))
-        .merge(register_auth_routes(&state))
-        .merge(register_media_routes(&state))
-        .merge(register_write_routes(&state))
-        .merge(register_read_routes(&state))
-        // WebRTC configuration endpoints
+        .merge(register_extracted_auth_routes())
+        .merge(register_auth_routes(state))
+        .merge(register_extracted_user_routes())
+        .merge(publish_key::create_publish_key_router())
+        .merge(
+            Router::new()
+                .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
+                .route(
+                    "/api/rooms/{room_id}/members/{user_id}/approve",
+                    post(room_extra::approve_member),
+                )
+                .route(
+                    "/api/rooms/{room_id}/members/{user_id}/reject",
+                    post(room_extra::reject_member),
+                )
+                .route(
+                    "/api/rooms/{room_id}/members/{user_id}",
+                    axum::routing::delete(room_extra::kick_member),
+                )
+                .route(
+                    "/api/rooms/{room_id}/members/{user_id}",
+                    axum::routing::patch(room_extra::set_member_permissions),
+                )
+                .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
+                .route(
+                    "/api/rooms/{room_id}/bans/{user_id}",
+                    axum::routing::delete(room_extra::unban_member),
+                ),
+        )
+        .merge(Router::new().route("/api/tickets", post(ticket::create_ticket)))
         .merge(
             Router::new()
                 .route(
-                    "/api/rooms/{room_id}/webrtc/ice-servers",
-                    get(webrtc::get_ice_servers),
+                    "/api/oauth2/{provider}/bind",
+                    get(oauth2::get_bind_authorize_url),
                 )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                )),
+                .route(
+                    "/api/oauth2/type/{provider}/unlink",
+                    axum::routing::delete(oauth2::unlink_provider),
+                )
+                .route("/api/oauth2/linked", get(oauth2::get_linked_providers)),
         )
+        .merge(register_media_routes(state))
+        .merge(register_write_routes(state))
+        .merge(register_read_routes(state))
+        // WebRTC configuration endpoints
+        .merge(Router::new().route(
+            "/api/rooms/{room_id}/webrtc/ice-servers",
+            get(webrtc::get_ice_servers),
+        ))
         // Admin routes
-        .merge(
-            Router::new()
-                .nest("/api/admin", admin::create_admin_router())
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::admin_rate_limit,
-                )),
-        )
+        .merge(Router::new().nest("/api/admin", admin::create_admin_router()))
         // Provider routes
         .merge(
             Router::new()
-                .merge(register_provider_management_routes(&state))
+                .merge(register_provider_management_routes(state))
                 .merge(
-                    Router::new()
-                        .nest("/api/provider", provider_common::register_common_routes())
-                        .route_layer(axum_middleware::from_fn_with_state(
-                            state.clone(),
-                            middleware::read_rate_limit,
-                        )),
+                    Router::new().nest("/api/provider", provider_common::register_common_routes()),
                 ),
-        );
-
-    timeout_router = timeout_router.merge(register_provider_proxy_routes(&state));
-
-    let no_timeout_router = register_provider_streaming_routes(&state);
-
-    timeout_router = timeout_router
-        .merge(
-            notifications::create_notification_read_router().route_layer(
-                axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
-            ),
         )
-        .merge(
-            notifications::create_notification_write_router().route_layer(
-                axum_middleware::from_fn_with_state(state.clone(), middleware::write_rate_limit),
-            ),
-        );
+        .merge(register_provider_proxy_routes(state))
+        .merge(register_websocket_routes(state));
 
-    let email_routes = email_verification::create_email_router().route_layer(
-        axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
-    );
-    timeout_router = timeout_router.merge(email_routes);
+    router = router
+        .merge(notifications::create_notification_read_router())
+        .merge(notifications::create_notification_write_router());
 
-    timeout_router = timeout_router.merge(
+    let email_routes = email_verification::create_email_router();
+    router = router.merge(email_routes);
+
+    router = router.merge(
         Router::new()
             .route(
                 "/api/oauth2/{provider}/authorize",
@@ -920,31 +859,21 @@ fn register_all_routes(state: AppState) -> (Router<AppState>, Router<AppState>, 
             .route(
                 "/api/oauth2/providers",
                 get(oauth2::list_available_providers),
-            )
-            .route_layer(axum_middleware::from_fn_with_state(
-                state.clone(),
-                middleware::read_rate_limit,
-            )),
+            ),
     );
 
-    let upgrade_router = register_websocket_routes(&state);
-
     if state.live_streaming_infrastructure.is_some() {
-        timeout_router = timeout_router.merge(
+        router = router.merge(
             Router::new()
                 .nest("/api/providers/rtmp", providers::live::rtmp_routes())
                 .nest(
                     "/api/providers/live_proxy",
                     providers::live::live_proxy_routes(),
-                )
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state,
-                    middleware::read_rate_limit,
-                )),
+                ),
         );
     }
 
-    (timeout_router, no_timeout_router, upgrade_router)
+    router
 }
 
 #[cfg(feature = "openapi")]
@@ -957,7 +886,7 @@ fn openapi_router() -> Router<AppState> {
     Router::new()
 }
 
-fn register_provider_management_routes(state: &AppState) -> Router<AppState> {
+fn register_provider_management_routes(_state: &AppState) -> Router<AppState> {
     Router::new()
         .merge(
             Router::new()
@@ -969,11 +898,7 @@ fn register_provider_management_routes(state: &AppState) -> Router<AppState> {
                     "/api/providers/alist",
                     providers::alist::alist_auth_routes(),
                 )
-                .nest("/api/providers/emby", providers::emby::emby_auth_routes())
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::auth_rate_limit,
-                )),
+                .nest("/api/providers/emby", providers::emby::emby_auth_routes()),
         )
         .merge(
             Router::new()
@@ -985,40 +910,16 @@ fn register_provider_management_routes(state: &AppState) -> Router<AppState> {
                     "/api/providers/alist",
                     providers::alist::alist_read_routes(),
                 )
-                .nest("/api/providers/emby", providers::emby::emby_read_routes())
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                )),
+                .nest("/api/providers/emby", providers::emby::emby_read_routes()),
         )
 }
 
 fn register_provider_proxy_routes(state: &AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/providers/proxy/{provider_name}/{*sub_path}",
-            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
-        )
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::streaming_rate_limit,
-        ))
-}
-
-fn register_provider_streaming_routes(state: &AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/providers/proxy/rtmp/{*sub_path}",
-            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
-        )
-        .route(
-            "/api/providers/proxy/live_proxy/{*sub_path}",
-            get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
-        )
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::streaming_rate_limit,
-        ))
+    let _ = state;
+    Router::new().route(
+        "/api/providers/proxy/{provider_name}/{*sub_path}",
+        get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
+    )
 }
 
 /// Build CORS layer based on configuration.
@@ -1074,7 +975,7 @@ fn parse_configured_cors_origin(origin: &str) -> anyhow::Result<HeaderValue> {
         .map_err(|_| anyhow::anyhow!("invalid CORS origin configured: `{origin}`"))
 }
 
-/// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS,
+/// Apply shared transport layers (CORS, body limit, security headers, HSTS,
 /// request ID propagation, and tracing) and bind state.
 fn apply_shared_http_layers(
     router: Router<AppState>,
@@ -1136,75 +1037,26 @@ fn apply_shared_http_layers(
         ))
 }
 
-fn apply_global_layers(
-    timeout_router: Router<AppState>,
-    no_timeout_router: Router<AppState>,
-    upgrade_router: Router<AppState>,
-    state: &AppState,
-) -> anyhow::Result<axum::Router> {
-    apply_global_layers_with_timeout(
-        timeout_router,
-        no_timeout_router,
-        upgrade_router,
-        state,
-        HTTP_REQUEST_TIMEOUT,
-    )
-}
-
-fn apply_global_layers_with_timeout(
-    timeout_router: Router<AppState>,
-    no_timeout_router: Router<AppState>,
-    upgrade_router: Router<AppState>,
-    state: &AppState,
-    request_timeout: std::time::Duration,
-) -> anyhow::Result<axum::Router> {
+fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Result<axum::Router> {
     let cors = build_cors_layer(&state.config)?;
     let trusted_proxies = state.config.server.trusted_proxies.clone();
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
-    let timeout_router = apply_shared_http_layers(
-        timeout_router.layer(axum_middleware::from_fn(
-            move |request: axum::extract::Request, next: axum::middleware::Next| async move {
-                match tokio::time::timeout(request_timeout, next.run(request)).await {
-                    Ok(response) => response,
-                    Err(_) => {
-                        AppError::new(axum::http::StatusCode::REQUEST_TIMEOUT, "Request timed out")
-                            .into_response()
-                    }
-                }
-            },
-        )),
-        cors.clone(),
-        trusted_proxies.clone(),
-        hsts_value.clone(),
-    );
-
-    let no_timeout_router = apply_shared_http_layers(
-        no_timeout_router,
-        cors.clone(),
-        trusted_proxies.clone(),
-        hsts_value.clone(),
-    );
-
-    let upgrade_router =
-        apply_shared_http_layers(upgrade_router, cors, trusted_proxies, hsts_value);
-
-    Ok(timeout_router
-        .merge(no_timeout_router)
-        .merge(upgrade_router)
-        .layer(axum_middleware::from_fn(
-            crate::observability::metrics_middleware::metrics_layer,
-        ))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state.clone()))
+    Ok(
+        apply_shared_http_layers(router, cors, trusted_proxies, hsts_value)
+            .layer(axum_middleware::from_fn(
+                crate::observability::metrics_middleware::metrics_layer,
+            ))
+            .layer(TraceLayer::new_for_http())
+            .with_state(state.clone()),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_global_layers_with_timeout, build_app_state, build_cors_layer,
-        register_all_routes_for_test, start_proxy_cache_lifecycle, RouterConfig, WithId,
-        WithMediaId, WithPlaylistId, WithProviderInstanceName, WithRoomId, WithUserId,
-        HTTP_REQUEST_TIMEOUT,
+        apply_global_layers, build_app_state, build_cors_layer, register_all_routes_for_test,
+        start_proxy_cache_lifecycle, RouterConfig, WithId, WithMediaId, WithPlaylistId,
+        WithProviderInstanceName, WithRoomId, WithUserId,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1679,15 +1531,15 @@ mod tests {
     #[tokio::test]
     async fn test_playback_patch_route_is_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/rooms/room123/playback")
+                    .uri("/api/rooms/AbC123xYz890/playback")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"state":"playing"}"#))
+                    .body(Body::from(r#"{"state":1}"#))
                     .expect("request"),
             )
             .await
@@ -1713,7 +1565,7 @@ mod tests {
     #[tokio::test]
     async fn test_public_rooms_route_is_reachable_without_auth() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1741,7 +1593,7 @@ mod tests {
     #[tokio::test]
     async fn test_removed_room_password_verify_route_returns_not_found() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1765,7 +1617,7 @@ mod tests {
     #[tokio::test]
     async fn test_member_approval_routes_are_reachable_via_project_router() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         for (method, uri, body) in [
             (
@@ -1816,7 +1668,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth2_unlink_route_uses_provider_type_namespace() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let new_route_response = app
             .clone()
@@ -1847,7 +1699,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_all_read_notifications_uses_read_namespace() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let new_route_response = app
             .clone()
@@ -1888,7 +1740,7 @@ mod tests {
             config.metrics.auth.bearer_token = "metrics-secret".to_string();
             config
         });
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1904,7 +1756,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_provider_login_routes_use_auth_rate_limit_tier() {
+    async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() {
         let state = test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig {
                 auth_max_requests: 1,
@@ -1915,7 +1767,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
             .clone()
@@ -1923,8 +1775,11 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/providers/alist/login")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+                    ))
                     .expect("request"),
             )
             .await
@@ -1936,8 +1791,11 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/providers/alist/login")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+                    ))
                     .expect("request"),
             )
             .await
@@ -1945,14 +1803,60 @@ mod tests {
         assert_eq!(
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
-            "provider login endpoints must share the stricter auth rate-limit bucket"
+            "provider login routes should consume the auth rate-limit bucket before invalid-token authentication fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() {
+        let state = test_app_state_with_rate_limits(
+            synctv_core::HttpRateLimitConfig {
+                auth_max_requests: 1,
+                auth_window_seconds: 60,
+                read_max_requests: 100,
+                read_window_seconds: 60,
+                ..synctv_core::HttpRateLimitConfig::default()
+            },
+            synctv_core::GrpcRateLimitConfig::default(),
+        );
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{invalid json"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{invalid json"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "malformed auth payloads should still consume the auth rate-limit bucket"
         );
     }
 
     #[tokio::test]
     async fn test_bilibili_me_route_requires_post() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -1985,7 +1889,7 @@ mod tests {
             synctv_core::GrpcRateLimitConfig::default(),
         )
         .await;
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
             .clone()
@@ -1994,7 +1898,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
                     .expect("request"),
             )
             .await
@@ -2011,7 +1915,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
                     .expect("request"),
             )
             .await
@@ -2019,7 +1923,7 @@ mod tests {
         assert_eq!(
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
-            "ticket issuance must share the write rate-limit bucket"
+            "ticket issuance should consume the write rate-limit bucket before unauthenticated requests reach impl authentication"
         );
     }
 
@@ -2035,7 +1939,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2068,155 +1972,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_global_timeout_applies_only_to_timeout_router() {
+    async fn test_transport_layers_preserve_shared_http_metadata_without_global_timeout() {
         let state = test_app_state();
-
-        let timeout_router = Router::new().route(
-            "/timeout",
-            get(|| async {
-                tokio::time::sleep(HTTP_REQUEST_TIMEOUT + Duration::from_millis(50)).await;
-                "too slow"
-            }),
-        );
-        let no_timeout_router = Router::new().route(
-            "/streaming",
-            get(|| async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                "stream survives"
-            }),
-        );
-
-        let app = apply_global_layers_with_timeout(
-            timeout_router,
-            no_timeout_router,
-            Router::new(),
+        let app = apply_global_layers(
+            Router::new().route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    "completed"
+                }),
+            ),
             &state,
-            Duration::from_millis(10),
         )
         .expect("valid test router should build");
 
-        let timeout_response = app
-            .clone()
+        let response = app
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/timeout")
-                    .header("x-request-id", "timeout-test-123")
+                    .uri("/slow")
+                    .header("x-request-id", "transport-no-timeout-123")
                     .body(Body::empty())
                     .expect("request"),
             )
             .await
             .expect("response");
+
         assert_eq!(
-            timeout_response.status(),
-            StatusCode::REQUEST_TIMEOUT,
-            "ordinary HTTP routes must still respect the global timeout budget"
+            response.status(),
+            StatusCode::OK,
+            "transport layers should no longer enforce a path-selected unary timeout"
         );
         assert_eq!(
-            timeout_response
+            response
                 .headers()
                 .get("x-request-id")
                 .and_then(|value| value.to_str().ok()),
-            Some("timeout-test-123"),
-            "timed out responses must still propagate request IDs"
+            Some("transport-no-timeout-123"),
+            "request IDs must still be propagated without transport timeout wrapping"
         );
         assert_eq!(
-            timeout_response.headers().get("X-Frame-Options").unwrap(),
+            response.headers().get("X-Frame-Options").unwrap(),
             "DENY",
-            "timed out responses must still include security headers"
-        );
-        let timeout_body = axum::body::to_bytes(timeout_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let timeout_json: serde_json::Value =
-            serde_json::from_slice(&timeout_body).expect("timeout response should be JSON");
-        assert_eq!(timeout_json["status"], 408);
-        assert_eq!(timeout_json["error"], "Request timed out");
-        assert_eq!(timeout_json["request_id"], "timeout-test-123");
-
-        let streaming_response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/streaming")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            streaming_response.status(),
-            StatusCode::OK,
-            "streaming/provider proxy routes must not be cut off by the unary HTTP timeout layer"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_live_metadata_routes_stay_on_timeout_router() {
-        let state = test_app_state();
-
-        let timeout_router = Router::new().route(
-            "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
-            get(|| async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                "metadata too slow"
-            }),
-        );
-        let no_timeout_router = Router::new().route(
-            "/api/providers/proxy/{provider_name}/{*sub_path}",
-            get(|| async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                "stream survives"
-            }),
-        );
-
-        let app = apply_global_layers_with_timeout(
-            timeout_router,
-            no_timeout_router,
-            Router::new(),
-            &state,
-            Duration::from_millis(10),
-        )
-        .expect("valid test router should build");
-
-        let metadata_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/providers/rtmp/rooms/room123/info/media123")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            metadata_response.status(),
-            StatusCode::REQUEST_TIMEOUT,
-            "live metadata routes must remain protected by the unary HTTP timeout"
-        );
-
-        let streaming_response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            streaming_response.status(),
-            StatusCode::OK,
-            "actual streaming proxy routes must remain outside the unary HTTP timeout"
+            "shared security headers must still be applied after removing transport timeout routing"
         );
     }
 
     #[tokio::test]
     async fn test_streaming_proxy_routes_preserve_options_preflight() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let rtmp_preflight = app
             .clone()
@@ -2289,7 +2094,7 @@ mod tests {
     #[tokio::test]
     async fn test_openapi_json_route_is_available() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2430,7 +2235,7 @@ mod tests {
     #[tokio::test]
     async fn test_swagger_ui_route_is_available() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2475,69 +2280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finite_provider_proxy_routes_stay_on_timeout_router() {
-        let state = test_app_state();
-
-        let timeout_router = Router::new().route(
-            "/api/providers/proxy/{provider_name}/{*sub_path}",
-            get(|| async {
-                tokio::time::sleep(HTTP_REQUEST_TIMEOUT + Duration::from_millis(50)).await;
-                "finite proxy too slow"
-            }),
-        );
-        let no_timeout_router = Router::new().route(
-            "/api/providers/proxy/rtmp/{*sub_path}",
-            get(|| async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                "stream survives"
-            }),
-        );
-
-        let app = apply_global_layers_with_timeout(
-            timeout_router,
-            no_timeout_router,
-            Router::new(),
-            &state,
-            Duration::from_millis(10),
-        )
-        .expect("valid test router should build");
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/providers/proxy/bilibili/ver1/playlist.m3u8")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            response.status(),
-            StatusCode::REQUEST_TIMEOUT,
-            "finite provider proxy routes must remain protected by the unary HTTP timeout"
-        );
-
-        let streaming_response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(
-            streaming_response.status(),
-            StatusCode::OK,
-            "live provider proxy routes must remain outside the unary HTTP timeout"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_provider_common_routes_use_read_rate_limit_tier() {
+    async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() {
         let state = test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig {
                 read_max_requests: 1,
@@ -2548,7 +2291,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2565,7 +2308,7 @@ mod tests {
         assert_eq!(
             first.status(),
             StatusCode::UNAUTHORIZED,
-            "first provider common request should reach auth before exhausting the read bucket"
+            "first provider common request should still reach authentication while the read bucket has capacity"
         );
 
         let second = app
@@ -2582,7 +2325,7 @@ mod tests {
         assert_eq!(
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
-            "provider common routes must share the read rate-limit bucket"
+            "provider common routes should consume the read rate-limit bucket before invalid-token authentication fails"
         );
     }
 
@@ -2598,7 +2341,7 @@ mod tests {
             },
             synctv_core::GrpcRateLimitConfig::default(),
         );
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let management = app
             .clone()
@@ -2608,7 +2351,9 @@ mod tests {
                     .uri("/api/providers/alist/login")
                     .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"username":"demo","password":"demo"}"#))
+                    .body(Body::from(
+                        r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+                    ))
                     .expect("request"),
             )
             .await
@@ -2650,7 +2395,7 @@ mod tests {
             synctv_core::GrpcRateLimitConfig::default(),
         )
         .await;
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let first = app
             .clone()
@@ -2659,7 +2404,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
                     .expect("request"),
             )
             .await
@@ -2672,7 +2417,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
+                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
                     .expect("request"),
             )
             .await
@@ -2680,14 +2425,14 @@ mod tests {
         assert_eq!(
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
-            "ticket creation must use the write rate-limit bucket"
+            "ticket creation should consume the write rate-limit bucket before unauthenticated requests reach impl authentication"
         );
     }
 
     #[tokio::test]
     async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2709,9 +2454,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websocket_ticket_runtime_middleware_does_not_leak_to_other_write_routes() {
+    async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ws/rooms/AbC123xYz890")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "websocket runtime checks must fail closed before WebSocketUpgrade extraction would otherwise return 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2735,14 +2503,14 @@ mod tests {
     #[tokio::test]
     async fn test_publish_key_route_is_namespaced_under_api() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state).with_state(test_app_state());
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let api_response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/rooms/room1234_abx/movies/media123/live/publish-key")
+                    .uri("/api/rooms/AbC123xYz890/movies/ZyX098wVu765/live/publish-key")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2754,7 +2522,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/rooms/room1234_abx/movies/media123/live/publish-key")
+                    .uri("/rooms/AbC123xYz890/movies/ZyX098wVu765/live/publish-key")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2766,7 +2534,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth2_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2783,9 +2551,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_optional_user_execution_rejects_invalid_authorization_header() {
+        let state = test_app_state();
+        let request_meta =
+            crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
+                .with_authorization(Some("Bearer malformed-token".to_string()))
+                .with_client_ip(Some("127.0.0.1".parse().expect("ip")));
+
+        let err = state
+            .request_executor
+            .execute_optional_user_with_control(
+                &request_meta,
+                crate::impls::EndpointRateLimitCategory::Auth,
+                |_control, _authenticated| async move { Ok::<_, crate::impls::ApiError>(()) },
+            )
+            .await
+            .expect_err("invalid bearer token must be rejected on the strict optional-auth path");
+
+        assert!(
+            matches!(err.classify(), crate::impls::ErrorKind::Unauthenticated),
+            "strict optional-auth execution must reject invalid bearer headers instead of downgrading to anonymous",
+        );
+    }
+
+    #[tokio::test]
     async fn test_email_routes_fail_closed_when_services_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2805,7 +2597,7 @@ mod tests {
     #[tokio::test]
     async fn test_notification_routes_fail_closed_when_service_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let read_response = app
             .clone()
@@ -2818,7 +2610,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(read_response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(read_response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let write_response = app
             .oneshot(
@@ -2830,13 +2622,13 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(write_response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(write_response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
     async fn test_live_provider_routes_are_not_registered_when_infrastructure_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(
@@ -2855,7 +2647,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_routes_fail_closed_when_dependencies_missing() {
         let state = test_app_state();
-        let app = register_all_routes_for_test(state.clone()).with_state(state);
+        let app = register_all_routes_for_test(&state).with_state(state);
 
         let response = app
             .oneshot(

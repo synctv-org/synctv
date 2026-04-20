@@ -85,7 +85,7 @@ impl AppError {
 
     #[must_use]
     pub fn token_invalid() -> Self {
-        Self::unauthorized("Invalid or expired token")
+        Self::unauthorized(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN)
     }
 
     #[must_use]
@@ -121,22 +121,22 @@ impl AppError {
 
     #[must_use]
     pub fn missing_authorization_header() -> Self {
-        Self::unauthorized("Missing Authorization header")
+        Self::unauthorized(synctv_common::messages::MISSING_AUTHORIZATION_HEADER)
     }
 
     #[must_use]
     pub fn invalid_authorization_header() -> Self {
-        Self::unauthorized("Invalid Authorization header")
+        Self::unauthorized(synctv_common::messages::INVALID_AUTHORIZATION_HEADER)
     }
 
     #[must_use]
     pub fn invalid_authorization_header_non_utf8() -> Self {
-        Self::unauthorized("Invalid Authorization header: non-UTF-8 value")
+        Self::unauthorized(synctv_common::messages::INVALID_AUTHORIZATION_HEADER_NON_UTF8)
     }
 
     #[must_use]
     pub fn invalid_or_expired_token() -> Self {
-        Self::unauthorized("Invalid or expired token")
+        Self::unauthorized(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN)
     }
 
     #[must_use]
@@ -236,7 +236,7 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                 if status == 401 || status == 403 {
                     Self::unauthorized("Provider authentication failed")
                 } else if status == 404 {
-                    Self::not_found("Provider resource not found")
+                    Self::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND)
                 } else if status == 408 || status == 429 || status >= 500 {
                     Self::new(
                         StatusCode::BAD_GATEWAY,
@@ -251,12 +251,14 @@ impl From<synctv_core::provider::ProviderError> for AppError {
             | ProviderError::InvalidUrl(msg)
             | ProviderError::MissingField(msg)
             | ProviderError::UnsupportedFormat(msg) => Self::bad_request(msg),
-            ProviderError::NotFound => Self::not_found("Resource not found"),
+            ProviderError::NotFound => Self::not_found(synctv_common::messages::RESOURCE_NOT_FOUND),
             ProviderError::InstanceNotFound(msg) | ProviderError::CredentialNotFound(msg) => {
                 Self::not_found(msg)
             }
             ProviderError::MissingInstance => Self::not_found("Provider instance not configured"),
-            ProviderError::AuthRequired => Self::unauthorized("Authentication required"),
+            ProviderError::AuthRequired => {
+                Self::unauthorized(synctv_common::messages::AUTHENTICATION_REQUIRED)
+            }
             ProviderError::CredentialRequired => Self::unauthorized("Credential required"),
             ProviderError::InvalidCredentialType => Self::bad_request("Invalid credential type"),
             ProviderError::RouteRegistrationFailed(msg) => {
@@ -333,7 +335,7 @@ impl From<synctv_core::Error> for AppError {
             ),
             Error::Timeout(msg) => {
                 tracing::warn!("Backend timeout: {}", msg);
-                Self::service_unavailable()
+                Self::new(StatusCode::REQUEST_TIMEOUT, msg)
             }
         }
     }
@@ -376,6 +378,7 @@ impl From<crate::impls::ApiError> for AppError {
                 }
             }
             ErrorKind::ServiceUnavailable => Self::service_unavailable(),
+            ErrorKind::Timeout => Self::new(StatusCode::REQUEST_TIMEOUT, msg),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
                 Self::internal("Internal error")
@@ -578,28 +581,40 @@ mod tests {
     fn test_missing_authorization_header_helper() {
         let err = AppError::missing_authorization_header();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Missing Authorization header");
+        assert_eq!(
+            err.message,
+            synctv_common::messages::MISSING_AUTHORIZATION_HEADER
+        );
     }
 
     #[test]
     fn test_invalid_authorization_header_helper() {
         let err = AppError::invalid_authorization_header();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid Authorization header");
+        assert_eq!(
+            err.message,
+            synctv_common::messages::INVALID_AUTHORIZATION_HEADER
+        );
     }
 
     #[test]
     fn test_invalid_authorization_header_non_utf8_helper() {
         let err = AppError::invalid_authorization_header_non_utf8();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid Authorization header: non-UTF-8 value");
+        assert_eq!(
+            err.message,
+            synctv_common::messages::INVALID_AUTHORIZATION_HEADER_NON_UTF8
+        );
     }
 
     #[test]
     fn test_invalid_or_expired_token_helper() {
         let err = AppError::invalid_or_expired_token();
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid or expired token");
+        assert_eq!(
+            err.message,
+            synctv_common::messages::INVALID_OR_EXPIRED_TOKEN
+        );
     }
 
     #[test]
@@ -797,14 +812,11 @@ mod tests {
     }
 
     #[test]
-    fn test_from_core_timeout_maps_to_service_unavailable() {
+    fn test_from_core_timeout_maps_to_request_timeout() {
         let core_err = synctv_core::Error::Timeout("redis lock renewal timed out".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(
-            app_err.message.contains("temporarily unavailable"),
-            "backend timeouts should not be reported as client-side request mistakes"
-        );
+        assert_eq!(app_err.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(app_err.message, "redis lock renewal timed out");
     }
 
     #[test]
@@ -922,6 +934,15 @@ mod tests {
     }
 
     #[test]
+    fn test_from_api_error_timeout() {
+        let api_err = crate::impls::ApiError::Timeout("request budget exceeded".to_string());
+        let app_err = AppError::from(api_err);
+        assert_eq!(app_err.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(app_err.message, "request budget exceeded");
+        assert_eq!(app_err.error_code, Some(crate::impls::error_codes::TIMEOUT));
+    }
+
+    #[test]
     fn test_from_core_rate_limited_via_api_error() {
         // Test the full chain: synctv_core::Error::RateLimited -> ApiError -> AppError
         let core_err = synctv_core::Error::RateLimited("exceeded quota".to_string());
@@ -951,7 +972,10 @@ mod tests {
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
         assert_eq!(app_err.status, StatusCode::NOT_FOUND);
-        assert_eq!(app_err.message, "Provider resource not found");
+        assert_eq!(
+            app_err.message,
+            synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND
+        );
     }
 
     #[test]

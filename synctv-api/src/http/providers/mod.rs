@@ -17,14 +17,35 @@ pub mod live;
 
 use axum::{
     extract::{Path, RawQuery, State},
-    http::HeaderMap,
+    http::{header, HeaderMap, StatusCode},
 };
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use std::sync::Arc;
 
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::proxy::{ProxyAction, ProxyRequestContext};
+use synctv_core::provider::ExecutionControl;
 
-use crate::http::{error::AppResult, AppError, AppState};
+use crate::http::{
+    error::{map_api_error, AppResult},
+    middleware::RequestMetadata,
+    AppError, AppState,
+};
+use crate::impls::{ApiError, EndpointRateLimitCategory};
+
+fn set_default_cache_control(
+    mut response: axum::response::Response,
+    value: &'static str,
+) -> axum::response::Response {
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static(value),
+        );
+    }
+    response
+}
 
 /// Execute a `ProxyAction` returned by a provider's `ProviderProxy::resolve_proxy`.
 ///
@@ -33,6 +54,7 @@ pub(crate) async fn execute_proxy_action(
     proxy_http_client: &reqwest::Client,
     action: ProxyAction,
     client_headers: &axum::http::HeaderMap,
+    request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         ProxyAction::LiveFlv { .. }
@@ -46,18 +68,27 @@ pub(crate) async fn execute_proxy_action(
                 url: &url,
                 provider_headers: &headers,
                 client_headers,
+                request_control,
+                upstream_header_timeout: None,
             };
             synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
                 .await
-                .map_err(Into::into)
+                .map_err(map_proxy_execution_error)
         }
         ProxyAction::M3u8Rewrite {
             url,
             headers,
             proxy_base,
-        } => synctv_proxy::proxy_m3u8_and_rewrite(proxy_http_client, &url, &headers, &proxy_base)
-            .await
-            .map_err(Into::into),
+        } => synctv_proxy::proxy_m3u8_and_rewrite_with_control(
+            proxy_http_client,
+            &url,
+            &headers,
+            &proxy_base,
+            request_control,
+        )
+        .await
+        .map(|response| set_default_cache_control(response, "no-cache, no-store"))
+        .map_err(map_proxy_execution_error),
         ProxyAction::DirectBody {
             body,
             content_type,
@@ -78,6 +109,7 @@ pub(crate) async fn execute_proxy_action_with_state(
     state: &AppState,
     action: ProxyAction,
     client_headers: &axum::http::HeaderMap,
+    request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         ProxyAction::LiveFlv { .. }
@@ -93,27 +125,39 @@ pub(crate) async fn execute_proxy_action_with_state(
             let range_header = client_headers
                 .get(axum::http::header::RANGE)
                 .and_then(|value| value.to_str().ok());
+            let proxy_control = proxy_execution_control(request_control);
 
             if should_use_proxy_cache(cache_enabled, range_header) {
-                return synctv_proxy::slice_cache::proxy_with_cache_enabled(
+                return synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control(
                     &state.proxy_slice_cache,
                     cache_enabled,
                     range_header,
                     &url,
                     &headers,
+                    proxy_control.as_ref(),
                 )
                 .await
-                .map_err(Into::into);
+                .map_err(map_proxy_execution_error);
             }
 
             execute_proxy_action(
                 &state.proxy_http_client,
                 ProxyAction::FetchAndForward { url, headers },
                 client_headers,
+                proxy_control.as_ref(),
             )
             .await
         }
-        other => execute_proxy_action(&state.proxy_http_client, other, client_headers).await,
+        other => {
+            let proxy_control = proxy_execution_control(request_control);
+            execute_proxy_action(
+                &state.proxy_http_client,
+                other,
+                client_headers,
+                proxy_control.as_ref(),
+            )
+            .await
+        }
     }
 }
 
@@ -158,69 +202,163 @@ pub(crate) async fn proxy_options_preflight(
 /// 2. Parse and verify HMAC signature from query string
 /// 3. Revalidate current user/room/member access
 /// 4. Resolve provider and execute proxy action
-pub(crate) async fn unified_proxy_handler(
+///
+/// Proxy handling is cancellation-driven.
+///
+/// Important timeout model:
+/// - Proxy routes do not inherit a whole-request/unary timeout budget.
+/// - Optional timeouts, if configured inside `synctv-proxy`, apply only to a
+///   single upstream HTTP hop up to response headers.
+/// - Response bodies are never timed out here; they stop only on cancellation.
+/// - Slice-cache proxying may perform multiple upstream hops, and each hop is
+///   independent rather than sharing one end-to-end deadline.
+pub(crate) fn unified_proxy_handler(
     Path(path): Path<crate::proto::client::ProviderProxyPathRequest>,
     State(state): State<AppState>,
+    request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
-) -> AppResult<axum::response::Response> {
-    crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
-    let crate::proto::client::ProviderProxyPathRequest {
-        provider_name,
-        sub_path,
-    } = path;
-    let query_str = raw_query.0.as_deref().unwrap_or("");
+) -> BoxFuture<'static, AppResult<axum::response::Response>> {
+    execute_unified_proxy_handler(
+        path,
+        state,
+        request_meta.0.with_timeout(None),
+        headers,
+        raw_query,
+    )
+}
 
-    // 1. Extract version from sub_path (first segment)
-    let version = sub_path.split('/').next().unwrap_or("");
+fn proxy_execution_control(request_control: Option<&ExecutionControl>) -> Option<ExecutionControl> {
+    request_control.map(|control| ExecutionControl::from_parts(None, control.cancellation_token()))
+}
 
-    // 2. Parse and verify HMAC signature from query string
-    let claims = state
-        .proxy_signing_key
-        .parse_and_verify_query(query_str, &provider_name, version)
-        .map_err(|error| {
-            tracing::warn!(error = %error, "Invalid proxy signature");
-            AppError::unauthorized("Invalid proxy signature")
-        })?;
+fn build_proxy_action_control(
+    action_cancellation: tokio_util::sync::CancellationToken,
+) -> ExecutionControl {
+    ExecutionControl::from_parts(None, action_cancellation)
+}
 
-    // 3. Fresh access verification
-    let uid = UserId::from_string(claims.user_id.clone());
-    let rid = RoomId::from_string(claims.room_id.clone());
-    validate_fresh_proxy_access(&state, &rid, &uid).await?;
+fn execute_unified_proxy_handler(
+    path: crate::proto::client::ProviderProxyPathRequest,
+    state: AppState,
+    request_meta: crate::impls::RequestMetadata,
+    headers: HeaderMap,
+    raw_query: RawQuery,
+) -> BoxFuture<'static, AppResult<axum::response::Response>> {
+    async move {
+        crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
+        let crate::proto::client::ProviderProxyPathRequest {
+            provider_name,
+            sub_path,
+        } = path;
+        let query_str = raw_query.0.unwrap_or_default();
 
-    // 4. Resolve proxy provider from registry (no hardcoded match)
-    let proxy = state
-        .proxy_provider_registry
-        .get(&provider_name)
-        .ok_or_else(|| AppError::not_found("Unknown provider"))?;
+        let request_executor = state.request_executor.clone();
+        let resolve_request_meta = request_meta.clone();
+        let state_for_resolution = state.clone();
+        let provider_name_for_resolution = provider_name.clone();
+        let sub_path_for_resolution = sub_path.clone();
+        let query_str_for_resolution = query_str.clone();
 
-    // 5. Build context with verified claims for M3U8 signature propagation
-    let store = state.provider_stores.load(&provider_name);
-    let proxy_base = format!("/api/providers/proxy/{provider_name}");
-    let ctx = ProxyRequestContext {
-        sub_path: &sub_path,
-        query_string: Some(query_str),
-        store: Some(&store),
-        proxy_base: &proxy_base,
-        services: &state.proxy_services,
-        verified_claims: Some(&claims),
-    };
+        let (action, action_cancellation) = request_executor
+            .execute_public_with_control(
+                &resolve_request_meta,
+                EndpointRateLimitCategory::Streaming,
+                move |request_control| async move {
+                    let version = sub_path_for_resolution.split('/').next().unwrap_or("");
+                    let claims = state_for_resolution
+                        .proxy_signing_key
+                        .parse_and_verify_query(
+                            &query_str_for_resolution,
+                            &provider_name_for_resolution,
+                            version,
+                        )
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = %error,
+                                message = synctv_common::messages::INVALID_PROXY_SIGNATURE,
+                                "Proxy signature validation failed"
+                            );
+                            ApiError::Authentication(
+                                synctv_common::messages::INVALID_PROXY_SIGNATURE.to_string(),
+                            )
+                        })?;
 
-    // 7. Resolve and execute
-    let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;
-    match action {
-        ProxyAction::LiveFlv { .. }
-        | ProxyAction::LiveHlsPlaylist { .. }
-        | ProxyAction::LiveHlsSegment { .. } => {
-            live::execute_live_proxy_action(&state, action, Some(query_str)).await
+                    let uid = UserId::from_string(claims.user_id.clone());
+                    let rid = RoomId::from_string(claims.room_id.clone());
+                    validate_fresh_proxy_access_api(&state_for_resolution, &rid, &uid).await?;
+
+                    let proxy = state_for_resolution
+                        .proxy_provider_registry
+                        .get(&provider_name_for_resolution)
+                        .ok_or_else(|| {
+                            ApiError::NotFound(
+                                synctv_common::messages::UNKNOWN_PROVIDER.to_string(),
+                            )
+                        })?;
+
+                    let store = state_for_resolution
+                        .provider_stores
+                        .load(&provider_name_for_resolution);
+                    let proxy_base = format!("/api/providers/proxy/{provider_name_for_resolution}");
+                    let ctx = ProxyRequestContext {
+                        sub_path: &sub_path_for_resolution,
+                        query_string: Some(&query_str_for_resolution),
+                        store: Some(&store),
+                        proxy_base: &proxy_base,
+                        services: &state_for_resolution.proxy_services,
+                        verified_claims: Some(&claims),
+                        request_context: Some(&request_control),
+                    };
+
+                    let action = proxy.resolve_proxy(&ctx).await.map_err(ApiError::from)?;
+
+                    Ok::<_, ApiError>((action, request_control.cancellation_token()))
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+
+        let action_control = build_proxy_action_control(action_cancellation);
+        action_control
+            .check_active()
+            .map_err(|err| app_error_from_control(&err))?;
+
+        match action {
+            ProxyAction::LiveFlv { .. }
+            | ProxyAction::LiveHlsPlaylist { .. }
+            | ProxyAction::LiveHlsSegment { .. } => {
+                live::execute_live_proxy_action(&state, action, Some(query_str.as_str()))
+                    .await
+                    .map_err(app_error_to_api_error)
+                    .map_err(map_api_error)
+            }
+            other => {
+                execute_proxy_action_with_state(&state, other, &headers, Some(&action_control))
+                    .await
+                    .map_err(app_error_to_api_error)
+                    .map_err(map_api_error)
+            }
         }
-        other => execute_proxy_action_with_state(&state, other, &headers).await,
+    }
+    .boxed()
+}
+
+fn app_error_from_control(err: &synctv_common::ExecutionControlError) -> AppError {
+    match err {
+        synctv_common::ExecutionControlError::Cancelled => AppError::service_unavailable(),
+        synctv_common::ExecutionControlError::DeadlineExceeded => AppError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            synctv_common::messages::REQUEST_TIMED_OUT,
+        ),
     }
 }
 
 fn map_proxy_membership_probe_error(err: synctv_core::Error) -> AppError {
     match err {
-        synctv_core::Error::Authorization(_) => AppError::forbidden("Not a member of this room"),
+        synctv_core::Error::Authorization(_) => {
+            AppError::forbidden(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM)
+        }
         other => AppError::from(other),
     }
 }
@@ -233,7 +371,7 @@ async fn validate_fresh_proxy_access(
     let user = state.user_service.get_user(user_id).await?;
     if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
         return Err(AppError::forbidden(
-            "Proxy URL is no longer valid for this user",
+            synctv_common::messages::STALE_PROXY_ACCESS,
         ));
     }
 
@@ -250,6 +388,55 @@ async fn validate_fresh_proxy_access(
         .check_membership(room_id, user_id)
         .await
         .map_err(map_proxy_membership_probe_error)
+}
+
+async fn validate_fresh_proxy_access_api(
+    state: &AppState,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<(), ApiError> {
+    validate_fresh_proxy_access(state, room_id, user_id)
+        .await
+        .map_err(app_error_to_api_error)
+}
+
+fn app_error_to_api_error(err: AppError) -> ApiError {
+    match err.status {
+        StatusCode::BAD_REQUEST => ApiError::InvalidInput(err.message),
+        StatusCode::UNAUTHORIZED => ApiError::Authentication(err.message),
+        StatusCode::FORBIDDEN => ApiError::Authorization(err.message),
+        StatusCode::NOT_FOUND => ApiError::NotFound(err.message),
+        StatusCode::CONFLICT => ApiError::AlreadyExists(err.message),
+        StatusCode::TOO_MANY_REQUESTS => match err.retry_after_seconds {
+            Some(retry_after_seconds) => ApiError::RateLimitedWithRetry {
+                message: err.message,
+                retry_after_seconds,
+            },
+            None => ApiError::RateLimited(err.message),
+        },
+        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(err.message),
+        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT | StatusCode::SERVICE_UNAVAILABLE => {
+            ApiError::ServiceUnavailable(err.message)
+        }
+        _ => ApiError::Internal(err.message),
+    }
+}
+
+fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
+    match synctv_proxy::proxy_error_kind(&err) {
+        Some(synctv_proxy::ProxyErrorKind::Cancelled | synctv_proxy::ProxyErrorKind::Timeout) => {
+            AppError::new(StatusCode::REQUEST_TIMEOUT, err.to_string())
+        }
+        Some(
+            synctv_proxy::ProxyErrorKind::Connection
+            | synctv_proxy::ProxyErrorKind::Upstream
+            | synctv_proxy::ProxyErrorKind::Ssrf,
+        ) => AppError::new(StatusCode::BAD_GATEWAY, err.to_string()),
+        Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
+            AppError::bad_request(err.to_string())
+        }
+        Some(synctv_proxy::ProxyErrorKind::Other) | None => AppError::from(err),
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +468,12 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn test_request_metadata() -> RequestMetadata {
+        RequestMetadata(crate::impls::RequestMetadata::new(
+            crate::impls::TransportProtocol::Http,
+        ))
+    }
+
     #[test]
     fn test_provider_proxy_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::ProviderProxyPathRequest = serde_json::from_str(
@@ -290,6 +483,41 @@ mod tests {
 
         assert_eq!(req.provider_name, "test_provider");
         assert_eq!(req.sub_path, "v1/media/stream.m3u8");
+    }
+
+    #[test]
+    fn test_set_default_cache_control_inserts_when_missing() {
+        let response = axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .body(axum::body::Body::empty())
+            .expect("response");
+
+        let response = set_default_cache_control(response, "no-cache, no-store");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache, no-store")
+        );
+    }
+
+    #[test]
+    fn test_set_default_cache_control_preserves_existing_value() {
+        let response = axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CACHE_CONTROL, "public, max-age=60")
+            .body(axum::body::Body::empty())
+            .expect("response");
+
+        let response = set_default_cache_control(response, "no-cache, no-store");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=60")
+        );
     }
 
     async fn start_mock_server_or_skip() -> Option<MockServer> {
@@ -403,10 +631,13 @@ mod tests {
 
     #[test]
     fn proxy_signature_errors_hide_verification_details() {
-        let err = AppError::unauthorized("Invalid proxy signature");
+        let err = AppError::unauthorized(synctv_common::messages::INVALID_PROXY_SIGNATURE);
 
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid proxy signature");
+        assert_eq!(
+            err.message,
+            synctv_common::messages::INVALID_PROXY_SIGNATURE
+        );
     }
 
     #[tokio::test]
@@ -729,6 +960,7 @@ mod tests {
                 sub_path: "v1/media".to_string(),
             }),
             State(state),
+            test_request_metadata(),
             HeaderMap::new(),
             RawQuery(Some(raw_query)),
         )
@@ -793,6 +1025,7 @@ mod tests {
                 sub_path: "v1/media".to_string(),
             }),
             State(state),
+            test_request_metadata(),
             HeaderMap::new(),
             RawQuery(Some(raw_query)),
         )
@@ -887,10 +1120,11 @@ mod tests {
             axum::http::HeaderValue::from_static("bytes=0-999"),
         )]);
 
-        let response1 = execute_proxy_action_with_state(&state, action.clone(), &client_headers)
-            .await
-            .expect("first proxy response");
-        let response2 = execute_proxy_action_with_state(&state, action, &client_headers)
+        let response1 =
+            execute_proxy_action_with_state(&state, action.clone(), &client_headers, None)
+                .await
+                .expect("first proxy response");
+        let response2 = execute_proxy_action_with_state(&state, action, &client_headers, None)
             .await
             .expect("second proxy response");
 
@@ -904,6 +1138,33 @@ mod tests {
         assert!(!should_use_proxy_cache(true, None));
         assert!(!should_use_proxy_cache(false, Some("bytes=0-999")));
         assert!(!should_use_proxy_cache(false, None));
+    }
+
+    #[test]
+    fn test_build_proxy_action_control_drops_deadline_but_preserves_cancellation() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let control = build_proxy_action_control(cancellation.clone());
+
+        assert_eq!(control.deadline(), None);
+        cancellation.cancel();
+        assert!(matches!(
+            control.check_active(),
+            Err(synctv_common::ExecutionControlError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn test_proxy_execution_control_drops_deadline_but_preserves_cancellation() {
+        let parent = ExecutionControl::from_timeout(Some(std::time::Duration::from_secs(5)));
+
+        let derived = proxy_execution_control(Some(&parent)).expect("derived proxy control");
+
+        assert_eq!(derived.deadline(), None);
+        parent.cancel();
+        assert!(matches!(
+            derived.check_active(),
+            Err(synctv_common::ExecutionControlError::Cancelled)
+        ));
     }
 
     #[tokio::test]

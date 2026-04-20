@@ -3,7 +3,8 @@
 
 use axum::{extract::State, Json};
 
-use super::{middleware::AuthUser, validation::ValidatedQuery, AppResult, AppState};
+use super::{middleware::RequestMetadata, validation::ValidatedQuery, AppResult, AppState};
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{GetProfileResponse, ListMyRoomsResponse};
 pub use crate::proto::client::{UpdateUserRequest, UpdateUserResponse};
 
@@ -24,12 +25,20 @@ pub use crate::proto::client::{UpdateUserRequest, UpdateUserResponse};
     )
 )]
 pub async fn get_me(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetProfileResponse>> {
-    let response = state
-        .client_api
-        .get_profile(&auth.user_id.to_string())
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.get_profile(auth.user_id.as_str()).await },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -55,7 +64,7 @@ pub async fn get_me(
     )
 )]
 pub async fn update_user(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UpdateUserResponse>> {
@@ -78,13 +87,27 @@ pub async fn update_user(
         ));
     }
 
-    let response = state
-        .client_api
-        .update_profile(
-            &auth.user_id.to_string(),
-            username.clone(),
-            old_password,
-            password,
+    let response_username = username.clone();
+    let update_username = username.clone();
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .update_profile(
+                        auth.user_id.as_str(),
+                        update_username.clone(),
+                        old_password,
+                        password,
+                    )
+                    .await
+            },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -92,7 +115,7 @@ pub async fn update_user(
     let username = if let Some(user) = response.user {
         Some(user.username)
     } else {
-        username
+        response_username
     };
     Ok(Json(UpdateUserResponse {
         message: format!("{} updated successfully", updated_fields.join(" and ")),
@@ -120,13 +143,21 @@ pub async fn update_user(
     )
 )]
 pub async fn list_my_rooms(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<crate::proto::client::ListMyRoomsRequest>,
 ) -> AppResult<Json<ListMyRoomsResponse>> {
-    let response = state
-        .client_api
-        .list_my_rooms(&auth.user_id.to_string(), req)
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.list_my_rooms(auth.user_id.as_str(), req).await },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -154,12 +185,25 @@ pub async fn list_my_rooms(
     )
 )]
 pub async fn delete_me(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<axum::http::StatusCode> {
-    state
-        .client_api
-        .delete_current_user(auth.user_id.as_str())
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .delete_current_user(auth.user_id.as_str())
+                    .await?;
+                Ok::<(), crate::impls::ApiError>(())
+            },
+        )
         .await
         .map_err(super::AppError::from)?;
 

@@ -205,7 +205,7 @@ fn extract_basic_credentials(headers: &HeaderMap) -> Result<String, MetricsAcces
 
 #[cfg(feature = "k8s")]
 #[derive(Clone)]
-struct CachedAuthUser {
+struct CachedKubernetesUserInfo {
     user_info: k8s_openapi::api::authentication::v1::UserInfo,
     expires_at: Instant,
 }
@@ -220,7 +220,7 @@ struct CachedAuthorizationDecision {
 #[cfg(feature = "k8s")]
 struct KubernetesMetricsAuthorizer {
     client: kube::Client,
-    authentication_cache: dashmap::DashMap<String, CachedAuthUser>,
+    authentication_cache: dashmap::DashMap<String, CachedKubernetesUserInfo>,
     authorization_cache: dashmap::DashMap<String, CachedAuthorizationDecision>,
 }
 
@@ -317,7 +317,7 @@ impl KubernetesMetricsAuthorizer {
 
         self.authentication_cache.insert(
             cache_key,
-            CachedAuthUser {
+            CachedKubernetesUserInfo {
                 user_info: user_info.clone(),
                 expires_at: now
                     + Duration::from_secs(metrics.auth.kubernetes.authentication_cache_ttl_seconds),

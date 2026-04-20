@@ -19,12 +19,12 @@
 //! Local clients are managed by `ProviderClientManager` rather than global statics.
 //! This enables proper sharing across the application and testability.
 
-use super::ProviderError;
+use super::{ExecutionControl, ProviderError};
 use async_trait::async_trait;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
 use tonic::{Code, Request, Status};
@@ -36,6 +36,7 @@ static PROVIDER_CLIENT_MANAGER_MARKER_SEQ: AtomicUsize = AtomicUsize::new(1);
 pub struct RemoteProviderConnection {
     channel: tonic::transport::Channel,
     auth_secret: Option<Arc<str>>,
+    request_context: Option<ExecutionControl>,
 }
 
 impl RemoteProviderConnection {
@@ -44,6 +45,7 @@ impl RemoteProviderConnection {
         Self {
             channel,
             auth_secret: auth_secret.map(|secret| Arc::<str>::from(secret.into())),
+            request_context: None,
         }
     }
 
@@ -56,6 +58,25 @@ impl RemoteProviderConnection {
     pub fn auth_secret(&self) -> Option<&str> {
         self.auth_secret.as_deref()
     }
+
+    #[must_use]
+    pub fn with_request_context(mut self, request_context: Option<ExecutionControl>) -> Self {
+        self.request_context = request_context;
+        self
+    }
+
+    #[must_use]
+    pub const fn request_context(&self) -> Option<&ExecutionControl> {
+        self.request_context.as_ref()
+    }
+
+    #[must_use]
+    pub fn effective_request_timeout(&self) -> Duration {
+        self.request_context
+            .as_ref()
+            .and_then(ExecutionControl::remaining_timeout)
+            .unwrap_or(GRPC_REQUEST_TIMEOUT)
+    }
 }
 
 /// Default per-request timeout for gRPC calls to remote providers.
@@ -63,6 +84,48 @@ impl RemoteProviderConnection {
 /// Reduced from 30s to 10s: hung requests under load consume threads.
 /// Providers that genuinely need longer should use explicit deadlines.
 const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn execute_grpc_request<T, E, F>(
+    connection: &RemoteProviderConnection,
+    context: &str,
+    future: F,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    E: From<synctv_media_providers::ProviderClientError>,
+{
+    // This is an intentional cancellation boundary around outbound gRPC I/O.
+    // Upper-layer business logic remains cooperatively cancellable; only the
+    // remote RPC wait itself is aborted here.
+    let request_timeout = connection.effective_request_timeout();
+    let run = async move {
+        tokio::time::timeout(request_timeout, future)
+            .await
+            .map_err(|_| {
+                E::from(synctv_media_providers::ProviderClientError::Network(
+                    format!(
+                        "gRPC request timeout ({}s) for {context}",
+                        request_timeout.as_secs_f64(),
+                    ),
+                ))
+            })?
+    };
+
+    match connection.request_context() {
+        Some(request_context) => {
+            let cancellation = request_context.cancellation_token();
+            tokio::select! {
+                () = cancellation.cancelled() => Err(E::from(
+                    synctv_media_providers::ProviderClientError::Network(format!(
+                        "gRPC request cancelled for {context}"
+                    ))
+                )),
+                result = run => result,
+            }
+        }
+        None => run.await,
+    }
+}
 
 /// Macro to generate a boilerplate gRPC client method implementation.
 ///
@@ -94,16 +157,14 @@ macro_rules! impl_grpc_method {
                 let mut client = _client_mod::$client_name::new(self.connection.channel());
                 let request = build_grpc_request(self.connection.auth_secret(), request)
                     .map_err(<$error>::from)?;
-                let response = tokio::time::timeout(GRPC_REQUEST_TIMEOUT, client.$method(request))
-                    .await
-                    .map_err(|_| {
-                        <$error>::Network(format!(
-                            "gRPC request timeout ({}s) for {}",
-                            GRPC_REQUEST_TIMEOUT.as_secs(),
-                            stringify!($method),
-                        ))
-                    })?
-                    .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), &e)))?;
+                let response =
+                    execute_grpc_request(&self.connection, stringify!($method), async move {
+                        client
+                            .$method(request)
+                            .await
+                            .map_err(|e| <$error>::from(map_grpc_status(stringify!($method), &e)))
+                    })
+                    .await?;
                 Ok(response.into_inner())
             })
         }
@@ -460,15 +521,13 @@ impl AlistInterface for GrpcAlistClient {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
         let mut client = AlistClient::new(self.connection.channel());
         let request = build_grpc_request(self.connection.auth_secret(), request)?;
-        let response = tokio::time::timeout(GRPC_REQUEST_TIMEOUT, client.login(request))
-            .await
-            .map_err(|_| {
-                AlistError::Network(format!(
-                    "gRPC request timeout ({}s) for login",
-                    GRPC_REQUEST_TIMEOUT.as_secs(),
-                ))
-            })?
-            .map_err(|e| map_grpc_status("login", &e))?;
+        let response = execute_grpc_request(&self.connection, "login", async move {
+            client
+                .login(request)
+                .await
+                .map_err(|e| map_grpc_status("login", &e))
+        })
+        .await?;
         Ok(response.into_inner().token)
     }
 }

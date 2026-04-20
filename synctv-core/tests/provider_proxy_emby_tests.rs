@@ -129,6 +129,7 @@ async fn test_stream_proxy() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -161,6 +162,7 @@ async fn test_m3u8_proxy() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -213,6 +215,7 @@ async fn test_subtitle_path_without_mode_is_rejected() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(err, ProviderError::NotFound));
@@ -254,6 +257,7 @@ async fn test_subtitle_by_mode_and_index() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -294,6 +298,7 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -401,6 +406,7 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
 
     let action = p
@@ -444,6 +450,7 @@ async fn test_subtitle_index_out_of_range() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -473,6 +480,7 @@ async fn test_subtitle_invalid_index() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -502,6 +510,7 @@ async fn test_unknown_sub_path() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -532,6 +541,7 @@ async fn test_expired_version() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -551,6 +561,7 @@ async fn test_no_store() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -571,6 +582,7 @@ async fn test_no_slash_in_sub_path() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -591,6 +603,7 @@ async fn test_version_not_in_store() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -622,6 +635,7 @@ async fn test_stream_preserves_all_headers() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {

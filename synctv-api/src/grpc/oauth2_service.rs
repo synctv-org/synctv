@@ -28,38 +28,37 @@
 //! - `UnlinkProvider` - remove `OAuth2` binding
 //! - `GetLinkedProviders` - list user's `OAuth2` bindings
 //!
-//! The service is registered WITHOUT a global auth interceptor. Authenticated
-//! endpoints perform inline JWT validation using `AuthInterceptor` directly.
+//! The service is registered without transport-level auth middleware.
+//! Authenticated endpoints call the shared impl-level `RequestExecutor`
+//! explicitly so HTTP and gRPC reuse the same validation pipeline.
 
 use synctv_proto::client::{
-    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
-    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
-    GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersRequest,
-    GetLinkedProvidersResponse, ListAvailableProvidersRequest, ListAvailableProvidersResponse,
-    UnlinkProviderRequest, UnlinkProviderResponse, o_auth2_service_server::OAuth2Service,
+    o_auth2_service_server::OAuth2Service, ExchangeAuthorizationCodeRequest,
+    ExchangeAuthorizationCodeResponse, GetAuthorizationUrlForBindRequest,
+    GetAuthorizationUrlForBindResponse, GetAuthorizationUrlRequest, GetAuthorizationUrlResponse,
+    GetLinkedProvidersRequest, GetLinkedProvidersResponse, ListAvailableProvidersRequest,
+    ListAvailableProvidersResponse, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
 use std::sync::Arc;
 use synctv_core::Config;
-use synctv_core::models::UserId;
 
 use super::map_api_error;
+use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 
 /// gRPC `OAuth2` service with mixed authentication.
 ///
-/// Registered WITHOUT a global auth interceptor. Public endpoints
+/// Registered without transport-level auth middleware. Public endpoints
 /// (`GetAuthorizationUrl`, `ExchangeAuthorizationCode`, `ListAvailableProviders`)
 /// require no authentication. Private endpoints (`GetAuthorizationUrlForBind`,
-/// `UnlinkProvider`, `GetLinkedProviders`) perform inline JWT validation.
+/// `UnlinkProvider`, `GetLinkedProviders`) call the shared request executor
+/// explicitly.
 pub struct OAuth2GrpcService {
     oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
     config: Arc<Config>,
-    /// Auth interceptor for endpoints that require authentication.
-    /// Used inline instead of as a global service interceptor so that
-    /// public endpoints remain unauthenticated.
-    auth_interceptor: super::interceptors::AuthInterceptor,
+    request_executor: Arc<RequestExecutor>,
 }
 
 impl OAuth2GrpcService {
@@ -67,33 +66,13 @@ impl OAuth2GrpcService {
     pub const fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
         config: Arc<Config>,
-        auth_interceptor: super::interceptors::AuthInterceptor,
+        request_executor: Arc<RequestExecutor>,
     ) -> Self {
         Self {
             oauth2_api,
             config,
-            auth_interceptor,
+            request_executor,
         }
-    }
-
-    /// Perform inline JWT auth and extract `user_id` for authenticated endpoints.
-    ///
-    /// This replaces the global `with_interceptor` pattern so that only the
-    /// private endpoints require authentication. Calls `inject_user` on the
-    /// request and then reads the resulting `UserContext` from extensions.
-    fn require_auth<T: std::fmt::Debug>(
-        &self,
-        request: Request<T>,
-    ) -> Result<(UserId, Request<T>), Status> {
-        // inject_user consumes the authenticated identity produced by
-        // BlacklistCheckLayer and inserts UserContext into extensions
-        let request = self.auth_interceptor.inject_user(request)?;
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::internal("UserContext missing after auth"))?;
-        let user_id = UserId::from_string(user_context.user_id.clone());
-        Ok((user_id, request))
     }
 }
 
@@ -117,12 +96,31 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<GetAuthorizationUrlRequest>,
     ) -> Result<Response<GetAuthorizationUrlResponse>, Status> {
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         validate_oauth2_proto_request(&req)?;
         let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+        let oauth2_api = Arc::clone(&self.oauth2_api);
+        let provider = req.provider.clone();
         let (authorization_url, state) = self
-            .oauth2_api
-            .get_authorization_url(&req.provider, redirect_url)
+            .request_executor
+            .execute_public_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control| async move {
+                    oauth2_api
+                        .get_authorization_url_with_control(
+                            &provider,
+                            redirect_url,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL: {}", e);
@@ -146,25 +144,40 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<GetAuthorizationUrlForBindRequest>,
     ) -> Result<Response<GetAuthorizationUrlForBindResponse>, Status> {
-        let (user_id, request) = self.require_auth(request)?;
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         validate_oauth2_proto_request(&req)?;
         let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+        let oauth2_api = Arc::clone(&self.oauth2_api);
+        let provider = req.provider.clone();
 
         let (authorization_url, state) = self
-            .oauth2_api
-            .get_authorization_url_for_bind(&user_id, &req.provider, redirect_url)
+            .request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |request_control, authenticated| async move {
+                    oauth2_api
+                        .get_authorization_url_for_bind_with_control(
+                            &authenticated.user_id,
+                            &provider,
+                            redirect_url,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL for bind: {}", e);
                 map_api_error(e)
             })?;
 
-        debug!(
-            "Generated OAuth2 bind URL for provider: {} (user: {})",
-            req.provider,
-            user_id.as_str()
-        );
+        debug!("Generated OAuth2 bind URL for provider: {}", req.provider);
 
         Ok(Response::new(GetAuthorizationUrlForBindResponse {
             authorization_url,
@@ -181,25 +194,36 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<ExchangeAuthorizationCodeRequest>,
     ) -> Result<Response<ExchangeAuthorizationCodeResponse>, Status> {
-        // Reuse the identity authenticated by BlacklistCheckLayer when present.
-        // Public login flows have no authenticated token and therefore keep
-        // `current_user_id` as `None`.
-        let current_user_id: Option<UserId> = request
-            .extensions()
-            .get::<synctv_core::service::AuthenticatedToken>()
-            .map(|authenticated| authenticated.user_id.clone());
-
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
         validate_oauth2_proto_request(&req)?;
+        let oauth2_api = Arc::clone(&self.oauth2_api);
+        let provider = req.provider.clone();
+        let code = req.code.clone();
+        let state_token = req.state.clone();
         let result = self
-            .oauth2_api
-            .exchange_authorization_code(
-                &req.provider,
-                &req.code,
-                &req.state,
-                current_user_id.as_ref(),
-                client_ip,
+            .request_executor
+            .execute_optional_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control, authenticated| async move {
+                    let current_user_id = authenticated.as_ref().map(|token| &token.user_id);
+                    oauth2_api
+                        .exchange_authorization_code_with_control(
+                            &provider,
+                            &code,
+                            &state_token,
+                            current_user_id,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
             )
             .await
             .map_err(|e| {
@@ -225,11 +249,21 @@ impl OAuth2Service for OAuth2GrpcService {
     /// List all available `OAuth2` provider instances (PUBLIC - no auth required)
     async fn list_available_providers(
         &self,
-        _request: Request<ListAvailableProvidersRequest>,
+        request: Request<ListAvailableProvidersRequest>,
     ) -> Result<Response<ListAvailableProvidersResponse>, Status> {
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
+        let oauth2_api = Arc::clone(&self.oauth2_api);
         let providers = self
-            .oauth2_api
-            .list_available_providers()
+            .request_executor
+            .execute_public(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move || async move { oauth2_api.list_available_providers().await },
+            )
             .await
             .map_err(|e| {
                 error!("Failed to list available providers: {}", e);
@@ -251,25 +285,39 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<UnlinkProviderRequest>,
     ) -> Result<Response<UnlinkProviderResponse>, Status> {
-        let (user_id, request) = self.require_auth(request)?;
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         validate_oauth2_proto_request(&req)?;
         let provider_user_id = optional_non_empty_trimmed(&req.provider_user_id);
+        let oauth2_api = Arc::clone(&self.oauth2_api);
+        let provider = req.provider.clone();
 
         let result = self
-            .oauth2_api
-            .unlink_provider(&user_id, &req.provider, provider_user_id.as_deref())
+            .request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    oauth2_api
+                        .unlink_provider(
+                            &authenticated.user_id,
+                            &provider,
+                            provider_user_id.as_deref(),
+                        )
+                        .await
+                },
+            )
             .await
             .map_err(|e| {
                 error!("Failed to unlink OAuth2 provider: {}", e);
                 map_api_error(e)
             })?;
 
-        info!(
-            "User {} unlinked OAuth2 provider: {}",
-            user_id.as_str(),
-            req.provider
-        );
+        info!("OAuth2 provider unlinked: {}", req.provider);
 
         Ok(Response::new(UnlinkProviderResponse {
             success: result.success,
@@ -282,11 +330,22 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         request: Request<GetLinkedProvidersRequest>,
     ) -> Result<Response<GetLinkedProvidersResponse>, Status> {
-        let (user_id, _request) = self.require_auth(request)?;
+        let metadata = super::request_metadata(
+            &request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
+        );
 
         let providers = self
-            .oauth2_api
-            .get_linked_providers(&user_id)
+            .request_executor
+            .execute_user(&metadata, EndpointRateLimitCategory::Read, {
+                let oauth2_api = Arc::clone(&self.oauth2_api);
+                move |authenticated| async move {
+                    oauth2_api
+                        .get_linked_providers(&authenticated.user_id)
+                        .await
+                }
+            })
             .await
             .map_err(|e| {
                 error!("Failed to get linked providers: {}", e);

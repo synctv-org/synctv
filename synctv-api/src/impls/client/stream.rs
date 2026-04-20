@@ -170,7 +170,11 @@ impl ClientApiImpl {
         let user_id = self
             .jwt_validator
             .validate_http_extract_user_id(&bearer_token)
-            .map_err(|_| ApiError::Authentication("Invalid or expired token".to_string()))?;
+            .map_err(|_| {
+                ApiError::Authentication(
+                    synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                )
+            })?;
 
         // Verify room membership
         let rid = Self::parse_room_id(room_id)?;

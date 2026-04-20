@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
+use super::ExecutionControl;
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use crate::service::{CredentialEncryption, RoomService};
@@ -62,6 +63,16 @@ pub enum ProxyAction {
     },
 }
 
+impl ProxyAction {
+    #[must_use]
+    pub const fn bypasses_unary_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::LiveFlv { .. } | Self::LiveHlsPlaylist { .. } | Self::LiveHlsSegment { .. }
+        )
+    }
+}
+
 /// Services available to providers during proxy resolution.
 ///
 /// Gives providers DB access (e.g., fetching media from playlists) without
@@ -91,6 +102,8 @@ pub struct ProxyRequestContext<'a> {
     /// Verified claims from the incoming request's HMAC signature (if available).
     /// Providers use these to re-sign M3U8 proxy_base URLs with the same claims.
     pub verified_claims: Option<&'a ProxyUrlClaims>,
+    /// Cooperative execution control propagated from the caller.
+    pub request_context: Option<&'a ExecutionControl>,
 }
 
 /// Optional trait for providers that support HTTP proxy routes.
@@ -146,13 +159,27 @@ impl Default for ProxyProviderRegistry {
 pub async fn lookup_versioned(
     store: Option<&Arc<dyn ProviderStore>>,
     version: &str,
+    request_context: Option<&ExecutionControl>,
 ) -> Result<VersionedPlayback, ProviderError> {
+    if let Some(request_context) = request_context {
+        request_context
+            .check_active()
+            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+    }
+
     let store = store.ok_or_else(|| ProviderError::ApiError("Store not configured".into()))?;
     let versioned: VersionedPlayback = store
         .get(&format!("v:{version}"))
         .await
         .map_err(|e| ProviderError::ApiError(format!("Store error: {e}")))?
         .ok_or(ProviderError::NotFound)?;
+
+    if let Some(request_context) = request_context {
+        request_context
+            .check_active()
+            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+    }
+
     if versioned.is_expired() {
         return Err(ProviderError::NotFound);
     }
@@ -162,13 +189,14 @@ pub async fn lookup_versioned(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::store::InMemoryProviderStore;
+    use crate::provider::{store::InMemoryProviderStore, ExecutionControl};
     use crate::provider::{store::VersionedPlayback, PlaybackResult};
     use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_lookup_versioned_no_store() {
-        let result = lookup_versioned(None, "v1").await;
+        let result = lookup_versioned(None, "v1", None).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ProviderError::ApiError(_)));
     }
@@ -176,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn test_lookup_versioned_not_found() {
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(100));
-        let result = lookup_versioned(Some(&store), "nonexistent").await;
+        let result = lookup_versioned(Some(&store), "nonexistent", None).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ProviderError::NotFound));
     }
@@ -197,7 +225,7 @@ mod tests {
             .set("v:v1", &vp, Duration::from_mins(1))
             .await
             .unwrap();
-        let result = lookup_versioned(Some(&store), "v1").await;
+        let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ProviderError::NotFound));
     }
@@ -218,8 +246,33 @@ mod tests {
             .set("v:v1", &vp, Duration::from_mins(1))
             .await
             .unwrap();
-        let result = lookup_versioned(Some(&store), "v1").await;
+        let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().version, "v1");
+    }
+
+    #[tokio::test]
+    async fn test_lookup_versioned_respects_cancellation() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(100));
+        let vp = VersionedPlayback {
+            version: "v1".to_string(),
+            result: PlaybackResult {
+                playback_infos: HashMap::new(),
+                default_mode: "direct".to_string(),
+                metadata: HashMap::new(),
+            },
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        store
+            .set("v:v1", &vp, Duration::from_mins(1))
+            .await
+            .unwrap();
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let request_context = ExecutionControl::from_parts(None, cancellation);
+
+        let result = lookup_versioned(Some(&store), "v1", Some(&request_context)).await;
+        assert!(matches!(result, Err(ProviderError::NetworkError(_))));
     }
 }

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
@@ -421,6 +422,16 @@ impl std::fmt::Debug for OAuth2Service {
 }
 
 impl OAuth2Service {
+    async fn run_with_control<T, F>(control: Option<&ExecutionControl>, future: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        match control {
+            Some(control) => control.run(future).await.map_err(Error::from)?,
+            None => future.await,
+        }
+    }
+
     /// Create a new `OAuth2` service.
     ///
     /// # Arguments
@@ -477,15 +488,27 @@ impl OAuth2Service {
         self.allowed_redirect_domains = Arc::new(domains);
     }
 
-    /// Store `OAuth2` state via the configured state store
+    #[cfg(test)]
     async fn store_state(&self, state_token: &str, state: &OAuth2State) -> Result<()> {
-        self.state_store
-            .store(
+        self.store_state_with_control(state_token, state, None)
+            .await
+    }
+
+    async fn store_state_with_control(
+        &self,
+        state_token: &str,
+        state: &OAuth2State,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::run_with_control(
+            control,
+            self.state_store.store(
                 state_token,
                 state,
                 std::time::Duration::from_secs(OAUTH2_STATE_TTL_SECONDS),
-            )
-            .await?;
+            ),
+        )
+        .await?;
         debug!(
             "Stored OAuth2 state for token {}",
             &state_token[..8.min(state_token.len())]
@@ -498,10 +521,17 @@ impl OAuth2Service {
     /// Uses the configured [`OAuthStateStore`] to ensure single-use consumption
     /// and prevent CSRF replay attacks.
     ///
-    /// Also performs an additional expiry check on `created_at` as a defense-in-depth
-    /// measure, even though the storage layer should have already enforced TTL.
+    #[cfg(test)]
     async fn consume_state(&self, state_token: &str) -> Result<OAuth2State> {
-        match self.state_store.consume(state_token).await? {
+        self.consume_state_with_control(state_token, None).await
+    }
+
+    async fn consume_state_with_control(
+        &self,
+        state_token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OAuth2State> {
+        match Self::run_with_control(control, self.state_store.consume(state_token)).await? {
             Some(state) => {
                 // Defense-in-depth: verify state has not expired based on created_at timestamp.
                 // This provides an additional layer of protection even if the storage backend
@@ -564,7 +594,17 @@ impl OAuth2Service {
         instance_name: &str,
         redirect_url: Option<String>,
     ) -> Result<(String, String)> {
-        self.build_authorization_url(instance_name, redirect_url, None)
+        self.get_authorization_url_with_control(instance_name, redirect_url, None)
+            .await
+    }
+
+    pub async fn get_authorization_url_with_control(
+        &self,
+        instance_name: &str,
+        redirect_url: Option<String>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String)> {
+        self.build_authorization_url(instance_name, redirect_url, None, control)
             .await
     }
 
@@ -575,7 +615,23 @@ impl OAuth2Service {
         redirect_url: Option<String>,
         user_id: Option<UserId>,
     ) -> Result<(String, String)> {
-        self.build_authorization_url(instance_name, redirect_url, user_id)
+        self.get_authorization_url_with_user_with_control(
+            instance_name,
+            redirect_url,
+            user_id,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_authorization_url_with_user_with_control(
+        &self,
+        instance_name: &str,
+        redirect_url: Option<String>,
+        user_id: Option<UserId>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String)> {
+        self.build_authorization_url(instance_name, redirect_url, user_id, control)
             .await
     }
 
@@ -590,6 +646,7 @@ impl OAuth2Service {
         instance_name: &str,
         redirect_url: Option<String>,
         bind_user_id: Option<UserId>,
+        control: Option<&ExecutionControl>,
     ) -> Result<(String, String)> {
         // Validate redirect URL if provided
         if let Some(ref url) = redirect_url {
@@ -614,10 +671,13 @@ impl OAuth2Service {
         let state_token = synctv_common::snanoid!(32);
 
         // Generate authorization URL with PKCE challenge (lock is NOT held here)
-        let (auth_url, pkce_verifier) = provider
-            .new_auth_url(&state_token)
-            .await
-            .internal_with_err("Failed to generate authorization URL")?;
+        let (auth_url, pkce_verifier) = Self::run_with_control(control, async {
+            provider
+                .new_auth_url(&state_token)
+                .await
+                .internal_with_err("Failed to generate authorization URL")
+        })
+        .await?;
 
         // Store state (including PKCE verifier) for verification during callback
         let oauth_state = OAuth2State {
@@ -628,7 +688,8 @@ impl OAuth2Service {
             pkce_verifier,
         };
 
-        self.store_state(&state_token, &oauth_state).await?;
+        self.store_state_with_control(&state_token, &oauth_state, control)
+            .await?;
 
         debug!(
             "Generated OAuth2 authorization URL for provider {}",
@@ -765,7 +826,15 @@ impl OAuth2Service {
 
     /// Verify `OAuth2` state during callback
     pub async fn verify_state(&self, state_token: &str) -> Result<OAuth2State> {
-        self.consume_state(state_token).await
+        self.verify_state_with_control(state_token, None).await
+    }
+
+    pub async fn verify_state_with_control(
+        &self,
+        state_token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OAuth2State> {
+        self.consume_state_with_control(state_token, control).await
     }
 
     /// Exchange authorization code for user info with PKCE verification
@@ -779,6 +848,17 @@ impl OAuth2Service {
         instance_name: &str,
         code: &str,
         pkce_verifier: &str,
+    ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
+        self.exchange_code_for_user_info_with_control(instance_name, code, pkce_verifier, None)
+            .await
+    }
+
+    pub async fn exchange_code_for_user_info_with_control(
+        &self,
+        instance_name: &str,
+        code: &str,
+        pkce_verifier: &str,
+        control: Option<&ExecutionControl>,
     ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
         // Clone both the Arc<provider> and the provider_type under the read lock.
         // After this block the lock is released; subsequent code cannot race with
@@ -797,10 +877,13 @@ impl OAuth2Service {
         debug!("Exchanging code for user info from {}", instance_name);
 
         // Network I/O without holding the lock
-        let user_info = provider
-            .get_user_info(code, pkce_verifier)
-            .await
-            .internal_with_err("Failed to get user info")?;
+        let user_info = Self::run_with_control(control, async {
+            provider
+                .get_user_info(code, pkce_verifier)
+                .await
+                .internal_with_err("Failed to get user info")
+        })
+        .await?;
 
         // Convert provider user info to service user info
         let service_user_info = OAuth2UserInfo {

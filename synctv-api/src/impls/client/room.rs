@@ -2,6 +2,7 @@
 
 use crate::impls::ApiError;
 use synctv_core::models::UserId;
+use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
 use super::convert::{
@@ -427,6 +428,18 @@ impl ClientApiImpl {
         req: crate::proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
     ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+        self.join_room_with_control(user_id, room_id, req, client_ip, None)
+            .await
+    }
+
+    pub async fn join_room_with_control(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::JoinRoomRequest,
+        client_ip: Option<&str>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = UserId::from_string(user_id.to_string());
@@ -449,19 +462,29 @@ impl ClientApiImpl {
 
             let valid = self
                 .room_service
-                .check_room_password_with_rate_limit(&rid, password, parsed_client_ip)
+                .check_room_password_with_rate_limit_with_control(
+                    &rid,
+                    password,
+                    parsed_client_ip,
+                    request_control,
+                )
                 .await
                 .map_err(ApiError::from)?;
 
             let elapsed = start.elapsed();
             let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
             if elapsed < min_delay {
-                tokio::time::sleep(
-                    min_delay
-                        .checked_sub(elapsed)
-                        .expect("elapsed < min_delay guaranteed by if-check above"),
-                )
-                .await;
+                let delay = min_delay
+                    .checked_sub(elapsed)
+                    .expect("elapsed < min_delay guaranteed by if-check above");
+                if let Some(request_control) = request_control {
+                    request_control
+                        .run(tokio::time::sleep(delay))
+                        .await
+                        .map_err(|error| ApiError::from(synctv_core::Error::from(error)))?;
+                } else {
+                    tokio::time::sleep(delay).await;
+                }
             }
 
             if !valid {

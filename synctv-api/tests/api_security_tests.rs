@@ -1,6 +1,6 @@
 //! API Security Tests //!
 //! Tests for various security fixes:
-//! - B1: GuestUser extractor must use GuestTokenValidator (blacklist check)
+//! - B1: Guest-token validation must use GuestTokenValidator (blacklist check)
 //! - B8: WebSocket Bearer token case-sensitivity
 //! - B10: set_password must validate password strength at API layer
 //! - D13: Logout must require auth token
@@ -18,10 +18,10 @@ use synctv_core::service::auth::{
 };
 use synctv_core::Error;
 
-// B1: GuestUser extractor must check blacklist
+// B1: Guest-token validation must check blacklist
 
 /// A blacklisted guest token MUST be rejected by validate_async.
-/// This tests the core requirement that the GuestUser extractor must use
+/// This tests the core requirement that shared guest-token validation must use
 /// GuestTokenValidator::validate_async() (which checks blacklist) instead of
 /// just jwt_service.verify_guest_token() (which only checks JWT signature).
 #[tokio::test]
@@ -55,9 +55,9 @@ async fn test_b1_blacklisted_guest_token_rejected_by_validator() {
     );
 }
 
-/// The GuestUser extractor in middleware.rs must use validate_async (not
-/// verify_guest_token). We verify this by checking that the middleware
-/// code path (via GuestTokenValidator) catches blacklisted tokens.
+/// Shared guest-token validation must use validate_async (not
+/// verify_guest_token). We verify this by checking that the
+/// GuestTokenValidator path catches blacklisted tokens.
 #[tokio::test]
 async fn test_b1_non_blacklisted_token_passes() {
     let jwt = create_test_jwt_service();
@@ -136,8 +136,8 @@ async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
 // B8: WebSocket Bearer token case-insensitive
 
 /// "bearer " (lowercase) should be accepted by extract_bearer_token.
-/// The HTTP AuthUser extractor uses JwtValidator::extract_bearer_token which
-/// is case-insensitive. WebSocket's extract_user_id must match.
+/// The shared Bearer parsing path uses JwtValidator::extract_bearer_token,
+/// which is case-insensitive. WebSocket's extract_user_id must match.
 #[test]
 fn test_b8_bearer_lowercase_accepted() {
     let result = JwtValidator::extract_bearer_token("bearer some_token_value");

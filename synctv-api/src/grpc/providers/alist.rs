@@ -4,8 +4,10 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::http::SharedApiRuntime;
-use crate::impls::AlistApiImpl;
 use crate::impls::providers::{extract_instance_name, get_provider_binds};
+use crate::impls::AlistApiImpl;
+use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
+use synctv_core::Config;
 
 // Import generated proto types from synctv_proto
 use crate::proto::providers::alist::alist_provider_service_server::AlistProviderService;
@@ -15,8 +17,6 @@ use crate::proto::providers::alist::{
 };
 
 use crate::grpc::map_api_error;
-use crate::grpc::map_provider_error as api_err;
-
 /// Alist Provider gRPC Service
 ///
 /// Thin wrapper that delegates to `AlistApiImpl`.
@@ -24,15 +24,23 @@ use crate::grpc::map_provider_error as api_err;
 pub struct AlistProviderGrpcService {
     shared_api_runtime: Arc<SharedApiRuntime>,
     api: AlistApiImpl,
+    request_executor: Arc<RequestExecutor>,
+    config: Arc<Config>,
 }
 
 impl AlistProviderGrpcService {
     #[must_use]
-    pub fn new(shared_api_runtime: Arc<SharedApiRuntime>) -> Self {
+    pub fn new(
+        shared_api_runtime: Arc<SharedApiRuntime>,
+        request_executor: Arc<RequestExecutor>,
+        config: Arc<Config>,
+    ) -> Self {
         let api = shared_api_runtime.alist_api.as_ref().clone();
         Self {
             shared_api_runtime,
             api,
+            request_executor,
+            config,
         }
     }
 }
@@ -44,28 +52,42 @@ impl AlistProviderService for AlistProviderGrpcService {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let user_ctx = request
-            .extensions()
-            .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
-            .clone();
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         tracing::info!("gRPC Alist login request: host={}", req.host);
         let instance_name = extract_instance_name(&req.instance_name);
+        let api = self.api.clone();
 
-        self.api
-            .login(&user_ctx.user_id, req, instance_name.as_deref())
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control, authenticated| async move {
+                    api.login_with_context(
+                        authenticated.user_id.as_str(),
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
             .await
             .map(Response::new)
-            .map_err(api_err)
+            .map_err(crate::grpc::map_api_error)
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        let user_ctx = request
-            .extensions()
-            .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
-            .clone();
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         tracing::info!(
             "gRPC Alist list request: server_id={}, path={}",
@@ -73,78 +95,123 @@ impl AlistProviderService for AlistProviderGrpcService {
             req.path
         );
         let instance_name = extract_instance_name(&req.instance_name);
+        let api = self.api.clone();
 
-        self.api
-            .list(&user_ctx.user_id, req, instance_name.as_deref())
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.list_with_context(
+                        authenticated.user_id.as_str(),
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
             .await
             .map(Response::new)
-            .map_err(api_err)
+            .map_err(crate::grpc::map_api_error)
     }
 
     async fn get_me(
         &self,
         request: Request<GetMeRequest>,
     ) -> Result<Response<GetMeResponse>, Status> {
-        let user_ctx = request
-            .extensions()
-            .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
-            .clone();
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         tracing::info!("gRPC Alist me request: server_id={}", req.server_id);
         let instance_name = extract_instance_name(&req.instance_name);
+        let api = self.api.clone();
 
-        self.api
-            .get_me(&user_ctx.user_id, req, instance_name.as_deref())
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.get_me_with_context(
+                        authenticated.user_id.as_str(),
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
             .await
             .map(Response::new)
-            .map_err(api_err)
+            .map_err(crate::grpc::map_api_error)
     }
 
     async fn logout(
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let user_ctx = request
-            .extensions()
-            .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
-            .clone();
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
         let req = request.into_inner();
         tracing::info!("gRPC Alist logout request");
+        let api = self.api.clone();
 
-        self.api
-            .logout(&user_ctx.user_id, req)
+        self.request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |authenticated| async move {
+                    api.logout(authenticated.user_id.as_str(), req)
+                        .await
+                        .map_err(crate::impls::ApiError::from)
+                },
+            )
             .await
             .map(Response::new)
-            .map_err(api_err)
+            .map_err(crate::grpc::map_api_error)
     }
 
     async fn get_binds(
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
-        let req = request.get_ref();
-        let auth_context = request
-            .extensions()
-            .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-        let instance_name = extract_instance_name(&req.instance_name);
-
-        tracing::info!(
-            "gRPC Alist get binds request for user: {}",
-            auth_context.user_id
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
         );
-
-        let provider_binds = get_provider_binds(
-            &self.shared_api_runtime.user_provider_credential_repository,
-            &auth_context.user_id,
-            synctv_core::provider::AlistProvider::NAME,
-            "username",
-            instance_name.as_deref(),
-        )
-        .await
-        .map_err(map_api_error)?;
+        let req = request.get_ref();
+        let instance_name = extract_instance_name(&req.instance_name);
+        let repo = self
+            .shared_api_runtime
+            .user_provider_credential_repository
+            .clone();
+        let provider_binds = self
+            .request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    get_provider_binds(
+                        &repo,
+                        authenticated.user_id.as_str(),
+                        synctv_core::provider::AlistProvider::NAME,
+                        "username",
+                        instance_name.as_deref(),
+                    )
+                    .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
 
         let binds = provider_binds
             .into_iter()

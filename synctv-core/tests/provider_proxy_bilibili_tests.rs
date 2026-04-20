@@ -140,6 +140,7 @@ async fn test_subtitle_proxy() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -179,6 +180,7 @@ async fn test_subtitle_english() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -210,6 +212,7 @@ async fn test_subtitle_not_found() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -297,6 +300,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
 
     let action = p
@@ -380,6 +384,7 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
 
     let action = p
@@ -423,6 +428,7 @@ async fn test_m3u8_proxy() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -460,6 +466,7 @@ async fn test_unknown_sub_path() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -490,6 +497,7 @@ async fn test_expired_version() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -509,6 +517,7 @@ async fn test_no_store() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -529,6 +538,7 @@ async fn test_no_slash_in_sub_path() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -549,6 +559,7 @@ async fn test_version_not_in_store() {
         services: &fake_services,
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
+        request_context: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(

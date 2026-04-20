@@ -4,6 +4,7 @@ use super::convert::user_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 use std::future::Future;
+use synctv_core::provider::ExecutionControl;
 
 /// Outcome of a logout operation.
 ///
@@ -33,8 +34,17 @@ impl LogoutOutcome {
 impl ClientApiImpl {
     pub async fn register(
         &self,
+        req: crate::proto::client::RegisterRequest,
+        client_ip: Option<std::net::IpAddr>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        self.register_with_control(req, client_ip, None).await
+    }
+
+    pub async fn register_with_control(
+        &self,
         mut req: crate::proto::client::RegisterRequest,
         client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
         // Validate and sanitize username
         req.username = crate::http::validation::validate_username(&req.username)
@@ -56,7 +66,7 @@ impl ClientApiImpl {
         // Tokens are None when email verification is required (user is Pending).
         let (user, access_token, refresh_token) = self
             .user_service
-            .register(req.username, email, req.password, client_ip)
+            .register_with_control(req.username, email, req.password, client_ip, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -71,6 +81,15 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::LoginRequest,
         client_ip: Option<std::net::IpAddr>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        self.login_with_control(req, client_ip, None).await
+    }
+
+    pub async fn login_with_control(
+        &self,
+        req: crate::proto::client::LoginRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
@@ -101,7 +120,7 @@ impl ClientApiImpl {
         // Login user (returns tuple: (User, access_token, refresh_token))
         let (user, access_token, refresh_token) = self
             .user_service
-            .login(identifier, req.password, client_ip)
+            .login_with_control(identifier, req.password, client_ip, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -116,12 +135,20 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::RefreshTokenRequest,
     ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
+        self.refresh_token_with_control(req, None).await
+    }
+
+    pub async fn refresh_token_with_control(
+        &self,
+        req: crate::proto::client::RefreshTokenRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
         let (access_token, refresh_token) = self
             .user_service
-            .refresh_token(req.refresh_token)
+            .refresh_token_with_control(req.refresh_token, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -166,7 +193,7 @@ where
                 error = %error,
                 "Rejecting logout because the presented token is not a valid access token"
             );
-            ApiError::Authentication("Invalid or expired token".to_string())
+            ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
 
     if claims.jti.is_empty() {
@@ -257,7 +284,7 @@ mod tests {
         match result {
             Err(ApiError::Authentication(message)) => {
                 assert!(
-                    message == "Invalid or expired token",
+                    message == synctv_common::messages::INVALID_OR_EXPIRED_TOKEN,
                     "unexpected authentication error: {message}"
                 );
             }
@@ -280,7 +307,7 @@ mod tests {
         match result {
             Err(ApiError::Authentication(message)) => {
                 assert!(
-                    message == "Invalid or expired token",
+                    message == synctv_common::messages::INVALID_OR_EXPIRED_TOKEN,
                     "unexpected authentication error: {message}"
                 );
             }

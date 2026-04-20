@@ -4,7 +4,7 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use synctv_core::models::{PlaylistId, UserId};
-use synctv_core::provider::ProviderContext;
+use synctv_core::provider::{ExecutionControl, ProviderContext};
 
 use super::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
@@ -151,10 +151,12 @@ impl ClientApiImpl {
         &'a self,
         user_id: &'a str,
         room_id: &'a str,
+        request_control: Option<&ExecutionControl>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id)
-            .with_room_id(room_id);
+            .with_room_id(room_id)
+            .with_request_context(request_control.map(ExecutionControl::child));
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
         }
@@ -183,6 +185,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
             sign_local_bilibili_danmaku_urls(
@@ -216,7 +219,7 @@ impl ClientApiImpl {
         };
 
         let ctx = self.attach_provider_store(
-            self.build_provider_context(user_id, room_id),
+            self.build_provider_context(user_id, room_id, request_control),
             provider.as_ref(),
         );
         let provider_result = provider
@@ -271,12 +274,11 @@ impl ClientApiImpl {
 
     async fn build_dynamic_playlist_playback_result(
         &self,
-        user_id: &str,
-        room_id: &str,
         room_id_model: &synctv_core::models::RoomId,
         user_id_model: &UserId,
         playlist_id: &PlaylistId,
         target: &[u8],
+        request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let playlist = self
             .room_service
@@ -333,7 +335,11 @@ impl ClientApiImpl {
         };
 
         let ctx = self.attach_provider_store(
-            self.build_provider_context(user_id, room_id),
+            self.build_provider_context(
+                user_id_model.as_str(),
+                room_id_model.as_str(),
+                request_control,
+            ),
             provider.as_ref(),
         );
         let provider_result = provider
@@ -375,6 +381,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
             let media = self
@@ -385,19 +392,23 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
             return self
-                .build_static_media_playback_result(user_id.as_str(), room_id.as_str(), media)
+                .build_static_media_playback_result(
+                    user_id.as_str(),
+                    room_id.as_str(),
+                    media,
+                    request_control,
+                )
                 .await;
         }
 
         if let Some(ref playlist_id) = state.playing_playlist_id {
             return self
                 .build_dynamic_playlist_playback_result(
-                    user_id.as_str(),
-                    room_id.as_str(),
                     room_id,
                     user_id,
                     playlist_id,
                     &state.target,
+                    request_control,
                 )
                 .await;
         }
@@ -476,7 +487,29 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
+        req: crate::proto::client::GetPlaybackRequest,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        self.get_playback_internal(user_id, room_id, req, None)
+            .await
+    }
+
+    pub async fn get_playback_with_context(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::GetPlaybackRequest,
+        request_control: &ExecutionControl,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        self.get_playback_internal(user_id, room_id, req, Some(request_control))
+            .await
+    }
+
+    async fn get_playback_internal(
+        &self,
+        user_id: &str,
+        room_id: &str,
         _req: crate::proto::client::GetPlaybackRequest,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
@@ -494,7 +527,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let playback_snapshot = match self
-            .build_playback_snapshot_from_state(&uid, &rid, &state)
+            .build_playback_snapshot_from_state(&uid, &rid, &state, request_control)
             .await
         {
             Ok(snapshot) => Some(snapshot),
@@ -513,6 +546,58 @@ impl ClientApiImpl {
             playback_state: Some(playback_state_to_proto(&state)),
             playback_snapshot,
         })
+    }
+
+    /// Apply a playback update patch or target switch, then return the final playback state.
+    pub async fn update_playback(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::UpdatePlaybackRequest,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = Self::parse_room_id(room_id)?;
+        let command = build_update_playback_request(req)?;
+
+        match command {
+            PlaybackUpdateCommand::Switch {
+                media_id,
+                playlist_id,
+                target,
+            } => {
+                self.room_service
+                    .playback_service()
+                    .switch(rid.clone(), uid.clone(), media_id, playlist_id, target)
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+            PlaybackUpdateCommand::Patch {
+                playing,
+                position,
+                speed,
+                version,
+            } => {
+                self.room_service
+                    .playback_service()
+                    .update_multiple_with_version(
+                        rid.clone(),
+                        uid.clone(),
+                        playing,
+                        position,
+                        speed,
+                        version,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+        }
+
+        self.get_playback(
+            user_id,
+            room_id,
+            crate::proto::client::GetPlaybackRequest {},
+        )
+        .await
     }
 
     // These methods are called from WebSocket message handler
@@ -613,7 +698,7 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        self.build_playback_snapshot_from_state(user_id, room_id, state)
+        self.build_playback_snapshot_from_state(user_id, room_id, state, None)
             .await
     }
 }

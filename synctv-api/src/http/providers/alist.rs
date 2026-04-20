@@ -8,11 +8,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
-    middleware::AuthUser, provider_common::provider_instance_name, validation::ValidatedQuery,
-    AppError, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, provider_common::provider_instance_name,
+    validation::ValidatedQuery, AppResult, AppState,
 };
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::ProviderInstanceQuery;
 use crate::proto::providers::alist::{BindInfo, GetBindsResponse};
 
@@ -31,6 +33,10 @@ pub fn alist_read_routes() -> Router<AppState> {
         .route("/list", post(list))
         .route("/me", post(me))
         .route("/binds", get(binds))
+}
+
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
 }
 
 // Provider API handlers
@@ -55,7 +61,7 @@ pub fn alist_read_routes() -> Router<AppState> {
     )
 )]
 pub(crate) async fn login(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::LoginRequest>,
@@ -63,13 +69,28 @@ pub(crate) async fn login(
     tracing::info!("Alist login request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.alist_api;
-    let resp = api
-        .login(&auth.user_id.to_string(), req, instance_name)
+    let api = state.alist_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |control, authenticated| async move {
+                api.login_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Alist login failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     tracing::info!("Alist login successful");
     Ok(Json(resp))
@@ -95,7 +116,7 @@ pub(crate) async fn login(
     )
 )]
 pub(crate) async fn list(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::ListRequest>,
@@ -103,13 +124,28 @@ pub(crate) async fn list(
     tracing::info!("Alist list request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.alist_api;
-    let resp = api
-        .list(&auth.user_id.to_string(), req, instance_name)
+    let api = state.alist_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |control, authenticated| async move {
+                api.list_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Alist list failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     Ok(Json(resp))
 }
@@ -134,7 +170,7 @@ pub(crate) async fn list(
     )
 )]
 pub(crate) async fn me(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::GetMeRequest>,
@@ -142,13 +178,28 @@ pub(crate) async fn me(
     tracing::info!("Alist me request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.alist_api;
-    let resp = api
-        .get_me(&auth.user_id.to_string(), req, instance_name)
+    let api = state.alist_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |control, authenticated| async move {
+                api.get_me_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Alist me failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     Ok(Json(resp))
 }
@@ -172,20 +223,29 @@ pub(crate) async fn me(
     )
 )]
 pub(crate) async fn logout(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<crate::proto::providers::alist::LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    let api = &state.alist_api;
-    let resp = api
-        .logout(&auth.user_id.to_string(), req)
-        .await
-        .map_err(|e| {
-            tracing::error!("Alist logout failed: {}", e);
-            AppError::from(e)
-        })?;
+    let api = state.alist_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp =
+        state
+            .client_api
+            .execute_user_endpoint(
+                &request_meta,
+                EndpointRateLimitCategory::Auth,
+                move |authenticated| async move {
+                    api.logout(authenticated.user_id.as_str(), req).await
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Alist logout failed: {}", e);
+                e
+            })?;
     Ok(Json(resp))
 }
 
@@ -207,32 +267,44 @@ pub(crate) async fn logout(
     )
 )]
 pub(crate) async fn binds(
-    auth: crate::http::middleware::AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
-    tracing::info!("Alist binds request for user: {}", auth.user_id);
     let instance_name = provider_instance_name(&query)?;
+    let repository = state.user_provider_credential_repository.clone();
+    let request_meta = request_metadata(request_meta);
+    let response = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                tracing::info!("Alist binds request for user: {}", authenticated.user_id);
+                let provider_binds = get_provider_binds(
+                    &repository,
+                    authenticated.user_id.as_str(),
+                    synctv_core::provider::AlistProvider::NAME,
+                    "username",
+                    instance_name,
+                )
+                .await?;
 
-    let provider_binds = get_provider_binds(
-        &state.user_provider_credential_repository,
-        &auth.user_id.to_string(),
-        synctv_core::provider::AlistProvider::NAME,
-        "username",
-        instance_name,
-    )
-    .await
-    .map_err(AppError::from)?;
+                let binds = provider_binds
+                    .into_iter()
+                    .map(|b| BindInfo {
+                        id: b.id,
+                        host: b.host,
+                        username: b.label_value,
+                        created_at: b.created_at,
+                    })
+                    .collect();
 
-    let alist_binds: Vec<_> = provider_binds
-        .into_iter()
-        .map(|b| BindInfo {
-            id: b.id,
-            host: b.host,
-            username: b.label_value,
-            created_at: b.created_at,
-        })
-        .collect();
+                Ok::<GetBindsResponse, crate::impls::ApiError>(GetBindsResponse { binds })
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
 
-    Ok(Json(GetBindsResponse { binds: alist_binds }))
+    Ok(Json(response))
 }

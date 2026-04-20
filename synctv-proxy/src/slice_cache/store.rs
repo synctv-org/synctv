@@ -11,10 +11,13 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
+use synctv_common::ExecutionControl;
 use tokio::sync::Mutex;
 
-use crate::apply_provider_headers;
-use crate::send_with_redirect_validation;
+use crate::{
+    apply_provider_headers, run_with_proxy_cancellation, send_with_redirect_validation,
+    send_with_redirect_validation_with_control,
+};
 
 use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
@@ -145,13 +148,7 @@ impl SliceCache {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard = tokio::time::timeout(Duration::from_secs(5), lock.lock())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Background cache lock timeout for slice {slice_index} (possible upstream hang)",
-                )
-            })?;
+        let _guard = lock.lock().await;
 
         if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
@@ -210,6 +207,7 @@ impl SliceCache {
                 slice_index,
                 total_size,
                 range_start,
+                None,
             )
             .await
             .map(|_| ())?;
@@ -224,6 +222,7 @@ impl SliceCache {
             slice_index,
             total_size,
             range_start,
+            None,
         )
         .await
         .map(|_| ())?;
@@ -455,6 +454,19 @@ impl SliceCache {
         slice_index: u64,
         total_size: u64,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
+        self.get_or_fetch_slice_with_control(url, provider_headers, slice_index, total_size, None)
+            .await
+    }
+
+    /// Get or fetch a single aligned slice with cooperative execution control.
+    pub async fn get_or_fetch_slice_with_control(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        slice_index: u64,
+        total_size: u64,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
 
         // Fast path: check cache without locking.
@@ -480,25 +492,26 @@ impl SliceCache {
             // needed for conditional request (304 Not Modified) handling.
         }
 
-        // Acquire per-key lock to prevent thundering herd.
-        // Use a timeout (like nginx's lock_timeout, default 5s) so a hung
-        // upstream doesn't block all subsequent requests forever.
+        // Acquire the per-key lock cooperatively.
+        // Proxy requests should only stop for caller cancellation, not for a
+        // proxy-local timeout budget.
         let lock = self
             .locks
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let Ok(_guard) = tokio::time::timeout(Duration::from_secs(5), lock.lock()).await else {
-            // Lock acquisition timed out -- serve stale data if available,
-            // otherwise return an error.
-            if let Some(entry) = self.backend.get(&key).await {
-                if entry.is_stale(self.config.stale_max_age) {
-                    return Ok((entry.data, CacheStatus::Stale));
+        let _guard = if let Some(control) = request_control {
+            let cancellation = control.cancellation_token();
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    return Err(anyhow::anyhow!(
+                        "Request cancelled while waiting for slice cache lock {slice_index}",
+                    ));
                 }
+                guard = lock.lock() => guard,
             }
-            return Err(anyhow::anyhow!(
-                "Cache lock timeout for slice {slice_index} (possible upstream hang)",
-            ));
+        } else {
+            lock.lock().await
         };
 
         // Double-check after acquiring lock.
@@ -542,7 +555,13 @@ impl SliceCache {
             }
         }
 
-        let resp = match send_with_redirect_validation(&self.client, request).await {
+        let resp = match send_with_redirect_validation_with_control(
+            &self.client,
+            request,
+            request_control,
+        )
+        .await
+        {
             Ok(proxy_response) => proxy_response.response,
             Err(e) => {
                 // Clean up updating_keys on send failure so the key is not
@@ -555,7 +574,9 @@ impl SliceCache {
         // Handle 304 Not Modified: refresh the TTL and return Revalidated.
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             // Consume the (empty) body to release the connection.
-            let _ = resp.bytes().await;
+            let _ =
+                run_with_proxy_cancellation("slice cache 304 drain", request_control, resp.bytes())
+                    .await;
 
             // Refresh the entry's TTL by re-inserting it.
             if let Some(existing) = self.backend.get(&key).await {
@@ -570,7 +591,13 @@ impl SliceCache {
             let mut request2 = self.client.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers)?;
             request2 = request2.header("Range", &range_header);
-            let resp2 = match send_with_redirect_validation(&self.client, request2).await {
+            let resp2 = match send_with_redirect_validation_with_control(
+                &self.client,
+                request2,
+                request_control,
+            )
+            .await
+            {
                 Ok(proxy_response) => proxy_response.response,
                 Err(e) => {
                     self.updating_keys.remove(&key);
@@ -586,6 +613,7 @@ impl SliceCache {
                     slice_index,
                     total_size,
                     range_start,
+                    request_control,
                 )
                 .await;
             // Always clean up updating_keys (idempotent remove).
@@ -602,6 +630,7 @@ impl SliceCache {
                 slice_index,
                 total_size,
                 range_start,
+                request_control,
             )
             .await;
         // Always clean up updating_keys (idempotent). Prevents the key from
@@ -622,6 +651,7 @@ impl SliceCache {
         slice_index: u64,
         total_size: u64,
         range_start: u64,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
         // For slice requests, only 206 Partial Content is valid.
         // A 200 OK means upstream doesn't support Range requests and
@@ -705,7 +735,12 @@ impl SliceCache {
                     // Drain the body to release the connection cleanly for
                     // reqwest's connection pool (dropping an unconsumed
                     // Response can block while the client drains it anyway).
-                    let _ = resp.bytes().await;
+                    let _ = run_with_proxy_cancellation(
+                        "slice cache etag mismatch drain",
+                        request_control,
+                        resp.bytes(),
+                    )
+                    .await;
                     // ETag mismatch: resource was modified between slices.
                     // Invalidate all cached slices for this resource.
                     self.invalidate_resource(url, provider_headers, total_size)
@@ -721,10 +756,10 @@ impl SliceCache {
         // Read body now that ETag is validated.  Reading eagerly (rather than
         // on-demand) ensures the connection is properly closed before any
         // error-path returns.
-        let data = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
+        let data =
+            run_with_proxy_cancellation("slice cache body read", request_control, resp.bytes())
+                .await?
+                .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
 
         if let Some(cr) = parsed_content_range {
             let expected_len = usize::try_from(cr.end.saturating_sub(cr.start))

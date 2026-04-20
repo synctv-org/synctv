@@ -46,13 +46,18 @@ impl SsrfSafeClientBuilder {
 
     /// Preset for outbound media proxy fetches.
     ///
-    /// Defaults: 10 s connect, 60 s request, 30 s read, pool 100, 30 s idle.
+    /// Defaults: 10 s connect, no request/read timeout, pool 100, 30 s idle.
+    ///
+    /// Proxy clients intentionally avoid client-wide request/read timeouts so
+    /// long-lived media bodies are not cut off mid-stream. If a caller needs a
+    /// timeout, it should apply an explicit per-request budget only around
+    /// "send request + receive response headers".
     #[must_use]
     pub const fn proxy() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Some(Duration::from_mins(1)),
-            read_timeout: Some(Duration::from_secs(30)),
+            request_timeout: None,
+            read_timeout: None,
             pool_max_idle_per_host: 100,
             pool_idle_timeout: Some(Duration::from_secs(30)),
             user_agent: None,
@@ -207,6 +212,14 @@ mod tests {
     #[test]
     fn test_build_proxy_client() {
         let _client = build_proxy_client().expect("proxy client should build");
+    }
+
+    #[test]
+    fn test_proxy_preset_disables_request_and_read_timeouts() {
+        let builder = SsrfSafeClientBuilder::proxy();
+
+        assert_eq!(builder.request_timeout, None);
+        assert_eq!(builder.read_timeout, None);
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! - POST /api/admin/users/{id}/ban
 //! - PUT /api/admin/settings
 //!
-//! These tests exercise the `RateLimiter` directly with the key patterns
-//! used by the admin middleware layer.
+//! These tests exercise the `RateLimiter` directly with the key patterns used
+//! by the shared admin request execution path.
 
 #![allow(clippy::unwrap_used)]
 
@@ -16,9 +16,9 @@ use synctv_core::service::rate_limit::{RateLimitError, RateLimiter};
 const ADMIN_MAX_REQUESTS: u32 = 30;
 const ADMIN_WINDOW_SECONDS: u64 = 60;
 
-/// Helper to build admin rate limit key (matches middleware logic)
-/// The middleware uses: format!("ratelimit:admin:user:{user_id}") or
-/// format!("ratelimit:admin:anon:{ip}") for unauthenticated requests
+/// Helper to build the admin rate limit key used by request execution.
+/// The shared request path uses: `format!("ratelimit:admin:user:{user_id}")`
+/// or `format!("ratelimit:admin:anon:{ip}")` for unauthenticated requests.
 fn admin_user_key(user_id: &str) -> String {
     format!("ratelimit:admin:user:{user_id}")
 }
@@ -210,8 +210,8 @@ async fn test_admin_rate_limit_error_contains_retry_after() {
 
 #[tokio::test]
 async fn test_admin_rate_limit_category_wide() {
-    // The middleware uses "ratelimit:admin:{user/ip}" as the key,
-    // which means ALL admin endpoints share the same bucket.
+    // The shared admin request path uses `ratelimit:admin:{user/ip}` as the
+    // key, which means ALL admin endpoints share the same bucket.
     // This test verifies that behavior.
     let limiter = RateLimiter::local_only("test_admin_category:".to_string());
     let key = admin_user_key("admin_shared_bucket");

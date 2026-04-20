@@ -68,7 +68,9 @@ impl UserRepository {
                 } else if constraint.contains("email") {
                     Error::AlreadyExists("Email already taken".to_string())
                 } else {
-                    Error::AlreadyExists("Username or email already taken".to_string())
+                    Error::AlreadyExists(
+                        synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                    )
                 }
             }
             _ => Error::Database(e),

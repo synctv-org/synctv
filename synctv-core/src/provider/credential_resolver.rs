@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::models::ProviderCredential;
 use crate::repository::UserProviderCredentialRepository;
 
+use super::ExecutionControl;
 use super::ProviderError;
 
 /// Reference to stored credentials, used in `source_config` instead of raw credentials.
@@ -37,7 +38,14 @@ pub async fn resolve_credential(
     repo: &UserProviderCredentialRepository,
     provider: &str,
     cred_ref: &CredentialRef,
+    request_context: Option<&ExecutionControl>,
 ) -> Result<ProviderCredential, ProviderError> {
+    if let Some(request_context) = request_context {
+        request_context
+            .check_active()
+            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+    }
+
     let credential = repo
         .get_by_provider_and_server(&cred_ref.credential_owner_id, provider, &cred_ref.server_id)
         .await
@@ -50,6 +58,12 @@ pub async fn resolve_credential(
                 cred_ref.credential_owner_id, cred_ref.server_id
             ))
         })?;
+
+    if let Some(request_context) = request_context {
+        request_context
+            .check_active()
+            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+    }
 
     // Check expiry
     if credential.is_expired() {

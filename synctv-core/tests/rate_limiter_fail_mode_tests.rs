@@ -168,6 +168,9 @@ async fn test_fail_open_does_not_propagate_redis_errors() {
                     "check_rate_limit should not return BackendUnavailable in fail-open mode: {message}"
                 );
             }
+            Err(RateLimitError::Control(error)) => {
+                panic!("check_rate_limit should not return Control in fail-open mode: {error}");
+            }
             Err(RateLimitError::RedisError(e)) => {
                 panic!("check_rate_limit should not propagate RedisError in fail-open mode: {e}");
             }

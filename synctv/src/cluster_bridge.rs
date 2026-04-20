@@ -8,9 +8,11 @@ use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager};
 
 fn bridge_user_id(user_id: Option<&synctv_core::models::UserId>) -> synctv_core::models::UserId {
-    user_id
-        .cloned()
-        .unwrap_or_else(|| synctv_core::models::UserId::from_string("__system__".to_string()))
+    user_id.cloned().unwrap_or_else(|| {
+        synctv_core::models::UserId::from_string(
+            synctv_common::reserved::SYSTEM_USER_ID.to_string(),
+        )
+    })
 }
 
 fn playlist_created_event(
@@ -191,7 +193,9 @@ pub fn room_event_to_cluster_event(
         synctv_core::service::RoomEvent::RoomDeleted => Some(ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
             room_id: room_id.clone(),
-            deleted_by: synctv_core::models::UserId::from_string("__system__".to_string()),
+            deleted_by: synctv_core::models::UserId::from_string(
+                synctv_common::reserved::SYSTEM_USER_ID.to_string(),
+            ),
             timestamp,
         }),
         _ => None,
@@ -214,8 +218,10 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
             // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id
             // with a clearly-invalid prefix that cannot collide with real user IDs.
             // The consumer in messaging.rs only reads the state payload, not the user fields.
-            user_id: synctv_core::models::UserId::from_string("__system__".to_string()),
-            username: "__system__".to_string(),
+            user_id: synctv_core::models::UserId::from_string(
+                synctv_common::reserved::SYSTEM_USER_ID.to_string(),
+            ),
+            username: synctv_common::reserved::SYSTEM_USERNAME.to_string(),
             state: state.clone(),
             timestamp: chrono::Utc::now(),
         };

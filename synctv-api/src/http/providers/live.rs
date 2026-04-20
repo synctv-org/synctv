@@ -5,12 +5,12 @@
 //! provider proxy trait path.
 
 use axum::{
-    Json, Router,
     body::Body,
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     response::Response,
     routing::get,
+    Json, Router,
 };
 use bytes::Bytes;
 use serde::Deserialize;
@@ -19,9 +19,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
 use crate::http::{
-    AppError, AppResult, AppState, error::map_api_error, middleware::AuthUser,
-    validation::StrictQuery,
+    error::map_api_error, middleware::RequestMetadata, validation::StrictQuery, AppError,
+    AppResult, AppState,
 };
+use crate::impls::EndpointRateLimitCategory;
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::id::RoomId;
 use synctv_core::provider::proxy::ProxyAction;
@@ -111,15 +112,27 @@ fn live_streaming_unavailable_http_error() -> AppError {
     )
 )]
 pub(crate) async fn handle_stream_info(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<crate::proto::client::GetStreamInfoResponse>> {
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .get_stream_info(auth.user_id.as_str(), &room_id, &media_id)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                client_api
+                    .get_stream_info(authenticated.user_id.as_str(), &room_id, &media_id)
+                    .await
+            },
+        )
         .await
         .map_err(map_api_error)?;
 
@@ -171,7 +184,7 @@ pub(crate) const fn live_proxy_stream_info_doc() {}
     )
 )]
 pub(crate) async fn handle_room_streams(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     StrictQuery(query): StrictQuery<RoomStreamsQuery>,
     State(state): State<AppState>,
@@ -180,9 +193,21 @@ pub(crate) async fn handle_room_streams(
     let room_id = path.room_id;
     let req =
         crate::impls::client::build_room_streams_request(query.into()).map_err(map_api_error)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .list_room_streams(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                client_api
+                    .list_room_streams(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(map_api_error)?;
 

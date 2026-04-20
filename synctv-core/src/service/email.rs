@@ -9,6 +9,7 @@ use lettre::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 
 use super::email_templates::EmailTemplateManager;
 use super::email_token::{EmailTokenService, EmailTokenType};
@@ -68,30 +69,55 @@ impl std::fmt::Debug for EmailService {
 }
 
 impl EmailService {
-    async fn send_tokenized_email(
+    async fn run_with_control<T, F>(
+        control: Option<&ExecutionControl>,
+        future: F,
+    ) -> std::result::Result<T, EmailError>
+    where
+        F: std::future::Future<Output = std::result::Result<T, EmailError>>,
+    {
+        match control {
+            Some(control) => control
+                .run(future)
+                .await
+                .map_err(|error| EmailError::SendError(error.to_string()))?,
+            None => future.await,
+        }
+    }
+
+    async fn send_tokenized_email_with_control(
         &self,
         email: &str,
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
         token_type: EmailTokenType,
         success_log_message: &'static str,
+        control: Option<&ExecutionControl>,
     ) -> Result<String> {
         Self::validate_email(email)?;
 
-        let token = token_service.generate_token(user_id, token_type).await?;
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let token = token_service
+            .generate_token_with_control(user_id, token_type, control)
+            .await?;
 
         if let Some(config) = &self.config {
             let send_result = match token_type {
                 EmailTokenType::EmailVerification => {
-                    self.send_verification_email_impl(config, email, &token)
+                    self.send_verification_email_impl(config, email, &token, control)
                         .await
                 }
                 EmailTokenType::PasswordReset => {
-                    self.send_password_reset_email_impl(config, email, &token)
+                    self.send_password_reset_email_impl(config, email, &token, control)
                         .await
                 }
                 EmailTokenType::EmailLogin => {
-                    self.send_email_login_email_impl(config, email, &token)
+                    self.send_email_login_email_impl(config, email, &token, control)
                         .await
                 }
             };
@@ -285,12 +311,24 @@ impl EmailService {
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        self.send_tokenized_email(
+        self.send_verification_email_with_control(email, token_service, user_id, None)
+            .await
+    }
+
+    pub async fn send_verification_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &crate::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        self.send_tokenized_email_with_control(
             email,
             token_service,
             user_id,
             EmailTokenType::EmailVerification,
             "Sent verification email",
+            control,
         )
         .await
     }
@@ -302,12 +340,24 @@ impl EmailService {
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        self.send_tokenized_email(
+        self.send_password_reset_email_with_control(email, token_service, user_id, None)
+            .await
+    }
+
+    pub async fn send_password_reset_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &crate::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        self.send_tokenized_email_with_control(
             email,
             token_service,
             user_id,
             EmailTokenType::PasswordReset,
             "Sent password reset email",
+            control,
         )
         .await
     }
@@ -319,18 +369,38 @@ impl EmailService {
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        self.send_tokenized_email(
+        self.send_email_login_email_with_control(email, token_service, user_id, None)
+            .await
+    }
+
+    pub async fn send_email_login_email_with_control(
+        &self,
+        email: &str,
+        token_service: &EmailTokenService,
+        user_id: &crate::models::UserId,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        self.send_tokenized_email_with_control(
             email,
             token_service,
             user_id,
             EmailTokenType::EmailLogin,
             "Sent email login code",
+            control,
         )
         .await
     }
 
     /// Send a test email to verify email configuration
     pub async fn send_test_email(&self, to: &str) -> Result<()> {
+        self.send_test_email_with_control(to, None).await
+    }
+
+    pub async fn send_test_email_with_control(
+        &self,
+        to: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         Self::validate_email(to)?;
 
         let config = self
@@ -345,7 +415,7 @@ impl EmailService {
             .internal_with_err("Failed to render template")?;
 
         let subject = "SyncTV Email Test";
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
             .await
             .internal_with_err("Failed to send test email")?;
 
@@ -358,6 +428,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Verify your SyncTV email";
         let (html_body, plain_text_body) = self
@@ -365,7 +436,7 @@ impl EmailService {
             .render_verification_email(token, "24 hours")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
             .await
     }
 
@@ -374,6 +445,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Reset your SyncTV password";
         let (html_body, plain_text_body) = self
@@ -381,7 +453,7 @@ impl EmailService {
             .render_password_reset_email(token, "1 hour")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
             .await
     }
 
@@ -390,6 +462,7 @@ impl EmailService {
         config: &EmailConfig,
         to: &str,
         token: &str,
+        control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Your SyncTV login code";
         let (html_body, plain_text_body) = self
@@ -397,7 +470,7 @@ impl EmailService {
             .render_email_login_email(token, "15 minutes")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body, control)
             .await
     }
 
@@ -408,6 +481,7 @@ impl EmailService {
         subject: &str,
         html_body: &str,
         plain_text_body: &str,
+        control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let from_mailbox: Mailbox = format!("{} <{}>", config.from_name, config.from_email)
             .parse()
@@ -436,13 +510,14 @@ impl EmailService {
             )
             .map_err(|e| EmailError::SendError(format!("Failed to build email: {e}")))?;
 
-        self.send_message(config, email).await
+        self.send_message(config, email, control).await
     }
 
     async fn send_message(
         &self,
         config: &EmailConfig,
         email: Message,
+        control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), EmailError> {
         let recipient = email
             .envelope()
@@ -456,10 +531,13 @@ impl EmailService {
             .as_ref()
             .ok_or_else(|| EmailError::SendError("SMTP transport not initialized".to_string()))?;
 
-        transport
-            .send(email)
-            .await
-            .map_err(|e| EmailError::SendError(format!("Failed to send email: {e}")))?;
+        Self::run_with_control(control, async {
+            transport
+                .send(email)
+                .await
+                .map_err(|e| EmailError::SendError(format!("Failed to send email: {e}")))
+        })
+        .await?;
 
         tracing::info!(
             "Email sent successfully to {} via SMTP {}:{}",

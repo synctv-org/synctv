@@ -9,18 +9,22 @@
 //! ## Rate Limiting
 //!
 //! These endpoints apply two layers of rate limiting:
-//! 1. **Per-IP** (via `auth_rate_limit` middleware): 5 req/min shared with other auth endpoints.
-//! 2. **Per-email** (inside shared `EmailApiImpl`): 3 requests per hour per email address,
-//!    preventing email spam and user enumeration even when the attacker rotates IPs.
+//! 1. **Per-IP** via explicit `RequestExecutor` calls in each handler.
+//! 2. **Per-email** inside shared `EmailApiImpl`, preventing email spam and user
+//!    enumeration even when the attacker rotates IPs.
 //!
-//! The per-IP middleware limit is applied externally in `register_all_routes`.
-//! The per-email limit is enforced by the shared `EmailApiImpl`, so HTTP and gRPC
-//! use the exact same application-layer behavior.
+//! HTTP and gRPC therefore share the same application-layer behavior while the
+//! transport only extracts metadata and request bodies.
 
 use axum::{extract::State, response::Json, routing::post, Router};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::{AppError, AppResult, AppState};
-use crate::impls::EmailApiImpl;
+use crate::http::{
+    error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
+};
+use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use crate::proto::client::{
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
     ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
@@ -30,7 +34,7 @@ use crate::proto::client::{
 fn email_api_unavailable_error() -> AppError {
     AppError::new(
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "Email service is not available on this server.",
+        synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE,
     )
 }
 
@@ -52,9 +56,39 @@ fn require_email_api(state: &AppState) -> Result<&std::sync::Arc<EmailApiImpl>, 
     })
 }
 
-/// Create email-related routes
-///
-/// Rate limiting is applied externally in `create_router` where `AppState` is available.
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+}
+
+fn execute_email_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    operation: F,
+) -> BoxFuture<'a, Result<T, AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(std::sync::Arc<EmailApiImpl>, synctv_core::provider::ExecutionControl) -> Fut
+        + Send
+        + 'a,
+    Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let email_api = require_email_api(state)?.clone();
+        let executor = state.request_executor.clone();
+        executor
+            .execute_public_with_control(
+                &request_meta,
+                EndpointRateLimitCategory::Email,
+                move |request_control| operation(email_api, request_control),
+            )
+            .await
+            .map_err(map_api_error)
+    }
+    .boxed()
+}
+
+/// Create email-related routes.
 pub fn create_email_router() -> Router<AppState> {
     Router::new()
         .route("/api/email/verify/send", post(send_verification_email))
@@ -68,7 +102,7 @@ pub fn create_email_router() -> Router<AppState> {
 /// POST /api/email/verify/send
 /// Public endpoint - no authentication required
 ///
-/// Rate limited per-email (3/hour) in addition to per-IP middleware.
+/// Rate limited per-email in `EmailApiImpl` and per-client via `RequestExecutor`.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -84,15 +118,20 @@ pub fn create_email_router() -> Router<AppState> {
     )
 )]
 pub async fn send_verification_email(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<SendVerificationEmailRequest>,
 ) -> AppResult<Json<SendVerificationEmailResponse>> {
-    let email_api = require_email_api(&state)?;
-
-    let result = email_api
-        .send_verification_email(&req.email)
-        .await
-        .map_err(crate::http::error::map_api_error)?;
+    let result = execute_email_endpoint(
+        &state,
+        request_meta,
+        move |email_api, request_control| async move {
+            email_api
+                .send_verification_email_with_control(&req.email, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(SendVerificationEmailResponse {
         message: result.message,
@@ -117,15 +156,20 @@ pub async fn send_verification_email(
     )
 )]
 pub async fn confirm_email(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<ConfirmEmailRequest>,
 ) -> AppResult<Json<ConfirmEmailResponse>> {
-    let email_api = require_email_api(&state)?;
-
-    let result = email_api
-        .confirm_email(&req.email, &req.token)
-        .await
-        .map_err(crate::http::error::map_api_error)?;
+    let result = execute_email_endpoint(
+        &state,
+        request_meta,
+        move |email_api, request_control| async move {
+            email_api
+                .confirm_email_with_control(&req.email, &req.token, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(ConfirmEmailResponse {
         message: result.message,
@@ -138,7 +182,7 @@ pub async fn confirm_email(
 /// POST /api/email/password/reset
 /// Public endpoint - no authentication required
 ///
-/// Rate limited per-email (3/hour) in addition to per-IP middleware.
+/// Rate limited per-email in `EmailApiImpl` and per-client via `RequestExecutor`.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -154,15 +198,20 @@ pub async fn confirm_email(
     )
 )]
 pub async fn request_password_reset(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
-    let email_api = require_email_api(&state)?;
-
-    let result = email_api
-        .request_password_reset(&req.email)
-        .await
-        .map_err(crate::http::error::map_api_error)?;
+    let result = execute_email_endpoint(
+        &state,
+        request_meta,
+        move |email_api, request_control| async move {
+            email_api
+                .request_password_reset_with_control(&req.email, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(RequestPasswordResetResponse {
         message: result.message,
@@ -187,15 +236,25 @@ pub async fn request_password_reset(
     )
 )]
 pub async fn confirm_password_reset(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<ConfirmPasswordResetRequest>,
 ) -> AppResult<Json<ConfirmPasswordResetResponse>> {
-    let email_api = require_email_api(&state)?;
-
-    let result = email_api
-        .confirm_password_reset(&req.email, &req.token, &req.new_password)
-        .await
-        .map_err(crate::http::error::map_api_error)?;
+    let result = execute_email_endpoint(
+        &state,
+        request_meta,
+        move |email_api, request_control| async move {
+            email_api
+                .confirm_password_reset_with_control(
+                    &req.email,
+                    &req.token,
+                    &req.new_password,
+                    Some(&request_control),
+                )
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(ConfirmPasswordResetResponse {
         message: result.message,
@@ -214,7 +273,7 @@ mod tests {
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             err.message,
-            "Email service is not available on this server."
+            synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE
         );
     }
 

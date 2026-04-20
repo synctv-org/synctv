@@ -304,7 +304,8 @@ impl ProviderProxy for DirectUrlProvider {
         let sub_path = ctx.sub_path;
 
         if let Some((version, rest)) = sub_path.split_once('/') {
-            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+            let versioned =
+                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =

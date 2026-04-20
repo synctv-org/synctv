@@ -51,10 +51,12 @@
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_common::ExecutionControl;
 
 use crate::{
     cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, RedisConnectionRuntime,
@@ -68,11 +70,43 @@ use crate::{
 #[async_trait]
 pub trait BruteForceProtectionService: Send + Sync {
     async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()>;
+    async fn check_allowed_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()>;
+    async fn record_failure_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()>;
+    async fn record_ip_failure_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()>;
+    async fn check_ip_allowed_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn reset(&self, username: &str) -> Result<()>;
+    async fn reset_with_control(
+        &self,
+        username: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()>;
+    async fn reset_ip_with_control(
+        &self,
+        ip: &IpAddr,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()>;
 }
 
 /// Build a brute-force protection service behind the service abstraction.
@@ -96,24 +130,82 @@ where
         self.as_ref().check_allowed(username, ip).await
     }
 
+    async fn check_allowed_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .check_allowed_with_control(username, ip, control)
+            .await
+    }
+
     async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
         self.as_ref().record_failure(username, ip).await
+    }
+
+    async fn record_failure_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .record_failure_with_control(username, ip, control)
+            .await
     }
 
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
         self.as_ref().record_ip_failure(ip).await
     }
 
+    async fn record_ip_failure_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .record_ip_failure_with_control(ip, control)
+            .await
+    }
+
     async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
         self.as_ref().check_ip_allowed(ip).await
+    }
+
+    async fn check_ip_allowed_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref()
+            .check_ip_allowed_with_control(ip, control)
+            .await
     }
 
     async fn reset(&self, username: &str) -> Result<()> {
         self.as_ref().reset(username).await
     }
 
+    async fn reset_with_control(
+        &self,
+        username: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref().reset_with_control(username, control).await
+    }
+
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
         self.as_ref().reset_ip(ip).await
+    }
+
+    async fn reset_ip_with_control(
+        &self,
+        ip: &IpAddr,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.as_ref().reset_ip_with_control(ip, control).await
     }
 }
 
@@ -152,6 +244,16 @@ fn nonnegative_i64_to_u64(value: i64) -> u64 {
 
 fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+async fn run_with_control<T, F>(control: Option<&ExecutionControl>, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match control {
+        Some(control) => control.run(future).await.map_err(Error::from)?,
+        None => future.await,
+    }
 }
 
 /// Configuration for brute-force protection thresholds and durations.
@@ -946,10 +1048,20 @@ impl BruteForceProtection {
     /// - `Error::Authentication`: Account or IP is locked (legitimate lockout)
     /// - `Error::Internal`: Backend unavailable in fail-closed mode (temporary)
     pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        self.check_allowed_with_control(username, ip, None).await
+    }
+
+    pub async fn check_allowed_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         // Check IP-level lockout first
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
+            let (ip_attempts, ip_last_failure_at) =
+                run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
                 let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
@@ -970,7 +1082,8 @@ impl BruteForceProtection {
 
         // Check per-username lockout
         let key = self.key_builder.login_attempts(username);
-        let (attempts, last_failure_at) = self.username_tracker.get_attempts(&key).await?;
+        let (attempts, last_failure_at) =
+            run_with_control(control, self.username_tracker.get_attempts(&key)).await?;
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
@@ -1001,21 +1114,36 @@ impl BruteForceProtection {
     /// The caller should still deny the login attempt but may want to log the
     /// tracking failure separately.
     pub async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        self.record_failure_with_control(username, ip, None).await
+    }
+
+    pub async fn record_failure_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
 
         // Record IP-level failure
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker
-                .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs)
-                .await?;
+            run_with_control(
+                control,
+                self.ip_tracker
+                    .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs),
+            )
+            .await?;
         }
 
         // Record username-level failure
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker
-            .record_failure(&key, now, self.config.attempts_ttl_secs)
-            .await?;
+        run_with_control(
+            control,
+            self.username_tracker
+                .record_failure(&key, now, self.config.attempts_ttl_secs),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1030,12 +1158,23 @@ impl BruteForceProtection {
     ///
     /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
     pub async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
+        self.record_ip_failure_with_control(ip, None).await
+    }
+
+    pub async fn record_ip_failure_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         if let Some(ip_addr) = ip {
             let now = chrono::Utc::now().timestamp();
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker
-                .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs)
-                .await?;
+            run_with_control(
+                control,
+                self.ip_tracker
+                    .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1050,9 +1189,18 @@ impl BruteForceProtection {
     /// - `Error::Authentication`: IP is locked (legitimate lockout)
     /// - `Error::Internal`: Backend unavailable in fail-closed mode (temporary)
     pub async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
+        self.check_ip_allowed_with_control(ip, None).await
+    }
+
+    pub async fn check_ip_allowed_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
+            let (ip_attempts, ip_last_failure_at) =
+                run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
                 let elapsed = nonnegative_i64_to_u64(now - ip_last_failure_at);
@@ -1081,8 +1229,16 @@ impl BruteForceProtection {
     /// This is a best-effort operation - the reset failure should typically not
     /// block the successful login response, but should be logged.
     pub async fn reset(&self, username: &str) -> Result<()> {
+        self.reset_with_control(username, None).await
+    }
+
+    pub async fn reset_with_control(
+        &self,
+        username: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker.reset(&key).await?;
+        run_with_control(control, self.username_tracker.reset(&key)).await?;
         Ok(())
     }
 
@@ -1093,8 +1249,16 @@ impl BruteForceProtection {
     /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
     /// This is a best-effort operation.
     pub async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
+        self.reset_ip_with_control(ip, None).await
+    }
+
+    pub async fn reset_ip_with_control(
+        &self,
+        ip: &IpAddr,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
         let ip_key = self.key_builder.login_attempts_ip(&ip.to_string());
-        self.ip_tracker.reset(&ip_key).await?;
+        run_with_control(control, self.ip_tracker.reset(&ip_key)).await?;
         Ok(())
     }
 }
@@ -1105,24 +1269,74 @@ impl BruteForceProtectionService for BruteForceProtection {
         Self::check_allowed(self, username, ip).await
     }
 
+    async fn check_allowed_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::check_allowed_with_control(self, username, ip, control).await
+    }
+
     async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
         Self::record_failure(self, username, ip).await
+    }
+
+    async fn record_failure_with_control(
+        &self,
+        username: &str,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::record_failure_with_control(self, username, ip, control).await
     }
 
     async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
         Self::record_ip_failure(self, ip).await
     }
 
+    async fn record_ip_failure_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::record_ip_failure_with_control(self, ip, control).await
+    }
+
     async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
         Self::check_ip_allowed(self, ip).await
+    }
+
+    async fn check_ip_allowed_with_control(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::check_ip_allowed_with_control(self, ip, control).await
     }
 
     async fn reset(&self, username: &str) -> Result<()> {
         Self::reset(self, username).await
     }
 
+    async fn reset_with_control(
+        &self,
+        username: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::reset_with_control(self, username, control).await
+    }
+
     async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
         Self::reset_ip(self, ip).await
+    }
+
+    async fn reset_ip_with_control(
+        &self,
+        ip: &IpAddr,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::reset_ip_with_control(self, ip, control).await
     }
 }
 

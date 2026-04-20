@@ -15,12 +15,15 @@
 //! - Does not expose the actual JWT token
 
 use axum::{extract::State, Json};
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use super::middleware::AuthUser;
+use super::middleware::RequestMetadata;
 use super::{AppError, AppResult, AppState};
 use crate::impls::client::build_create_websocket_ticket_request;
+use crate::impls::EndpointRateLimitCategory;
 pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_room_lookup_error(room_id: &str, err: synctv_core::Error) -> AppError {
     match err {
         synctv_core::Error::NotFound(_) => AppError::not_found(format!("Room {room_id} not found")),
@@ -28,10 +31,12 @@ fn map_room_lookup_error(room_id: &str, err: synctv_core::Error) -> AppError {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_ticket_membership_probe_error(err: synctv_core::Error) -> AppError {
     AppError::from(err)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
     AppError::from(err)
 }
@@ -82,58 +87,77 @@ fn map_ticket_creation_error(err: synctv_core::Error) -> AppError {
     )
 )]
 pub async fn create_ticket(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<CreateWebSocketTicketRequest>,
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
     let room_id =
         build_create_websocket_ticket_request(&req).map_err(super::error::map_api_error)?;
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let room_service = state.room_service.clone();
+    let ws_ticket_service = state.ws_ticket_service.clone();
+    let requested_room_id = req.room_id.clone();
 
-    // Verify room exists and is accessible
-    let room = state
-        .room_service
-        .get_room(&room_id)
+    let ticket_response = state
+        .request_executor
+        .execute_user_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |request_control, authenticated| async move {
+                let room = room_service
+                    .get_room(&room_id)
+                    .await
+                    .map_err(|err| match err {
+                        synctv_core::Error::NotFound(_) => crate::impls::ApiError::NotFound(
+                            format!("Room {requested_room_id} not found"),
+                        ),
+                        other => crate::impls::ApiError::from(other),
+                    })?;
+
+                if room.is_banned {
+                    return Err(crate::impls::ApiError::Authorization(
+                        "Room is banned".to_string(),
+                    ));
+                }
+
+                let is_member = room_service
+                    .member_service()
+                    .is_member(&room_id, &authenticated.user_id)
+                    .await
+                    .map_err(crate::impls::ApiError::from)?;
+
+                if !is_member {
+                    return Err(crate::impls::ApiError::Authorization(
+                        "Not a member of this room. Join the room first.".to_string(),
+                    ));
+                }
+
+                let ticket = ws_ticket_service
+                    .create_ticket_with_control(
+                        &authenticated.user_id,
+                        &room_id,
+                        authenticated.claims.pv,
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)?;
+
+                Ok(CreateWebSocketTicketResponse {
+                    ticket,
+                    room_id: room_id.as_str().to_string(),
+                    expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
+                    usage: format!(
+                        "Use in WebSocket URL: ws://host/ws/rooms/{}?ticket=xxx",
+                        room_id.as_str()
+                    ),
+                })
+            },
+        )
         .await
-        .map_err(|err| map_room_lookup_error(&req.room_id, err))?;
+        .map_err(super::error::map_api_error)?;
 
-    if room.is_banned {
-        return Err(AppError::forbidden("Room is banned"));
-    }
-
-    // Check room membership: user must be a member of the room
-    let is_member = state
-        .room_service
-        .member_service()
-        .is_member(&room_id, &auth.user_id)
-        .await
-        .map_err(map_ticket_membership_probe_error)?;
-
-    if !is_member {
-        return Err(AppError::forbidden(
-            "Not a member of this room. Join the room first.",
-        ));
-    }
-
-    // Check if ticket service is available
-    // Create a new room-bound ticket for this user  // Include password_version so tickets are invalidated on password change
-    let ticket = state
-        .ws_ticket_service
-        .create_ticket(&auth.user_id, &room_id, auth.password_version)
-        .await
-        .map_err(map_ticket_creation_error)?;
-
-    let response = CreateWebSocketTicketResponse {
-        ticket,
-        room_id: room_id.as_str().to_string(),
-        expires_in_secs: state.ws_ticket_service.ticket_ttl_secs(),
-        usage: format!(
-            "Use in WebSocket URL: ws://host/ws/rooms/{}?ticket=xxx",
-            room_id.as_str()
-        ),
-    };
-
-    Ok(Json(response))
+    Ok(Json(ticket_response))
 }
 
 #[cfg(test)]

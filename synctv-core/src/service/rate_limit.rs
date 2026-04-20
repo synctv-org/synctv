@@ -7,8 +7,9 @@
 //!
 //! - **Domain-level**: `ChatService` uses `RateLimiter` for per-user chat and
 //!   danmaku throttling (business logic).
-//! - **API-level**: `synctv-api` uses `RateLimiter` in gRPC interceptors,
-//!   tower middleware layers, and HTTP handlers for request-level throttling.
+//! - **API-level**: `synctv-api` uses `RateLimiter` from shared request
+//!   execution paths and transport-adjacent helpers for request-level
+//!   throttling.
 //!
 //! # Backends
 //!
@@ -26,9 +27,9 @@
 //!   per-replica. If strict global enforcement is critical, consider lowering
 //!   `max_requests` by a factor of the expected replica count, or ensuring Redis
 //!   high availability.
-//! - **Sync endpoints** (`check_rate_limit_sync` for gRPC interceptors) always
-//!   use in-memory limiting regardless of Redis availability, since gRPC
-//!   interceptors are synchronous.
+//! - **Sync call sites** (`check_rate_limit_sync`) always use in-memory
+//!   limiting regardless of Redis availability, since synchronous call paths
+//!   cannot `await` shared-state backends.
 
 use crate::{RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 use async_trait::async_trait;
@@ -39,6 +40,7 @@ use nonzero_ext::nonzero;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use synctv_common::{ExecutionControl, ExecutionControlError};
 use thiserror::Error;
 
 /// Type alias for the keyed rate limiter cache used by `InMemoryGovernorLimiter`.
@@ -53,6 +55,9 @@ pub enum RateLimitError {
     #[error("Rate limit backend unavailable: {0}")]
     BackendUnavailable(String),
 
+    #[error(transparent)]
+    Control(#[from] ExecutionControlError),
+
     #[error("Redis error: {0}")]
     RedisError(#[from] redis::RedisError),
 }
@@ -66,6 +71,7 @@ impl From<RateLimitError> for crate::Error {
                 "Rate limit exceeded. Try again in {retry_after_seconds}s"
             )),
             RateLimitError::BackendUnavailable(msg) => Self::ServiceUnavailable(msg),
+            RateLimitError::Control(error) => Self::Timeout(error.to_string()),
             RateLimitError::RedisError(e) => {
                 Self::Internal(format!("Rate limiter Redis error: {e}"))
             }
@@ -204,6 +210,19 @@ pub trait RateLimitBackend: Send + Sync {
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError>;
 
+    async fn check_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        self.check(key, max_requests, window_seconds).await
+    }
+
     /// Strict distributed check. Fails closed when Redis is unavailable.
     async fn check_strict(
         &self,
@@ -211,6 +230,19 @@ pub trait RateLimitBackend: Send + Sync {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError>;
+
+    async fn check_strict_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        self.check_strict(key, max_requests, window_seconds).await
+    }
 
     /// Get remaining quota: (`remaining_requests`, `reset_time_seconds`).
     async fn get_quota(
@@ -237,7 +269,7 @@ pub trait RequestRateLimiterService: Send + Sync {
     /// Check if the backend is healthy.
     async fn health_check(&self) -> std::result::Result<(), String>;
 
-    /// Synchronous rate limit check for sync middleware/interceptors.
+    /// Synchronous rate limit check for sync call sites.
     fn check_rate_limit_sync(
         &self,
         key: &str,
@@ -253,6 +285,20 @@ pub trait RequestRateLimiterService: Send + Sync {
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError>;
 
+    async fn check_rate_limit_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        self.check_rate_limit(key, max_requests, window_seconds)
+            .await
+    }
+
     /// Strict distributed rate limit check that fails closed when the shared
     /// backend is unavailable.
     async fn check_rate_limit_distributed(
@@ -261,6 +307,20 @@ pub trait RequestRateLimiterService: Send + Sync {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError>;
+
+    async fn check_rate_limit_distributed_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        self.check_rate_limit_distributed(key, max_requests, window_seconds)
+            .await
+    }
 
     /// Get remaining quota for a rate limit.
     async fn get_quota(
@@ -314,6 +374,18 @@ where
             .await
     }
 
+    async fn check_rate_limit_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.as_ref()
+            .check_rate_limit_with_control(key, max_requests, window_seconds, control)
+            .await
+    }
+
     async fn check_rate_limit_distributed(
         &self,
         key: &str,
@@ -322,6 +394,18 @@ where
     ) -> std::result::Result<(), RateLimitError> {
         self.as_ref()
             .check_rate_limit_distributed(key, max_requests, window_seconds)
+            .await
+    }
+
+    async fn check_rate_limit_distributed_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.as_ref()
+            .check_rate_limit_distributed_with_control(key, max_requests, window_seconds, control)
             .await
     }
 
@@ -376,6 +460,19 @@ impl RedisRateLimitBackend {
     async fn get_conn(&self) -> redis::aio::ConnectionManager {
         self.conn.snapshot().await
     }
+
+    async fn run_with_control<T, F>(
+        control: Option<&ExecutionControl>,
+        operation: F,
+    ) -> std::result::Result<T, RateLimitError>
+    where
+        F: std::future::Future<Output = std::result::Result<T, RateLimitError>>,
+    {
+        match control {
+            Some(control) => control.run(operation).await?,
+            None => operation.await,
+        }
+    }
 }
 
 #[async_trait]
@@ -386,7 +483,17 @@ impl RateLimitBackend for RedisRateLimitBackend {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        let mut conn = self.get_conn().await;
+        self.check_with_control(key, max_requests, window_seconds, None)
+            .await
+    }
+
+    async fn check_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
@@ -414,16 +521,22 @@ impl RateLimitBackend for RedisRateLimitBackend {
             ",
         );
 
-        let result: Vec<i64> = match script
-            .key(&redis_key)
-            .arg(millis_to_i64_saturating(window_start))
-            .arg(now)
-            .arg(expire_seconds)
-            .arg(max_requests)
-            .invoke_async(&mut conn)
-            .await
+        let result: Vec<i64> = match Self::run_with_control(control, async {
+            let mut conn = self.get_conn().await;
+            script
+                .key(&redis_key)
+                .arg(millis_to_i64_saturating(window_start))
+                .arg(now)
+                .arg(expire_seconds)
+                .arg(max_requests)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(RateLimitError::from)
+        })
+        .await
         {
             Ok(vals) => vals,
+            Err(RateLimitError::Control(error)) => return Err(RateLimitError::Control(error)),
             Err(e) => {
                 tracing::warn!(
                     "Redis rate limiter unavailable, falling back to in-memory: {}",
@@ -469,7 +582,17 @@ impl RateLimitBackend for RedisRateLimitBackend {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        let mut conn = self.get_conn().await;
+        self.check_strict_with_control(key, max_requests, window_seconds, None)
+            .await
+    }
+
+    async fn check_strict_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
@@ -488,15 +611,21 @@ impl RateLimitBackend for RedisRateLimitBackend {
             ",
         );
 
-        let current_count: u32 = match script
-            .key(&redis_key)
-            .arg(millis_to_i64_saturating(window_start))
-            .arg(now)
-            .arg(expire_seconds)
-            .invoke_async(&mut conn)
-            .await
+        let current_count: u32 = match Self::run_with_control(control, async {
+            let mut conn = self.get_conn().await;
+            script
+                .key(&redis_key)
+                .arg(millis_to_i64_saturating(window_start))
+                .arg(now)
+                .arg(expire_seconds)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(RateLimitError::from)
+        })
+        .await
         {
             Ok(count) => count,
+            Err(RateLimitError::Control(error)) => return Err(RateLimitError::Control(error)),
             Err(e) => {
                 tracing::error!(
                     "Redis unreachable during distributed rate limit check, denying request (fail closed): {e}"
@@ -656,8 +785,7 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
 /// Rate limiter with pluggable backend and sync fallback.
 ///
 /// Wraps an async `RateLimitBackend` (Redis or in-memory) and always
-/// maintains a local `InMemoryGovernorLimiter` for synchronous operations
-/// (gRPC interceptors).
+/// maintains a local `InMemoryGovernorLimiter` for synchronous operations.
 #[derive(Clone)]
 pub struct RateLimiter {
     backend: Arc<dyn RateLimitBackend>,
@@ -735,8 +863,8 @@ impl RateLimiter {
 
     /// Synchronous rate limit check using the in-memory governor limiter.
     ///
-    /// Always uses in-memory governor regardless of backend. gRPC interceptors
-    /// are synchronous and cannot `await` a Redis call.
+    /// Always uses in-memory governor regardless of backend. Synchronous call
+    /// sites cannot `await` a Redis call.
     pub fn check_rate_limit_sync(
         &self,
         key: &str,
@@ -758,12 +886,25 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
+        self.check_rate_limit_with_control(key, max_requests, window_seconds, None)
+            .await
+    }
+
+    pub async fn check_rate_limit_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
         if self.strict_distributed {
             self.backend
-                .check_strict(key, max_requests, window_seconds)
+                .check_strict_with_control(key, max_requests, window_seconds, control)
                 .await
         } else {
-            self.backend.check(key, max_requests, window_seconds).await
+            self.backend
+                .check_with_control(key, max_requests, window_seconds, control)
+                .await
         }
     }
 
@@ -774,8 +915,19 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
+        self.check_rate_limit_distributed_with_control(key, max_requests, window_seconds, None)
+            .await
+    }
+
+    pub async fn check_rate_limit_distributed_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
         self.backend
-            .check_strict(key, max_requests, window_seconds)
+            .check_strict_with_control(key, max_requests, window_seconds, control)
             .await
     }
 
@@ -821,6 +973,16 @@ impl RequestRateLimiterService for RateLimiter {
         Self::check_rate_limit(self, key, max_requests, window_seconds).await
     }
 
+    async fn check_rate_limit_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        Self::check_rate_limit_with_control(self, key, max_requests, window_seconds, control).await
+    }
+
     async fn check_rate_limit_distributed(
         &self,
         key: &str,
@@ -828,6 +990,23 @@ impl RequestRateLimiterService for RateLimiter {
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
         Self::check_rate_limit_distributed(self, key, max_requests, window_seconds).await
+    }
+
+    async fn check_rate_limit_distributed_with_control(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+        control: Option<&ExecutionControl>,
+    ) -> std::result::Result<(), RateLimitError> {
+        Self::check_rate_limit_distributed_with_control(
+            self,
+            key,
+            max_requests,
+            window_seconds,
+            control,
+        )
+        .await
     }
 
     async fn get_quota(
@@ -1394,6 +1573,9 @@ mod tests {
                 panic!(
                     "check_rate_limit should NOT return BackendUnavailable in fail-open mode: {message}"
                 );
+            }
+            Err(RateLimitError::Control(error)) => {
+                panic!("check_rate_limit should NOT return Control in fail-open mode: {error}");
             }
             Err(RateLimitError::RedisError(e)) => {
                 panic!(

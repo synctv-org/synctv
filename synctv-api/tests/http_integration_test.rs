@@ -1157,7 +1157,7 @@ mod unauthenticated_access {
 
     #[tokio::test]
     async fn test_protected_endpoint_without_auth_header() {
-        // Simulate a handler that requires AuthUser via a guard
+        // Simulate a protected handler that rejects missing auth
         let app = Router::new().route(
             "/api/user",
             get(|| async {

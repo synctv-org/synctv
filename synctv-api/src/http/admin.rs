@@ -4,170 +4,33 @@
 //! Thin handlers that delegate to `AdminApiImpl`.
 
 use axum::{
-    extract::{FromRef, FromRequestParts, Path, State},
-    http::request::Parts,
+    extract::{Path, State},
     routing::{get, post, put},
     Json, Router,
 };
-use std::sync::Arc;
-use synctv_core::models::id::UserId;
-use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use std::{future::Future, sync::Arc};
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::{
-    validation::ValidatedQuery, AppError, AppResult, AppState, WithProviderInstanceName,
-    WithRoomId, WithUserId,
+    middleware::RequestMetadata, validation::ValidatedQuery, AppError, AppResult, AppState,
+    WithProviderInstanceName, WithRoomId, WithUserId,
 };
 use crate::proto::admin;
 
-// Auth extractors
-
-/// Extension to hold JWT validator in request extensions (cached)
-#[derive(Clone)]
-struct JwtValidatorExt(Arc<JwtValidator>);
-
-/// Shared JWT validation + admin auth verification.
-///
-/// Extracts JWT claims from the Authorization header, runs the shared
-/// [`SecurityPipeline`] (password invalidation, user status, and access
-/// token blacklist), then verifies admin role via `validate_admin_auth`.
-async fn validate_auth_user(
-    parts: &mut Parts,
-    app_state: &AppState,
-) -> Result<crate::impls::admin::ValidatedAdmin, AppError> {
-    let validator = parts
-        .extensions
-        .get::<JwtValidatorExt>()
-        .map_or_else(|| app_state.jwt_validator.clone(), |v| v.0.clone());
-
-    let auth_header = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)
-        .ok_or_else(AppError::missing_authorization_header)?;
-
-    let auth_str = auth_header
-        .to_str()
-        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
-
-    let claims = validator
-        .validate_http(auth_str)
-        .map_err(|_| AppError::invalid_or_expired_token())?;
-
-    // Run the shared SecurityPipeline (password version, user status, access
-    // token blacklist). This matches the checks in the regular AuthUser
-    // extractor, preventing blacklisted tokens from accessing admin endpoints.
-    app_state
-        .security_pipeline
-        .check(&claims)
-        .await
-        .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
-            AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-            AuthErrorCategory::Authorization => {
-                crate::http::error::map_auth_authorization_error(&e)
-            }
-            AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
-        })?;
-
-    let user_id = UserId::from_string(claims.sub);
-
-    crate::impls::admin::validate_admin_auth(
-        &app_state.user_service,
-        user_id,
-        claims.pv,
-        claims.iat,
-    )
-    .await
-    .map_err(AppError::from)
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
 }
 
-/// Authenticated admin user (admin or root role required)
-#[derive(Debug, Clone)]
-pub struct AuthAdmin {
-    pub user_id: UserId,
-    pub role: synctv_core::models::UserRole,
-}
-
-impl<S> FromRequestParts<S> for AuthAdmin
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let validated = validate_auth_user(parts, &app_state).await?;
-
-        if !validated.role.is_admin_or_above() {
-            return Err(AppError::forbidden("Admin role required"));
-        }
-
-        Ok(Self {
-            user_id: validated.user_id,
-            role: validated.role,
-        })
+fn request_context(
+    request_meta: &crate::impls::RequestMetadata,
+) -> crate::impls::admin::RequestContext {
+    crate::impls::admin::RequestContext {
+        ip_address: request_meta.client_ip.map(|ip| ip.to_string()),
+        user_agent: request_meta.user_agent.clone(),
     }
 }
-
-/// Authenticated root user (root role only)
-#[derive(Debug, Clone)]
-pub struct AuthRoot {
-    pub user_id: UserId,
-}
-
-impl<S> FromRequestParts<S> for AuthRoot
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let validated = validate_auth_user(parts, &app_state).await?;
-
-        if !matches!(validated.role, synctv_core::models::UserRole::Root) {
-            return Err(AppError::forbidden("Root role required"));
-        }
-
-        Ok(Self {
-            user_id: validated.user_id,
-        })
-    }
-}
-
-// Request context extractor (IP + User-Agent for audit logs)
-
-/// Extracts client IP address and User-Agent from HTTP request for audit logging.
-pub(crate) struct ReqCtx(crate::impls::admin::RequestContext);
-
-impl<S> FromRequestParts<S> for ReqCtx
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let ip_address = parts
-            .extensions
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| {
-                super::auth::extract_client_ip(&app_state.config, ci.0, &parts.headers).to_string()
-            });
-        let user_agent = parts
-            .headers
-            .get(axum::http::header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .map(std::string::ToString::to_string);
-        Ok(Self(crate::impls::admin::RequestContext {
-            ip_address,
-            user_agent,
-        }))
-    }
-}
-
-// Helper to get admin_api or 503
 
 fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl>, AppError> {
     state.admin_api.as_ref().ok_or_else(|| {
@@ -182,6 +45,99 @@ fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl
 /// status code mapping (no keyword-based heuristics).
 fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
+}
+
+fn execute_admin_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    operation: F,
+) -> BoxFuture<'a, Result<T, AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+        Arc<crate::impls::AdminApiImpl>,
+        crate::impls::admin::ValidatedAdmin,
+        crate::impls::admin::RequestContext,
+    ) -> Fut,
+    F: Send + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let ctx = request_context(&request_meta);
+        let api = require_admin_api(state)?.clone();
+        let executor = api.clone();
+        executor
+            .execute_admin_endpoint(&request_meta, move |validated| {
+                operation(api, validated, ctx)
+            })
+            .await
+            .map_err(admin_err_to_app_error)
+    }
+    .boxed()
+}
+
+fn execute_admin_endpoint_with_control<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    operation: F,
+) -> BoxFuture<'a, Result<T, AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+            Arc<crate::impls::AdminApiImpl>,
+            synctv_core::provider::ExecutionControl,
+            crate::impls::admin::ValidatedAdmin,
+            crate::impls::admin::RequestContext,
+        ) -> Fut
+        + Send
+        + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let ctx = request_context(&request_meta);
+        let api = require_admin_api(state)?.clone();
+        let executor = api.clone();
+        executor
+            .execute_admin_endpoint_with_control(
+                &request_meta,
+                move |request_control, validated| operation(api, request_control, validated, ctx),
+            )
+            .await
+            .map_err(admin_err_to_app_error)
+    }
+    .boxed()
+}
+
+fn execute_root_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    operation: F,
+) -> BoxFuture<'a, Result<T, AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+        Arc<crate::impls::AdminApiImpl>,
+        crate::impls::admin::ValidatedAdmin,
+        crate::impls::admin::RequestContext,
+    ) -> Fut,
+    F: Send + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let ctx = request_context(&request_meta);
+        let api = require_admin_api(state)?.clone();
+        let executor = api.clone();
+        executor
+            .execute_root_endpoint(&request_meta, move |validated| {
+                operation(api, validated, ctx)
+            })
+            .await
+            .map_err(admin_err_to_app_error)
+    }
+    .boxed()
 }
 
 // Path validation helpers
@@ -267,14 +223,13 @@ pub fn create_admin_router() -> Router<AppState> {
     )
 )]
 pub(crate) async fn get_system_stats(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::GetSystemStatsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .get_system_stats(admin::GetSystemStatsRequest {})
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_system_stats(admin::GetSystemStatsRequest {}).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -294,15 +249,18 @@ pub(crate) async fn get_system_stats(
     )
 )]
 pub(crate) async fn get_settings(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::GetSettingsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .get_settings(admin::GetSettingsRequest {}, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.get_settings(admin::GetSettingsRequest {}, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -321,17 +279,19 @@ pub(crate) async fn get_settings(
     )
 )]
 pub(crate) async fn get_settings_group(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::GetSettingsGroupRequest>,
 ) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
     let req = validate_admin_proto_path(path)?;
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .get_settings_group(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.get_settings_group(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -351,16 +311,18 @@ pub(crate) async fn get_settings_group(
     )
 )]
 pub(crate) async fn set_settings(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::UpdateSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateSettingsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_settings(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.update_settings(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -382,13 +344,18 @@ pub(crate) async fn set_settings(
     )
 )]
 pub(crate) async fn send_test_email(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::SendTestEmailRequest>,
 ) -> AppResult<Json<admin::SendTestEmailResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .send_test_email(req)
+    let request_meta = request_metadata(request_meta);
+    let api = require_admin_api(&state)?.clone();
+    let executor = api.clone();
+    let resp = executor
+        .execute_admin_endpoint_with_control(&request_meta, move |request_control, _| async move {
+            api.send_test_email_with_control(req, Some(&request_control))
+                .await
+        })
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -411,12 +378,14 @@ pub(crate) async fn send_test_email(
     )
 )]
 pub(crate) async fn list_users(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListUsersRequest>,
 ) -> AppResult<Json<admin::ListUsersResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api.list_users(req).await.map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.list_users(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -436,12 +405,14 @@ pub(crate) async fn list_users(
     )
 )]
 pub(crate) async fn get_user(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::GetUserRequest>,
 ) -> AppResult<Json<admin::GetUserResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api.get_user(req).await.map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_user(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -461,16 +432,19 @@ pub(crate) async fn get_user(
     )
 )]
 pub(crate) async fn create_user(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::CreateUserRequest>,
 ) -> AppResult<Json<admin::CreateUserResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .create_user(req, auth.role, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.create_user(req, validated.role, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -489,16 +463,19 @@ pub(crate) async fn create_user(
     )
 )]
 pub(crate) async fn delete_user(
-    auth: AuthRoot,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::DeleteUserRequest>,
 ) -> AppResult<Json<admin::DeleteUserResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .delete_user(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_root_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.delete_user(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -519,18 +496,21 @@ pub(crate) async fn delete_user(
     )
 )]
 pub(crate) async fn set_user_role(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_user_role(req, &auth.user_id, auth.role, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.update_user_role(req, &validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -551,21 +531,24 @@ pub(crate) async fn set_user_role(
     )
 )]
 pub(crate) async fn set_user_password(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
     req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let api = require_admin_api(&state)?;
     if req.reason.is_empty() {
         req.reason = "Admin forced password reset".to_string();
     }
-    let resp = api
-        .update_user_password(req, auth.user_id, auth.role, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.update_user_password(req, validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -586,18 +569,21 @@ pub(crate) async fn set_user_password(
     )
 )]
 pub(crate) async fn set_user_username(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_user_username(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.update_user_username(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -618,18 +604,21 @@ pub(crate) async fn set_user_username(
     )
 )]
 pub(crate) async fn ban_user(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .ban_user(req, &auth.user_id, auth.role, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.ban_user(req, &validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -648,16 +637,19 @@ pub(crate) async fn ban_user(
     )
 )]
 pub(crate) async fn unban_user(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::UnbanUserRequest>,
 ) -> AppResult<Json<admin::UnbanUserResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .unban_user(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.unban_user(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -676,16 +668,18 @@ pub(crate) async fn unban_user(
     )
 )]
 pub(crate) async fn approve_user(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::ApproveUserRequest>,
 ) -> AppResult<Json<admin::ApproveUserResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .approve_user(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.approve_user(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -707,18 +701,16 @@ pub(crate) async fn approve_user(
     )
 )]
 pub(crate) async fn get_user_rooms(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     ValidatedQuery(req): ValidatedQuery<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let api = require_admin_api(&state)?;
-
-    let resp = api
-        .get_user_rooms(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_user_rooms(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -740,8 +732,7 @@ pub(crate) async fn get_user_rooms(
     )
 )]
 pub(crate) async fn batch_ban_users(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanUsersRequest>,
 ) -> AppResult<Json<admin::BatchBanUsersResponse>> {
@@ -756,12 +747,15 @@ pub(crate) async fn batch_ban_users(
             "Reason too long (max 500 characters)",
         ));
     }
-
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .batch_ban_users(req, &auth.user_id, auth.role, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.batch_ban_users(req, &validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -781,8 +775,7 @@ pub(crate) async fn batch_ban_users(
     )
 )]
 pub(crate) async fn batch_delete_users(
-    auth: AuthRoot,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteUsersRequest>,
 ) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
@@ -792,17 +785,15 @@ pub(crate) async fn batch_delete_users(
     if req.user_ids.len() > 100 {
         return Err(AppError::bad_request("Batch size exceeds limit of 100"));
     }
-
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .batch_delete_users(
-            req,
-            &auth.user_id,
-            synctv_core::models::UserRole::Root,
-            &rctx.0,
-        )
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_root_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.batch_delete_users(req, &validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -823,12 +814,14 @@ pub(crate) async fn batch_delete_users(
     )
 )]
 pub(crate) async fn list_rooms(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListRoomsRequest>,
 ) -> AppResult<Json<admin::ListRoomsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api.list_rooms(req).await.map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.list_rooms(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -847,12 +840,14 @@ pub(crate) async fn list_rooms(
     )
 )]
 pub(crate) async fn get_room(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::GetRoomRequest>,
 ) -> AppResult<Json<admin::GetRoomResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api.get_room(req).await.map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_room(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -871,16 +866,19 @@ pub(crate) async fn get_room(
     )
 )]
 pub(crate) async fn delete_room(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::DeleteRoomRequest>,
 ) -> AppResult<Json<admin::DeleteRoomResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .delete_room(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.delete_room(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -901,18 +899,21 @@ pub(crate) async fn delete_room(
     )
 )]
 pub(crate) async fn set_room_password(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_room_password(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.update_room_password(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -934,18 +935,16 @@ pub(crate) async fn set_room_password(
     )
 )]
 pub(crate) async fn get_room_members(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     ValidatedQuery(req): ValidatedQuery<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let api = require_admin_api(&state)?;
-
-    let resp = api
-        .get_room_members(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_room_members(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -966,18 +965,21 @@ pub(crate) async fn get_room_members(
     )
 )]
 pub(crate) async fn ban_room(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .ban_room(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.ban_room(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -996,16 +998,19 @@ pub(crate) async fn ban_room(
     )
 )]
 pub(crate) async fn unban_room(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::UnbanRoomRequest>,
 ) -> AppResult<Json<admin::UnbanRoomResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .unban_room(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.unban_room(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -1024,16 +1029,18 @@ pub(crate) async fn unban_room(
     )
 )]
 pub(crate) async fn approve_room(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::ApproveRoomRequest>,
 ) -> AppResult<Json<admin::ApproveRoomResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .approve_room(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.approve_room(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1052,15 +1059,14 @@ pub(crate) async fn approve_room(
     )
 )]
 pub(crate) async fn get_room_settings(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::GetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::GetRoomSettingsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .get_room_settings(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.get_room_settings(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1081,17 +1087,16 @@ pub(crate) async fn get_room_settings(
     )
 )]
 pub(crate) async fn set_room_settings(
-    auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_room_settings(req, &auth.user_id)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, validated, _| async move {
+        api.update_room_settings(req, &validated.user_id).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1110,15 +1115,14 @@ pub(crate) async fn set_room_settings(
     )
 )]
 pub(crate) async fn reset_room_settings(
-    auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::ResetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::ResetRoomSettingsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .reset_room_settings(req, &auth.user_id)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, validated, _| async move {
+        api.reset_room_settings(req, &validated.user_id).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1140,8 +1144,7 @@ pub(crate) async fn reset_room_settings(
     )
 )]
 pub(crate) async fn batch_ban_rooms(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanRoomsRequest>,
 ) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
@@ -1156,12 +1159,14 @@ pub(crate) async fn batch_ban_rooms(
             "Reason too long (max 500 characters)",
         ));
     }
-
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .batch_ban_rooms(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.batch_ban_rooms(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1181,8 +1186,7 @@ pub(crate) async fn batch_ban_rooms(
     )
 )]
 pub(crate) async fn batch_delete_rooms(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteRoomsRequest>,
 ) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
@@ -1192,12 +1196,14 @@ pub(crate) async fn batch_delete_rooms(
     if req.room_ids.len() > 100 {
         return Err(AppError::bad_request("Batch size exceeds limit of 100"));
     }
-
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .batch_delete_rooms(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.batch_delete_rooms(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1217,15 +1223,14 @@ pub(crate) async fn batch_delete_rooms(
     )
 )]
 pub(crate) async fn list_providers(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListProviderInstancesRequest>,
 ) -> AppResult<Json<admin::ListProviderInstancesResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .list_provider_instances(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.list_provider_instances(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1245,16 +1250,24 @@ pub(crate) async fn list_providers(
     )
 )]
 pub(crate) async fn add_provider(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::AddProviderInstanceRequest>,
 ) -> AppResult<Json<admin::AddProviderInstanceResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .add_provider_instance(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint_with_control(
+        &state,
+        request_meta,
+        move |api, request_control, validated, rctx| async move {
+            api.add_provider_instance_with_control(
+                req,
+                &validated.user_id,
+                &rctx,
+                Some(&request_control),
+            )
+            .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1275,18 +1288,26 @@ pub(crate) async fn add_provider(
     )
 )]
 pub(crate) async fn update_provider(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::ProviderInstancePathRequest>,
     Json(req): Json<admin::UpdateProviderInstanceRequest>,
 ) -> AppResult<Json<admin::UpdateProviderInstanceResponse>> {
     let req = req.with_provider_instance_name(validate_admin_proto_path(path)?.name);
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .update_provider_instance(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint_with_control(
+        &state,
+        request_meta,
+        move |api, request_control, validated, rctx| async move {
+            api.update_provider_instance_with_control(
+                req,
+                &validated.user_id,
+                &rctx,
+                Some(&request_control),
+            )
+            .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1305,16 +1326,19 @@ pub(crate) async fn update_provider(
     )
 )]
 pub(crate) async fn delete_provider(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::DeleteProviderInstanceRequest>,
 ) -> AppResult<Json<admin::DeleteProviderInstanceResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .delete_provider_instance(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.delete_provider_instance(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1333,16 +1357,24 @@ pub(crate) async fn delete_provider(
     )
 )]
 pub(crate) async fn reconnect_provider(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::ReconnectProviderInstanceRequest>,
 ) -> AppResult<Json<admin::ReconnectProviderInstanceResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .reconnect_provider_instance(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint_with_control(
+        &state,
+        request_meta,
+        move |api, request_control, validated, rctx| async move {
+            api.reconnect_provider_instance_with_control(
+                req,
+                &validated.user_id,
+                &rctx,
+                Some(&request_control),
+            )
+            .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1361,15 +1393,19 @@ pub(crate) async fn reconnect_provider(
     )
 )]
 pub(crate) async fn enable_provider(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::EnableProviderInstanceRequest>,
 ) -> AppResult<Json<admin::EnableProviderInstanceResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .enable_provider_instance(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint_with_control(
+        &state,
+        request_meta,
+        move |api, request_control, _, _| async move {
+            api.enable_provider_instance_with_control(req, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1388,15 +1424,14 @@ pub(crate) async fn enable_provider(
     )
 )]
 pub(crate) async fn disable_provider(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::DisableProviderInstanceRequest>,
 ) -> AppResult<Json<admin::DisableProviderInstanceResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .disable_provider_instance(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.disable_provider_instance(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1417,15 +1452,14 @@ pub(crate) async fn disable_provider(
     )
 )]
 pub(crate) async fn list_streams(
-    _auth: AuthAdmin,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListActiveStreamsRequest>,
 ) -> AppResult<Json<admin::ListActiveStreamsResponse>> {
-    let api = require_admin_api(&state)?;
-    let response = api
-        .list_active_streams(req)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let response = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.list_active_streams(req).await
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -1445,15 +1479,14 @@ pub(crate) async fn list_streams(
     )
 )]
 pub(crate) async fn kick_stream(
-    auth: AuthAdmin,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
-    let api = require_admin_api(&state)?;
-    api.kick_stream(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    execute_admin_endpoint(&state, request_meta, move |api, validated, rctx| async move {
+        api.kick_stream(req, &validated.user_id, &rctx).await
+    })
+    .await?;
     Ok(Json(admin::KickStreamResponse {}))
 }
 
@@ -1473,12 +1506,14 @@ pub(crate) async fn kick_stream(
     )
 )]
 pub(crate) async fn list_admins(
-    _auth: AuthRoot,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListAdminsRequest>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api.list_admins(req).await.map_err(admin_err_to_app_error)?;
+    let resp = execute_root_endpoint(&state, request_meta, move |api, _, _| async move {
+        api.list_admins(req).await
+    })
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1497,16 +1532,19 @@ pub(crate) async fn list_admins(
     )
 )]
 pub(crate) async fn add_admin(
-    auth: AuthRoot,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::AddAdminRequest>,
 ) -> AppResult<Json<admin::AddAdminResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .add_admin(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp =
+        execute_root_endpoint(
+            &state,
+            request_meta,
+            move |api, validated, rctx| async move {
+                api.add_admin(req, &validated.user_id, &rctx).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -1525,16 +1563,18 @@ pub(crate) async fn add_admin(
     )
 )]
 pub(crate) async fn remove_admin(
-    auth: AuthRoot,
-    rctx: ReqCtx,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::RemoveAdminRequest>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
-    let api = require_admin_api(&state)?;
-    let resp = api
-        .remove_admin(req, &auth.user_id, &rctx.0)
-        .await
-        .map_err(admin_err_to_app_error)?;
+    let resp = execute_root_endpoint(
+        &state,
+        request_meta,
+        move |api, validated, rctx| async move {
+            api.remove_admin(req, &validated.user_id, &rctx).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1679,7 +1719,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_req_ctx_uses_trusted_proxy_headers_for_audit_ip() {
+    async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() {
         let mut state = crate::http::tests::test_app_state();
         {
             let router_config = std::sync::Arc::make_mut(&mut state.router_config);
@@ -1698,16 +1738,18 @@ mod tests {
         ));
 
         let (mut parts, ()) = request.into_parts();
-        let ctx = ReqCtx::from_request_parts(&mut parts, &state)
-            .await
-            .expect("extractor should not fail");
+        let request_meta =
+            crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
+                .await
+                .expect("extractor should not fail");
+        let ctx = request_context(&request_meta.0);
 
-        assert_eq!(ctx.0.ip_address.as_deref(), Some("203.0.113.10"));
-        assert_eq!(ctx.0.user_agent.as_deref(), Some("audit-test"));
+        assert_eq!(ctx.ip_address.as_deref(), Some("203.0.113.10"));
+        assert_eq!(ctx.user_agent.as_deref(), Some("audit-test"));
     }
 
     #[tokio::test]
-    async fn test_req_ctx_ignores_forwarded_headers_from_untrusted_proxy() {
+    async fn test_request_context_ignores_forwarded_headers_from_untrusted_proxy() {
         let state = crate::http::tests::test_app_state();
 
         let mut request = Request::builder()
@@ -1722,11 +1764,13 @@ mod tests {
         ));
 
         let (mut parts, ()) = request.into_parts();
-        let ctx = ReqCtx::from_request_parts(&mut parts, &state)
-            .await
-            .expect("extractor should not fail");
+        let request_meta =
+            crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
+                .await
+                .expect("extractor should not fail");
+        let ctx = request_context(&request_meta.0);
 
-        assert_eq!(ctx.0.ip_address.as_deref(), Some("198.51.100.7"));
+        assert_eq!(ctx.ip_address.as_deref(), Some("198.51.100.7"));
     }
 
     #[tokio::test]

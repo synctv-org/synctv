@@ -1,19 +1,12 @@
 // HTTP middleware
 
 use axum::{
-    extract::{FromRef, FromRequestParts, OptionalFromRequestParts, Request, State},
+    extract::{FromRef, FromRequestParts, Request},
     http::request::Parts,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use std::sync::LazyLock;
-use synctv_core::{
-    models::{id::UserId, RoomId},
-    service::{
-        auth::{AuthErrorCategory, JwtValidator, SecurityPipeline},
-        rate_limit::RateLimitError,
-    },
-};
 
 use super::{AppError, AppState};
 
@@ -27,6 +20,51 @@ tokio::task_local! {
 /// to correlate errors with the request ID.
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
+
+/// Transport metadata extracted from the HTTP request without performing
+/// authentication, blacklist, rate-limit, or timeout decisions.
+#[derive(Debug, Clone)]
+pub struct RequestMetadata(pub crate::impls::RequestMetadata);
+
+impl<S> FromRequestParts<S> for RequestMetadata
+where
+    S: Send + Sync,
+    AppState: FromRef<S>,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+        let peer_ip = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|info| info.0.ip());
+        let client_ip = peer_ip.map(|peer_ip| {
+            crate::client_ip::extract_client_ip_from_headers(
+                &app_state.config,
+                peer_ip,
+                &parts.headers,
+            )
+        });
+        let authorization = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let user_agent = parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+
+        Ok(Self(
+            crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
+                .with_authorization(authorization)
+                .with_client_ip(client_ip)
+                .with_user_agent(user_agent),
+        ))
+    }
+}
 
 /// HTTP header name for request/trace ID propagation.
 static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
@@ -94,446 +132,12 @@ static REFERRER_POLICY: LazyLock<axum::http::HeaderName> =
 static PERMISSIONS_POLICY: LazyLock<axum::http::HeaderName> =
     LazyLock::new(|| axum::http::HeaderName::from_static("permissions-policy"));
 
-/// Authenticated user extracted from JWT token
-#[derive(Debug, Clone)]
-pub struct AuthUser {
-    pub user_id: UserId,
-    /// Password version from JWT claims.
-    /// Used when creating WebSocket tickets to ensure tickets are invalidated
-    /// when the user changes their password.
-    pub password_version: i32,
-}
-
-impl<S> FromRequestParts<S> for AuthUser
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        // Get AppState from state
-        let app_state = AppState::from_ref(state);
-
-        // Use shared JWT validator from AppState (created once at startup)
-        let validator = app_state.jwt_validator.clone();
-
-        // Extract Authorization header
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .ok_or_else(AppError::missing_authorization_header)?;
-
-        // Parse Bearer token and validate using unified validator.
-        let auth_str = auth_header
-            .to_str()
-            .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
-
-        // Step 1: JWT verification
-        let claims = validator
-            .validate_http(auth_str)
-            .map_err(|_| AppError::invalid_or_expired_token())?;
-
-        // Steps 2-3: Shared security pipeline (password invalidation, user status)
-        let authenticated = app_state
-            .security_pipeline
-            .check(&claims)
-            .await
-            .map_err(|e| match SecurityPipeline::classify_auth_error(&e) {
-                AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-                AuthErrorCategory::Authorization => {
-                    crate::http::error::map_auth_authorization_error(&e)
-                }
-                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
-            })?;
-
-        // Password version is carried directly in JWT claims and already validated
-        // by the shared security pipeline.
-        let password_version = authenticated.claims.pv;
-
-        Ok(Self {
-            user_id: authenticated.user_id,
-            password_version,
-        })
-    }
-}
-
-impl<S> OptionalFromRequestParts<S> for AuthUser
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &S,
-    ) -> Result<Option<Self>, Self::Rejection> {
-        // If there's no Authorization header, return None (anonymous access)
-        if parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .is_none()
-        {
-            return Ok(None);
-        }
-        // Header IS present: authenticate and propagate errors for invalid tokens
-        // (don't silently downgrade to anonymous when the token is malformed/expired)
-        let user = <Self as FromRequestParts<S>>::from_request_parts(parts, state).await?;
-        Ok(Some(user))
-    }
-}
-
-/// Authenticated guest extracted from a guest JWT token.
-///
-/// Guest tokens are scoped to a single room and only permit read/view
-/// operations. Write endpoints must use [`AuthUser`] which rejects guest
-/// tokens. This type-safe separation ensures guest tokens cannot be used
-/// to create, modify, or manage resources.
-#[derive(Debug, Clone)]
-pub struct GuestUser {
-    pub room_id: RoomId,
-    pub session_id: String,
-}
-
-impl<S> FromRequestParts<S> for GuestUser
-where
-    S: Send + Sync,
-    AppState: FromRef<S>,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .ok_or_else(AppError::missing_authorization_header)?;
-
-        let auth_str = auth_header
-            .to_str()
-            .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
-
-        let token = JwtValidator::extract_bearer_token(auth_str)
-            .map_err(|_| AppError::invalid_or_expired_token())?;
-
-        let map_guest_auth_error =
-            |e: synctv_core::Error| match SecurityPipeline::classify_auth_error(&e) {
-                AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
-                AuthErrorCategory::Authorization => {
-                    crate::http::error::map_auth_authorization_error(&e)
-                }
-                AuthErrorCategory::Unavailable | AuthErrorCategory::Internal => AppError::from(e),
-            };
-
-        // Validate JWT first so we can derive the target room and then enforce
-        // both the room-wide guest version and current guest access policy.
-        let prevalidated_claims = app_state
-            .guest_token_validator
-            .validate_async(&token)
-            .await
-            .map_err(map_guest_auth_error)?;
-
-        if !prevalidated_claims.is_guest() {
-            return Err(AppError::unauthorized("Not a guest token"));
-        }
-
-        let room_id = prevalidated_claims.room_id();
-        let current_room_guest_version = app_state
-            .room_service
-            .get_room_guest_version(&room_id)
-            .await
-            .map_err(map_guest_auth_error)?;
-
-        let claims = app_state
-            .guest_token_validator
-            .validate_with_version_async(&token, current_room_guest_version)
-            .await
-            .map_err(map_guest_auth_error)?;
-
-        // Verify the room still exists. A guest token is only valid for the specific room
-        // it was issued for. If the room has been deleted, the token must be rejected so
-        // that stale guest tokens cannot be replayed against newly-created rooms that
-        // happen to reuse the same ID.
-        // Uses lightweight existence check (SELECT EXISTS) instead of fetching the full
-        // room row, since we only need to confirm the room hasn't been deleted.
-        let exists = app_state
-            .room_service
-            .room_exists(&room_id)
-            .await
-            .map_err(|_| AppError::unauthorized("Room not found or has been deleted"))?;
-        if !exists {
-            return Err(AppError::unauthorized("Room not found or has been deleted"));
-        }
-
-        app_state
-            .room_service
-            .check_guest_allowed(&room_id, app_state.settings_registry.as_deref())
-            .await
-            .map_err(map_guest_auth_error)?;
-
-        Ok(Self {
-            room_id,
-            session_id: claims.session_id,
-        })
-    }
-}
-
 /// HTTP rate limiting configuration for different endpoint categories.
 ///
 /// Type alias to the canonical config struct in `synctv_core::config`.
 /// Previously this was a duplicate struct with hardcoded defaults;
 /// now it comes from the config file via `Config.http_rate_limits`.
 pub type RateLimitConfig = synctv_core::HttpRateLimitConfig;
-
-/// Rate limit category for different types of operations
-#[derive(Debug, Clone, Copy)]
-pub enum RateLimitCategory {
-    Auth,
-    Write,
-    Read,
-    Media,
-    Admin,
-    Streaming,
-    WebSocket,
-}
-
-/// Middleware for rate limiting based on user ID and endpoint category
-pub async fn rate_limit_middleware(
-    State(state): State<AppState>,
-    category: RateLimitCategory,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    // Extract user ID from authorization header if present.
-    // Prefix with "user:" so the key format matches the gRPC rate limit layer
-    // (which uses "user:{token_hash}"), ensuring the same user shares one bucket
-    // regardless of whether they connect via HTTP or gRPC.
-    let user_id = extract_user_id_from_header(&request, &state).map(|id| format!("user:{id}"));
-
-    // Use IP address as fallback if no user ID (for public endpoints).
-    // We only trust X-Forwarded-For/X-Real-IP headers when:
-    // 1. The request comes from a configured trusted proxy, OR
-    // 2. Development mode is enabled (for local testing)
-    // This prevents header spoofing attacks that could bypass rate limiting.
-    let rate_limit_key = user_id.unwrap_or_else(|| {
-        // Try to get the remote/socket address from ConnectInfo extension
-        let remote_addr = request
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip());
-
-        // Check if we should trust proxy headers
-        let should_trust_headers =
-            remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
-
-        if should_trust_headers {
-            // Trust X-Forwarded-For from trusted proxies (or in dev mode).
-            // Parse as IpAddr to prevent attackers from injecting arbitrary
-            // strings (e.g. "127.0.0.1, evil") as rate limit keys.
-            let forwarded_ip = request
-                .headers()
-                .get("X-Forwarded-For")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .map(str::trim)
-                .and_then(|s| s.parse::<std::net::IpAddr>().ok());
-
-            let real_ip = request
-                .headers()
-                .get("X-Real-IP")
-                .and_then(|h| h.to_str().ok())
-                .map(str::trim)
-                .and_then(|s| s.parse::<std::net::IpAddr>().ok());
-
-            if let Some(ip) = forwarded_ip {
-                format!("anon:{ip}")
-            } else if let Some(ip) = real_ip {
-                format!("anon:{ip}")
-            } else if let Some(ip) = remote_addr {
-                format!("anon:{ip}")
-            } else {
-                "anon:unknown".to_string()
-            }
-        } else {
-            // Don't trust headers - use socket address directly
-            remote_addr.map_or_else(|| "anon:unknown".to_string(), |ip| format!("anon:{ip}"))
-        }
-    });
-
-    // Get rate limiter and config from app state (config is shared, not per-request)
-    let rate_limiter = state.rate_limiter.clone();
-    let config = &state.rate_limit_config;
-
-    // Determine rate limit parameters based on category
-    let (max_requests, window_seconds, category_name) = match category {
-        RateLimitCategory::Auth => (config.auth_max_requests, config.auth_window_seconds, "auth"),
-        RateLimitCategory::Write => (
-            config.write_max_requests,
-            config.write_window_seconds,
-            "write",
-        ),
-        RateLimitCategory::Read => (config.read_max_requests, config.read_window_seconds, "read"),
-        RateLimitCategory::Media => (
-            config.media_max_requests,
-            config.media_window_seconds,
-            "media",
-        ),
-        RateLimitCategory::Admin => (
-            config.admin_max_requests,
-            config.admin_window_seconds,
-            "admin",
-        ),
-        RateLimitCategory::Streaming => (
-            config.streaming_max_requests,
-            config.streaming_window_seconds,
-            "streaming",
-        ),
-        RateLimitCategory::WebSocket => (
-            config.websocket_max_requests,
-            config.websocket_window_seconds,
-            "websocket",
-        ),
-    };
-
-    // Check rate limit
-    // FIXED: P0.13 - Removed path from key to enforce category-wide limit
-    // Previously: format!("{}:{}:{}", category_name, rate_limit_key, path)
-    // This caused each endpoint to have its own counter, effectively multiplying the limit
-    // Now: All endpoints in same category share the limit (e.g., 30 req/min for ALL write operations)
-    let key = format!("ratelimit:{category_name}:{rate_limit_key}");
-    match rate_limiter
-        .check_rate_limit(&key, max_requests, window_seconds)
-        .await
-    {
-        Ok(()) => {
-            // Rate limit check passed, proceed with request
-            Ok(next.run(request).await)
-        }
-        Err(RateLimitError::RateLimitExceeded {
-            retry_after_seconds,
-        }) => {
-            // Rate limit exceeded, return 429 Too Many Requests with standard JSON error format
-            let error = AppError::rate_limited(retry_after_seconds);
-            let mut response = error.into_response();
-            // Add rate-limit headers for client consumption
-            let headers = response.headers_mut();
-            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_seconds.to_string()) {
-                headers.insert("Retry-After", v);
-            }
-            if let Ok(v) = axum::http::HeaderValue::from_str(&max_requests.to_string()) {
-                headers.insert("X-RateLimit-Limit", v);
-            }
-            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_seconds.to_string()) {
-                headers.insert("X-RateLimit-Reset", v);
-            }
-
-            Ok(response)
-        }
-        Err(e) => {
-            // This branch should not be reached for check_rate_limit (which
-            // degrades to in-memory on Redis errors), but handle defensively.
-            tracing::error!(
-                "Rate limit check unexpected error: {}. Denying request (fail closed).",
-                e
-            );
-            let error = AppError::rate_limited(1);
-            Ok(error.into_response())
-        }
-    }
-}
-
-/// Helper function to extract user ID from authorization header
-fn extract_user_id_from_header(request: &Request, state: &AppState) -> Option<String> {
-    let auth_header = request.headers().get(axum::http::header::AUTHORIZATION)?;
-    let auth_str = auth_header.to_str().ok()?;
-
-    // Use shared JwtValidator from AppState (not per-request creation)
-    let user_id = state
-        .jwt_validator
-        .validate_http_extract_user_id(auth_str)
-        .ok()?;
-
-    Some(user_id.to_string())
-}
-
-/// Middleware factory for authentication endpoints
-pub async fn auth_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Auth, request, next).await
-}
-
-/// Middleware factory for write operations
-pub async fn write_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Write, request, next).await
-}
-
-/// Middleware factory for read operations
-pub async fn read_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Read, request, next).await
-}
-
-/// Middleware factory for media operations
-pub async fn media_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Media, request, next).await
-}
-
-/// Middleware factory for admin operations
-pub async fn admin_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Admin, request, next).await
-}
-
-/// Middleware factory for streaming operations (FLV/HLS)
-pub async fn streaming_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::Streaming, request, next).await
-}
-
-/// Middleware factory for WebSocket connection attempts
-pub async fn websocket_rate_limit(
-    state: State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    rate_limit_middleware(state, RateLimitCategory::WebSocket, request, next).await
-}
-
-/// Middleware for routes that require the WebSocket runtime to be fully wired.
-///
-/// This runs before request extractors in the handler, ensuring these endpoints
-/// fail closed with 503 instead of leaking auth/validation-specific status codes
-/// when the runtime is unavailable.
-pub async fn websocket_runtime_required(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    crate::http::websocket::validate_websocket_runtime_dependencies(&state)?;
-    Ok(next.run(request).await)
-}
 
 /// Security headers middleware
 ///
@@ -546,7 +150,6 @@ pub async fn websocket_runtime_required(
 /// - Referrer-Policy: Controls referrer information
 /// - Permissions-Policy: Restricts browser features
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
-    let request_path = request.uri().path().to_string();
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -614,30 +217,16 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
         );
     }
 
-    // Cache Control for API responses
-    // Use short cache for HLS/streaming paths to avoid breaking live playback;
-    // apply strict no-store for all other (sensitive) API responses.
-    let is_streaming_path = request_path.contains("/live/hls/")
-        || request_path.contains("/live/flv/")
-        || request_path.ends_with(".m3u8")
-        || request_path.ends_with(".ts")
-        || request_path.ends_with(".flv");
-
+    // Cache Control for API responses.
+    // Middleware only provides the safe default. Endpoints that intentionally
+    // allow caching must set an explicit Cache-Control header themselves.
     if !headers.contains_key("Cache-Control") {
-        if is_streaming_path {
-            // HLS segments and playlists need short caching for smooth playback
-            headers.insert(
-                axum::http::header::CACHE_CONTROL,
-                axum::http::HeaderValue::from_static("public, max-age=2"),
-            );
-        } else {
-            headers.insert(
-                axum::http::header::CACHE_CONTROL,
-                axum::http::HeaderValue::from_static(
-                    "no-store, no-cache, must-revalidate, proxy-revalidate",
-                ),
-            );
-        }
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static(
+                "no-store, no-cache, must-revalidate, proxy-revalidate",
+            ),
+        );
     }
 
     response
@@ -673,6 +262,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use synctv_core::service::auth::AuthErrorCategory;
+    use synctv_core::service::SecurityPipeline;
     use tower::ServiceExt;
 
     #[test]
@@ -844,14 +435,15 @@ mod tests {
         );
     }
 
-    // The HTTP AuthUser extractor performs security checks in order:
+    // The shared auth pipeline performs security checks in order:
     // 1. JWT verification (validate signature, expiration, and access token type)
     // 2. Password invalidation check (reject tokens issued before password change)
     // 3. Banned/deleted user check (reject banned or soft-deleted users)
-    // These checks mirror the gRPC BlacklistCheckLayer to ensure consistent
-    // security enforcement across both transport layers.
-    // Full integration tests require AppState with real services; the tests
-    // below verify the structural aspects that can be tested in isolation.
+    // These checks now execute inside the shared impl-level request executor,
+    // keeping HTTP and gRPC behavior aligned without transport-side auth
+    // extractors. Full integration tests require AppState with real services;
+    // the tests below verify the structural aspects that can be tested in
+    // isolation.
 
     #[tokio::test]
     async fn test_security_headers_frame_ancestors_none() {
@@ -925,10 +517,9 @@ mod tests {
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
     }
 
-    // Provider routes are registered with only rate-limit middleware, but the
-    // global security_headers_middleware is applied to the entire router in
+    // Provider routes rely on the global security_headers_middleware applied in
     // apply_global_layers(). These tests verify that nested routes still
-    // receive security headers.
+    // receive the shared headers.
 
     #[tokio::test]
     async fn test_nested_routes_receive_security_headers() {
@@ -983,18 +574,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nested_routes_with_rate_limit_still_get_security_headers() {
-        // Simulate the exact Provider routes architecture:
-        // 1. Inner router with provider handlers
-        // 2. Route layer with rate limiting
-        // 3. Merged into outer router
-        // 4. Global security layer applied
+    async fn test_nested_routes_with_additional_route_layers_still_get_security_headers() {
+        // Simulate nested provider routes wrapped with an additional
+        // route-local transport layer, while the outer router still applies the
+        // global security headers middleware.
 
         async fn mock_rate_limit(
             request: axum::extract::Request,
             next: axum::middleware::Next,
         ) -> Result<Response, std::convert::Infallible> {
-            // Mock rate limiter that always passes
+            // Mock route-local layer that always passes
             Ok(next.run(request).await)
         }
 
@@ -1017,19 +606,19 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
 
-        // Verify security headers are present even with rate limit layer
+        // Verify security headers are present even with the extra route layer
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
             response.headers().contains_key("X-Frame-Options"),
-            "Provider routes with rate limit must still have X-Frame-Options"
+            "Provider routes with extra route layers must still have X-Frame-Options"
         );
         assert!(
             response.headers().contains_key("X-Content-Type-Options"),
-            "Provider routes with rate limit must still have X-Content-Type-Options"
+            "Provider routes with extra route layers must still have X-Content-Type-Options"
         );
         assert!(
             response.headers().contains_key("Content-Security-Policy"),
-            "Provider routes with rate limit must still have Content-Security-Policy"
+            "Provider routes with extra route layers must still have Content-Security-Policy"
         );
     }
 }

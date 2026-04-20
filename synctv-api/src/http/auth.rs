@@ -1,9 +1,14 @@
 // Authentication HTTP handlers
 // This layer now uses proto types and delegates to the impls layer for business logic
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{FromRequest, FromRequestParts, Request, State},
+    Json,
+};
+use serde::de::DeserializeOwned;
 
 use super::{AppError, AppResult, AppState};
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
     LoginRequest, LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse,
     RegisterRequest, RegisterResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
@@ -23,6 +28,33 @@ pub fn extract_client_ip(
     crate::client_ip::extract_client_ip_from_headers(config, socket_addr.ip(), headers)
 }
 
+async fn extract_auth_request(
+    state: &AppState,
+    request: Request,
+) -> Result<(crate::impls::RequestMetadata, Request), AppError> {
+    let (mut parts, body) = request.into_parts();
+    let request_meta =
+        super::middleware::RequestMetadata::from_request_parts(&mut parts, state).await?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    Ok((request_meta, Request::from_parts(parts, body)))
+}
+
+fn map_json_rejection(err: &axum::extract::rejection::JsonRejection) -> ApiError {
+    ApiError::InvalidInput(err.body_text())
+}
+
+async fn parse_auth_json<T>(request: Request) -> Result<T, ApiError>
+where
+    T: DeserializeOwned,
+{
+    let Json(request) = Json::<T>::from_request(request, &())
+        .await
+        .map_err(|err| map_json_rejection(&err))?;
+    Ok(request)
+}
+
 /// Register a new user
 #[cfg_attr(
     feature = "openapi",
@@ -40,15 +72,23 @@ pub fn extract_client_ip(
 )]
 pub async fn register(
     State(state): State<AppState>,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<RegisterRequest>,
+    request: Request,
 ) -> AppResult<Json<RegisterResponse>> {
-    let client_ip = extract_client_ip(&state.config, connect_info.0, &headers);
-
-    let response = state
-        .client_api
-        .register(req, Some(client_ip))
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RegisterRequest>(request).await?;
+                client_api
+                    .register_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -73,55 +113,61 @@ pub async fn register(
 )]
 pub async fn login(
     State(state): State<AppState>,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<LoginRequest>,
+    request: Request,
 ) -> AppResult<Json<LoginResponse>> {
-    let client_ip = extract_client_ip(&state.config, connect_info.0, &headers);
-    let response = if req.email_token.is_empty() {
-        state
-            .client_api
-            .login(req, Some(client_ip))
-            .await
-            .map_err(super::error::map_api_error)?
-    } else if req.password.is_empty()
-        && !req.email.trim().is_empty()
-        && req.username.trim().is_empty()
-    {
-        let result = require_email_api(&state)?
-            .confirm_email_login(&req.email, &req.email_token, Some(client_ip))
-            .await
-            .map_err(super::error::map_api_error)?;
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_login = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<LoginRequest>(request).await?;
+                if req.email_token.is_empty() {
+                    let client_api = state_for_login.client_api.clone();
+                    return client_api
+                        .login_with_control(req, client_ip, Some(&request_control))
+                        .await;
+                }
+                if req.password.is_empty()
+                    && !req.email.trim().is_empty()
+                    && req.username.trim().is_empty()
+                {
+                    let email_api = require_email_api_api(&state_for_login)?;
+                    let result = email_api
+                        .confirm_email_login_with_control(
+                            &req.email,
+                            &req.email_token,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await?;
+                    return Ok(LoginResponse {
+                        user: Some(crate::impls::client::user_to_proto(&result.user)),
+                        access_token: result.access_token,
+                        refresh_token: result.refresh_token,
+                    });
+                }
 
-        LoginResponse {
-            user: Some(crate::impls::client::user_to_proto(&result.user)),
-            access_token: result.access_token,
-            refresh_token: result.refresh_token,
-        }
-    } else {
-        return Err(AppError::new(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Email login token requires email only and cannot be combined with username or password.",
-        ));
-    };
+                Err(ApiError::InvalidInput(
+                    "Email login token requires email only and cannot be combined with username or password.".to_string(),
+                ))
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
 
-fn email_api_unavailable_error() -> AppError {
-    AppError::new(
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "Email service is not available on this server.",
-    )
-}
-
-fn require_email_api(
+fn require_email_api_api(
     state: &AppState,
-) -> Result<&std::sync::Arc<crate::impls::EmailApiImpl>, AppError> {
-    state
-        .email_api
-        .as_ref()
-        .ok_or_else(email_api_unavailable_error)
+) -> Result<std::sync::Arc<crate::impls::EmailApiImpl>, ApiError> {
+    state.email_api.clone().ok_or_else(|| {
+        ApiError::ServiceUnavailable(synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string())
+    })
 }
 
 /// Request a passwordless email login code.
@@ -141,11 +187,23 @@ fn require_email_api(
 )]
 pub async fn request_email_login(
     State(state): State<AppState>,
-    Json(req): Json<RequestEmailLoginRequest>,
+    request: Request,
 ) -> AppResult<Json<RequestEmailLoginResponse>> {
-    let email_api = require_email_api(&state)?;
-    let result = email_api
-        .request_email_login(&req.email)
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let state_for_request = state.clone();
+    let result = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RequestEmailLoginRequest>(request).await?;
+                let email_api = require_email_api_api(&state_for_request)?;
+                email_api
+                    .request_email_login_with_control(&req.email, Some(&request_control))
+                    .await
+            },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -171,11 +229,22 @@ pub async fn request_email_login(
 )]
 pub async fn refresh_token(
     State(state): State<AppState>,
-    Json(req): Json<RefreshTokenRequest>,
+    request: Request,
 ) -> AppResult<Json<RefreshTokenResponse>> {
-    let response = state
-        .client_api
-        .refresh_token(req)
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RefreshTokenRequest>(request).await?;
+                client_api
+                    .refresh_token_with_control(req, Some(&request_control))
+                    .await
+            },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -206,23 +275,34 @@ pub async fn refresh_token(
 )]
 pub async fn logout(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    request_meta: super::middleware::RequestMetadata,
 ) -> AppResult<Json<LogoutResponse>> {
-    // D13 FIX: Return an error when no valid Authorization header is present.
-    // Previously, the handler returned success: true even without a token,
-    // which confused clients and did not actually blacklist anything.
-    let auth_value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .ok_or_else(AppError::missing_authorization_header)?
-        .to_str()
-        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
-
-    let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
-        .map_err(|_| AppError::invalid_or_expired_token())?;
-
-    let outcome = state
-        .client_api
-        .logout(&token)
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let authorization = request_meta.authorization.clone();
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let outcome = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |_| async move {
+                let auth_value = authorization.as_deref().ok_or_else(|| {
+                    ApiError::Authentication(
+                        synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
+                    )
+                })?;
+                let token =
+                    synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
+                        .map_err(|_| {
+                            ApiError::Authentication(
+                                synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                            )
+                        })?;
+                client_api.logout(&token).await
+            },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 

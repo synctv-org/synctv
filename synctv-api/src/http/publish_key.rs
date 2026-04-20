@@ -12,8 +12,10 @@ use axum::{
     routing::post,
     Router,
 };
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::{middleware::AuthUser, AppResult, AppState, WithId};
+use crate::http::{middleware::RequestMetadata, AppResult, AppState, WithId};
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{CreatePublishKeyResponse, RoomMediaTargetPathRequest};
 
 /// Create publish key routes
@@ -60,17 +62,26 @@ pub fn create_publish_key_router() -> Router<AppState> {
 pub async fn generate_publish_key(
     State(state): State<AppState>,
     Path(path): Path<RoomMediaTargetPathRequest>,
-    auth_user: AuthUser,
+    request_meta: RequestMetadata,
 ) -> AppResult<Json<CreatePublishKeyResponse>> {
-    let user_id_str = auth_user.user_id.to_string();
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let client_api = state.client_api.clone();
 
     // Delegate to shared ClientApiImpl (handles permission check, key generation, RTMP URL)
     let req = crate::proto::client::CreatePublishKeyRequest::default().with_id(media_id);
     let resp = state
         .client_api
-        .create_publish_key(&user_id_str, &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .create_publish_key(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 

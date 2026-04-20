@@ -4,6 +4,8 @@
 //! Used by both HTTP and gRPC handlers.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use synctv_core::models::{
@@ -11,6 +13,7 @@ use synctv_core::models::{
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
     RoomId, SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
 };
+use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
     AuditService, AuthorizedAdminActor, EmailService, RemoteProviderManager, RoomService,
     SettingsRegistry, SettingsService, UserService,
@@ -34,6 +37,7 @@ use crate::impls::playback_snapshot::{
     dynamic_playback_snapshot_version, playback_snapshot_expires_at,
     static_playback_snapshot_version,
 };
+use crate::impls::{EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
 use crate::membership_event_fanout::{
@@ -191,8 +195,7 @@ pub struct ValidatedAdmin {
 /// status, and verify the token has not been invalidated by a password change.
 ///
 /// Both transports must resolve `user_id` and `token_iat` from their own
-/// auth mechanism (HTTP Authorization header / gRPC interceptor) before
-/// calling this function.
+/// request metadata before calling this function.
 pub async fn validate_admin_auth(
     user_service: &UserService,
     user_id: UserId,
@@ -268,6 +271,7 @@ pub struct AdminApiImpl {
     pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub request_executor: Option<Arc<RequestExecutor>>,
 }
 
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
@@ -416,6 +420,98 @@ impl AdminApiImpl {
     ) {
         self.room_cache_fanout
             .publish_invalidation(reservation, room_id);
+    }
+
+    #[must_use]
+    pub fn with_request_executor(mut self, request_executor: Arc<RequestExecutor>) -> Self {
+        self.request_executor = Some(request_executor);
+        self
+    }
+
+    fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
+        self.request_executor.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable("Request executor is not configured".to_string())
+        })
+    }
+
+    pub fn execute_admin_endpoint<'a, T, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        F: FnOnce(ValidatedAdmin) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
+    {
+        self.execute_admin_endpoint_with_control(metadata, move |_, validated| operation(validated))
+    }
+
+    pub fn execute_admin_endpoint_with_control<'a, T, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        F: FnOnce(ExecutionControl, ValidatedAdmin) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
+    {
+        let user_service = Arc::clone(&self.user_service);
+        match self.request_executor() {
+            Ok(executor) => executor.execute_user_with_control(
+                metadata,
+                EndpointRateLimitCategory::Admin,
+                move |request_control, authenticated| async move {
+                    let validated = validate_admin_auth(
+                        user_service.as_ref(),
+                        authenticated.user_id,
+                        authenticated.claims.pv,
+                        authenticated.claims.iat,
+                    )
+                    .await?;
+                    if !validated.role.is_admin_or_above() {
+                        return Err(ApiError::Authorization("Admin role required".to_string()));
+                    }
+                    operation(request_control, validated).await
+                },
+            ),
+            Err(err) => async move { Err(err) }.boxed(),
+        }
+    }
+
+    pub fn execute_root_endpoint<'a, T, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        F: FnOnce(ValidatedAdmin) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
+    {
+        self.execute_root_endpoint_with_control(metadata, move |_, validated| operation(validated))
+    }
+
+    pub fn execute_root_endpoint_with_control<'a, T, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        F: FnOnce(ExecutionControl, ValidatedAdmin) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
+    {
+        self.execute_admin_endpoint_with_control(
+            metadata,
+            move |request_context, validated| async move {
+                if !matches!(validated.role, UserRole::Root) {
+                    return Err(ApiError::Authorization("Root role required".to_string()));
+                }
+                operation(request_context, validated).await
+            },
+        )
     }
 
     fn map_admin_auth_user_lookup_error(err: synctv_core::Error) -> ApiError {
@@ -978,6 +1074,7 @@ impl AdminApiImpl {
             realtime_event_service: None,
             audit_service,
             provider_stores: None,
+            request_executor: None,
         }
     }
 
@@ -2381,9 +2478,19 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::SendTestEmailRequest,
     ) -> Result<crate::proto::admin::SendTestEmailResponse, ApiError> {
+        self.send_test_email_with_control(req, None).await
+    }
+
+    pub async fn send_test_email_with_control(
+        &self,
+        req: crate::proto::admin::SendTestEmailRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::admin::SendTestEmailResponse, ApiError> {
         Ok(Self::map_send_test_email_result(
             &req.to,
-            self.email_service.send_test_email(&req.to).await,
+            self.email_service
+                .send_test_email_with_control(&req.to, control)
+                .await,
         ))
     }
 
@@ -2449,6 +2556,17 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
+        self.add_provider_instance_with_control(req, admin_user_id, ctx, None)
+            .await
+    }
+
+    pub async fn add_provider_instance_with_control(
+        &self,
+        req: crate::proto::admin::AddProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         // Parse config if provided
         let (jwt_secret, custom_ca) = if req.config.is_empty() {
@@ -2492,7 +2610,7 @@ impl AdminApiImpl {
         };
 
         self.provider_instance_manager
-            .add(instance.clone())
+            .add_with_control(instance.clone(), control)
             .await
             .map_err(ApiError::from)?;
 
@@ -2520,6 +2638,17 @@ impl AdminApiImpl {
         req: crate::proto::admin::UpdateProviderInstanceRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
+        self.update_provider_instance_with_control(req, admin_user_id, ctx, None)
+            .await
+    }
+
+    pub async fn update_provider_instance_with_control(
+        &self,
+        req: crate::proto::admin::UpdateProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+        control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         // Get existing instance
@@ -2578,7 +2707,7 @@ impl AdminApiImpl {
         instance.updated_at = chrono::Utc::now();
 
         self.provider_instance_manager
-            .update(instance.clone())
+            .update_with_control(instance.clone(), control)
             .await
             .map_err(ApiError::from)?;
 
@@ -2629,9 +2758,20 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
+        self.reconnect_provider_instance_with_control(req, admin_user_id, ctx, None)
+            .await
+    }
+
+    pub async fn reconnect_provider_instance_with_control(
+        &self,
+        req: crate::proto::admin::ReconnectProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
         // Atomic reconnect: invalidate cached channel and re-create from DB config
         self.provider_instance_manager
-            .reconnect(&req.name)
+            .reconnect_with_control(&req.name, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -2668,8 +2808,16 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::EnableProviderInstanceRequest,
     ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, ApiError> {
+        self.enable_provider_instance_with_control(req, None).await
+    }
+
+    pub async fn enable_provider_instance_with_control(
+        &self,
+        req: crate::proto::admin::EnableProviderInstanceRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, ApiError> {
         self.provider_instance_manager
-            .enable(&req.name)
+            .enable_with_control(&req.name, control)
             .await
             .map_err(ApiError::from)?;
 

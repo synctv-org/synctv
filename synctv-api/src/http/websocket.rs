@@ -18,15 +18,17 @@
 //! - Tickets are single-use and expire quickly (30 seconds by default)
 
 use axum::{
-    extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode, header},
+    extract::{ConnectInfo, FromRef, FromRequestParts, Path, Query, State, WebSocketUpgrade},
+    http::request::Parts,
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
+use std::convert::Infallible;
 use std::future::Future;
 use std::sync::{
-    Arc,
     atomic::{AtomicU32, Ordering},
+    Arc,
 };
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -35,10 +37,14 @@ use crate::http::{AppError, AppState};
 use crate::impls::messaging::{
     MessageSender, ProtoCodec, RealtimeJoinError, StreamMessage, StreamMessageHandler,
 };
+use crate::impls::{
+    ApiError, EndpointRateLimitCategory, RequestMetadata as ApiRequestMetadata, TransportProtocol,
+};
 use crate::proto::client::{ClientMessage, ServerMessage};
 use crate::runtime::RealtimeConnectionService;
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::auth::{AuthErrorCategory, JwtValidator, SecurityPipeline};
+use synctv_core::provider::ExecutionControl;
+use synctv_core::service::auth::{AuthErrorCategory, JwtValidator};
 use synctv_core::service::{ContentFilter, PendingValidatedTicket};
 
 /// Threshold for consecutive slow-client drops before disconnecting them
@@ -97,12 +103,10 @@ impl Drop for MetricsGuard {
 
 type WsQuery = crate::proto::client::WebSocketConnectRequest;
 
-/// Authentication method used for WebSocket connection
+/// Authentication method used for WebSocket connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethod {
-    /// Authorization header (most secure)
     Header,
-    /// Ticket query parameter (recommended for browsers)
     Ticket,
 }
 
@@ -127,78 +131,173 @@ struct PreparedWebSocketUpgrade {
     reservation: HandshakeReservation,
 }
 
-/// Extract user ID from authentication credentials
-///
-/// Priority:
-/// 1. Authorization header (most secure)
-/// 2. Ticket query parameter (recommended for browsers)
-///
-/// The `room_id` parameter is required for ticket validation: tickets are
-/// room-scoped and must be checked against the room the connection targets.
-///
-/// For the header path, the `SecurityPipeline` is invoked after signature verification
-/// to enforce password-version, banned, and deleted checks (parity with the HTTP
-/// `AuthUser` extractor). For the ticket path, the user status is checked explicitly
-/// since tickets don't carry JWT claims.
-async fn extract_user_id(
-    state: &AppState,
-    headers: &HeaderMap,
-    query: &WsQuery,
-    room_id: &synctv_core::models::RoomId,
-) -> Result<HandshakeAuthContext, AppError> {
-    // Use the shared JwtValidator from AppState (created once at startup)
-    let validator = &state.jwt_validator;
+pub struct OptionalPeerIp(Option<std::net::IpAddr>);
 
-    // First, try Authorization header (most secure)
-    // B8 FIX: Use JwtValidator::extract_bearer_token for case-insensitive "Bearer "
-    // matching, consistent with the HTTP AuthUser extractor. Also return an error
-    // when the header is present but has an invalid format, instead of silently
-    // falling through to query parameters.
-    if let Some(token) = extract_authorization_bearer_token(headers)? {
-        let claims = validator
-            .validate_token(&token)
-            .map_err(|_| AppError::invalid_or_expired_token())?;
+impl<S> FromRequestParts<S> for OptionalPeerIp
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
 
-        // Run SecurityPipeline checks (password version, banned/deleted status)
-        let authenticated = state
-            .security_pipeline
-            .check(&claims)
-            .await
-            .map_err(map_security_pipeline_error)?;
-
-        return Ok(HandshakeAuthContext {
-            user_id: authenticated.user_id,
-            ticket_commit: None,
-        });
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<std::net::SocketAddr>>()
+                .map(|info| info.0.ip()),
+        ))
     }
-
-    // Second, try ticket query parameter (recommended for browsers).
-    // The ticket is validated against the target room to prevent cross-room replay.
-    // User status and password version are checked atomically with ticket consumption
-    // to prevent TOCTOU race conditions.
-    if !query.ticket.is_empty() {
-        let pending = state
-            .ws_ticket_service
-            .validate_checked(&query.ticket, room_id, &*state.user_service)
-            .await
-            .map_err(map_websocket_ticket_validation_error)?;
-
-        return Ok(HandshakeAuthContext {
-            user_id: pending.user_id.clone(),
-            ticket_commit: Some(TicketAuthCommit {
-                ticket: query.ticket.clone(),
-                pending,
-            }),
-        });
-    }
-
-    Err(AppError::unauthorized(
-        "Missing authentication: provide token via Authorization header or ?ticket=",
-    ))
 }
 
+pub struct WebSocketRuntimeReady;
+
+impl<S> FromRequestParts<S> for WebSocketRuntimeReady
+where
+    S: Send + Sync,
+    AppState: axum::extract::FromRef<S>,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let _ = parts;
+        let app_state = AppState::from_ref(state);
+        validate_websocket_runtime_dependencies(&app_state)?;
+        Ok(Self)
+    }
+}
+
+fn websocket_request_metadata(
+    config: &synctv_core::Config,
+    headers: &HeaderMap,
+    direct_peer_ip: Option<std::net::IpAddr>,
+) -> Result<ApiRequestMetadata, AppError> {
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .map_err(|_| AppError::invalid_authorization_header_non_utf8())
+        })
+        .transpose()?;
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let client_ip = direct_peer_ip
+        .map(|peer_ip| crate::client_ip::extract_client_ip_from_headers(config, peer_ip, headers));
+
+    Ok(ApiRequestMetadata::new(TransportProtocol::Http)
+        .with_authorization(authorization)
+        .with_client_ip(client_ip)
+        .with_user_agent(user_agent)
+        .with_timeout(Some(WEBSOCKET_HANDSHAKE_TIMEOUT)))
+}
+
+fn validate_websocket_authorization_header(authorization: Option<&str>) -> Result<(), AppError> {
+    if let Some(authorization) = authorization {
+        JwtValidator::extract_bearer_token(authorization)
+            .map_err(|_| AppError::invalid_authorization_header())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
+    let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
+
+    let token = JwtValidator::extract_bearer_token(auth_str)
+        .map_err(|_| AppError::invalid_authorization_header())?;
+
+    Ok(Some(token))
+}
+
+fn app_error_to_api_error(err: AppError) -> ApiError {
+    match err.status {
+        StatusCode::BAD_REQUEST => ApiError::InvalidInput(err.message),
+        StatusCode::UNAUTHORIZED => ApiError::Authentication(err.message),
+        StatusCode::FORBIDDEN => ApiError::Authorization(err.message),
+        StatusCode::NOT_FOUND => ApiError::NotFound(err.message),
+        StatusCode::TOO_MANY_REQUESTS => ApiError::RateLimited(err.message),
+        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(err.message),
+        StatusCode::SERVICE_UNAVAILABLE => ApiError::ServiceUnavailable(err.message),
+        _ => ApiError::Internal(err.message),
+    }
+}
+
+/// Extract user identity for the WebSocket handshake using explicit request execution.
+async fn extract_handshake_auth(
+    state: &AppState,
+    request_meta: &ApiRequestMetadata,
+    query: &WsQuery,
+    room_id: &synctv_core::models::RoomId,
+    handshake_control: &ExecutionControl,
+) -> Result<HandshakeAuthContext, AppError> {
+    if request_meta.authorization.is_some() {
+        validate_websocket_authorization_header(request_meta.authorization.as_deref())?;
+        return state
+            .request_executor
+            .execute_user_with_control(
+                request_meta,
+                EndpointRateLimitCategory::WebSocket,
+                |_request_control, authenticated| async move {
+                    Ok(HandshakeAuthContext {
+                        user_id: authenticated.user_id,
+                        ticket_commit: None,
+                    })
+                },
+            )
+            .await
+            .map_err(crate::http::error::map_api_error);
+    }
+
+    state
+        .request_executor
+        .execute_public_with_control(
+            request_meta,
+            EndpointRateLimitCategory::WebSocket,
+            move |_request_control| async move {
+                if query.ticket.is_empty() {
+                    return Err(ApiError::Authentication(
+                        "Missing authentication: provide token via Authorization header or ?ticket="
+                            .to_string(),
+                    ));
+                }
+
+                let pending = state
+                    .ws_ticket_service
+                    .validate_checked_with_control(
+                        &query.ticket,
+                        room_id,
+                        &*state.user_service,
+                        Some(handshake_control),
+                    )
+                    .await
+                    .map_err(map_websocket_ticket_validation_error)
+                    .map_err(app_error_to_api_error)?;
+
+                Ok(HandshakeAuthContext {
+                    user_id: pending.user_id.clone(),
+                    ticket_commit: Some(TicketAuthCommit {
+                        ticket: query.ticket.clone(),
+                        pending,
+                    }),
+                })
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)
+}
+
+#[cfg(test)]
 fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
-    match SecurityPipeline::classify_auth_error(&error) {
+    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
         AuthErrorCategory::Authorization => {
             crate::http::error::map_auth_authorization_error(&error)
@@ -236,21 +335,6 @@ async fn validate_websocket_room_membership(
         .check_membership_with_room(room, user_id)
         .await
         .map_err(map_websocket_membership_probe_error)
-}
-
-fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AppError> {
-    let Some(auth_header) = headers.get("Authorization") else {
-        return Ok(None);
-    };
-
-    let auth_str = auth_header
-        .to_str()
-        .map_err(|_| AppError::invalid_authorization_header_non_utf8())?;
-
-    let token = JwtValidator::extract_bearer_token(auth_str)
-        .map_err(|_| AppError::invalid_authorization_header())?;
-
-    Ok(Some(token))
 }
 
 fn validate_websocket_origin(
@@ -829,23 +913,31 @@ pub(crate) const fn websocket_room_connect_doc() {}
 
 pub async fn websocket_handler(
     State(state): State<AppState>,
+    _runtime_ready: WebSocketRuntimeReady,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
-    connect_info: ConnectInfo<std::net::SocketAddr>,
+    peer_ip: OptionalPeerIp,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
-    validate_websocket_runtime_dependencies(&state)?;
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     crate::impls::validate_proto_request(&query).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
+    let request_meta = websocket_request_metadata(state.config.as_ref(), &headers, peer_ip.0)?;
+    let handshake_control = ExecutionControl::from_timeout(request_meta.timeout);
 
     let prepared = run_websocket_handshake_with_timeout(async {
-        let prepared =
-            prepare_websocket_upgrade(&state, &room_id, &query, &headers, connect_info.0.ip())
-                .await?;
+        let prepared = prepare_websocket_upgrade(
+            &state,
+            &room_id,
+            &query,
+            &headers,
+            &request_meta,
+            &handshake_control,
+        )
+        .await?;
 
-        commit_websocket_upgrade(&state, prepared).await
+        commit_websocket_upgrade(&state, prepared, &handshake_control).await
     })
     .await?;
 
@@ -877,6 +969,7 @@ async fn commit_prevalidated_ticket(
     state: &AppState,
     room_id: &RoomId,
     auth: &HandshakeAuthContext,
+    handshake_control: &ExecutionControl,
 ) -> Result<(), AppError> {
     let Some(ticket_commit) = auth.ticket_commit.as_ref() else {
         return Ok(());
@@ -884,7 +977,12 @@ async fn commit_prevalidated_ticket(
 
     state
         .ws_ticket_service
-        .consume_prevalidated(&ticket_commit.ticket, room_id, &ticket_commit.pending)
+        .consume_prevalidated_with_control(
+            &ticket_commit.ticket,
+            room_id,
+            &ticket_commit.pending,
+            Some(handshake_control),
+        )
         .await
         .map(|_| ())
         .map_err(map_websocket_ticket_validation_error)
@@ -893,13 +991,14 @@ async fn commit_prevalidated_ticket(
 async fn commit_websocket_upgrade(
     state: &AppState,
     prepared: PreparedWebSocketUpgrade,
+    handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
     let mut cleanup = ReservationCleanupGuard::new(
         state.connection_manager.clone(),
         prepared.reservation.clone(),
     );
 
-    commit_prevalidated_ticket(state, &prepared.room_id, &prepared.auth).await?;
+    commit_prevalidated_ticket(state, &prepared.room_id, &prepared.auth, handshake_control).await?;
     cleanup.disarm();
 
     Ok(prepared)
@@ -989,18 +1088,19 @@ async fn prepare_websocket_upgrade(
     room_id: &str,
     query: &WsQuery,
     headers: &HeaderMap,
-    direct_peer_ip: std::net::IpAddr,
+    request_meta: &ApiRequestMetadata,
+    handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
     validate_websocket_origin(
         headers,
         &state.config.server.cors_allowed_origins,
-        Some(direct_peer_ip),
+        request_meta.client_ip,
         &state.config.server.trusted_proxies,
     )?;
 
     let rid = synctv_core::models::RoomId::from_string(room_id.to_string());
 
-    let auth = extract_user_id(state, headers, query, &rid).await?;
+    let auth = extract_handshake_auth(state, request_meta, query, &rid, handshake_control).await?;
     let user_id = auth.user_id.clone();
 
     let room = state
@@ -1161,13 +1261,16 @@ async fn handle_socket(
     };
     let connection_id = stream_handler.connection_id().to_string();
 
-    if let Err(error) = stream_handler.pre_join().await {
-        error!(
-            "Failed to join WebSocket connection before message loop: {}",
-            error
-        );
-        return;
-    }
+    let (incoming_tx, cancel_token) = match stream_handler.start().await {
+        Ok(started) => started,
+        Err(error) => {
+            error!(
+                "Failed to join WebSocket connection before message loop: {}",
+                error
+            );
+            return;
+        }
+    };
 
     reservation_cleanup.disarm();
     reservation.release(state.connection_manager.as_ref());
@@ -1190,18 +1293,47 @@ async fn handle_socket(
         .await;
     });
 
-    // Create WebSocketStream and run unified message loop
-    let mut stream = WebSocketStream {
-        receiver: ws_receiver,
-        sender: ws_sender,
-        is_alive,
-        raw_sender: raw_sender_for_ping,
-    };
+    // Pump transport input into the shared handler. The handler owns all
+    // business logic and cleanup; this task only decodes WebSocket frames.
+    let input_cancel_token = cancel_token.clone();
+    let close_sender_on_cancel = critical_tx.clone();
+    tokio::spawn(async move {
+        let mut stream = WebSocketStream {
+            receiver: ws_receiver,
+            sender: ws_sender,
+            is_alive,
+            raw_sender: raw_sender_for_ping,
+        };
 
-    // Run unified message loop after the connection has been registered/joined.
-    if let Err(e) = stream_handler.run_after_join(&mut stream).await {
-        error!("Stream handler error: {}", e);
-    }
+        loop {
+            tokio::select! {
+                () = input_cancel_token.cancelled() => {
+                    let _ = close_sender_on_cancel.try_send(axum::extract::ws::Message::Close(None));
+                    break;
+                }
+                message = stream.recv() => {
+                    match message {
+                        Some(Ok(message)) => {
+                            if incoming_tx.send(message).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Err(error)) => {
+                            error!("WebSocket receive error: {}", error);
+                            input_cancel_token.cancel();
+                            break;
+                        }
+                        None => {
+                            input_cancel_token.cancel();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    cancel_token.cancelled().await;
 
     // Metrics are automatically decremented when _metrics_guard is dropped
     // (RAII ensures this happens even if the above code panics)
@@ -1223,9 +1355,9 @@ mod tests {
         config::PasswordComplexityConfig,
         models::{RoomId, UserId, UserStatus},
         service::{
+            auth::{BruteForceProtection, JwtService},
             InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult,
             UserValidator,
-            auth::{BruteForceProtection, JwtService},
         },
     };
 
@@ -1278,6 +1410,21 @@ mod tests {
             ticket: "ticket_abc".to_string(),
         };
         assert_eq!(query.ticket, "ticket_abc");
+    }
+
+    #[test]
+    fn test_websocket_request_metadata_uses_forwarded_ip_for_trusted_proxy() {
+        let mut config = synctv_core::Config::default();
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.50".parse().unwrap());
+
+        let metadata =
+            websocket_request_metadata(&config, &headers, Some("127.0.0.1".parse().unwrap()))
+                .expect("metadata should build");
+
+        assert_eq!(metadata.client_ip, Some("203.0.113.50".parse().unwrap()));
     }
 
     #[test]
@@ -2039,8 +2186,9 @@ mod tests {
             connection_id: "conn-ticket-restore".to_string(),
             reservation: reservation.clone(),
         };
+        let handshake_control = ExecutionControl::default();
 
-        commit_websocket_upgrade(&state, prepared)
+        commit_websocket_upgrade(&state, prepared, &handshake_control)
             .await
             .expect("handshake commit should consume the ticket before switching protocols");
 
@@ -2097,8 +2245,9 @@ mod tests {
             connection_id: "conn-ticket-claim-fail".to_string(),
             reservation,
         };
+        let handshake_control = ExecutionControl::default();
 
-        let error = commit_websocket_upgrade(&state, prepared)
+        let error = commit_websocket_upgrade(&state, prepared, &handshake_control)
             .await
             .expect_err("commit should fail when another handshake already claimed the ticket");
         assert_eq!(error.status, StatusCode::UNAUTHORIZED);
@@ -2138,10 +2287,12 @@ mod tests {
             connection_id: "conn-ticket-timeout".to_string(),
             reservation,
         };
+        let handshake_control = ExecutionControl::default();
 
         let timeout_task = tokio::spawn(async move {
             run_websocket_handshake_with_timeout(async move {
-                let prepared = commit_websocket_upgrade(&timeout_state, prepared).await?;
+                let prepared =
+                    commit_websocket_upgrade(&timeout_state, prepared, &handshake_control).await?;
                 std::future::pending::<()>().await;
                 #[allow(unreachable_code)]
                 Ok::<PreparedWebSocketUpgrade, AppError>(prepared)
@@ -2244,7 +2395,7 @@ mod tests {
     #[test]
     fn test_state_resync_messages_disconnect_slow_client_immediately() {
         use crate::impls::messaging::MessageSender;
-        use crate::proto::client::{ServerMessage, UserJoinedRoom, server_message::Message};
+        use crate::proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
 
         let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -2272,7 +2423,7 @@ mod tests {
     #[test]
     fn test_critical_messages_bypass_full_normal_queue() {
         use crate::impls::messaging::MessageSender;
-        use crate::proto::client::{ErrorMessage, ServerMessage, server_message::Message};
+        use crate::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
 
         let (critical_tx, mut critical_rx) = tokio::sync::mpsc::channel(1);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use synctv_core::models::{Media, MediaId, RoomId, UserId};
 use synctv_core::provider::store::ProviderStore;
 use synctv_core::provider::{
-    MediaProvider, PlaybackResult as ProviderPlaybackResult, ProviderContext,
+    ExecutionControl, MediaProvider, PlaybackResult as ProviderPlaybackResult, ProviderContext,
 };
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::RoomService;
@@ -26,6 +26,7 @@ pub struct ProviderPlaybackDeps<'a> {
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
     pub signing_key: Option<&'a ProxySigningKey>,
     pub store: Option<std::sync::Arc<dyn ProviderStore>>,
+    pub request_context: Option<&'a ExecutionControl>,
 }
 
 fn build_provider_context<'a>(
@@ -35,7 +36,8 @@ fn build_provider_context<'a>(
 ) -> ProviderContext<'a> {
     let mut ctx = ProviderContext::new("synctv")
         .with_user_id(user_id.as_str())
-        .with_room_id(room_id.as_str());
+        .with_room_id(room_id.as_str())
+        .with_request_context(deps.request_context.cloned());
     if let Some(enc) = deps.credential_encryption {
         ctx = ctx.with_credential_encryption(enc);
     }
@@ -174,6 +176,7 @@ mod tests {
                 credential_repo: Some(&credential_repo),
                 signing_key: Some(&signing_key),
                 store: Some(store.clone()),
+                request_context: None,
             },
         );
 

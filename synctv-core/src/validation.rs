@@ -907,7 +907,8 @@ mod tests {
         assert!(validate_path_for_traversal("single.dot").is_ok()); // single dot is ok
         assert!(validate_path_for_traversal("file.tar.gz").is_ok()); // dots in filename
         assert!(validate_path_for_traversal("/path/with.dots/in/middle").is_ok());
-        assert!(validate_path_for_traversal("unicode-file/résumé.txt").is_ok()); // Unicode
+        assert!(validate_path_for_traversal("unicode-file/résumé.txt").is_ok());
+        // Unicode
     }
 
     #[test]

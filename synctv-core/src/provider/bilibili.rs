@@ -68,15 +68,18 @@ impl BilibiliProvider {
         }
     }
 
-    /// Get Bilibili client for the given instance name (remote if available, local fallback)
-    async fn get_client(
+    async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<BilibiliClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(instance_name, create_remote_bilibili_client, || {
-                self.client_manager.local_bilibili_client()
-            })
+            .resolve_client_required_with_context(
+                instance_name,
+                request_context,
+                create_remote_bilibili_client,
+                || self.client_manager.local_bilibili_client(),
+            )
             .await
     }
 
@@ -86,7 +89,18 @@ impl BilibiliProvider {
         url: String,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.r#match_with_context(url, instance_name, None).await
+    }
+
+    pub async fn r#match_with_context(
+        &self,
+        url: String,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         let req = synctv_media_providers::grpc::bilibili::MatchReq { url };
         client.r#match(req).await.map_err(std::convert::Into::into)
     }
@@ -97,7 +111,19 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.parse_video_page_with_context(req, instance_name, None)
+            .await
+    }
+
+    pub async fn parse_video_page_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .parse_video_page(req)
             .await
@@ -110,7 +136,19 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.parse_pgc_page_with_context(req, instance_name, None)
+            .await
+    }
+
+    pub async fn parse_pgc_page_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .parse_pgc_page(req)
             .await
@@ -123,7 +161,19 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.parse_live_page_with_context(req, instance_name, None)
+            .await
+    }
+
+    pub async fn parse_live_page_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .parse_live_page(req)
             .await
@@ -135,7 +185,17 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.new_qr_code_with_context(instance_name, None).await
+    }
+
+    pub async fn new_qr_code_with_context(
+        &self,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .new_qr_code(synctv_media_providers::grpc::bilibili::Empty {})
             .await
@@ -148,7 +208,19 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.login_with_qr_code_with_context(req, instance_name, None)
+            .await
+    }
+
+    pub async fn login_with_qr_code_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .login_with_qr_code(req)
             .await
@@ -160,7 +232,17 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.new_captcha_with_context(instance_name, None).await
+    }
+
+    pub async fn new_captcha_with_context(
+        &self,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .new_captcha(synctv_media_providers::grpc::bilibili::Empty {})
             .await
@@ -173,7 +255,18 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::NewSmsReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.new_sms_with_context(req, instance_name, None).await
+    }
+
+    pub async fn new_sms_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::NewSmsReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.new_sms(req).await.map_err(std::convert::Into::into)
     }
 
@@ -183,7 +276,19 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.login_with_sms_with_context(req, instance_name, None)
+            .await
+    }
+
+    pub async fn login_with_sms_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .login_with_sms(req)
             .await
@@ -196,7 +301,18 @@ impl BilibiliProvider {
         req: synctv_media_providers::grpc::bilibili::UserInfoReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.user_info_with_context(req, instance_name, None).await
+    }
+
+    pub async fn user_info_with_context(
+        &self,
+        req: synctv_media_providers::grpc::bilibili::UserInfoReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client
             .user_info(req)
             .await
@@ -210,7 +326,20 @@ impl BilibiliProvider {
         cookies: HashMap<String, String>,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.get_live_danmu_info_with_context(room_id, cookies, instance_name, None)
+            .await
+    }
+
+    pub async fn get_live_danmu_info_with_context(
+        &self,
+        room_id: u64,
+        cookies: HashMap<String, String>,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         let req = synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq { cookies, room_id };
         client
             .get_live_danmu_info(req)
@@ -358,8 +487,13 @@ impl MediaProvider for BilibiliProvider {
         })?;
 
         let cred_ref = config.credential_ref();
-        let credential =
-            super::credential_resolver::resolve_credential(repo, Self::NAME, cred_ref).await?;
+        let credential = super::credential_resolver::resolve_credential(
+            repo,
+            Self::NAME,
+            cred_ref,
+            _ctx.request_context(),
+        )
+        .await?;
 
         let crate::models::ProviderCredential::Bilibili { cookies } = credential else {
             return Err(ProviderError::InvalidCredentialType);
@@ -402,7 +536,7 @@ impl MediaProvider for BilibiliProvider {
 
         // Call provider API with resolved cookies
         let result = self
-            .resolve_from_api_with_cookies(&config, &cookies)
+            .resolve_from_api_with_cookies(&config, &cookies, _ctx.request_context())
             .await?;
 
         // Generate version and store result
@@ -535,7 +669,8 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
         // Try `{version}/subtitle/{name}`
         if let Some((version, rest)) = sub_path.split_once('/') {
             if let Some(stream_path) = rest.strip_prefix("stream/") {
-                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let versioned =
+                    super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
                 let (playback_info, index_str) =
                     if let Some((mode_name, index_str)) = stream_path.split_once('/') {
                         (
@@ -575,7 +710,8 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
             }
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
-                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let versioned =
+                    super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
                 let (subtitle_url, subtitle_headers) =
                     if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
                         let playback_info = versioned
@@ -632,7 +768,8 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
 
             // Try `{version}/m3u8`
             if rest == "m3u8" {
-                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let versioned =
+                    super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
                 let default_info = versioned
                     .result
                     .playback_infos
@@ -715,6 +852,7 @@ impl BilibiliProvider {
                         repo,
                         Self::NAME,
                         credential_ref,
+                        ctx.request_context,
                     )
                     .await?;
                     match credential {
@@ -761,9 +899,12 @@ impl BilibiliProvider {
         &self,
         config: &BilibiliSourceConfig,
         cookies: &HashMap<String, String>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<PlaybackResult, ProviderError> {
         let sanitized_cookies = cookies.clone();
-        let client = self.get_client(config.provider_instance_name()).await?;
+        let client = self
+            .get_client_with_context(config.provider_instance_name(), request_context)
+            .await?;
 
         match config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {

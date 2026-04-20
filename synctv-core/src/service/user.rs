@@ -2,6 +2,7 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 
 use crate::{
     cache::{CacheInvalidationRuntime, KeyBuilder, UsernameCache},
@@ -129,16 +130,17 @@ impl UserService {
         }
     }
 
-    async fn complete_authenticated_login(
+    async fn complete_authenticated_login_with_control(
         &self,
         user: User,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
     ) -> Result<(User, String, String)> {
         if let Err(error) = self.validate_user_access(&user) {
             if let Err(bf_err) = self
                 .brute_force
-                .record_failure(brute_force_key, client_ip)
+                .record_failure_with_control(brute_force_key, client_ip, control)
                 .await
             {
                 tracing::warn!(error = %bf_err, "Failed to record login failure for brute-force tracking");
@@ -146,11 +148,15 @@ impl UserService {
             return Err(error);
         }
 
-        if let Err(error) = self.brute_force.reset(brute_force_key).await {
+        if let Err(error) = self
+            .brute_force
+            .reset_with_control(brute_force_key, control)
+            .await
+        {
             tracing::warn!(error = %error, "Failed to reset brute-force counter after successful login");
         }
         if let Some(ip) = client_ip {
-            if let Err(error) = self.brute_force.reset_ip(&ip).await {
+            if let Err(error) = self.brute_force.reset_ip_with_control(&ip, control).await {
                 tracing::warn!(error = %error, "Failed to reset IP brute-force counter after successful login");
             }
         }
@@ -171,13 +177,24 @@ impl UserService {
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
+        self.login_with_verified_email_with_control(user_id, brute_force_key, client_ip, None)
+            .await
+    }
+
+    pub async fn login_with_verified_email_with_control(
+        &self,
+        user_id: &UserId,
+        brute_force_key: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, String, String)> {
         let user = self
             .repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        self.complete_authenticated_login(user, brute_force_key, client_ip)
+        self.complete_authenticated_login_with_control(user, brute_force_key, client_ip, control)
             .await
     }
 
@@ -793,19 +810,39 @@ impl UserService {
         password: String,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, Option<String>, Option<String>)> {
+        self.register_with_control(username, email, password, client_ip, None)
+            .await
+    }
+
+    pub async fn register_with_control(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: String,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, Option<String>, Option<String>)> {
         // Check per-IP brute-force before any processing. This throttles automated
         // mass-registration attempts (credential stuffing, spam account creation).
         // Use a fixed key instead of the attacker-controlled username to prevent
         // bypassing per-account lockout by varying the username on each attempt.
         self.brute_force
-            .check_allowed("__registration__", client_ip)
+            .check_allowed_with_control(
+                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                client_ip,
+                control,
+            )
             .await?;
 
         // Validate input - record failures for validation errors (potential attacks)
         if let Err(e) = Self::validate_username(&username) {
             if let Err(err) = self
                 .brute_force
-                .record_failure("__registration__", client_ip)
+                .record_failure_with_control(
+                    synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                    client_ip,
+                    control,
+                )
                 .await
             {
                 tracing::warn!(error = %err, "Failed to record registration brute-force failure");
@@ -816,7 +853,11 @@ impl UserService {
             if let Err(e) = Self::validate_email(email) {
                 if let Err(err) = self
                     .brute_force
-                    .record_failure("__registration__", client_ip)
+                    .record_failure_with_control(
+                        synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                        client_ip,
+                        control,
+                    )
                     .await
                 {
                     tracing::warn!(error = %err, "Failed to record registration brute-force failure");
@@ -827,7 +868,11 @@ impl UserService {
         if let Err(e) = self.validate_password(&password) {
             if let Err(err) = self
                 .brute_force
-                .record_failure("__registration__", client_ip)
+                .record_failure_with_control(
+                    synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                    client_ip,
+                    control,
+                )
                 .await
             {
                 tracing::warn!(error = %err, "Failed to record registration brute-force failure");
@@ -856,7 +901,11 @@ impl UserService {
                     {
                         if let Err(err) = self
                             .brute_force
-                            .record_failure("__registration__", client_ip)
+                            .record_failure_with_control(
+                                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                                client_ip,
+                                control,
+                            )
                             .await
                         {
                             tracing::warn!(error = %err, "Failed to record registration brute-force failure");
@@ -875,13 +924,13 @@ impl UserService {
         // that are already known to fail with `AlreadyExists`.
         if self.repository.get_by_username(&username).await?.is_some() {
             return Err(Error::AlreadyExists(
-                "Username or email already taken".to_string(),
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
         }
         if let Some(ref email_addr) = email {
             if self.repository.get_by_email(email_addr).await?.is_some() {
                 return Err(Error::AlreadyExists(
-                    "Username or email already taken".to_string(),
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
                 ));
             }
         }
@@ -923,14 +972,18 @@ impl UserService {
             Err(Error::AlreadyExists(_)) => {
                 // Don't record failure for AlreadyExists - user just picked a taken username
                 return Err(Error::AlreadyExists(
-                    "Username or email already taken".to_string(),
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
                 ));
             }
             Err(e) => {
                 // Record failure for other database errors (could indicate attack)
                 if let Err(err) = self
                     .brute_force
-                    .record_failure("__registration__", client_ip)
+                    .record_failure_with_control(
+                        synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                        client_ip,
+                        control,
+                    )
                     .await
                 {
                     tracing::warn!(error = %err, "Failed to record registration brute-force failure");
@@ -1098,13 +1151,24 @@ impl UserService {
         password: String,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
+        self.login_with_control(identifier, password, client_ip, None)
+            .await
+    }
+
+    pub async fn login_with_control(
+        &self,
+        identifier: String,
+        password: String,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, String, String)> {
         let normalized_identifier = Self::normalize_login_identifier(&identifier);
 
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
         // distributed attacks while also saving CPU on locked accounts.
         self.brute_force
-            .check_allowed(&normalized_identifier, client_ip)
+            .check_allowed_with_control(&normalized_identifier, client_ip, control)
             .await?;
 
         // Get user by username or email.
@@ -1142,11 +1206,13 @@ impl UserService {
                 let record_result = if user_existed {
                     // User existed but wrong password - record both username and IP
                     self.brute_force
-                        .record_failure(&normalized_identifier, client_ip)
+                        .record_failure_with_control(&normalized_identifier, client_ip, control)
                         .await
                 } else {
                     // User didn't exist - only record IP-level failure
-                    self.brute_force.record_ip_failure(client_ip).await
+                    self.brute_force
+                        .record_ip_failure_with_control(client_ip, control)
+                        .await
                 };
                 if let Err(e) = record_result {
                     tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
@@ -1155,8 +1221,13 @@ impl UserService {
             }
         };
 
-        self.complete_authenticated_login(user, &normalized_identifier, client_ip)
-            .await
+        self.complete_authenticated_login_with_control(
+            user,
+            &normalized_identifier,
+            client_ip,
+            control,
+        )
+        .await
     }
 
     /// Issue an access/refresh token pair for the local management plane.
@@ -1174,9 +1245,20 @@ impl UserService {
         provider_user_id: &str,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
+        self.login_oauth2_with_control(user_id, provider_user_id, client_ip, None)
+            .await
+    }
+
+    pub async fn login_oauth2_with_control(
+        &self,
+        user_id: &UserId,
+        provider_user_id: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, String, String)> {
         // Check per-IP and per-account brute-force before token issuance.
         self.brute_force
-            .check_allowed(provider_user_id, client_ip)
+            .check_allowed_with_control(provider_user_id, client_ip, control)
             .await?;
 
         // Get user to ensure they exist and are active
@@ -1186,7 +1268,7 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        self.complete_authenticated_login(user, provider_user_id, client_ip)
+        self.complete_authenticated_login_with_control(user, provider_user_id, client_ip, control)
             .await
     }
 
@@ -1200,6 +1282,14 @@ impl UserService {
     /// 3. After issuing new tokens, the old JTI is added to the blacklist with a TTL
     ///    equal to the old token's remaining lifetime.
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
+        self.refresh_token_with_control(refresh_token, None).await
+    }
+
+    pub async fn refresh_token_with_control(
+        &self,
+        refresh_token: String,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
         let user_id = UserId::from_string(claims.sub.clone());
@@ -1211,10 +1301,11 @@ impl UserService {
         // Rate limit key is per-user: "refresh:<user_id>"
         let rate_limit_key = format!("refresh:{}", user_id.as_str());
         self.refresh_rate_limiter
-            .check_rate_limit(
+            .check_rate_limit_with_control(
                 &rate_limit_key,
                 self.refresh_rate_limit_config.requests,
                 self.refresh_rate_limit_config.window_secs,
+                control,
             )
             .await
             .map_err(|e| {

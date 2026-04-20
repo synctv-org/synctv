@@ -1,9 +1,9 @@
 // Provider Context
 // Contains all information needed for provider execution
 
-use std::sync::Arc;
-
 use sqlx::PgPool;
+use std::sync::Arc;
+use synctv_common::ExecutionControl;
 
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::ProxySigningKey;
@@ -41,6 +41,9 @@ pub struct ProviderContext<'a> {
 
     /// Proxy signing key for generating HMAC-signed proxy URLs (optional)
     pub signing_key: Option<&'a ProxySigningKey>,
+
+    /// Cooperative request context propagated from the caller, if any.
+    pub request_context: Option<ExecutionControl>,
 }
 
 impl<'a> ProviderContext<'a> {
@@ -57,6 +60,7 @@ impl<'a> ProviderContext<'a> {
             store: None,
             credential_repo: None,
             signing_key: None,
+            request_context: None,
         }
     }
 
@@ -117,6 +121,28 @@ impl<'a> ProviderContext<'a> {
     pub const fn with_signing_key(mut self, key: &'a ProxySigningKey) -> Self {
         self.signing_key = Some(key);
         self
+    }
+
+    /// Attach the caller's cooperative request context for downstream provider I/O.
+    #[must_use]
+    pub fn with_request_context(mut self, request_context: Option<ExecutionControl>) -> Self {
+        self.request_context = request_context;
+        self
+    }
+
+    #[must_use]
+    pub const fn request_context(&self) -> Option<&ExecutionControl> {
+        self.request_context.as_ref()
+    }
+
+    pub fn check_active(&self) -> Result<(), crate::Error> {
+        if let Some(request_context) = self.request_context.as_ref() {
+            request_context
+                .check_active()
+                .map_err(|err| crate::Error::Timeout(err.to_string()))?;
+        }
+
+        Ok(())
     }
 
     /// Validate that all required fields are present for playback generation.

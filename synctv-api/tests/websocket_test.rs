@@ -1008,13 +1008,18 @@ mod websocket_e2e {
             providers_manager: None,
         };
 
-        let guest_token_validator = Arc::new(
-            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(jwt_service.clone()))
-                .with_blacklist(
-                    user_service.token_blacklist_store(),
-                    user_service.key_builder().clone(),
-                ),
+        let shared_security_pipeline = Arc::new(
+            synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            ),
         );
+        let shared_request_executor = Arc::new(synctv_api::impls::RequestExecutor::new(
+            router_config.config.clone(),
+            jwt_validator.clone(),
+            shared_security_pipeline.clone(),
+            router_config.rate_limiter.clone(),
+        ));
         let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
             redis_runtime: None,
             rate_limit_config: rate_limit_config.clone(),
@@ -1025,14 +1030,8 @@ mod websocket_e2e {
                 std::time::Duration::from_millis(100),
             ),
             jwt_validator: jwt_validator.clone(),
-            security_pipeline: Arc::new(
-                synctv_core::service::SecurityPipeline::new(user_service.clone())
-                    .with_token_blacklist(
-                        user_service.token_blacklist_store(),
-                        user_service.key_builder().clone(),
-                    ),
-            ),
-            guest_token_validator: guest_token_validator.clone(),
+            security_pipeline: shared_security_pipeline.clone(),
+            request_executor: shared_request_executor.clone(),
             client_api: client_api.clone(),
             admin_api: None,
             email_api: None,
@@ -1078,7 +1077,7 @@ mod websocket_e2e {
             ),
             jwt_validator,
             security_pipeline: shared_api_runtime.security_pipeline.clone(),
-            guest_token_validator,
+            request_executor: shared_request_executor,
             client_api,
             admin_api: None,
             email_api: None,
@@ -4789,13 +4788,6 @@ mod websocket_connection_limit_timing {
             providers_manager: None,
         };
 
-        let guest_token_validator = Arc::new(
-            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(jwt_service.clone()))
-                .with_blacklist(
-                    user_service.token_blacklist_store(),
-                    user_service.key_builder().clone(),
-                ),
-        );
         let shared_security_pipeline = Arc::new(
             synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
                 user_service.token_blacklist_store(),
@@ -4817,6 +4809,12 @@ mod websocket_connection_limit_timing {
                 credential_repo: user_provider_credential_repo.clone(),
                 signing_key: shared_proxy_signing_key.clone(),
             });
+        let shared_request_executor = Arc::new(synctv_api::impls::RequestExecutor::new(
+            router_config.config.clone(),
+            jwt_validator.clone(),
+            shared_security_pipeline.clone(),
+            router_config.rate_limiter.clone(),
+        ));
 
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
@@ -4833,7 +4831,7 @@ mod websocket_connection_limit_timing {
                 ),
                 jwt_validator: jwt_validator.clone(),
                 security_pipeline: shared_security_pipeline.clone(),
-                guest_token_validator: guest_token_validator.clone(),
+                request_executor: shared_request_executor.clone(),
                 client_api: client_api.clone(),
                 admin_api: None,
                 email_api: None,
@@ -4858,7 +4856,7 @@ mod websocket_connection_limit_timing {
             ),
             jwt_validator,
             security_pipeline: shared_security_pipeline,
-            guest_token_validator,
+            request_executor: shared_request_executor,
             client_api,
             admin_api: None,
             email_api: None,

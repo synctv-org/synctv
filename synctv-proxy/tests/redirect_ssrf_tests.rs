@@ -28,6 +28,8 @@ async fn test_proxy_blocks_private_ip_via_dns() {
         url: "http://192.168.1.1/secret",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
+        request_control: None,
+        upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
@@ -45,6 +47,8 @@ async fn test_proxy_blocks_loopback_via_dns() {
         url: "http://127.0.0.1:8080/admin",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
+        request_control: None,
+        upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
@@ -62,6 +66,8 @@ async fn test_proxy_blocks_cloud_metadata_via_dns() {
         url: "http://169.254.169.254/latest/meta-data/",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
+        request_control: None,
+        upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(

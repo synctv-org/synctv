@@ -10,7 +10,9 @@
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use std::future::Future;
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -99,6 +101,16 @@ impl std::fmt::Debug for EmailTokenService {
 }
 
 impl EmailTokenService {
+    async fn run_with_control<T, F>(control: Option<&ExecutionControl>, future: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        match control {
+            Some(control) => control.run(future).await.map_err(Error::from)?,
+            None => future.await,
+        }
+    }
+
     /// Create a new email token service without rate limiting
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -151,31 +163,56 @@ impl EmailTokenService {
         user_id: &UserId,
         token_type: EmailTokenType,
     ) -> Result<String> {
+        self.generate_token_with_control(user_id, token_type, None)
+            .await
+    }
+
+    pub async fn generate_token_with_control(
+        &self,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
         // Check rate limit if configured
         if let Some(ref limiter) = self.rate_limiter {
             let rate_limit_key = format!("email:{}:{}", token_type.as_str(), user_id.as_str());
 
-            if let Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds,
-            }) = limiter
-                .check_rate_limit(
+            match limiter
+                .check_rate_limit_with_control(
                     &rate_limit_key,
                     self.rate_limit_config.max_tokens_per_user,
                     self.rate_limit_config.window_seconds,
+                    control,
                 )
                 .await
             {
-                warn!(
-                    user_id = %user_id.as_str(),
-                    token_type = %token_type.as_str(),
+                Ok(()) => {}
+                Err(RateLimitError::RateLimitExceeded {
                     retry_after_seconds,
-                    "Email token rate limit exceeded"
-                );
-                return Err(Error::RateLimited(format!(
-                    "Too many {} requests. Please try again in {} seconds.",
-                    token_type.as_str(),
-                    retry_after_seconds
-                )));
+                }) => {
+                    warn!(
+                        user_id = %user_id.as_str(),
+                        token_type = %token_type.as_str(),
+                        retry_after_seconds,
+                        "Email token rate limit exceeded"
+                    );
+                    return Err(Error::RateLimited(format!(
+                        "Too many {} requests. Please try again in {} seconds.",
+                        token_type.as_str(),
+                        retry_after_seconds
+                    )));
+                }
+                Err(RateLimitError::Control(error)) => {
+                    return Err(Error::Timeout(error.to_string()));
+                }
+                Err(RateLimitError::BackendUnavailable(message)) => {
+                    return Err(Error::ServiceUnavailable(message));
+                }
+                Err(RateLimitError::RedisError(error)) => {
+                    return Err(Error::ServiceUnavailable(format!(
+                        "Email token rate limit service unavailable: {error}"
+                    )));
+                }
             }
         }
 
@@ -209,11 +246,24 @@ impl EmailTokenService {
     /// Uses a single UPDATE with WHERE conditions to atomically check validity
     /// and mark as used, preventing concurrent token reuse.
     pub async fn validate_token(&self, token: &str, token_type: EmailTokenType) -> Result<UserId> {
-        let token_record = self
-            .repository
-            .validate_and_consume(token, token_type)
-            .await?
-            .ok_or_else(|| Error::InvalidInput("Invalid or expired token".to_string()))?;
+        self.validate_token_with_control(token, token_type, None)
+            .await
+    }
+
+    pub async fn validate_token_with_control(
+        &self,
+        token: &str,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<UserId> {
+        let token_record = Self::run_with_control(
+            control,
+            self.repository.validate_and_consume(token, token_type),
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
+        })?;
 
         info!(
             "Validated {} token for user {}",
@@ -231,11 +281,26 @@ impl EmailTokenService {
         token_type: EmailTokenType,
         expected_user_id: &UserId,
     ) -> Result<UserId> {
-        let token_record = self
-            .repository
-            .validate_and_consume_for_user(token, token_type, expected_user_id)
-            .await?
-            .ok_or_else(|| Error::InvalidInput("Invalid or expired token".to_string()))?;
+        self.validate_token_for_user_with_control(token, token_type, expected_user_id, None)
+            .await
+    }
+
+    pub async fn validate_token_for_user_with_control(
+        &self,
+        token: &str,
+        token_type: EmailTokenType,
+        expected_user_id: &UserId,
+        control: Option<&ExecutionControl>,
+    ) -> Result<UserId> {
+        let token_record = Self::run_with_control(
+            control,
+            self.repository
+                .validate_and_consume_for_user(token, token_type, expected_user_id),
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
+        })?;
 
         info!(
             "Validated {} token for expected user {}",
@@ -252,9 +317,21 @@ impl EmailTokenService {
         user_id: &UserId,
         token_type: EmailTokenType,
     ) -> Result<()> {
-        self.repository
-            .delete_user_tokens(user_id, token_type)
-            .await?;
+        self.invalidate_user_tokens_with_control(user_id, token_type, None)
+            .await
+    }
+
+    pub async fn invalidate_user_tokens_with_control(
+        &self,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::run_with_control(
+            control,
+            self.repository.delete_user_tokens(user_id, token_type),
+        )
+        .await?;
 
         debug!(
             "Invalidated all {} tokens for user {}",
@@ -272,9 +349,23 @@ impl EmailTokenService {
         user_id: &UserId,
         token_type: EmailTokenType,
     ) -> Result<()> {
-        self.repository
-            .delete_unused_token(token, user_id, token_type)
-            .await?;
+        self.invalidate_specific_token_with_control(token, user_id, token_type, None)
+            .await
+    }
+
+    pub async fn invalidate_specific_token_with_control(
+        &self,
+        token: &str,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        Self::run_with_control(
+            control,
+            self.repository
+                .delete_unused_token(token, user_id, token_type),
+        )
+        .await?;
 
         debug!(
             "Invalidated specific {} token for user {}",
@@ -287,7 +378,14 @@ impl EmailTokenService {
 
     /// Cleanup expired tokens
     pub async fn cleanup_expired(&self) -> Result<usize> {
-        let count = self.repository.cleanup_expired().await?;
+        self.cleanup_expired_with_control(None).await
+    }
+
+    pub async fn cleanup_expired_with_control(
+        &self,
+        control: Option<&ExecutionControl>,
+    ) -> Result<usize> {
+        let count = Self::run_with_control(control, self.repository.cleanup_expired()).await?;
         if count > 0 {
             info!("Cleaned up {} expired email tokens", count);
         }

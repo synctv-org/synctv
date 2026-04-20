@@ -15,12 +15,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use synctv_core::models::ProviderCredential;
 use synctv_core::provider::proxy::ProxyAction;
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
-    middleware::AuthUser, provider_common::provider_instance_name, validation::ValidatedQuery,
-    AppError, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, provider_common::provider_instance_name,
+    validation::ValidatedQuery, AppError, AppResult, AppState,
 };
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::ProviderInstanceQuery;
 use crate::proto::providers::emby::{BindInfo, GetBindsResponse};
 
@@ -286,6 +288,27 @@ pub fn emby_read_routes() -> Router<AppState> {
         .route("/thumbnail/{item_id}", get(thumbnail))
 }
 
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+}
+
+fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
+    match err.status {
+        axum::http::StatusCode::BAD_REQUEST => crate::impls::ApiError::InvalidInput(err.message),
+        axum::http::StatusCode::UNAUTHORIZED => crate::impls::ApiError::Authentication(err.message),
+        axum::http::StatusCode::FORBIDDEN => crate::impls::ApiError::Authorization(err.message),
+        axum::http::StatusCode::NOT_FOUND => crate::impls::ApiError::NotFound(err.message),
+        axum::http::StatusCode::TOO_MANY_REQUESTS => {
+            crate::impls::ApiError::RateLimited(err.message)
+        }
+        axum::http::StatusCode::REQUEST_TIMEOUT => crate::impls::ApiError::Timeout(err.message),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE => {
+            crate::impls::ApiError::ServiceUnavailable(err.message)
+        }
+        _ => crate::impls::ApiError::Internal(err.message),
+    }
+}
+
 // Existing provider API handlers
 
 /// Login to Emby/Jellyfin (validate API key and persist credential)
@@ -308,7 +331,7 @@ pub fn emby_read_routes() -> Router<AppState> {
     )
 )]
 pub(crate) async fn login(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::LoginRequest>,
@@ -316,13 +339,28 @@ pub(crate) async fn login(
     tracing::info!("Emby login request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.emby_api;
-    let resp = api
-        .login(&auth.user_id.to_string(), req, instance_name)
+    let api = state.emby_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |control, authenticated| async move {
+                api.login_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Emby login failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     Ok(Json(resp))
 }
@@ -347,7 +385,7 @@ pub(crate) async fn login(
     )
 )]
 pub(crate) async fn list(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::ListRequest>,
@@ -355,13 +393,28 @@ pub(crate) async fn list(
     tracing::info!("Emby list request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.emby_api;
-    let resp = api
-        .list(&auth.user_id.to_string(), req, instance_name)
+    let api = state.emby_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |control, authenticated| async move {
+                api.list_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Emby list failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     Ok(Json(resp))
 }
@@ -386,7 +439,7 @@ pub(crate) async fn list(
     )
 )]
 pub(crate) async fn me(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
@@ -394,13 +447,28 @@ pub(crate) async fn me(
     tracing::info!("Emby me request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = &state.emby_api;
-    let resp = api
-        .get_me(&auth.user_id.to_string(), req, instance_name)
+    let api = state.emby_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |control, authenticated| async move {
+                api.get_me_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
         .await
+        .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Emby me failed: {}", e);
-            AppError::from(e)
+            e
         })?;
     Ok(Json(resp))
 }
@@ -424,20 +492,29 @@ pub(crate) async fn me(
     )
 )]
 pub(crate) async fn logout(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<crate::proto::providers::emby::LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
-    let api = &state.emby_api;
-    let resp = api
-        .logout(&auth.user_id.to_string(), req)
-        .await
-        .map_err(|e| {
-            tracing::error!("Emby logout failed: {}", e);
-            AppError::from(e)
-        })?;
+    let api = state.emby_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp =
+        state
+            .client_api
+            .execute_user_endpoint(
+                &request_meta,
+                EndpointRateLimitCategory::Auth,
+                move |authenticated| async move {
+                    api.logout(authenticated.user_id.as_str(), req).await
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Emby logout failed: {}", e);
+                e
+            })?;
     Ok(Json(resp))
 }
 
@@ -459,34 +536,46 @@ pub(crate) async fn logout(
     )
 )]
 pub(crate) async fn binds(
-    auth: crate::http::middleware::AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
-    tracing::info!("Emby binds request for user: {}", auth.user_id);
     let instance_name = provider_instance_name(&query)?;
+    let repository = state.user_provider_credential_repository.clone();
+    let request_meta = request_metadata(request_meta);
+    let response = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                tracing::info!("Emby binds request for user: {}", authenticated.user_id);
+                let provider_binds = get_provider_binds(
+                    &repository,
+                    authenticated.user_id.as_str(),
+                    synctv_core::provider::EmbyProvider::NAME,
+                    "emby_user_id",
+                    instance_name,
+                )
+                .await?;
 
-    let provider_binds = get_provider_binds(
-        &state.user_provider_credential_repository,
-        &auth.user_id.to_string(),
-        synctv_core::provider::EmbyProvider::NAME,
-        "emby_user_id",
-        instance_name,
-    )
-    .await
-    .map_err(AppError::from)?;
+                let binds = provider_binds
+                    .into_iter()
+                    .map(|b| BindInfo {
+                        id: b.id,
+                        host: b.host,
+                        user_id: b.label_value,
+                        created_at: b.created_at,
+                    })
+                    .collect();
 
-    let emby_binds: Vec<_> = provider_binds
-        .into_iter()
-        .map(|b| BindInfo {
-            id: b.id,
-            host: b.host,
-            user_id: b.label_value,
-            created_at: b.created_at,
-        })
-        .collect();
+                Ok::<GetBindsResponse, crate::impls::ApiError>(GetBindsResponse { binds })
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
 
-    Ok(Json(GetBindsResponse { binds: emby_binds }))
+    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -514,7 +603,7 @@ pub(crate) async fn binds(
     )
 )]
 pub(crate) async fn thumbnail(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
     Query(query): Query<ThumbnailQuery>,
@@ -523,48 +612,76 @@ pub(crate) async fn thumbnail(
 ) -> AppResult<axum::response::Response> {
     let (server_id, credential_owner_id, max_height, max_width) = resolve_thumbnail_query(&query)?;
     let raw_query = raw_query.as_deref().unwrap_or("");
-    let scope = ThumbnailSignatureScope {
-        item_id: &item_id,
-        server_id,
-        credential_owner_id: credential_owner_id.unwrap_or(auth.user_id.as_str()),
-        max_height,
-        max_width,
-    };
-    if let Some(room_id) = authorize_thumbnail_request(
-        &state.proxy_signing_key,
-        auth.user_id.as_str(),
-        raw_query,
-        credential_owner_id,
-        scope,
-    )? {
-        super::validate_fresh_proxy_access(
-            &state,
-            &synctv_core::models::RoomId::from_string(room_id),
-            &auth.user_id,
-        )
-        .await?;
-    }
+    let operation_state = state.clone();
+    let request_meta = request_metadata(request_meta);
+    let response = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                let state = operation_state;
+                let scope = ThumbnailSignatureScope {
+                    item_id: &item_id,
+                    server_id,
+                    credential_owner_id: credential_owner_id
+                        .unwrap_or(authenticated.user_id.as_str()),
+                    max_height,
+                    max_width,
+                };
+                if let Some(room_id) = authorize_thumbnail_request(
+                    &state.proxy_signing_key,
+                    authenticated.user_id.as_str(),
+                    raw_query,
+                    credential_owner_id,
+                    scope,
+                )
+                .map_err(app_error_to_api_error)?
+                {
+                    super::validate_fresh_proxy_access(
+                        &state,
+                        &synctv_core::models::RoomId::from_string(room_id),
+                        &authenticated.user_id,
+                    )
+                    .await
+                    .map_err(app_error_to_api_error)?;
+                }
 
-    let credential_lookup_user_id = credential_owner_id.unwrap_or_else(|| auth.user_id.as_str());
+                let credential_lookup_user_id =
+                    credential_owner_id.unwrap_or_else(|| authenticated.user_id.as_str());
 
-    let credential = state
-        .user_provider_credential_repository
-        .get_by_provider_and_server(
-            credential_lookup_user_id,
-            synctv_core::provider::EmbyProvider::NAME,
-            server_id,
+                let credential = state
+                    .user_provider_credential_repository
+                    .get_by_provider_and_server(
+                        credential_lookup_user_id,
+                        synctv_core::provider::EmbyProvider::NAME,
+                        server_id,
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)?
+                    .ok_or_else(|| {
+                        crate::impls::ApiError::NotFound("Emby credential not found".to_string())
+                    })?;
+
+                let parsed = credential.get_credential().map_err(|error| {
+                    crate::impls::ApiError::Internal(format!(
+                        "Failed to parse stored Emby credential: {error}"
+                    ))
+                })?;
+                let action = build_thumbnail_proxy_action_from_credential(
+                    &item_id, &parsed, max_height, max_width,
+                )
+                .map_err(app_error_to_api_error)?;
+
+                super::execute_proxy_action_with_state(&state, action, &headers, None)
+                    .await
+                    .map_err(app_error_to_api_error)
+            },
         )
         .await
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("Emby credential not found"))?;
+        .map_err(map_api_error)?;
 
-    let parsed = credential.get_credential().map_err(|error| {
-        AppError::internal(format!("Failed to parse stored Emby credential: {error}"))
-    })?;
-    let action =
-        build_thumbnail_proxy_action_from_credential(&item_id, &parsed, max_height, max_width)?;
-
-    super::execute_proxy_action_with_state(&state, action, &headers).await
+    Ok(response)
 }
 
 #[cfg(test)]

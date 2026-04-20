@@ -5,6 +5,7 @@
 
 use chrono::Utc;
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 use tracing::{debug, error, info};
 
 use crate::{
@@ -109,6 +110,18 @@ impl ChatService {
         user_id: UserId,
         content: String,
     ) -> Result<ChatMessage> {
+        self.send_message_with_control(room_id, user_id, content, None)
+            .await
+    }
+
+    /// Send a chat message with cooperative execution control.
+    pub async fn send_message_with_control(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        content: String,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ChatMessage> {
         // Check SEND_CHAT permission
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SEND_CHAT)
@@ -126,10 +139,11 @@ impl ChatService {
         let rate_key = format!("chat:rate:{}:{}", room_id.as_str(), user_id.as_str());
         if let Err(e) = self
             .rate_limiter
-            .check_rate_limit(
+            .check_rate_limit_with_control(
                 &rate_key,
                 self.rate_limit_config.chat_per_second,
                 self.rate_limit_config.window_seconds,
+                control,
             )
             .await
         {
@@ -268,6 +282,18 @@ impl ChatService {
         user_id: UserId,
         request: SendDanmakuRequest,
     ) -> Result<crate::models::DanmakuMessage> {
+        self.send_danmaku_with_control(room_id, user_id, request, None)
+            .await
+    }
+
+    /// Send a danmaku message with cooperative execution control.
+    pub async fn send_danmaku_with_control(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SendDanmakuRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::models::DanmakuMessage> {
         use crate::models::DanmakuMessage;
 
         // Check SEND_CHAT permission (danmaku is a form of chat)
@@ -287,10 +313,11 @@ impl ChatService {
         let rate_key = format!("danmaku:rate:{}:{}", room_id.as_str(), user_id.as_str());
         if let Err(e) = self
             .rate_limiter
-            .check_rate_limit(
+            .check_rate_limit_with_control(
                 &rate_key,
                 self.rate_limit_config.danmaku_per_second,
                 self.rate_limit_config.window_seconds,
+                control,
             )
             .await
         {

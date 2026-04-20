@@ -26,6 +26,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use tracing::{debug, error, info};
 
 use synctv_proto::client::{
@@ -36,7 +37,8 @@ use synctv_proto::client::{
     OAuth2ProviderTypePathRequest, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
-use super::{error::map_api_error, middleware::AuthUser, AppError, AppResult, AppState};
+use super::{error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState};
+use crate::impls::EndpointRateLimitCategory;
 
 fn oauth2_unavailable_error() -> AppError {
     AppError::new(
@@ -92,6 +94,7 @@ fn optional_non_empty_trimmed(value: &str) -> Option<String> {
     )
 )]
 pub async fn get_authorize_url(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
     Query(mut req): Query<GetAuthorizationUrlRequest>,
@@ -100,9 +103,24 @@ pub async fn get_authorize_url(
     req.provider = validate_oauth2_path(path)?.provider;
     validate_oauth2_proto_request(&req)?;
     let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+    let provider = req.provider.clone();
 
-    let (authorization_url, state_token) = oauth2_api
-        .get_authorization_url(&req.provider, redirect_url)
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let (authorization_url, state_token) = state
+        .request_executor
+        .execute_public_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |request_control| async move {
+                oauth2_api
+                    .get_authorization_url_with_control(
+                        &provider,
+                        redirect_url,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
         .await
         .map_err(|e| {
             error!("Failed to get authorization URL: {}", e);
@@ -146,7 +164,7 @@ pub async fn get_authorize_url(
     )
 )]
 pub async fn exchange_authorization_code(
-    maybe_auth: Option<super::middleware::AuthUser>,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
@@ -157,21 +175,32 @@ pub async fn exchange_authorization_code(
     let mut req = req;
     req.provider = validate_oauth2_path(path)?.provider;
     validate_oauth2_proto_request(&req)?;
-
-    let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
     let client_ip = crate::client_ip::extract_client_ip_from_headers(
         &state.config,
         connect_info.0.ip(),
         &headers,
     );
+    let provider = req.provider.clone();
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let result = oauth2_api
-        .exchange_authorization_code(
-            &req.provider,
-            &req.code,
-            &req.state,
-            current_user_id,
-            Some(client_ip),
+    let result = state
+        .request_executor
+        .execute_optional_user_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control, authenticated| async move {
+                let current_user_id = authenticated.as_ref().map(|token| &token.user_id);
+                oauth2_api
+                    .exchange_authorization_code_with_control(
+                        &provider,
+                        &req.code,
+                        &req.state,
+                        current_user_id,
+                        Some(client_ip),
+                        Some(&request_control),
+                    )
+                    .await
+            },
         )
         .await
         .map_err(|e| {
@@ -221,7 +250,7 @@ pub async fn exchange_authorization_code(
     )
 )]
 pub async fn get_bind_authorize_url(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
     Query(mut req): Query<GetAuthorizationUrlForBindRequest>,
@@ -230,20 +259,32 @@ pub async fn get_bind_authorize_url(
     req.provider = validate_oauth2_path(path)?.provider;
     validate_oauth2_proto_request(&req)?;
     let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+    let provider = req.provider.clone();
 
-    let (authorization_url, state_token) = oauth2_api
-        .get_authorization_url_for_bind(&auth.user_id, &req.provider, redirect_url)
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let (authorization_url, state_token) = state
+        .request_executor
+        .execute_user_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |request_control, authenticated| async move {
+                oauth2_api
+                    .get_authorization_url_for_bind_with_control(
+                        &authenticated.user_id,
+                        &provider,
+                        redirect_url,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
         .await
         .map_err(|e| {
             error!("Failed to get authorization URL for bind: {}", e);
             map_api_error(e)
         })?;
 
-    debug!(
-        "Generated OAuth2 bind URL for provider: {} (user: {})",
-        req.provider,
-        auth.user_id.as_str()
-    );
+    debug!("Generated OAuth2 bind URL for provider: {}", req.provider);
 
     Ok(Json(GetAuthorizationUrlForBindResponse {
         authorization_url,
@@ -275,7 +316,7 @@ pub async fn get_bind_authorize_url(
     )
 )]
 pub async fn unlink_provider(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderTypePathRequest>,
     Query(mut req): Query<UnlinkProviderRequest>,
@@ -284,20 +325,31 @@ pub async fn unlink_provider(
     req.provider = validate_oauth2_path(path)?.provider;
     validate_oauth2_proto_request(&req)?;
     let provider_user_id = optional_non_empty_trimmed(&req.provider_user_id);
+    let provider = req.provider.clone();
 
-    let result = oauth2_api
-        .unlink_provider(&auth.user_id, &req.provider, provider_user_id.as_deref())
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let result = state
+        .request_executor
+        .execute_user(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                oauth2_api
+                    .unlink_provider(
+                        &authenticated.user_id,
+                        &provider,
+                        provider_user_id.as_deref(),
+                    )
+                    .await
+            },
+        )
         .await
         .map_err(|e| {
             error!("Failed to unlink OAuth2 provider: {}", e);
             map_api_error(e)
         })?;
 
-    info!(
-        "User {} unlinked OAuth2 provider: {}",
-        auth.user_id.as_str(),
-        req.provider
-    );
+    info!("OAuth2 provider unlinked: {}", req.provider);
 
     Ok(Json(UnlinkProviderResponse {
         success: result.success,
@@ -324,14 +376,24 @@ pub async fn unlink_provider(
     )
 )]
 pub async fn list_available_providers(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<ListAvailableProvidersResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let providers = oauth2_api.list_available_providers().await.map_err(|e| {
-        error!("Failed to list available providers: {}", e);
-        map_api_error(e)
-    })?;
+    let providers = state
+        .request_executor
+        .execute_public(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            || async move { oauth2_api.list_available_providers().await },
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to list available providers: {}", e);
+            map_api_error(e)
+        })?;
 
     let response = providers
         .into_iter()
@@ -364,13 +426,23 @@ pub async fn list_available_providers(
     )
 )]
 pub async fn get_linked_providers(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetLinkedProvidersResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let providers = oauth2_api
-        .get_linked_providers(&auth.user_id)
+    let providers = state
+        .request_executor
+        .execute_user(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                oauth2_api
+                    .get_linked_providers(&authenticated.user_id)
+                    .await
+            },
+        )
         .await
         .map_err(|e| {
             error!("Failed to get linked providers: {}", e);

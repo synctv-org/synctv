@@ -3,6 +3,7 @@
 //! Used by both HTTP and gRPC handlers to avoid duplicating email logic.
 
 use std::sync::Arc;
+use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
     rate_limit::RateLimitError, EmailService, EmailTokenService, EmailTokenType,
     RequestRateLimiterService, UserService,
@@ -89,16 +90,40 @@ pub fn build_shared_email_api(
 }
 
 impl EmailApiImpl {
+    async fn sleep_with_control(
+        delay: std::time::Duration,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
+        match control {
+            Some(control) => control
+                .run(tokio::time::sleep(delay))
+                .await
+                .map_err(|error| ApiError::from(synctv_core::Error::from(error)))?,
+            None => tokio::time::sleep(delay).await,
+        }
+
+        Ok(())
+    }
+
     fn normalize_rate_limited_email(email: &str) -> String {
         email.trim().to_ascii_lowercase()
     }
 
-    async fn check_email_rate_limit(&self, email: &str) -> Result<(), ApiError> {
+    async fn check_email_rate_limit(
+        &self,
+        email: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), ApiError> {
         let normalized = Self::normalize_rate_limited_email(email);
         let key = format!("email:addr:{normalized}");
         match self
             .rate_limiter
-            .check_rate_limit(&key, EMAIL_ADDR_MAX_REQUESTS, EMAIL_ADDR_WINDOW_SECONDS)
+            .check_rate_limit_with_control(
+                &key,
+                EMAIL_ADDR_MAX_REQUESTS,
+                EMAIL_ADDR_WINDOW_SECONDS,
+                control,
+            )
             .await
         {
             Ok(()) => Ok(()),
@@ -138,7 +163,15 @@ impl EmailApiImpl {
         &self,
         email: &str,
     ) -> Result<SendVerificationResult, ApiError> {
-        self.check_email_rate_limit(email).await?;
+        self.send_verification_email_with_control(email, None).await
+    }
+
+    pub async fn send_verification_email_with_control(
+        &self,
+        email: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<SendVerificationResult, ApiError> {
+        self.check_email_rate_limit(email, control).await?;
 
         let user = self
             .user_service
@@ -158,7 +191,12 @@ impl EmailApiImpl {
 
         let _token = self
             .email_service
-            .send_verification_email(email, &self.email_token_service, &user.id)
+            .send_verification_email_with_control(
+                email,
+                &self.email_token_service,
+                &user.id,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -178,6 +216,15 @@ impl EmailApiImpl {
         email: &str,
         token: &str,
     ) -> Result<ConfirmEmailResult, ApiError> {
+        self.confirm_email_with_control(email, token, None).await
+    }
+
+    pub async fn confirm_email_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmEmailResult, ApiError> {
         let user = self
             .user_service
             .get_by_email(email)
@@ -189,7 +236,12 @@ impl EmailApiImpl {
 
         let validated_user_id = self
             .email_token_service
-            .validate_token_for_user(token, EmailTokenType::EmailVerification, &user.id)
+            .validate_token_for_user_with_control(
+                token,
+                EmailTokenType::EmailVerification,
+                &user.id,
+                control,
+            )
             .await
             .map_err(|_| {
                 ApiError::InvalidInput("Invalid or expired verification token".to_string())
@@ -215,7 +267,11 @@ impl EmailApiImpl {
 
         // Invalidate all remaining email verification tokens for this user
         self.email_token_service
-            .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
+            .invalidate_user_tokens_with_control(
+                &user.id,
+                EmailTokenType::EmailVerification,
+                control,
+            )
             .await
             .map_err(map_email_mutation_error)?;
 
@@ -233,7 +289,15 @@ impl EmailApiImpl {
         &self,
         email: &str,
     ) -> Result<RequestPasswordResetResult, ApiError> {
-        self.check_email_rate_limit(email).await?;
+        self.request_password_reset_with_control(email, None).await
+    }
+
+    pub async fn request_password_reset_with_control(
+        &self,
+        email: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestPasswordResetResult, ApiError> {
+        self.check_email_rate_limit(email, control).await?;
 
         let user = self
             .user_service
@@ -245,7 +309,7 @@ impl EmailApiImpl {
             // Add random delay to prevent timing side-channel that leaks
             // whether an account exists based on response time differences.
             let delay_ms = rand::random_range(100u64..500u64);
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
             return Ok(RequestPasswordResetResult {
                 message: GENERIC_PASSWORD_RESET_MESSAGE.to_string(),
             });
@@ -253,7 +317,12 @@ impl EmailApiImpl {
 
         let _token = self
             .email_service
-            .send_password_reset_email(email, &self.email_token_service, &user.id)
+            .send_password_reset_email_with_control(
+                email,
+                &self.email_token_service,
+                &user.id,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -269,7 +338,15 @@ impl EmailApiImpl {
         &self,
         email: &str,
     ) -> Result<RequestEmailLoginResult, ApiError> {
-        self.check_email_rate_limit(email).await?;
+        self.request_email_login_with_control(email, None).await
+    }
+
+    pub async fn request_email_login_with_control(
+        &self,
+        email: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestEmailLoginResult, ApiError> {
+        self.check_email_rate_limit(email, control).await?;
 
         let user = self
             .user_service
@@ -279,7 +356,7 @@ impl EmailApiImpl {
 
         let Some(user) = user else {
             let delay_ms = rand::random_range(100u64..500u64);
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
             return Ok(RequestEmailLoginResult {
                 message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
             });
@@ -294,7 +371,7 @@ impl EmailApiImpl {
             )
         {
             let delay_ms = rand::random_range(100u64..500u64);
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
             return Ok(RequestEmailLoginResult {
                 message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
             });
@@ -302,7 +379,12 @@ impl EmailApiImpl {
 
         let _token = self
             .email_service
-            .send_email_login_email(email, &self.email_token_service, &user.id)
+            .send_email_login_email_with_control(
+                email,
+                &self.email_token_service,
+                &user.id,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -323,6 +405,17 @@ impl EmailApiImpl {
         token: &str,
         new_password: &str,
     ) -> Result<ConfirmPasswordResetResult, ApiError> {
+        self.confirm_password_reset_with_control(email, token, new_password, None)
+            .await
+    }
+
+    pub async fn confirm_password_reset_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        new_password: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmPasswordResetResult, ApiError> {
         // Password validation (complexity, length) is handled by
         // UserService::set_password() which uses the full PasswordValidator.
         // No redundant length-only check here.
@@ -336,7 +429,12 @@ impl EmailApiImpl {
 
         let validated_user_id = self
             .email_token_service
-            .validate_token_for_user(token, EmailTokenType::PasswordReset, &user.id)
+            .validate_token_for_user_with_control(
+                token,
+                EmailTokenType::PasswordReset,
+                &user.id,
+                control,
+            )
             .await
             .map_err(|_| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
@@ -360,7 +458,7 @@ impl EmailApiImpl {
 
         // Invalidate all remaining password reset tokens for this user
         self.email_token_service
-            .invalidate_user_tokens(&user.id, EmailTokenType::PasswordReset)
+            .invalidate_user_tokens_with_control(&user.id, EmailTokenType::PasswordReset, control)
             .await
             .map_err(map_email_mutation_error)?;
 
@@ -379,6 +477,17 @@ impl EmailApiImpl {
         token: &str,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<ConfirmEmailLoginResult, ApiError> {
+        self.confirm_email_login_with_control(email, token, client_ip, None)
+            .await
+    }
+
+    pub async fn confirm_email_login_with_control(
+        &self,
+        email: &str,
+        token: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmEmailLoginResult, ApiError> {
         let user = self
             .user_service
             .get_by_email(email)
@@ -388,7 +497,12 @@ impl EmailApiImpl {
 
         let validated_user_id = self
             .email_token_service
-            .validate_token_for_user(token, EmailTokenType::EmailLogin, &user.id)
+            .validate_token_for_user_with_control(
+                token,
+                EmailTokenType::EmailLogin,
+                &user.id,
+                control,
+            )
             .await
             .map_err(|_| ApiError::Authentication("Invalid or expired login code".to_string()))?;
 
@@ -421,7 +535,7 @@ impl EmailApiImpl {
         let login_key = format!("email:{}", Self::normalize_rate_limited_email(email));
         let (user, access_token, refresh_token) = self
             .user_service
-            .login_with_verified_email(&user.id, &login_key, client_ip)
+            .login_with_verified_email_with_control(&user.id, &login_key, client_ip, control)
             .await
             .map_err(ApiError::from)?;
 

@@ -22,6 +22,9 @@ chrono.workspace = true
 chrono-tz.workspace = true
 iana-time-zone.workspace = true
 nanoid.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

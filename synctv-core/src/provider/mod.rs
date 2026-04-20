@@ -40,6 +40,7 @@ pub use provider_client::ProviderClientManager;
 pub use proxy::*;
 pub use registry::*;
 pub use store::*;
+pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
 
 pub(crate) fn subtitle_headers_for_proxy(

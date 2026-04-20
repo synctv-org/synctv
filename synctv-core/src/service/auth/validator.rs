@@ -1,15 +1,15 @@
-//! Unified JWT validation for HTTP and gRPC
+//! Unified JWT validation for HTTP and gRPC.
 //!
 //! This module provides a single source of truth for JWT validation across
-//! both HTTP middleware and gRPC interceptors, eliminating code duplication
-//! and ensuring consistent authentication behavior.
+//! both transports, eliminating code duplication and ensuring consistent
+//! authentication behavior.
 
 use super::{jwt::JwtService, Claims};
 use crate::{models::UserId, Error, Result};
 use std::sync::Arc;
 use tonic::{metadata::MetadataMap, Status};
 
-/// Unified JWT validator for HTTP and gRPC authentication
+/// Unified JWT validator for HTTP and gRPC authentication.
 ///
 /// This validator provides consistent token extraction and validation
 /// for both HTTP (Authorization header) and gRPC (metadata) contexts.
@@ -94,7 +94,7 @@ impl JwtValidator {
 
     /// Validate JWT from HTTP Authorization header and extract user ID
     ///
-    /// Convenience method for HTTP middleware that only needs the `user_id`.
+    /// Convenience method for HTTP call sites that only need the `user_id`.
     ///
     /// # Arguments
     /// * `auth_header` - Authorization header value (e.g., "Bearer <token>")
@@ -151,7 +151,7 @@ impl JwtValidator {
 
     /// Validate JWT from gRPC metadata and extract user ID
     ///
-    /// Convenience method for gRPC interceptors that only need the `user_id`.
+    /// Convenience method for gRPC call sites that only need the `user_id`.
     ///
     /// # Arguments
     /// * `metadata` - gRPC request metadata
@@ -165,7 +165,7 @@ impl JwtValidator {
 
     /// Validate JWT from gRPC metadata and return as gRPC Status
     ///
-    /// This method is specifically designed for gRPC interceptors,
+    /// This method is specifically designed for gRPC-facing call sites,
     /// returning `tonic::Status` instead of `crate::Error`.
     ///
     /// # Arguments
@@ -190,7 +190,7 @@ impl JwtValidator {
             .verify_access_token(&token)
             .map_err(|error| {
                 tracing::warn!(error = %error, "gRPC token verification failed");
-                Status::unauthenticated("Invalid or expired token")
+                Status::unauthenticated(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN)
             })
     }
 }
@@ -344,7 +344,10 @@ mod tests {
             .expect_err("invalid token should be rejected");
 
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
-        assert_eq!(status.message(), "Invalid or expired token");
+        assert_eq!(
+            status.message(),
+            synctv_common::messages::INVALID_OR_EXPIRED_TOKEN
+        );
     }
 
     #[test]

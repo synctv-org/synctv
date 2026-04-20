@@ -26,6 +26,7 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
+use synctv_common::ExecutionControl;
 use tracing::debug;
 
 use crate::models::{RoomId, UserId};
@@ -491,6 +492,14 @@ pub trait WebSocketTicketService: Send + Sync {
         password_version: i32,
     ) -> Result<String>;
 
+    async fn create_ticket_with_control(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String>;
+
     async fn validate_and_consume(
         &self,
         ticket: &str,
@@ -511,11 +520,27 @@ pub trait WebSocketTicketService: Send + Sync {
         user_validator: &dyn UserValidator,
     ) -> Result<PendingValidatedTicket>;
 
+    async fn validate_checked_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+        control: Option<&ExecutionControl>,
+    ) -> Result<PendingValidatedTicket>;
+
     async fn consume_prevalidated(
         &self,
         ticket: &str,
         expected_room_id: &RoomId,
         pending: &PendingValidatedTicket,
+    ) -> Result<ValidatedTicket>;
+
+    async fn consume_prevalidated_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+        control: Option<&ExecutionControl>,
     ) -> Result<ValidatedTicket>;
 }
 
@@ -543,6 +568,16 @@ impl std::fmt::Debug for WsTicketService {
 }
 
 impl WsTicketService {
+    async fn run_with_control<T, F>(control: Option<&ExecutionControl>, future: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        match control {
+            Some(control) => control.run(future).await.map_err(Error::from)?,
+            None => future.await,
+        }
+    }
+
     /// Create a new WebSocket ticket service with a custom ticket store backend.
     pub fn from_store(store: Arc<dyn TicketStore>, ticket_ttl_secs: Option<u64>) -> Self {
         Self {
@@ -619,6 +654,17 @@ impl WsTicketService {
         room_id: &RoomId,
         password_version: i32,
     ) -> Result<String> {
+        self.create_ticket_with_control(user_id, room_id, password_version, None)
+            .await
+    }
+
+    pub async fn create_ticket_with_control(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
         let ticket = Self::generate_ticket();
 
         let ticket_data = WsTicketData {
@@ -631,9 +677,12 @@ impl WsTicketService {
             password_version,
         };
 
-        self.store
-            .store(&ticket, &ticket_data, self.ticket_ttl_secs)
-            .await?;
+        Self::run_with_control(
+            control,
+            self.store
+                .store(&ticket, &ticket_data, self.ticket_ttl_secs),
+        )
+        .await?;
 
         debug!(
             user_id = %user_id.as_str(),
@@ -660,9 +709,21 @@ impl WsTicketService {
         ticket: &str,
         expected_room_id: &RoomId,
     ) -> Result<ValidatedTicket> {
+        self.validate_and_consume_with_control(ticket, expected_room_id, None)
+            .await
+    }
+
+    pub async fn validate_and_consume_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
-        let Some(ticket_data) = self.store.consume(ticket, expected_room_id).await? else {
+        let Some(ticket_data) =
+            Self::run_with_control(control, self.store.consume(ticket, expected_room_id)).await?
+        else {
             debug!(
                 ticket = %ticket,
                 cross_node_capable,
@@ -713,16 +774,34 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         user_validator: &dyn UserValidator,
     ) -> Result<ValidatedTicket> {
+        self.validate_and_consume_checked_with_control(
+            ticket,
+            expected_room_id,
+            user_validator,
+            None,
+        )
+        .await
+    }
+
+    pub async fn validate_and_consume_checked_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
         let pending = self
-            .validate_checked(ticket, expected_room_id, user_validator)
+            .validate_checked_with_control(ticket, expected_room_id, user_validator, control)
             .await?;
 
-        if !self
-            .store
-            .claim(ticket, expected_room_id, &pending.ticket_data)
-            .await?
+        if !Self::run_with_control(
+            control,
+            self.store
+                .claim(ticket, expected_room_id, &pending.ticket_data),
+        )
+        .await?
         {
             debug!(
                 ticket = %ticket,
@@ -758,9 +837,22 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         user_validator: &dyn UserValidator,
     ) -> Result<PendingValidatedTicket> {
+        self.validate_checked_with_control(ticket, expected_room_id, user_validator, None)
+            .await
+    }
+
+    pub async fn validate_checked_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+        control: Option<&ExecutionControl>,
+    ) -> Result<PendingValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
-        let Some(ticket_data) = self.store.load(ticket, expected_room_id).await? else {
+        let Some(ticket_data) =
+            Self::run_with_control(control, self.store.load(ticket, expected_room_id)).await?
+        else {
             debug!(
                 ticket = %ticket,
                 cross_node_capable,
@@ -775,25 +867,25 @@ impl WsTicketService {
 
         // Room binding is enforced by the storage key. A ticket fetched here
         // is already scoped to `expected_room_id`.
-        let user_validation = user_validator
-            .validate_for_ticket(&user_id)
-            .await
-            .map_err(|e| {
-                debug!(
-                    user_id = %user_id.as_str(),
-                    error = %e,
-                    cross_node_capable,
-                    "WebSocket ticket rejected: user validation failed"
-                );
-                match crate::service::auth::SecurityPipeline::classify_auth_error(&e) {
-                    crate::service::auth::AuthErrorCategory::Authentication
-                    | crate::service::auth::AuthErrorCategory::Authorization => {
-                        Error::Authorization("Authentication failed".to_string())
+        let user_validation =
+            Self::run_with_control(control, user_validator.validate_for_ticket(&user_id))
+                .await
+                .map_err(|e| {
+                    debug!(
+                        user_id = %user_id.as_str(),
+                        error = %e,
+                        cross_node_capable,
+                        "WebSocket ticket rejected: user validation failed"
+                    );
+                    match crate::service::auth::SecurityPipeline::classify_auth_error(&e) {
+                        crate::service::auth::AuthErrorCategory::Authentication
+                        | crate::service::auth::AuthErrorCategory::Authorization => {
+                            Error::Authorization("Authentication failed".to_string())
+                        }
+                        crate::service::auth::AuthErrorCategory::Unavailable
+                        | crate::service::auth::AuthErrorCategory::Internal => e,
                     }
-                    crate::service::auth::AuthErrorCategory::Unavailable
-                    | crate::service::auth::AuthErrorCategory::Internal => e,
-                }
-            })?;
+                })?;
 
         // Check password version after loading the current user state.
         if ticket_data.password_version < user_validation.password_version {
@@ -828,12 +920,25 @@ impl WsTicketService {
         expected_room_id: &RoomId,
         pending: &PendingValidatedTicket,
     ) -> Result<ValidatedTicket> {
+        self.consume_prevalidated_with_control(ticket, expected_room_id, pending, None)
+            .await
+    }
+
+    pub async fn consume_prevalidated_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
-        if !self
-            .store
-            .claim(ticket, expected_room_id, &pending.ticket_data)
-            .await?
+        if !Self::run_with_control(
+            control,
+            self.store
+                .claim(ticket, expected_room_id, &pending.ticket_data),
+        )
+        .await?
         {
             debug!(
                 ticket = %ticket,
@@ -886,6 +991,23 @@ impl WebSocketTicketService for WsTicketService {
         WsTicketService::create_ticket(self, user_id, room_id, password_version).await
     }
 
+    async fn create_ticket_with_control(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String> {
+        WsTicketService::create_ticket_with_control(
+            self,
+            user_id,
+            room_id,
+            password_version,
+            control,
+        )
+        .await
+    }
+
     async fn validate_and_consume(
         &self,
         ticket: &str,
@@ -918,6 +1040,23 @@ impl WebSocketTicketService for WsTicketService {
         WsTicketService::validate_checked(self, ticket, expected_room_id, user_validator).await
     }
 
+    async fn validate_checked_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+        control: Option<&ExecutionControl>,
+    ) -> Result<PendingValidatedTicket> {
+        WsTicketService::validate_checked_with_control(
+            self,
+            ticket,
+            expected_room_id,
+            user_validator,
+            control,
+        )
+        .await
+    }
+
     async fn consume_prevalidated(
         &self,
         ticket: &str,
@@ -925,6 +1064,23 @@ impl WebSocketTicketService for WsTicketService {
         pending: &PendingValidatedTicket,
     ) -> Result<ValidatedTicket> {
         WsTicketService::consume_prevalidated(self, ticket, expected_room_id, pending).await
+    }
+
+    async fn consume_prevalidated_with_control(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        pending: &PendingValidatedTicket,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ValidatedTicket> {
+        WsTicketService::consume_prevalidated_with_control(
+            self,
+            ticket,
+            expected_room_id,
+            pending,
+            control,
+        )
+        .await
     }
 }
 

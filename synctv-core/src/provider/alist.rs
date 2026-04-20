@@ -67,15 +67,18 @@ impl AlistProvider {
         }
     }
 
-    /// Get Alist client for the given instance name (remote if available, local fallback)
-    async fn get_client(
+    async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<AlistClientArc, ProviderError> {
         self.provider_instance_manager
-            .resolve_client_required(instance_name, create_remote_alist_client, || {
-                self.client_manager.local_alist_client()
-            })
+            .resolve_client_required_with_context(
+                instance_name,
+                request_context,
+                create_remote_alist_client,
+                || self.client_manager.local_alist_client(),
+            )
             .await
     }
 
@@ -102,7 +105,18 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::LoginReq,
         instance_name: Option<&str>,
     ) -> Result<String, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.login_with_context(req, instance_name, None).await
+    }
+
+    pub async fn login_with_context(
+        &self,
+        req: synctv_media_providers::grpc::alist::LoginReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<String, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.login(req).await.map_err(std::convert::Into::into)
     }
 
@@ -114,7 +128,18 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::FsListReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::alist::FsListResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.fs_list_with_context(req, instance_name, None).await
+    }
+
+    pub async fn fs_list_with_context(
+        &self,
+        req: synctv_media_providers::grpc::alist::FsListReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::alist::FsListResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.fs_list(req).await.map_err(std::convert::Into::into)
     }
 
@@ -126,7 +151,18 @@ impl AlistProvider {
         req: synctv_media_providers::grpc::alist::MeReq,
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
-        let client = self.get_client(instance_name).await?;
+        self.me_with_context(req, instance_name, None).await
+    }
+
+    pub async fn me_with_context(
+        &self,
+        req: synctv_media_providers::grpc::alist::MeReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
@@ -215,6 +251,7 @@ impl AlistProvider {
             repo,
             Self::NAME,
             &config.credential_ref,
+            ctx.request_context(),
         )
         .await?;
 
@@ -232,7 +269,9 @@ impl AlistProvider {
                     hashed: true,
                 };
                 let instance_name = config.provider_instance_name.as_deref();
-                let token = self.provider_login(login_req, instance_name).await?;
+                let token = self
+                    .provider_login(login_req, instance_name, ctx.request_context())
+                    .await?;
 
                 Ok(ResolvedAlistConfig {
                     host,
@@ -251,8 +290,12 @@ impl AlistProvider {
         &self,
         req: synctv_media_providers::grpc::alist::LoginReq,
         instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<String, ProviderError> {
-        self.login(req, instance_name).await
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        client.login(req).await.map_err(std::convert::Into::into)
     }
 
     /// Resolve playback from the Alist API (no caching layer).
@@ -262,10 +305,11 @@ impl AlistProvider {
     async fn resolve_from_api(
         &self,
         config: &ResolvedAlistConfig,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<PlaybackResult, ProviderError> {
         // Get appropriate client based on instance_name from config
         let client = self
-            .get_client(config.provider_instance_name.as_deref())
+            .get_client_with_context(config.provider_instance_name.as_deref(), request_context)
             .await?;
 
         // Build proto request
@@ -524,7 +568,9 @@ impl MediaProvider for AlistProvider {
         }
 
         // Call provider API
-        let result = self.resolve_from_api(&resolved).await?;
+        let result = self
+            .resolve_from_api(&resolved, _ctx.request_context())
+            .await?;
 
         // Generate version and store result
         super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
@@ -553,7 +599,8 @@ impl super::proxy::ProviderProxy for AlistProvider {
         let sub_path = ctx.sub_path;
 
         if let Some((version, rest)) = sub_path.split_once('/') {
-            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+            let versioned =
+                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =
@@ -703,7 +750,10 @@ impl DynamicFolder for AlistProvider {
 
         // Get appropriate client
         let client = self
-            .get_client(resolved.provider_instance_name.as_deref())
+            .get_client_with_context(
+                resolved.provider_instance_name.as_deref(),
+                _ctx.request_context(),
+            )
             .await?;
 
         // Build list request

@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use std::{future::Future, sync::Arc};
 
 use tonic::{Request, Response, Status};
 
 use crate::impls::admin::RequestContext;
 use synctv_core::Config;
-use synctv_core::service::UserService;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{
@@ -66,105 +67,188 @@ fn grpc_request_context<T: std::fmt::Debug>(
 /// matching how `ClientServiceImpl` delegates to `ClientApiImpl`.
 #[derive(Clone)]
 pub struct AdminServiceImpl {
-    user_service: Arc<UserService>,
     admin_api: Arc<AdminApiImpl>,
     config: Arc<Config>,
 }
 
 impl AdminServiceImpl {
     #[must_use]
-    pub const fn new(
-        user_service: Arc<UserService>,
-        admin_api: Arc<AdminApiImpl>,
-        config: Arc<Config>,
-    ) -> Self {
-        Self {
-            user_service,
-            admin_api,
-            config,
-        }
+    pub const fn new(admin_api: Arc<AdminApiImpl>, config: Arc<Config>) -> Self {
+        Self { admin_api, config }
     }
 
-    /// Validate admin authentication: extract user from JWT, check banned/deleted
-    /// status, and verify token has not been invalidated by password change.
-    ///
-    /// Delegates to the shared `validate_admin_auth` in the impls layer.
-    /// Returns the authenticated user's role. Shared by `check_admin` and `check_root`.
-    async fn validate_auth(
+    fn request_metadata(
         &self,
         request: &Request<impl std::fmt::Debug>,
-    ) -> Result<synctv_core::models::UserRole, Status> {
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-
-        let user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
-
-        let validated = crate::impls::admin::validate_admin_auth(
-            &self.user_service,
-            user_id,
-            user_context.pv,
-            user_context.iat,
+    ) -> crate::impls::RequestMetadata {
+        super::request_metadata(
+            request,
+            &self.config,
+            Some(super::grpc_unary_request_timeout()),
         )
-        .await
-        .map_err(map_api_error)?;
-
-        Ok(validated.role)
     }
 
-    /// Check if user has admin role and return their role.
-    async fn check_admin_get_role(
+    fn execute_scoped_admin_rpc<TReq, TResp, F, Fut>(
         &self,
-        request: &Request<impl std::fmt::Debug>,
-    ) -> Result<synctv_core::models::UserRole, Status> {
-        let role = self.validate_auth(request).await?;
-        if !role.is_admin_or_above() {
-            return Err(Status::permission_denied("Admin role required"));
+        request: Request<TReq>,
+        require_root: bool,
+        operation: F,
+    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
+    where
+        TReq: std::fmt::Debug + Send + 'static,
+        TResp: Send + 'static,
+        F: FnOnce(
+                Arc<AdminApiImpl>,
+                crate::impls::admin::ValidatedAdmin,
+                RequestContext,
+                TReq,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
+    {
+        async move {
+            let metadata = self.request_metadata(&request);
+            let ctx = grpc_request_context(&request, &self.config);
+            let api = self.admin_api.clone();
+            let executor = api.clone();
+            let req = request.into_inner();
+
+            let response = if require_root {
+                executor
+                    .execute_root_endpoint(&metadata, move |validated| {
+                        operation(api, validated, ctx, req)
+                    })
+                    .await
+            } else {
+                executor
+                    .execute_admin_endpoint(&metadata, move |validated| {
+                        operation(api, validated, ctx, req)
+                    })
+                    .await
+            }
+            .map_err(map_api_error)?;
+
+            Ok(Response::new(response))
         }
-        Ok(role)
+        .boxed()
     }
 
-    /// Check if user has admin role and return validated admin info.
-    async fn check_admin_get_validated(
+    fn execute_admin_rpc<TReq, TResp, F, Fut>(
         &self,
-        request: &Request<impl std::fmt::Debug>,
-    ) -> Result<crate::impls::admin::ValidatedAdmin, Status> {
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-
-        let user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
-
-        let validated = crate::impls::admin::validate_admin_auth(
-            &self.user_service,
-            user_id,
-            user_context.pv,
-            user_context.iat,
-        )
-        .await
-        .map_err(map_api_error)?;
-
-        if !validated.role.is_admin_or_above() {
-            return Err(Status::permission_denied("Admin role required"));
-        }
-
-        Ok(validated)
+        request: Request<TReq>,
+        operation: F,
+    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
+    where
+        TReq: std::fmt::Debug + Send + 'static,
+        TResp: Send + 'static,
+        F: FnOnce(
+                Arc<AdminApiImpl>,
+                crate::impls::admin::ValidatedAdmin,
+                RequestContext,
+                TReq,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
+    {
+        self.execute_scoped_admin_rpc(request, false, operation)
     }
 
-    /// Check if user has admin role (load from database)
-    async fn check_admin(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
-        self.check_admin_get_role(request).await.map(|_| ())
+    fn execute_scoped_admin_rpc_with_control<TReq, TResp, F, Fut>(
+        &self,
+        request: Request<TReq>,
+        require_root: bool,
+        operation: F,
+    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
+    where
+        TReq: std::fmt::Debug + Send + 'static,
+        TResp: Send + 'static,
+        F: FnOnce(
+                Arc<AdminApiImpl>,
+                synctv_core::provider::ExecutionControl,
+                crate::impls::admin::ValidatedAdmin,
+                RequestContext,
+                TReq,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
+    {
+        async move {
+            let metadata = self.request_metadata(&request);
+            let ctx = grpc_request_context(&request, &self.config);
+            let api = self.admin_api.clone();
+            let executor = api.clone();
+            let req = request.into_inner();
+
+            let response = if require_root {
+                executor
+                    .execute_root_endpoint_with_control(
+                        &metadata,
+                        move |request_control, validated| {
+                            operation(api, request_control, validated, ctx, req)
+                        },
+                    )
+                    .await
+            } else {
+                executor
+                    .execute_admin_endpoint_with_control(
+                        &metadata,
+                        move |request_control, validated| {
+                            operation(api, request_control, validated, ctx, req)
+                        },
+                    )
+                    .await
+            }
+            .map_err(map_api_error)?;
+
+            Ok(Response::new(response))
+        }
+        .boxed()
     }
 
-    /// Check if user has root role (load from database).
-    async fn check_root(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
-        let role = self.validate_auth(request).await?;
-        if !matches!(role, synctv_core::models::UserRole::Root) {
-            return Err(Status::permission_denied("Root role required"));
-        }
-        Ok(())
+    fn execute_admin_rpc_with_control<TReq, TResp, F, Fut>(
+        &self,
+        request: Request<TReq>,
+        operation: F,
+    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
+    where
+        TReq: std::fmt::Debug + Send + 'static,
+        TResp: Send + 'static,
+        F: FnOnce(
+                Arc<AdminApiImpl>,
+                synctv_core::provider::ExecutionControl,
+                crate::impls::admin::ValidatedAdmin,
+                RequestContext,
+                TReq,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
+    {
+        self.execute_scoped_admin_rpc_with_control(request, false, operation)
+    }
+
+    fn execute_root_rpc<TReq, TResp, F, Fut>(
+        &self,
+        request: Request<TReq>,
+        operation: F,
+    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
+    where
+        TReq: std::fmt::Debug + Send + 'static,
+        TResp: Send + 'static,
+        F: FnOnce(
+                Arc<AdminApiImpl>,
+                crate::impls::admin::ValidatedAdmin,
+                RequestContext,
+                TReq,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
+    {
+        self.execute_scoped_admin_rpc(request, true, operation)
     }
 }
 
@@ -177,59 +261,50 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<GetSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_settings(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.get_settings(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn get_settings_group(
         &self,
         request: Request<GetSettingsGroupRequest>,
     ) -> Result<Response<GetSettingsGroupResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_settings_group(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.get_settings_group(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn update_settings(
         &self,
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<UpdateSettingsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_settings(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_settings(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn send_test_email(
         &self,
         request: Request<SendTestEmailRequest>,
     ) -> Result<Response<SendTestEmailResponse>, Status> {
-        self.check_admin(&request).await?;
+        let metadata = self.request_metadata(&request);
+        let api = self.admin_api.clone();
+        let executor = api.clone();
         let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .send_test_email(req)
+
+        let response = executor
+            .execute_admin_endpoint_with_control(&metadata, move |request_control, _| async move {
+                api.send_test_email_with_control(req, Some(&request_control))
+                    .await
+            })
             .await
             .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+
+        Ok(Response::new(response))
     }
 
     // Provider Instance Management
@@ -238,106 +313,102 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<ListProviderInstancesRequest>,
     ) -> Result<Response<ListProviderInstancesResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .list_provider_instances(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_provider_instances(req).await
+        })
+        .await
     }
 
     async fn add_provider_instance(
         &self,
         request: Request<AddProviderInstanceRequest>,
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .add_provider_instance(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc_with_control(
+            request,
+            move |api, request_control, validated, ctx, req| async move {
+                api.add_provider_instance_with_control(
+                    req,
+                    &validated.user_id,
+                    &ctx,
+                    Some(&request_control),
+                )
+                .await
+            },
+        )
+        .await
     }
 
     async fn update_provider_instance(
         &self,
         request: Request<UpdateProviderInstanceRequest>,
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_provider_instance(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc_with_control(
+            request,
+            move |api, request_control, validated, ctx, req| async move {
+                api.update_provider_instance_with_control(
+                    req,
+                    &validated.user_id,
+                    &ctx,
+                    Some(&request_control),
+                )
+                .await
+            },
+        )
+        .await
     }
 
     async fn delete_provider_instance(
         &self,
         request: Request<DeleteProviderInstanceRequest>,
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .delete_provider_instance(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.delete_provider_instance(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn reconnect_provider_instance(
         &self,
         request: Request<ReconnectProviderInstanceRequest>,
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .reconnect_provider_instance(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc_with_control(
+            request,
+            move |api, request_control, validated, ctx, req| async move {
+                api.reconnect_provider_instance_with_control(
+                    req,
+                    &validated.user_id,
+                    &ctx,
+                    Some(&request_control),
+                )
+                .await
+            },
+        )
+        .await
     }
 
     async fn enable_provider_instance(
         &self,
         request: Request<EnableProviderInstanceRequest>,
     ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .enable_provider_instance(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc_with_control(
+            request,
+            move |api, request_control, _, _, req| async move {
+                api.enable_provider_instance_with_control(req, Some(&request_control))
+                    .await
+            },
+        )
+        .await
     }
 
     async fn disable_provider_instance(
         &self,
         request: Request<DisableProviderInstanceRequest>,
     ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .disable_provider_instance(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.disable_provider_instance(req).await
+        })
+        .await
     }
 
     // User Management
@@ -346,177 +417,125 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<CreateUserRequest>,
     ) -> Result<Response<CreateUserResponse>, Status> {
-        // Creating root users requires root privileges
-        let caller_role = if request.get_ref().role == synctv_proto::common::UserRole::Root as i32 {
-            self.check_root(&request).await?;
-            synctv_core::models::UserRole::Root
-        } else {
-            self.check_admin_get_role(&request).await?
-        };
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .create_user(req, caller_role, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        let require_root = request.get_ref().role == synctv_proto::common::UserRole::Root as i32;
+        self.execute_scoped_admin_rpc(
+            request,
+            require_root,
+            move |api, validated, ctx, req| async move {
+                api.create_user(req, validated.role, &validated.user_id, &ctx)
+                    .await
+            },
+        )
+        .await
     }
 
     async fn delete_user(
         &self,
         request: Request<DeleteUserRequest>,
     ) -> Result<Response<DeleteUserResponse>, Status> {
-        self.check_root(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .delete_user(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            api.delete_user(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn list_users(
         &self,
         request: Request<ListUsersRequest>,
     ) -> Result<Response<ListUsersResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .list_users(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_users(req).await
+        })
+        .await
     }
 
     async fn get_user(
         &self,
         request: Request<GetUserRequest>,
     ) -> Result<Response<GetUserResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self.admin_api.get_user(req).await.map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_user(req).await
+        })
+        .await
     }
 
     async fn update_user_password(
         &self,
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_user_password(req, validated.user_id, validated.role, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_user_password(req, validated.user_id, validated.role, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn update_user_username(
         &self,
         request: Request<UpdateUserUsernameRequest>,
     ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_user_username(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_user_username(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn update_user_role(
         &self,
         request: Request<UpdateUserRoleRequest>,
     ) -> Result<Response<UpdateUserRoleResponse>, Status> {
-        // Granting root role requires root privileges
-        let caller_role = if request.get_ref().role == synctv_proto::common::UserRole::Root as i32 {
-            self.check_root(&request).await?;
-            synctv_core::models::UserRole::Root
-        } else {
-            self.check_admin_get_role(&request).await?
-        };
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_user_role(req, &admin_user_id, caller_role, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        let require_root = request.get_ref().role == synctv_proto::common::UserRole::Root as i32;
+        self.execute_scoped_admin_rpc(
+            request,
+            require_root,
+            move |api, validated, ctx, req| async move {
+                api.update_user_role(req, &validated.user_id, validated.role, &ctx)
+                    .await
+            },
+        )
+        .await
     }
 
     async fn ban_user(
         &self,
         request: Request<BanUserRequest>,
     ) -> Result<Response<BanUserResponse>, Status> {
-        let caller_role = self.check_admin_get_role(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .ban_user(req, &admin_user_id, caller_role, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.ban_user(req, &validated.user_id, validated.role, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn unban_user(
         &self,
         request: Request<UnbanUserRequest>,
     ) -> Result<Response<UnbanUserResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .unban_user(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.unban_user(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn get_user_rooms(
         &self,
         request: Request<GetUserRoomsRequest>,
     ) -> Result<Response<GetUserRoomsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_user_rooms(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_user_rooms(req).await
+        })
+        .await
     }
 
     async fn approve_user(
         &self,
         request: Request<ApproveUserRequest>,
     ) -> Result<Response<ApproveUserResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .approve_user(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_user(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     // Batch Operations
@@ -533,16 +552,11 @@ impl AdminService for AdminServiceImpl {
                 MAX_BATCH_SIZE
             )));
         }
-        let caller_role = self.check_admin_get_role(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .batch_ban_users(req, &admin_user_id, caller_role, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.batch_ban_users(req, &validated.user_id, validated.role, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn batch_delete_users(
@@ -557,22 +571,11 @@ impl AdminService for AdminServiceImpl {
                 MAX_BATCH_SIZE
             )));
         }
-        self.check_root(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        // check_root guarantees caller is Root
-        let resp = self
-            .admin_api
-            .batch_delete_users(
-                req,
-                &admin_user_id,
-                synctv_core::models::UserRole::Root,
-                &ctx,
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            api.batch_delete_users(req, &validated.user_id, validated.role, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn batch_ban_rooms(
@@ -587,16 +590,10 @@ impl AdminService for AdminServiceImpl {
                 MAX_BATCH_SIZE
             )));
         }
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .batch_ban_rooms(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.batch_ban_rooms(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn batch_delete_rooms(
@@ -611,16 +608,10 @@ impl AdminService for AdminServiceImpl {
                 MAX_BATCH_SIZE
             )));
         }
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .batch_delete_rooms(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.batch_delete_rooms(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     // Room Management
@@ -629,223 +620,152 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<ListRoomsRequest>,
     ) -> Result<Response<ListRoomsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .list_rooms(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_rooms(req).await
+        })
+        .await
     }
 
     async fn get_room(
         &self,
         request: Request<GetRoomRequest>,
     ) -> Result<Response<GetRoomResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self.admin_api.get_room(req).await.map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_room(req).await
+        })
+        .await
     }
 
     async fn update_room_password(
         &self,
         request: Request<UpdateRoomPasswordRequest>,
     ) -> Result<Response<UpdateRoomPasswordResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_room_password(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_room_password(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn delete_room(
         &self,
         request: Request<DeleteRoomRequest>,
     ) -> Result<Response<DeleteRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .delete_room(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.delete_room(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn ban_room(
         &self,
         request: Request<BanRoomRequest>,
     ) -> Result<Response<BanRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .ban_room(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.ban_room(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn unban_room(
         &self,
         request: Request<UnbanRoomRequest>,
     ) -> Result<Response<UnbanRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .unban_room(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.unban_room(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn approve_room(
         &self,
         request: Request<ApproveRoomRequest>,
     ) -> Result<Response<ApproveRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let admin_user_id = validated.user_id;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .approve_room(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_room(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn get_room_members(
         &self,
         request: Request<GetRoomMembersRequest>,
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_room_members(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_room_members(req).await
+        })
+        .await
     }
 
     async fn add_member(
         &self,
         request: Request<AddMemberRequest>,
     ) -> Result<Response<AddMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .add_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.add_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn approve_member(
         &self,
         request: Request<ApproveMemberRequest>,
     ) -> Result<Response<ApproveMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .approve_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn reject_member(
         &self,
         request: Request<RejectMemberRequest>,
     ) -> Result<Response<RejectMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .reject_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.reject_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn update_member_permissions(
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
     ) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_member_permissions(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_member_permissions(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
     }
 
     async fn kick_member(
         &self,
         request: Request<KickMemberRequest>,
     ) -> Result<Response<KickMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .kick_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.kick_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn ban_member(
         &self,
         request: Request<BanMemberRequest>,
     ) -> Result<Response<BanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .ban_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.ban_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn unban_member(
         &self,
         request: Request<UnbanMemberRequest>,
     ) -> Result<Response<UnbanMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .unban_member(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.unban_member(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     // Admin Management (Root Only)
@@ -854,46 +774,30 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<AddAdminRequest>,
     ) -> Result<Response<AddAdminResponse>, Status> {
-        self.check_root(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .add_admin(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            api.add_admin(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn remove_admin(
         &self,
         request: Request<RemoveAdminRequest>,
     ) -> Result<Response<RemoveAdminResponse>, Status> {
-        self.check_root(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .remove_admin(req, &admin_user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            api.remove_admin(req, &validated.user_id, &ctx).await
+        })
+        .await
     }
 
     async fn list_admins(
         &self,
         request: Request<ListAdminsRequest>,
     ) -> Result<Response<ListAdminsResponse>, Status> {
-        self.check_root(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .list_admins(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_root_rpc(request, move |api, _, _, req| async move {
+            api.list_admins(req).await
+        })
+        .await
     }
 
     // System Statistics
@@ -902,14 +806,10 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetSystemStatsRequest>,
     ) -> Result<Response<GetSystemStatsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_system_stats(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_system_stats(req).await
+        })
+        .await
     }
 
     // Room Settings Management
@@ -918,44 +818,30 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetRoomSettingsRequest>,
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .get_room_settings(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_room_settings(req).await
+        })
+        .await
     }
 
     async fn update_room_settings(
         &self,
         request: Request<UpdateRoomSettingsRequest>,
     ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .update_room_settings(req, &admin_user_id)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.update_room_settings(req, &validated.user_id).await
+        })
+        .await
     }
 
     async fn reset_room_settings(
         &self,
         request: Request<ResetRoomSettingsRequest>,
     ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let admin_user_id = super::interceptors::extract_user_id(&request)?;
-        let req = request.into_inner();
-        let resp = self
-            .admin_api
-            .reset_room_settings(req, &admin_user_id)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(resp))
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.reset_room_settings(req, &validated.user_id).await
+        })
+        .await
     }
 
     // Livestream Management
@@ -964,30 +850,22 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
-        self.check_admin(&request).await?;
-        let req = request.into_inner();
-        let response = self
-            .admin_api
-            .list_active_streams(req)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_active_streams(req).await
+        })
+        .await
     }
 
     async fn kick_stream(
         &self,
         request: Request<KickStreamRequest>,
     ) -> Result<Response<KickStreamResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request).await?;
-        let ctx = grpc_request_context(&request, &self.config);
-        let req = request.into_inner();
-
-        self.admin_api
-            .kick_stream(req, &validated.user_id, &ctx)
-            .await
-            .map_err(map_api_error)?;
-
-        Ok(Response::new(KickStreamResponse {}))
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.kick_stream(req, &validated.user_id, &ctx)
+                .await
+                .map(|()| KickStreamResponse {})
+        })
+        .await
     }
 }
 

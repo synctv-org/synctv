@@ -16,9 +16,11 @@ use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConne
 use crate::provider::ProviderError;
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_common::ExecutionControl;
 use synctv_media_providers::grpc::{
     alist::{alist_client::AlistClient, MeReq as AlistMeReq},
     bilibili::{bilibili_client::BilibiliClient, UserInfoReq},
@@ -93,6 +95,45 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
+    fn probe_execution_control(
+        control: Option<&ExecutionControl>,
+        timeout: Duration,
+    ) -> ExecutionControl {
+        let probe_deadline = std::time::Instant::now() + timeout;
+        match control {
+            Some(control) => {
+                let deadline = control
+                    .deadline()
+                    .map_or(probe_deadline, |deadline| deadline.min(probe_deadline));
+                ExecutionControl::from_parts(Some(deadline), control.cancellation_token())
+            }
+            None => ExecutionControl::from_timeout(Some(timeout)),
+        }
+    }
+
+    fn provider_registry_unavailable(
+        operation: &'static str,
+        error: impl std::fmt::Display,
+    ) -> crate::Error {
+        tracing::warn!(operation, error = %error, "Provider registry unavailable");
+        crate::Error::ServiceUnavailable(
+            "Provider configuration service is temporarily unavailable.".to_string(),
+        )
+    }
+
+    async fn run_with_control<T, F>(
+        control: Option<&ExecutionControl>,
+        future: F,
+    ) -> crate::Result<T>
+    where
+        F: Future<Output = crate::Result<T>>,
+    {
+        match control {
+            Some(control) => control.run(future).await.map_err(crate::Error::from)?,
+            None => future.await,
+        }
+    }
+
     fn provider_connection_setup_error(
         message: &'static str,
         error: impl std::fmt::Display,
@@ -608,36 +649,47 @@ impl RemoteProviderManager {
         Ok(RemoteProviderConnection::new(channel, auth_secret))
     }
 
-    async fn build_management_validated_remote_connection(
+    async fn build_management_validated_remote_connection_with_control(
         &self,
         config: &ProviderInstance,
+        control: Option<&ExecutionControl>,
     ) -> crate::Result<RemoteProviderConnection> {
-        let channel = self.create_grpc_channel(config).await?;
+        let channel = Box::pin(Self::run_with_control(
+            control,
+            self.create_grpc_channel(config),
+        ))
+        .await?;
         let connection = Self::build_remote_connection(config, channel)?;
-        self.validate_management_connection(config, &connection)
+        self.validate_management_connection_with_control(config, &connection, control)
             .await?;
         Ok(connection)
     }
 
-    async fn validate_management_connection(
+    async fn validate_management_connection_with_control(
         &self,
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
+        control: Option<&ExecutionControl>,
     ) -> crate::Result<()> {
         let mut client = HealthClient::new(connection.channel());
         let request = tonic::Request::new(HealthCheckRequest {
             service: String::new(),
         });
         let timeout = Duration::from_secs(5);
+        let control = Self::probe_execution_control(control, timeout);
 
-        let response = tokio::time::timeout(timeout, client.check(request))
+        let response = control
+            .run(client.check(request))
             .await
-            .map_err(|_| {
-                crate::Error::InvalidInput(format!(
-                    "Remote provider instance '{}' connectivity validation timed out after {}s",
-                    config.name,
-                    timeout.as_secs()
-                ))
+            .map_err(|err| match err {
+                synctv_common::ExecutionControlError::DeadlineExceeded => {
+                    crate::Error::InvalidInput(format!(
+                        "Remote provider instance '{}' connectivity validation timed out after {}s",
+                        config.name,
+                        timeout.as_secs()
+                    ))
+                }
+                other => crate::Error::from(other),
             })?
             .map_err(|status| {
                 crate::Error::InvalidInput(format!(
@@ -662,16 +714,27 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
     ) -> crate::Result<()> {
-        self.validate_management_connection(config, connection)
-            .await?;
-        self.validate_authenticated_provider_health(config, connection)
+        self.validate_remote_connection_with_control(config, connection, None)
             .await
     }
 
-    async fn validate_authenticated_provider_health(
+    async fn validate_remote_connection_with_control(
         &self,
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
+        control: Option<&ExecutionControl>,
+    ) -> crate::Result<()> {
+        self.validate_management_connection_with_control(config, connection, control)
+            .await?;
+        self.validate_authenticated_provider_health_with_control(config, connection, control)
+            .await
+    }
+
+    async fn validate_authenticated_provider_health_with_control(
+        &self,
+        config: &ProviderInstance,
+        connection: &RemoteProviderConnection,
+        control: Option<&ExecutionControl>,
     ) -> crate::Result<()> {
         let timeout = Duration::from_secs(5);
         let probe = async {
@@ -692,12 +755,16 @@ impl RemoteProviderManager {
             Ok(())
         };
 
-        tokio::time::timeout(timeout, probe).await.map_err(|_| {
-            crate::Error::InvalidInput(format!(
-                "Authenticated provider probe timed out for instance '{}' after {}s",
-                config.name,
-                timeout.as_secs()
-            ))
+        let control = Self::probe_execution_control(control, timeout);
+        control.run(probe).await.map_err(|err| match err {
+            synctv_common::ExecutionControlError::DeadlineExceeded => {
+                crate::Error::InvalidInput(format!(
+                    "Authenticated provider probe timed out for instance '{}' after {}s",
+                    config.name,
+                    timeout.as_secs()
+                ))
+            }
+            other => crate::Error::from(other),
         })?
     }
 
@@ -1017,6 +1084,22 @@ impl RemoteProviderManager {
         load_local()
     }
 
+    /// Resolve a provider client with a cooperative request context for remote calls.
+    pub async fn resolve_client_with_context<T>(
+        &self,
+        instance_name: Option<&str>,
+        request_context: Option<&crate::provider::ExecutionControl>,
+        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
+        load_local: impl FnOnce() -> T,
+    ) -> T {
+        if let Some(name) = instance_name {
+            if let Some(connection) = self.get(name).await {
+                return create_remote(connection.with_request_context(request_context.cloned()));
+            }
+        }
+        load_local()
+    }
+
     /// Resolve a provider client without silently falling back when an explicit
     /// remote instance name was requested.
     ///
@@ -1044,6 +1127,40 @@ impl RemoteProviderManager {
         }
     }
 
+    /// Resolve a provider client without silent fallback and attach a cooperative request context.
+    pub async fn resolve_client_required_with_context<T>(
+        &self,
+        instance_name: Option<&str>,
+        request_context: Option<&crate::provider::ExecutionControl>,
+        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
+        load_local: impl FnOnce() -> T,
+    ) -> std::result::Result<T, ProviderError> {
+        if let Some(request_context) = request_context {
+            request_context
+                .check_active()
+                .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+        }
+
+        match instance_name {
+            Some(name) => self
+                .get_connection_result(name)
+                .await?
+                .map(|connection| {
+                    if let Some(request_context) = request_context {
+                        request_context
+                            .check_active()
+                            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
+                    }
+                    Ok::<T, ProviderError>(create_remote(
+                        connection.with_request_context(request_context.cloned()),
+                    ))
+                })
+                .transpose()?
+                .ok_or_else(|| ProviderError::InstanceNotFound(name.to_string())),
+            None => Ok(load_local()),
+        }
+    }
+
     /// List all remote instance names (from cache + DB)
     ///
     /// Returns the union of cached instances and enabled instances from the DB.
@@ -1052,7 +1169,7 @@ impl RemoteProviderManager {
             .get_all_enabled()
             .await
             .map(|configs| configs.into_iter().map(|c| c.name).collect())
-            .map_err(|e| crate::Error::Internal(format!("{e}")))
+            .map_err(|e| Self::provider_registry_unavailable("list enabled instances", e))
     }
 
     /// Get all provider instances with full metadata
@@ -1060,14 +1177,14 @@ impl RemoteProviderManager {
         self.repository
             .get_all()
             .await
-            .map_err(|e| crate::Error::Internal(format!("{e}")))
+            .map_err(|e| Self::provider_registry_unavailable("get all instances", e))
     }
 
     pub async fn get_instance(&self, name: &str) -> crate::Result<Option<ProviderInstance>> {
         self.repository
             .get_by_name(name)
             .await
-            .map_err(|e| crate::Error::Internal(format!("{e}")))
+            .map_err(|e| Self::provider_registry_unavailable("get instance by name", e))
     }
 
     pub async fn list_instances(
@@ -1077,7 +1194,7 @@ impl RemoteProviderManager {
         self.repository
             .list(query)
             .await
-            .map_err(|e| crate::Error::Internal(format!("{e}")))
+            .map_err(|e| Self::provider_registry_unavailable("list instances", e))
     }
 
     pub async fn find_instances_by_provider(
@@ -1087,7 +1204,7 @@ impl RemoteProviderManager {
         self.repository
             .find_by_provider(provider)
             .await
-            .map_err(|e| crate::Error::Internal(format!("{e}")))
+            .map_err(|e| Self::provider_registry_unavailable("find instances by provider", e))
     }
 
     /// Add a new provider instance
@@ -1097,12 +1214,24 @@ impl RemoteProviderManager {
     /// 3. Caches the channel locally
     /// 4. Notifies other replicas via Redis
     pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
+        Box::pin(self.add_with_control(config, None)).await
+    }
+
+    pub async fn add_with_control(
+        &self,
+        config: ProviderInstance,
+        control: Option<&ExecutionControl>,
+    ) -> crate::Result<()> {
         Self::validate_config(&config)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
             Some(
-                self.build_management_validated_remote_connection(&config)
-                    .await?,
+                Box::pin(
+                    self.build_management_validated_remote_connection_with_control(
+                        &config, control,
+                    ),
+                )
+                .await?,
             )
         } else {
             None
@@ -1144,6 +1273,14 @@ impl RemoteProviderManager {
     /// 3. Replaces cached channel
     /// 4. Notifies other replicas via Redis
     pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
+        Box::pin(self.update_with_control(config, None)).await
+    }
+
+    pub async fn update_with_control(
+        &self,
+        config: ProviderInstance,
+        control: Option<&ExecutionControl>,
+    ) -> crate::Result<()> {
         let previous_config = self
             .repository
             .get_by_name(&config.name)
@@ -1157,8 +1294,12 @@ impl RemoteProviderManager {
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
             Some(
-                self.build_management_validated_remote_connection(&config)
-                    .await?,
+                Box::pin(
+                    self.build_management_validated_remote_connection_with_control(
+                        &config, control,
+                    ),
+                )
+                .await?,
             )
         } else {
             None
@@ -1236,6 +1377,14 @@ impl RemoteProviderManager {
     ///
     /// Loads config from DB, creates channel, caches it, and notifies replicas.
     pub async fn enable(&self, name: &str) -> crate::Result<()> {
+        Box::pin(self.enable_with_control(name, None)).await
+    }
+
+    pub async fn enable_with_control(
+        &self,
+        name: &str,
+        control: Option<&ExecutionControl>,
+    ) -> crate::Result<()> {
         let mut config = self
             .repository
             .get_by_name(name)
@@ -1246,8 +1395,8 @@ impl RemoteProviderManager {
         if config.enabled {
             if Self::requires_remote_connection(&config) {
                 let connection = self
-                    .build_management_validated_remote_connection(&config)
-                    .await?;
+                    .build_management_validated_remote_connection_with_control(&config, control);
+                let connection = Box::pin(connection).await?;
                 self.channel_cache
                     .insert(config.name.clone(), connection)
                     .await;
@@ -1267,9 +1416,9 @@ impl RemoteProviderManager {
 
         config.enabled = true;
         if Self::requires_remote_connection(&config) {
-            let connection = self
-                .build_management_validated_remote_connection(&config)
-                .await?;
+            let connection =
+                self.build_management_validated_remote_connection_with_control(&config, control);
+            let connection = Box::pin(connection).await?;
 
             // Persist only after a valid channel can be constructed.
             self.repository.enable(name).await?;
@@ -1346,6 +1495,14 @@ impl RemoteProviderManager {
     /// config. If the re-creation fails, the instance remains disabled so
     /// callers observe a consistent state rather than a half-connected instance.
     pub async fn reconnect(&self, name: &str) -> crate::Result<()> {
+        Box::pin(self.reconnect_with_control(name, None)).await
+    }
+
+    pub async fn reconnect_with_control(
+        &self,
+        name: &str,
+        control: Option<&ExecutionControl>,
+    ) -> crate::Result<()> {
         let previous_connection = self.channel_cache.get(name).await;
 
         // Invalidate the cached channel first
@@ -1370,9 +1527,9 @@ impl RemoteProviderManager {
             )));
         }
 
-        let connection = self
-            .build_management_validated_remote_connection(&config)
-            .await?;
+        let connection =
+            self.build_management_validated_remote_connection_with_control(&config, control);
+        let connection = Box::pin(connection).await?;
         self.channel_cache
             .insert(config.name.clone(), connection)
             .await;
@@ -1727,5 +1884,33 @@ mod tests {
             crate::Error::Internal(ref message)
                 if message == "Remote provider TLS connection setup failed."
         ));
+    }
+
+    #[test]
+    fn probe_execution_control_preserves_tighter_parent_deadline_and_cancellation() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let parent_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let parent = ExecutionControl::from_parts(Some(parent_deadline), cancellation.clone());
+
+        let probe =
+            RemoteProviderManager::probe_execution_control(Some(&parent), Duration::from_secs(5));
+
+        assert_eq!(probe.deadline(), Some(parent_deadline));
+        cancellation.cancel();
+        assert!(matches!(
+            probe.check_active(),
+            Err(synctv_common::ExecutionControlError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn probe_execution_control_applies_probe_timeout_without_parent_control() {
+        let probe = RemoteProviderManager::probe_execution_control(None, Duration::from_secs(5));
+
+        let remaining = probe
+            .remaining_timeout()
+            .expect("probe without parent control should still have a deadline");
+        assert!(remaining <= Duration::from_secs(5));
+        assert!(remaining > Duration::ZERO);
     }
 }

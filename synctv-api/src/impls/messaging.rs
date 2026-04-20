@@ -16,6 +16,7 @@ use rand::RngExt;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_cluster::sync::ClusterEvent;
+use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{
@@ -1134,6 +1135,7 @@ impl StreamMessageHandler {
         let global_msg_rate_limit = self.ws_message_rate_limit;
         let mut global_msg_count: u32 = 0;
         let mut global_msg_window_start = tokio::time::Instant::now();
+        let message_control = ExecutionControl::default();
 
         // Main message loop using tokio::select! for concurrent operations
         loop {
@@ -1187,7 +1189,10 @@ impl StreamMessageHandler {
 
                             // Process message with semaphore permit held
                             let _permit = permit; // Hold permit for duration of processing
-                            if let Err(e) = self.handle_client_message(&msg).await {
+                            if let Err(e) = self
+                                .handle_client_message_with_control(&msg, Some(&message_control))
+                                .await
+                            {
                                 tracing::error!("Failed to handle client message: {}", e);
                                 if let Err(send_err) =
                                     stream.send(Self::error_server_message(e.clone()))
@@ -2276,6 +2281,7 @@ impl StreamMessageHandler {
         spawn_monitored("messaging_client_handler", async move {
             let mut global_msg_count: u32 = 0;
             let mut global_msg_window_start = tokio::time::Instant::now();
+            let message_control = ExecutionControl::from_parts(None, msg_token.clone());
             loop {
                 tokio::select! {
                     () = msg_token.cancelled() => break,
@@ -2311,8 +2317,21 @@ impl StreamMessageHandler {
 
                                 // Process message with semaphore permit held
                                 let _permit = permit;
-                                if let Err(e) = handler.handle_client_message(&msg).await {
+                                if let Err(e) = handler
+                                    .handle_client_message_with_control(&msg, Some(&message_control))
+                                    .await
+                                {
                                     tracing::error!("Failed to handle client message: {}", e);
+                                    if let Err(send_err) = handler.send_server_message(
+                                        Self::error_server_message(e.clone()),
+                                    ) {
+                                        tracing::error!(
+                                            "Failed to send message error to client in start(): {}",
+                                            send_err
+                                        );
+                                        msg_token.cancel();
+                                        break;
+                                    }
                                 }
                             }
                             None => break,
@@ -3084,6 +3103,14 @@ impl StreamMessageHandler {
 
     /// Handle incoming client message with all validations
     pub async fn handle_client_message(&self, msg: &ClientMessage) -> Result<(), String> {
+        self.handle_client_message_with_control(msg, None).await
+    }
+
+    pub async fn handle_client_message_with_control(
+        &self,
+        msg: &ClientMessage,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), String> {
         use crate::proto::client::client_message::Message;
 
         match &msg.message {
@@ -3125,10 +3152,11 @@ impl StreamMessageHandler {
                         self.user_id.as_str()
                     );
                     self.rate_limiter
-                        .check_rate_limit(
+                        .check_rate_limit_with_control(
                             &rate_limit_key,
                             self.rate_limit_config.danmaku_per_second,
                             self.rate_limit_config.window_seconds,
+                            control,
                         )
                         .await
                         .map_err(|e| e.to_string())?;
@@ -3148,7 +3176,8 @@ impl StreamMessageHandler {
                     // Chat: delegate entirely to ChatService which handles permissions,
                     // room settings, rate limiting, content filtering, and persistence.
                     // This eliminates the dual-path fallback (H10).
-                    self.handle_chat_message(&chat_msg.content).await?;
+                    self.handle_chat_message_with_control(&chat_msg.content, control)
+                        .await?;
                 }
             }
             Some(Message::Heartbeat(_)) => {
@@ -3212,15 +3241,20 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_chat_message(&self, content: &str) -> Result<(), String> {
+    async fn handle_chat_message_with_control(
+        &self,
+        content: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(), String> {
         // Delegate to ChatService which handles permission checks, content filtering,
         // rate limiting, and persistence (no fallback path).
         let saved_msg = self
             .chat_service
-            .send_message(
+            .send_message_with_control(
                 self.room_id.clone(),
                 self.user_id.clone(),
                 content.to_string(),
+                control,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -4288,11 +4322,11 @@ async fn probe_realtime_membership_access_with_room(
         {
             Some(member) => Ok(RealtimeMembershipAccess::Allowed(member)),
             None => Ok(RealtimeMembershipAccess::Denied(
-                "Not a member of this room".to_string(),
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             )),
         },
         Err(synctv_core::Error::Authorization(message))
-            if message == "Not a member of this room" =>
+            if message == synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM =>
         {
             match room_service
                 .member_service()

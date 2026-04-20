@@ -11,6 +11,7 @@ compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive 
 pub mod slice_cache;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::BuildHasher;
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use axum::{
 };
 use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
+use synctv_common::ExecutionControl;
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
@@ -56,9 +58,6 @@ fn calculate_retry_delay() -> Duration {
     Duration::from_millis(RETRY_DELAY_MIN_MS + jitter)
 }
 
-/// Timeout for reading the response body after headers are received.
-const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Minimum delay before retrying a failed request (100ms).
 const RETRY_DELAY_MIN_MS: u64 = 100;
 
@@ -91,6 +90,63 @@ pub struct ProxyConfig<'a> {
     pub provider_headers: &'a HashMap<String, String>,
     /// Original client request headers to forward.
     pub client_headers: &'a HeaderMap,
+    /// Cooperative execution control propagated by the caller.
+    ///
+    /// Proxy flows only consume the cancellation signal from this control.
+    /// They must not inherit an end-to-end deadline for the entire proxy
+    /// lifecycle because upstream body size and transfer rate are unbounded.
+    pub request_control: Option<&'a ExecutionControl>,
+    /// Optional timeout for a single upstream HTTP hop.
+    ///
+    /// This timeout applies only to "send request + receive response headers".
+    /// Once headers are received, body reading/streaming is cancellation-only.
+    ///
+    /// Slice-cache flows may perform multiple upstream requests; each request
+    /// gets an independent timeout from this field and there is no shared
+    /// whole-lifecycle proxy deadline.
+    pub upstream_header_timeout: Option<Duration>,
+}
+
+pub(crate) async fn run_with_proxy_cancellation<T, F>(
+    context: &str,
+    request_control: Option<&ExecutionControl>,
+    future: F,
+) -> Result<T, anyhow::Error>
+where
+    F: Future<Output = T>,
+{
+    match request_control {
+        Some(request_control) if request_control.is_cancelled() => {
+            Err(ProxyError::Cancelled(context.to_string()).into())
+        }
+        Some(request_control) => {
+            let cancellation = request_control.cancellation_token();
+            tokio::select! {
+                () = cancellation.cancelled() => Err(ProxyError::Cancelled(context.to_string()).into()),
+                result = future => Ok(result),
+            }
+        }
+        None => Ok(future.await),
+    }
+}
+
+async fn run_with_proxy_header_control<T, F>(
+    context: &str,
+    request_control: Option<&ExecutionControl>,
+    header_timeout: Option<Duration>,
+    future: F,
+) -> Result<T, anyhow::Error>
+where
+    F: Future<Output = T>,
+{
+    match header_timeout {
+        Some(timeout) => run_with_proxy_cancellation(context, request_control, async move {
+            tokio::time::timeout(timeout, future).await
+        })
+        .await?
+        .map_err(|_| ProxyError::Timeout(context.to_string()).into()),
+        None => run_with_proxy_cancellation(context, request_control, future).await,
+    }
 }
 
 /// Apply provider headers and defaults (User-Agent, Referer) to a request builder.
@@ -159,7 +215,8 @@ impl ProxyMetrics for NoopMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProxyErrorKind {
+pub enum ProxyErrorKind {
+    Cancelled,
     Timeout,
     Connection,
     Ssrf,
@@ -171,6 +228,7 @@ enum ProxyErrorKind {
 impl ProxyErrorKind {
     const fn as_str(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::Timeout => "timeout",
             Self::Connection => "connection",
             Self::Ssrf => "ssrf",
@@ -183,6 +241,7 @@ impl ProxyErrorKind {
 
 #[derive(Debug)]
 enum ProxyError {
+    Cancelled(String),
     Timeout(String),
     Connection(String),
     Ssrf(String),
@@ -194,6 +253,7 @@ enum ProxyError {
 impl ProxyError {
     const fn kind(&self) -> ProxyErrorKind {
         match self {
+            Self::Cancelled(_) => ProxyErrorKind::Cancelled,
             Self::Timeout(_) => ProxyErrorKind::Timeout,
             Self::Connection(_) => ProxyErrorKind::Connection,
             Self::Ssrf(_) => ProxyErrorKind::Ssrf,
@@ -207,6 +267,7 @@ impl ProxyError {
 impl std::fmt::Display for ProxyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled(message) => write!(f, "Request cancelled: {message}"),
             Self::Timeout(message) => write!(f, "Request timed out: {message}"),
             Self::Connection(message) => write!(f, "Connection failed: {message}"),
             Self::Ssrf(message) => write!(f, "SSRF protection blocked request: {message}"),
@@ -218,6 +279,11 @@ impl std::fmt::Display for ProxyError {
 }
 
 impl std::error::Error for ProxyError {}
+
+#[must_use]
+pub fn proxy_error_kind(err: &anyhow::Error) -> Option<ProxyErrorKind> {
+    err.downcast_ref::<ProxyError>().map(ProxyError::kind)
+}
 
 /// Fetch a remote URL and return the response.
 ///
@@ -337,7 +403,13 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     validate_target_url_against_ssrf(&parsed_url)?;
 
     let request = build_proxy_request(&cfg)?;
-    let proxy_result = send_with_redirect_validation(cfg.client, request).await?;
+    let proxy_result = send_with_redirect_validation_with_control_and_timeout(
+        cfg.client,
+        request,
+        cfg.request_control,
+        cfg.upstream_header_timeout,
+    )
+    .await?;
 
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
     // We only retry once to avoid excessive latency for the client.
@@ -351,10 +423,19 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
                 retry_delay_ms = retry_delay.as_millis(),
                 "Upstream returned retryable server error, retrying once after delay"
             );
-            tokio::time::sleep(retry_delay).await;
+            run_with_proxy_cancellation("proxy retry delay", cfg.request_control, async move {
+                tokio::time::sleep(retry_delay).await
+            })
+            .await?;
 
             let retry_req = build_proxy_request(&cfg)?;
-            let retry_result = send_with_redirect_validation(cfg.client, retry_req).await?;
+            let retry_result = send_with_redirect_validation_with_control_and_timeout(
+                cfg.client,
+                retry_req,
+                cfg.request_control,
+                cfg.upstream_header_timeout,
+            )
+            .await?;
             (retry_result.response, retry_result.followed_redirects)
         } else {
             (proxy_result.response, proxy_result.followed_redirects)
@@ -451,9 +532,9 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     }
     builder = builder.header("X-Content-Type-Options", "nosniff");
 
-    // Stream the body with cumulative size enforcement to prevent upstream servers
-    // from sending unlimited data (e.g. with chunked transfer encoding or lying Content-Length).
-    // Returns `None` after the first size-exceeded error to terminate the stream immediately.
+    // After headers arrive the body is intentionally cancellation-only. We do
+    // not apply a timeout to the remainder of the proxy lifecycle because
+    // upstream media responses can be arbitrarily large or slow by design.
     let body_stream =
         proxy_response
             .bytes_stream()
@@ -494,6 +575,16 @@ pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
     provider_headers: &HashMap<String, String, S>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
+    proxy_m3u8_and_rewrite_with_control(client, url, provider_headers, proxy_base, None).await
+}
+
+pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
+    client: &reqwest::Client,
+    url: &str,
+    provider_headers: &HashMap<String, String, S>,
+    proxy_base: &str,
+    request_control: Option<&ExecutionControl>,
+) -> Result<Response, anyhow::Error> {
     let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
@@ -504,7 +595,8 @@ pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
 
     let request = apply_provider_headers(client.get(url), url, provider_headers)?;
 
-    let proxy_result = send_with_redirect_validation(client, request).await?;
+    let proxy_result =
+        send_with_redirect_validation_with_control(client, request, request_control).await?;
     let proxy_response = proxy_result.response;
 
     if !proxy_response.status().is_success() {
@@ -522,15 +614,13 @@ pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
         }
     }
 
-    let m3u8_bytes = tokio::time::timeout(BODY_READ_TIMEOUT, proxy_response.bytes())
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "M3U8 body read timed out after {}s",
-                BODY_READ_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| anyhow::anyhow!("Failed to read M3U8 body: {e}"))?;
+    let m3u8_bytes = run_with_proxy_cancellation(
+        "manifest proxy body read",
+        request_control,
+        proxy_response.bytes(),
+    )
+    .await?
+    .map_err(|e| anyhow::anyhow!("Failed to read M3U8 body: {e}"))?;
 
     if m3u8_bytes.len() > MAX_MANIFEST_SIZE {
         return Err(anyhow::anyhow!(
@@ -957,11 +1047,19 @@ struct ProxyResponse {
     followed_redirects: bool,
 }
 
-pub(crate) async fn send_head_with_redirect_validation(
+pub(crate) async fn send_head_with_redirect_validation_with_control(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+    request_control: Option<&ExecutionControl>,
 ) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_inner(client, request, reqwest::Method::HEAD).await
+    send_with_redirect_validation_inner(
+        client,
+        request,
+        reqwest::Method::HEAD,
+        request_control,
+        None,
+    )
+    .await
 }
 
 /// Send a request via the proxy client, manually following redirects with
@@ -978,13 +1076,40 @@ async fn send_with_redirect_validation(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
 ) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_inner(client, request, reqwest::Method::GET).await
+    send_with_redirect_validation_with_control(client, request, None).await
+}
+
+pub(crate) async fn send_with_redirect_validation_with_control(
+    client: &reqwest::Client,
+    request: reqwest::RequestBuilder,
+    request_control: Option<&ExecutionControl>,
+) -> Result<ProxyResponse, anyhow::Error> {
+    send_with_redirect_validation_with_control_and_timeout(client, request, request_control, None)
+        .await
+}
+
+pub(crate) async fn send_with_redirect_validation_with_control_and_timeout(
+    client: &reqwest::Client,
+    request: reqwest::RequestBuilder,
+    request_control: Option<&ExecutionControl>,
+    header_timeout: Option<Duration>,
+) -> Result<ProxyResponse, anyhow::Error> {
+    send_with_redirect_validation_inner(
+        client,
+        request,
+        reqwest::Method::GET,
+        request_control,
+        header_timeout,
+    )
+    .await
 }
 
 async fn send_with_redirect_validation_inner(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
     redirect_method: reqwest::Method,
+    request_control: Option<&ExecutionControl>,
+    header_timeout: Option<Duration>,
 ) -> Result<ProxyResponse, anyhow::Error> {
     // Build the request to capture headers before sending.
     let built = request
@@ -1003,10 +1128,14 @@ async fn send_with_redirect_validation_inner(
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
 
-    let mut response = client
-        .execute(built)
-        .await
-        .map_err(|error| classify_reqwest_error(&error))?;
+    let mut response = run_with_proxy_header_control(
+        "upstream proxy request headers",
+        request_control,
+        header_timeout,
+        async move { client.execute(built).await },
+    )
+    .await?
+    .map_err(|error| classify_reqwest_error(&error))?;
 
     let mut hops = 0usize;
     while response.status().is_redirection()
@@ -1059,10 +1188,14 @@ async fn send_with_redirect_validation_inner(
         }
 
         drop(response);
-        response = redirect_req
-            .send()
-            .await
-            .map_err(|error| classify_reqwest_error(&error))?;
+        response = run_with_proxy_header_control(
+            "upstream redirect request headers",
+            request_control,
+            header_timeout,
+            async move { redirect_req.send().await },
+        )
+        .await?
+        .map_err(|error| classify_reqwest_error(&error))?;
     }
 
     Ok(ProxyResponse {
@@ -1421,6 +1554,8 @@ mod tests {
             url: "file:///etc/passwd",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
+            request_control: None,
+            upstream_header_timeout: None,
         };
 
         let result = proxy_fetch_and_forward_inner(cfg).await;
@@ -1443,6 +1578,8 @@ mod tests {
             url: "ftp://example.com/file.txt",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
+            request_control: None,
+            upstream_header_timeout: None,
         };
 
         let result = proxy_fetch_and_forward_inner(cfg).await;
@@ -1465,6 +1602,8 @@ mod tests {
             url: "javascript:alert(1)",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
+            request_control: None,
+            upstream_header_timeout: None,
         };
 
         let result = proxy_fetch_and_forward_inner(cfg).await;
@@ -1487,6 +1626,8 @@ mod tests {
             url: "data:text/plain,hello",
             provider_headers: &provider_headers,
             client_headers: &client_headers,
+            request_control: None,
+            upstream_header_timeout: None,
         };
 
         let result = proxy_fetch_and_forward_inner(cfg).await;
@@ -1499,8 +1640,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() {
+        let server = wiremock::MockServer::start().await;
+        let public_origin = format!("http://cdn.example.com:{}", server.address().port());
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/slow.mp4"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_string("slow body"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *server.address())
+            .build()
+            .expect("client should build");
+        let provider_headers = HashMap::new();
+        let client_headers = HeaderMap::new();
+        let request_control = ExecutionControl::from_timeout(Some(Duration::from_millis(50)));
+        let cfg = ProxyConfig {
+            client: &client,
+            url: &format!("{public_origin}/slow.mp4"),
+            provider_headers: &provider_headers,
+            client_headers: &client_headers,
+            request_control: Some(&request_control),
+            upstream_header_timeout: None,
+        };
+
+        let response = proxy_fetch_and_forward(cfg, &NoopMetrics)
+            .await
+            .expect("proxy fetch should not inherit the outer request deadline");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[test]
     fn test_proxy_error_kind_mapping() {
+        assert_eq!(
+            ProxyError::Cancelled("x".into()).kind(),
+            ProxyErrorKind::Cancelled
+        );
         assert_eq!(
             ProxyError::Timeout("x".into()).kind(),
             ProxyErrorKind::Timeout

@@ -1908,6 +1908,7 @@ fn map_api_error(err: &ApiError) -> tonic::Status {
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
         ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
         ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),
+        ErrorKind::Timeout => tonic::Status::deadline_exceeded(msg),
         ErrorKind::Internal => {
             tracing::error!("Management API internal error: {msg}");
             tonic::Status::internal("Internal error")

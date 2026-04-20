@@ -8,20 +8,13 @@ use axum::{
     Json, Router,
 };
 
-use super::middleware::AuthUser;
+use super::middleware::RequestMetadata;
 use super::AppState;
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
     ListProviderBackendsRequest, ProviderBackendsResponse, ProviderInstanceQuery,
     ProviderInstancesResponse,
 };
-
-fn provider_registry_unavailable_error(
-    context: &str,
-    error: &synctv_core::Error,
-) -> super::AppError {
-    tracing::error!(operation = context, error = %error, "Provider registry query failed");
-    super::AppError::service_unavailable()
-}
 
 /// Register common provider routes
 ///
@@ -52,14 +45,27 @@ pub fn register_common_routes() -> Router<AppState> {
     )
 )]
 pub(crate) async fn list_instances(
-    _auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> Result<Json<ProviderInstancesResponse>, super::AppError> {
-    let instances = state
-        .provider_instance_manager
-        .list()
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let provider_instance_manager = state.provider_instance_manager.clone();
+    let instances = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |_| async move {
+                provider_instance_manager
+                    .list()
+                    .await
+                    .map_err(ApiError::from)
+            },
+        )
         .await
-        .map_err(|e| provider_registry_unavailable_error("list_instances", &e))?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(ProviderInstancesResponse { instances }))
 }
@@ -85,19 +91,29 @@ pub(crate) async fn list_instances(
     )
 )]
 pub(crate) async fn list_backends(
-    _auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<ListProviderBackendsRequest>,
 ) -> Result<Json<ProviderBackendsResponse>, super::AppError> {
     let provider_type = provider_type(&req)?;
-    let instances = state
-        .provider_instance_manager
-        .find_instances_by_provider(provider_type)
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let provider_instance_manager = state.provider_instance_manager.clone();
+    let instances = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |_| async move {
+                provider_instance_manager
+                    .find_instances_by_provider(provider_type)
+                    .await
+                    .map_err(ApiError::from)
+            },
+        )
         .await
-        .map_err(|e| {
-            tracing::error!(provider_type = %provider_type, error = %e, "Failed to list provider backends");
-            provider_registry_unavailable_error("list_backends", &e)
-        })?
+        .map_err(super::error::map_api_error)?
         .into_iter()
         .map(|i| i.name)
         .collect::<Vec<_>>();
@@ -128,8 +144,10 @@ mod tests {
 
     #[tokio::test]
     async fn provider_registry_errors_map_to_service_unavailable() {
-        let err = synctv_core::Error::Internal("db unavailable".to_string());
-        let mapped = provider_registry_unavailable_error("list_backends", &err);
+        let err = synctv_core::Error::ServiceUnavailable(
+            "Provider configuration service is temporarily unavailable.".to_string(),
+        );
+        let mapped = crate::http::error::map_api_error(crate::impls::ApiError::from(err));
         assert_eq!(mapped.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 

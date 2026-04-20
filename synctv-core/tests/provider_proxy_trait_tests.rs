@@ -88,7 +88,7 @@ async fn provider_set_registers_live_providers() {
 #[tokio::test]
 async fn test_lookup_versioned_store_error_propagates() {
     let store = new_store();
-    let err = lookup_versioned(Some(&store), "nonexistent")
+    let err = lookup_versioned(Some(&store), "nonexistent", None)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -113,7 +113,9 @@ async fn test_lookup_versioned_expired_returns_not_found() {
         .set(&format!("v:{}", vp.version), &vp, Duration::from_mins(5))
         .await
         .unwrap();
-    let err = lookup_versioned(Some(&store), "exp").await.unwrap_err();
+    let err = lookup_versioned(Some(&store), "exp", None)
+        .await
+        .unwrap_err();
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -122,7 +124,7 @@ async fn test_lookup_versioned_expired_returns_not_found() {
 
 #[tokio::test]
 async fn test_lookup_versioned_none_store_returns_api_error() {
-    let err = lookup_versioned(None, "v1").await.unwrap_err();
+    let err = lookup_versioned(None, "v1", None).await.unwrap_err();
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::ApiError(_)

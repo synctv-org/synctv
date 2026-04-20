@@ -9,7 +9,7 @@ use crate::proto::providers::emby::{
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserProviderCredential};
-use synctv_core::provider::EmbyProvider;
+use synctv_core::provider::{EmbyProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::resolve_bound_instance_name;
@@ -86,12 +86,23 @@ impl EmbyApiImpl {
         req: LoginRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
+        self.login_with_context(caller_user_id, req, instance_name, None)
+            .await
+    }
+
+    pub async fn login_with_context(
+        &self,
+        caller_user_id: &str,
+        req: LoginRequest,
+        instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
         let api_key = req.api_key.clone();
 
         let user_info = self
             .provider
-            .login(req.host, req.api_key, instance_name)
+            .login_with_context(req.host, req.api_key, instance_name, request_context)
             .await?;
 
         // Extract admin status from user policy
@@ -160,6 +171,17 @@ impl EmbyApiImpl {
         req: ListRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        self.list_with_context(caller_user_id, req, requested_instance_name, None)
+            .await
+    }
+
+    pub async fn list_with_context(
+        &self,
+        caller_user_id: &str,
+        req: ListRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
         let (host, token, user_id, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
@@ -180,7 +202,11 @@ impl EmbyApiImpl {
 
         let resp = self
             .provider
-            .fs_list(list_req, effective_instance_name.as_deref())
+            .fs_list_with_context(
+                list_req,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
             .await?;
 
         let items: Vec<MediaItem> = resp
@@ -210,6 +236,17 @@ impl EmbyApiImpl {
         req: GetMeRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
+        self.get_me_with_context(caller_user_id, req, requested_instance_name, None)
+            .await
+    }
+
+    pub async fn get_me_with_context(
+        &self,
+        caller_user_id: &str,
+        req: GetMeRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
         let (host, token, _, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
@@ -226,7 +263,7 @@ impl EmbyApiImpl {
 
         let resp = self
             .provider
-            .me(me_req, effective_instance_name.as_deref())
+            .me_with_context(me_req, effective_instance_name.as_deref(), request_context)
             .await?;
 
         Ok(GetMeResponse {

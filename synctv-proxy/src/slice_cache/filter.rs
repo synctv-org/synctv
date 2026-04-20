@@ -12,9 +12,13 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
+use synctv_common::ExecutionControl;
 
-use crate::apply_provider_headers;
-use crate::{send_head_with_redirect_validation, send_with_redirect_validation};
+use crate::{
+    apply_provider_headers, run_with_proxy_cancellation,
+    send_head_with_redirect_validation_with_control, send_with_redirect_validation,
+    send_with_redirect_validation_with_control,
+};
 
 use super::config::is_manifest_content_type;
 use super::etag::CachedResourceMeta;
@@ -72,11 +76,12 @@ async fn discover_content_length_via_range_get(
     client: &reqwest::Client,
     url: &str,
     provider_headers: &HashMap<String, String>,
+    request_control: Option<&ExecutionControl>,
 ) -> Result<u64, anyhow::Error> {
     let mut request = client.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
     request = request.header("Range", "bytes=0-0");
-    let resp = send_with_redirect_validation(client, request)
+    let resp = send_with_redirect_validation_with_control(client, request, request_control)
         .await
         .map_err(|e| anyhow::anyhow!("Range GET fallback failed: {e}"))?
         .response;
@@ -107,22 +112,38 @@ pub async fn head_content_length(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<u64, anyhow::Error> {
+    head_content_length_with_control(client, url, provider_headers, None).await
+}
+
+#[allow(clippy::implicit_hasher)]
+pub async fn head_content_length_with_control(
+    client: &reqwest::Client,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    request_control: Option<&ExecutionControl>,
+) -> Result<u64, anyhow::Error> {
     let mut request = client.head(url);
     request = apply_provider_headers(request, url, provider_headers)?;
-    let resp = send_head_with_redirect_validation(client, request)
+    let resp = send_head_with_redirect_validation_with_control(client, request, request_control)
         .await
         .map_err(|e| anyhow::anyhow!("HEAD request failed: {e}"))?
         .response;
 
     if !resp.status().is_success() {
-        return discover_content_length_via_range_get(client, url, provider_headers).await;
+        return discover_content_length_via_range_get(
+            client,
+            url,
+            provider_headers,
+            request_control,
+        )
+        .await;
     }
 
     if let Some(content_length) = parse_content_length_header(&resp) {
         return Ok(content_length);
     }
 
-    discover_content_length_via_range_get(client, url, provider_headers).await
+    discover_content_length_via_range_get(client, url, provider_headers, request_control).await
 }
 
 // proxy_with_cache  --  main entry point
@@ -144,12 +165,24 @@ pub async fn proxy_with_cache(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_enabled(
+    proxy_with_cache_with_control(cache, range_header, url, provider_headers, None).await
+}
+
+#[allow(clippy::implicit_hasher)]
+pub async fn proxy_with_cache_with_control(
+    cache: &SliceCache,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    request_control: Option<&ExecutionControl>,
+) -> Result<Response, anyhow::Error> {
+    proxy_with_cache_enabled_with_control(
         cache,
         cache.config().enabled,
         range_header,
         url,
         provider_headers,
+        request_control,
     )
     .await
 }
@@ -167,6 +200,26 @@ pub async fn proxy_with_cache_enabled(
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<Response, anyhow::Error> {
+    proxy_with_cache_enabled_with_control(
+        cache,
+        cache_enabled,
+        range_header,
+        url,
+        provider_headers,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::implicit_hasher)]
+pub async fn proxy_with_cache_enabled_with_control(
+    cache: &SliceCache,
+    cache_enabled: bool,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    request_control: Option<&ExecutionControl>,
+) -> Result<Response, anyhow::Error> {
     if !cache_enabled {
         return stream_through_with_status(
             cache.client(),
@@ -174,12 +227,13 @@ pub async fn proxy_with_cache_enabled(
             provider_headers,
             range_header,
             CacheStatus::Bypass,
+            request_control,
         )
         .await;
     }
 
     if range_header.is_none() {
-        return full_body_cache_path(cache, url, provider_headers).await;
+        return full_body_cache_path(cache, url, provider_headers, request_control).await;
     }
 
     let Some(range_str) = range_header else {
@@ -196,7 +250,10 @@ pub async fn proxy_with_cache_enabled(
             };
             size
         }
-        _ => head_content_length(cache.client(), url, provider_headers).await?,
+        _ => {
+            head_content_length_with_control(cache.client(), url, provider_headers, request_control)
+                .await?
+        }
     };
 
     let (range_start, range_end) = parse_range_header(range_str, total_size)?;
@@ -217,6 +274,7 @@ pub async fn proxy_with_cache_enabled(
             provider_headers,
             range_header,
             CacheStatus::Bypass,
+            request_control,
         )
         .await;
     }
@@ -229,7 +287,13 @@ pub async fn proxy_with_cache_enabled(
 
     for &idx in &needed {
         let (slice_data, slice_status) = cache
-            .get_or_fetch_slice(url, provider_headers, idx, total_size)
+            .get_or_fetch_slice_with_control(
+                url,
+                provider_headers,
+                idx,
+                total_size,
+                request_control,
+            )
             .await?;
 
         // Merge slice status: the "worst" status wins.
@@ -318,6 +382,7 @@ pub(super) async fn full_body_cache_path(
     cache: &SliceCache,
     url: &str,
     provider_headers: &HashMap<String, String>,
+    request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     // Check cache first.
     if let Some((data, content_type, status)) = cache.get_full_body(url, provider_headers).await {
@@ -372,7 +437,7 @@ pub(super) async fn full_body_cache_path(
         }
     }
 
-    let resp = send_with_redirect_validation(cache.client(), request)
+    let resp = send_with_redirect_validation_with_control(cache.client(), request, request_control)
         .await
         .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
         .response;
@@ -381,7 +446,9 @@ pub(super) async fn full_body_cache_path(
     // valid.  Re-insert the full body with a fresh TTL and serve it.
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         // Consume the empty body to release the connection.
-        let _ = resp.bytes().await;
+        let _ =
+            run_with_proxy_cancellation("full-body cache 304 drain", request_control, resp.bytes())
+                .await;
 
         // Re-fetch from our cache (it may have been evicted in the meantime).
         if let Some((data, content_type)) = cache
@@ -423,14 +490,31 @@ pub(super) async fn full_body_cache_path(
         // fall through to a full re-fetch without conditional headers.
         let mut request2 = cache.client().get(url);
         request2 = apply_provider_headers(request2, url, provider_headers)?;
-        let resp2 = send_with_redirect_validation(cache.client(), request2)
-            .await
-            .map_err(|e| anyhow::anyhow!("Full-body re-fetch after 304 failed: {e}"))?
-            .response;
-        return handle_full_body_response(cache, url, provider_headers, resp2, pre_status).await;
+        let resp2 =
+            send_with_redirect_validation_with_control(cache.client(), request2, request_control)
+                .await
+                .map_err(|e| anyhow::anyhow!("Full-body re-fetch after 304 failed: {e}"))?
+                .response;
+        return handle_full_body_response(
+            cache,
+            url,
+            provider_headers,
+            resp2,
+            pre_status,
+            request_control,
+        )
+        .await;
     }
 
-    handle_full_body_response(cache, url, provider_headers, resp, pre_status).await
+    handle_full_body_response(
+        cache,
+        url,
+        provider_headers,
+        resp,
+        pre_status,
+        request_control,
+    )
+    .await
 }
 
 async fn revalidate_stale_full_body_entry(
@@ -560,6 +644,7 @@ async fn handle_full_body_response(
     provider_headers: &HashMap<String, String>,
     resp: reqwest::Response,
     pre_status: CacheStatus,
+    request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     let status =
         StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -616,7 +701,10 @@ async fn handle_full_body_response(
     let mut buf = Vec::with_capacity(std::cmp::min(max_body + 1, 4 * 1024 * 1024));
     let mut stream = resp.bytes_stream();
     let mut exceeded = false;
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) =
+        run_with_proxy_cancellation("full-body proxy cache read", request_control, stream.next())
+            .await?
+    {
         let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
         buf.extend_from_slice(&chunk);
         if buf.len() > max_body {
@@ -702,6 +790,7 @@ pub(super) async fn stream_through_with_status(
     provider_headers: &HashMap<String, String>,
     range_header: Option<&str>,
     cache_status: CacheStatus,
+    request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     let mut request = client.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
@@ -710,7 +799,7 @@ pub(super) async fn stream_through_with_status(
         request = request.header("Range", range);
     }
 
-    let resp = send_with_redirect_validation(client, request)
+    let resp = send_with_redirect_validation_with_control(client, request, request_control)
         .await
         .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
         .response;
@@ -738,6 +827,9 @@ pub(super) async fn stream_through_with_status(
         }
     }
 
+    // Once upstream headers are received, the body is intentionally
+    // cancellation-only. We do not add a timeout around long or slow media
+    // bodies here.
     let stream = resp
         .bytes_stream()
         .map(|result| result.map_err(|e| std::io::Error::other(format!("Stream error: {e}"))));

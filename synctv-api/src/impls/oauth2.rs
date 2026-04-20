@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 use synctv_core::models::{User, UserId, UserRole, UserStatus};
+use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{OAuth2Service, UserService};
 use synctv_proto::client::{LinkedProvider, OAuth2ProviderInstance, OAuth2UserInfo};
 
@@ -60,9 +61,19 @@ impl OAuth2ApiImpl {
         provider: &str,
         redirect_url: Option<String>,
     ) -> Result<(String, String), ApiError> {
+        self.get_authorization_url_with_control(provider, redirect_url, None)
+            .await
+    }
+
+    pub async fn get_authorization_url_with_control(
+        &self,
+        provider: &str,
+        redirect_url: Option<String>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String), ApiError> {
         let (auth_url, state) = self
             .oauth2_service
-            .get_authorization_url(provider, redirect_url)
+            .get_authorization_url_with_control(provider, redirect_url, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -80,6 +91,17 @@ impl OAuth2ApiImpl {
         user_id: &UserId,
         provider: &str,
         redirect_url: Option<String>,
+    ) -> Result<(String, String), ApiError> {
+        self.get_authorization_url_for_bind_with_control(user_id, provider, redirect_url, None)
+            .await
+    }
+
+    pub async fn get_authorization_url_for_bind_with_control(
+        &self,
+        user_id: &UserId,
+        provider: &str,
+        redirect_url: Option<String>,
+        control: Option<&ExecutionControl>,
     ) -> Result<(String, String), ApiError> {
         // Verify user exists and is not banned/deleted
         // Use generic error message to prevent user enumeration attacks
@@ -99,7 +121,12 @@ impl OAuth2ApiImpl {
 
         let (auth_url, state) = self
             .oauth2_service
-            .get_authorization_url_with_user(provider, redirect_url, Some(user_id.clone()))
+            .get_authorization_url_with_user_with_control(
+                provider,
+                redirect_url,
+                Some(user_id.clone()),
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -129,10 +156,30 @@ impl OAuth2ApiImpl {
         current_user_id: Option<&UserId>,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<ExchangeCodeResult, ApiError> {
+        self.exchange_authorization_code_with_control(
+            provider,
+            code,
+            state,
+            current_user_id,
+            client_ip,
+            None,
+        )
+        .await
+    }
+
+    pub async fn exchange_authorization_code_with_control(
+        &self,
+        provider: &str,
+        code: &str,
+        state: &str,
+        current_user_id: Option<&UserId>,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ExchangeCodeResult, ApiError> {
         // 1. Verify state and retrieve stored OAuth2 state
         let oauth_state = self
             .oauth2_service
-            .verify_state(state)
+            .verify_state_with_control(state, control)
             .await
             .map_err(ApiError::from)?;
 
@@ -146,7 +193,12 @@ impl OAuth2ApiImpl {
         // 2. Exchange code for user info using PKCE verifier from stored state
         let (user_info, provider_type) = self
             .oauth2_service
-            .exchange_code_for_user_info(provider, code, &oauth_state.pkce_verifier)
+            .exchange_code_for_user_info_with_control(
+                provider,
+                code,
+                &oauth_state.pkce_verifier,
+                control,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -209,7 +261,12 @@ impl OAuth2ApiImpl {
             // User exists - generate tokens using OAuth2 login method
             // (user already authenticated by OAuth2 provider)
             self.user_service
-                .login_oauth2(&user_id, &user_info.provider_user_id, client_ip)
+                .login_oauth2_with_control(
+                    &user_id,
+                    &user_info.provider_user_id,
+                    client_ip,
+                    control,
+                )
                 .await
                 .map_err(ApiError::from)?
         } else {
@@ -220,7 +277,12 @@ impl OAuth2ApiImpl {
                 .map_err(ApiError::from)?;
 
             self.user_service
-                .login_oauth2(&user_id, &user_info.provider_user_id, client_ip)
+                .login_oauth2_with_control(
+                    &user_id,
+                    &user_info.provider_user_id,
+                    client_ip,
+                    control,
+                )
                 .await
                 .map_err(ApiError::from)?
         };

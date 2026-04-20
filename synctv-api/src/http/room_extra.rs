@@ -4,8 +4,14 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::{middleware::AuthUser, AppResult, AppState, WithUserId};
+use crate::http::{middleware::RequestMetadata, AppResult, AppState, WithUserId};
+use crate::impls::EndpointRateLimitCategory;
+
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+}
 
 pub type AddMemberBody = crate::proto::client::AddMemberRequest;
 pub type RejectMemberBody = crate::proto::client::RejectMemberRequest;
@@ -34,16 +40,26 @@ pub type BanMemberBody = crate::proto::client::BanMemberRequest;
     )
 )]
 pub async fn add_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMemberBody>,
 ) -> AppResult<Json<crate::proto::client::AddMemberResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .add_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .add_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -72,16 +88,26 @@ pub async fn add_member(
     )
 )]
 pub async fn approve_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::ApproveMemberResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = crate::proto::client::ApproveMemberRequest::default().with_user_id(user_id);
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .approve_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .approve_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -112,7 +138,7 @@ pub async fn approve_member(
     )
 )]
 pub async fn reject_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
     Json(req): Json<RejectMemberBody>,
@@ -120,9 +146,19 @@ pub async fn reject_member(
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = req.with_user_id(user_id);
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .reject_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .reject_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -151,16 +187,26 @@ pub async fn reject_member(
     )
 )]
 pub async fn kick_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::KickMemberResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = crate::proto::client::KickMemberRequest::default().with_user_id(user_id);
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .kick_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .kick_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -189,7 +235,7 @@ pub async fn kick_member(
     )
 )]
 pub async fn set_member_permissions(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
     Json(req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
@@ -197,9 +243,19 @@ pub async fn set_member_permissions(
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = req.with_user_id(user_id);
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .update_member_permissions(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_member_permissions(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
@@ -229,16 +285,26 @@ pub async fn set_member_permissions(
     )
 )]
 pub async fn ban_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<BanMemberBody>,
 ) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .ban_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .ban_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
@@ -267,16 +333,26 @@ pub async fn ban_member(
     )
 )]
 pub async fn unban_member(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::UnbanMemberResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = crate::proto::client::UnbanMemberRequest::default().with_user_id(user_id);
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
     let resp = state
         .client_api
-        .unban_member(auth.user_id.as_str(), &room_id, req)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .unban_member(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 

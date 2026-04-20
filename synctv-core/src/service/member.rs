@@ -389,7 +389,9 @@ impl MemberService {
         // and hasn't left yet, preventing TOCTOU races.
         let removed = self.member_repo.remove(&room_id, &user_id).await?;
         if !removed {
-            return Err(Error::NotFound("Not a member of this room".to_string()));
+            return Err(Error::NotFound(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ));
         }
 
         // Invalidate permission cache

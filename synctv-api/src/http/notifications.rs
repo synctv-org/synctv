@@ -7,13 +7,14 @@
 //! with gRPC handlers.
 
 use crate::http::error::AppResult;
-use crate::http::middleware::AuthUser;
+use crate::http::middleware::RequestMetadata;
 use crate::http::validation::ValidatedQuery;
 use crate::http::AppState;
 use crate::impls::notification::{
     build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
     notification_counts_to_proto, notification_to_proto,
 };
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
     ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
@@ -59,14 +60,22 @@ fn get_notification_api(
     )
 )]
 pub async fn list_notifications(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     ValidatedQuery(query): ValidatedQuery<crate::proto::client::ListNotificationsRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<ListNotificationsResponse>> {
     let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
-    let result = api
-        .list_notifications(&auth.user_id, query)
+    let result = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { api.list_notifications(&auth.user_id, query).await },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
     let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)
@@ -105,16 +114,24 @@ pub async fn list_notifications(
     )
 )]
 pub async fn get_notification(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     Path(req): Path<GetNotificationRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetNotificationResponse>> {
     let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let notification_id =
         build_get_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
-    let notification = api
-        .get_notification(&auth.user_id, notification_id)
+    let notification = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { api.get_notification(&auth.user_id, notification_id).await },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
@@ -143,16 +160,28 @@ pub async fn get_notification(
     )
 )]
 pub async fn mark_as_read(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<MarkAsReadRequest>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     let notification_ids =
         build_mark_as_read_request(&req).map_err(crate::http::error::map_api_error)?;
 
-    api.mark_as_read(&auth.user_id, notification_ids)
+    state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                api.mark_as_read(&auth.user_id, notification_ids).await?;
+                Ok::<(), crate::impls::ApiError>(())
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
@@ -179,11 +208,14 @@ pub async fn mark_as_read(
     )
 )]
 pub async fn mark_all_as_read(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     req: Option<Json<MarkAllAsReadRequest>>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     let before = req
         .and_then(|r| r.before)
@@ -193,7 +225,16 @@ pub async fn mark_all_as_read(
         })
         .transpose()?;
 
-    api.mark_all_as_read(&auth.user_id, before)
+    state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                api.mark_all_as_read(&auth.user_id, before).await?;
+                Ok::<(), crate::impls::ApiError>(())
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
@@ -222,19 +263,105 @@ pub async fn mark_all_as_read(
     )
 )]
 pub async fn delete_notification(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     Path(req): Path<DeleteNotificationRequest>,
     State(state): State<AppState>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let notification_id =
         build_delete_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
-    api.delete_notification(&auth.user_id, notification_id)
+    state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                api.delete_notification(&auth.user_id, notification_id)
+                    .await?;
+                Ok::<(), crate::impls::ApiError>(())
+            },
+        )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /api/notifications/read - Delete all read notifications
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/notifications/read",
+        tag = "Notification",
+        responses(
+            (status = 204, description = "All read notifications deleted"),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn delete_all_read(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+) -> AppResult<StatusCode> {
+    let api = get_notification_api(&state)?;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+
+    state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                api.delete_all_read(&auth.user_id).await?;
+                Ok::<(), crate::impls::ApiError>(())
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Create the notification read router (GET endpoints -- under read rate limit)
+pub fn create_notification_read_router() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route("/api/notifications", axum::routing::get(list_notifications))
+        .route(
+            "/api/notifications/{notification_id}",
+            axum::routing::get(get_notification),
+        )
+}
+
+/// Create the notification write router (POST/DELETE endpoints -- under write rate limit)
+pub fn create_notification_write_router() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route(
+            "/api/notifications/{notification_id}",
+            axum::routing::delete(delete_notification),
+        )
+        .route(
+            "/api/notifications/actions/mark-read",
+            axum::routing::post(mark_as_read),
+        )
+        .route(
+            "/api/notifications/read",
+            axum::routing::delete(delete_all_read),
+        )
+        .route(
+            "/api/notifications/read-all",
+            axum::routing::post(mark_all_as_read),
+        )
 }
 
 #[cfg(test)]
@@ -272,65 +399,4 @@ mod tests {
             "550e8400-e29b-41d4-a716-446655440000"
         );
     }
-}
-
-/// DELETE /api/notifications/read - Delete all read notifications
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        delete,
-        path = "/api/notifications/read",
-        tag = "Notification",
-        responses(
-            (status = 204, description = "All read notifications deleted"),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub async fn delete_all_read(
-    auth: AuthUser,
-    State(state): State<AppState>,
-) -> AppResult<StatusCode> {
-    let api = get_notification_api(&state)?;
-
-    api.delete_all_read(&auth.user_id)
-        .await
-        .map_err(crate::http::error::map_api_error)?;
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// Create the notification read router (GET endpoints -- under read rate limit)
-pub fn create_notification_read_router() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route("/api/notifications", axum::routing::get(list_notifications))
-        .route(
-            "/api/notifications/{notification_id}",
-            axum::routing::get(get_notification),
-        )
-}
-
-/// Create the notification write router (POST/DELETE endpoints -- under write rate limit)
-pub fn create_notification_write_router() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route(
-            "/api/notifications/{notification_id}",
-            axum::routing::delete(delete_notification),
-        )
-        .route(
-            "/api/notifications/actions/mark-read",
-            axum::routing::post(mark_as_read),
-        )
-        .route(
-            "/api/notifications/read",
-            axum::routing::delete(delete_all_read),
-        )
-        .route(
-            "/api/notifications/read-all",
-            axum::routing::post(mark_all_as_read),
-        )
 }

@@ -209,7 +209,8 @@ impl ProviderProxy for LiveProxyProvider {
             .sub_path
             .split_once('/')
             .ok_or(ProviderError::NotFound)?;
-        let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+        let versioned =
+            super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
         Self::build_live_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }

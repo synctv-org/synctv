@@ -155,6 +155,7 @@ tls-webpki-roots = [
     "lettre/webpki-roots",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
+    "jsonwebtoken/rust_crypto",
 ]
 tls-native-roots = [
     "synctv-proto/tls-native-roots",
@@ -164,6 +165,7 @@ tls-native-roots = [
     "sqlx/tls-rustls-ring-native-roots",
     "lettre/rustls-native-certs",
     "redis/tokio-rustls-comp",
+    "jsonwebtoken/rust_crypto",
 ]
 
 [lints]

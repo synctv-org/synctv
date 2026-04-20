@@ -598,7 +598,9 @@ impl PermissionService {
         };
 
         if !permissions.has_all(permission) {
-            return Err(Error::Authorization("Permission denied".to_string()));
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
         }
 
         Ok(())
@@ -622,7 +624,9 @@ impl PermissionService {
         let permissions = self.get_user_permissions_no_cache(room_id, user_id).await?;
 
         if !permissions.has_all(permission) {
-            return Err(Error::Authorization("Permission denied".to_string()));
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
         }
 
         Ok(())
@@ -641,7 +645,9 @@ impl PermissionService {
             .member_repo
             .get(room_id, user_id)
             .await?
-            .ok_or_else(|| Error::Authorization("Not a member of this room".to_string()))?;
+            .ok_or_else(|| {
+                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
+            })?;
 
         // Get room settings for role defaults
         let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
@@ -684,7 +690,9 @@ impl PermissionService {
             .member_repo
             .get(room_id, user_id)
             .await?
-            .ok_or_else(|| Error::Authorization("Not a member of this room".to_string()))?;
+            .ok_or_else(|| {
+                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
+            })?;
 
         // Get room settings for role defaults
         let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
@@ -737,7 +745,9 @@ impl PermissionService {
             .member_repo
             .get(room_id, user_id)
             .await?
-            .ok_or_else(|| Error::Authorization("Not a member of this room".to_string()))?;
+            .ok_or_else(|| {
+                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
+            })?;
 
         // Get room settings for role defaults
         let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
@@ -856,7 +866,9 @@ impl PermissionService {
 
         for &permission in permissions {
             if !user_permissions.has(permission) {
-                return Err(Error::Authorization("Permission denied".to_string()));
+                return Err(Error::Authorization(
+                    synctv_common::messages::PERMISSION_DENIED.to_string(),
+                ));
             }
         }
 
@@ -874,7 +886,9 @@ impl PermissionService {
             .member_repo
             .get(room_id, user_id)
             .await?
-            .ok_or_else(|| Error::Authorization("Not a member of this room".to_string()))?;
+            .ok_or_else(|| {
+                Error::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
+            })?;
 
         if member.role != expected_role {
             return Err(Error::Authorization("Insufficient permissions".to_string()));

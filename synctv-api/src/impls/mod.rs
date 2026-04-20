@@ -17,6 +17,7 @@ mod playback_snapshot;
 mod playlist_items_snapshot;
 pub mod provider;
 pub mod providers;
+pub mod request_context;
 mod room_members_snapshot;
 pub mod room_settings_snapshot;
 
@@ -30,6 +31,9 @@ pub use messaging::{
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
+pub use request_context::{
+    EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata, TransportProtocol,
+};
 
 const CLUSTER_EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -297,6 +301,7 @@ pub mod error_codes {
     pub const INTERNAL_ERROR: i32 = 9000;
     pub const DATABASE_ERROR: i32 = 9001;
     pub const SERVICE_UNAVAILABLE: i32 = 9002;
+    pub const TIMEOUT: i32 = 9003;
 }
 
 /// Shared error classification for impls-layer `String` errors.
@@ -312,6 +317,7 @@ pub enum ErrorKind {
     InvalidArgument,
     RateLimited,
     ServiceUnavailable,
+    Timeout,
     Internal,
 }
 
@@ -327,6 +333,7 @@ impl ErrorKind {
             Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
             Self::RateLimited => error_codes::RESOURCE_EXHAUSTED,
             Self::ServiceUnavailable => error_codes::SERVICE_UNAVAILABLE,
+            Self::Timeout => error_codes::TIMEOUT,
             Self::Internal => error_codes::INTERNAL_ERROR,
         }
     }
@@ -351,6 +358,7 @@ pub enum ApiError {
         retry_after_seconds: u64,
     },
     ServiceUnavailable(String),
+    Timeout(String),
     Internal(String),
 }
 
@@ -366,9 +374,8 @@ impl From<synctv_core::Error> for ApiError {
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
-            synctv_core::Error::ServiceUnavailable(msg) | synctv_core::Error::Timeout(msg) => {
-                Self::ServiceUnavailable(msg)
-            }
+            synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),
+            synctv_core::Error::Timeout(msg) => Self::Timeout(msg),
             synctv_core::Error::Internal(msg) if msg.starts_with("Redis timeout:") => {
                 Self::ServiceUnavailable(msg)
             }
@@ -403,7 +410,7 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
                     Self::Authentication("Provider authentication failed".to_string())
                 } else if status == 404 {
                     tracing::info!(status, "Upstream provider resource not found");
-                    Self::NotFound("Provider resource not found".to_string())
+                    Self::NotFound(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND.to_string())
                 } else if status == 408 || status == 429 || status >= 500 {
                     tracing::warn!(status, "Upstream provider unavailable");
                     Self::ServiceUnavailable(UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE.to_string())
@@ -417,7 +424,9 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             | ProviderError::InvalidUrl(msg)
             | ProviderError::MissingField(msg)
             | ProviderError::UnsupportedFormat(msg) => Self::InvalidInput(msg),
-            ProviderError::NotFound => Self::NotFound("Resource not found".to_string()),
+            ProviderError::NotFound => {
+                Self::NotFound(synctv_common::messages::RESOURCE_NOT_FOUND.to_string())
+            }
             ProviderError::InstanceNotFound(msg) | ProviderError::CredentialNotFound(msg) => {
                 Self::NotFound(msg)
             }
@@ -425,7 +434,7 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
                 Self::NotFound("Provider instance not configured".to_string())
             }
             ProviderError::AuthRequired => {
-                Self::Authentication("Authentication required".to_string())
+                Self::Authentication(synctv_common::messages::AUTHENTICATION_REQUIRED.to_string())
             }
             ProviderError::CredentialRequired => {
                 Self::Authentication("Credential required".to_string())
@@ -458,6 +467,7 @@ impl ApiError {
             Self::InvalidInput(_) => ErrorKind::InvalidArgument,
             Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
             Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
+            Self::Timeout(_) => ErrorKind::Timeout,
             Self::Internal(_) => ErrorKind::Internal,
         }
     }
@@ -473,6 +483,7 @@ impl ApiError {
             | Self::InvalidInput(msg)
             | Self::RateLimited(msg)
             | Self::ServiceUnavailable(msg)
+            | Self::Timeout(msg)
             | Self::Internal(msg) => msg,
             Self::RateLimitedWithRetry { message, .. } => message,
         }
@@ -579,6 +590,7 @@ impl From<String> for ApiError {
             ErrorKind::InvalidArgument => Self::InvalidInput(msg),
             ErrorKind::RateLimited => Self::RateLimited(msg),
             ErrorKind::ServiceUnavailable => Self::ServiceUnavailable(msg),
+            ErrorKind::Timeout => Self::Timeout(msg),
             ErrorKind::Internal => Self::Internal(msg),
         }
     }
@@ -703,6 +715,8 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::RateLimited)
     } else if err.starts_with("Service unavailable: ") {
         Some(ErrorKind::ServiceUnavailable)
+    } else if err.starts_with("Operation timeout: ") {
+        Some(ErrorKind::Timeout)
     } else if err.starts_with("Internal error: ")
         || err.starts_with("Database error: ")
         || err.starts_with("Redis error: ")
@@ -1013,6 +1027,9 @@ mod tests {
         let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
         assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
 
+        let err = ApiError::Timeout("request timed out".to_string());
+        assert!(matches!(err.classify(), ErrorKind::Timeout));
+
         let err = ApiError::Internal("boom".to_string());
         assert!(matches!(err.classify(), ErrorKind::Internal));
 
@@ -1231,15 +1248,15 @@ mod tests {
     }
 
     #[test]
-    fn test_api_error_from_core_timeout_maps_to_service_unavailable() {
+    fn test_api_error_from_core_timeout_maps_to_timeout() {
         let core_err = synctv_core::Error::Timeout("oauth2 provider timed out".to_string());
         let api_err = ApiError::from(core_err);
         assert!(matches!(
             api_err,
-            ApiError::ServiceUnavailable(ref msg) if msg == "oauth2 provider timed out"
+            ApiError::Timeout(ref msg) if msg == "oauth2 provider timed out"
         ));
-        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
-        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+        assert!(matches!(api_err.classify(), ErrorKind::Timeout));
+        assert_eq!(api_err.code(), error_codes::TIMEOUT);
     }
 
     #[test]
@@ -1349,7 +1366,8 @@ mod tests {
         let api_err = ApiError::from(provider_err);
         assert!(matches!(
             api_err,
-            ApiError::NotFound(ref msg) if msg == "Provider resource not found"
+            ApiError::NotFound(ref msg)
+                if msg == synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND
         ));
         assert!(matches!(api_err.classify(), ErrorKind::NotFound));
         assert_eq!(api_err.code(), error_codes::NOT_FOUND);
@@ -1375,6 +1393,10 @@ mod tests {
         assert!(matches!(
             classify_error("Rate limited: too fast"),
             ErrorKind::RateLimited
+        ));
+        assert!(matches!(
+            classify_error("Operation timeout: request budget exceeded"),
+            ErrorKind::Timeout
         ));
     }
 

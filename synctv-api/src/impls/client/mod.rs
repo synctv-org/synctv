@@ -25,7 +25,6 @@ mod stream;
 mod user;
 mod webrtc;
 pub(crate) use playback::build_start_playback_request;
-pub(crate) use playback::{build_update_playback_request, PlaybackUpdateCommand};
 pub(crate) use room::build_create_websocket_ticket_request;
 pub(crate) use stream::build_room_streams_request;
 
@@ -35,6 +34,7 @@ pub(crate) mod convert;
 #[cfg(test)]
 mod tests;
 
+use futures::future::BoxFuture;
 use std::sync::Arc;
 use synctv_core::models::RoomId;
 use synctv_core::service::{RoomService, UserService};
@@ -51,7 +51,9 @@ use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
-use crate::impls::ApiError;
+use crate::impls::{
+    ApiError, EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata,
+};
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
 use crate::membership_event_fanout::{
@@ -162,6 +164,7 @@ pub struct ClientApiImpl {
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
+    pub request_executor: Option<Arc<RequestExecutor>>,
 }
 
 impl ClientApiImpl {
@@ -266,6 +269,7 @@ impl ClientApiImpl {
             signing_key: None,
             provider_stores: None,
             jwt_validator,
+            request_executor: None,
         }
     }
 
@@ -323,6 +327,7 @@ impl ClientApiImpl {
             signing_key: None,
             provider_stores: config.provider_stores,
             jwt_validator,
+            request_executor: None,
         }
     }
 
@@ -452,5 +457,249 @@ impl ClientApiImpl {
     pub fn with_builtin_stun_url(mut self, url: String) -> Self {
         self.builtin_stun_url = Some(url);
         self
+    }
+
+    #[must_use]
+    pub fn with_request_executor(mut self, request_executor: Arc<RequestExecutor>) -> Self {
+        self.request_executor = Some(request_executor);
+        self
+    }
+
+    fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
+        self.request_executor.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable("Request executor is not configured".to_string())
+        })
+    }
+
+    pub fn execute_public_endpoint<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_public(metadata, category, move || async move {
+                operation().await.map_err(Into::into)
+            }),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_public_endpoint_with_context<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(RequestContext) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_public_with_context(
+                metadata,
+                category,
+                move |request_context| async move {
+                    operation(request_context).await.map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_public_endpoint_with_control<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(synctv_core::provider::ExecutionControl) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_public_with_control(
+                metadata,
+                category,
+                move |request_control| async move {
+                    operation(request_control).await.map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_optional_user_endpoint<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(Option<synctv_core::service::AuthenticatedToken>) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => {
+                executor.execute_optional_user(
+                    metadata,
+                    category,
+                    move |authenticated| async move {
+                        operation(authenticated).await.map_err(Into::into)
+                    },
+                )
+            }
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_optional_user_endpoint_with_context<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(RequestContext, Option<synctv_core::service::AuthenticatedToken>) -> Fut
+            + Send
+            + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_optional_user_with_context(
+                metadata,
+                category,
+                move |request_context, authenticated| async move {
+                    operation(request_context, authenticated)
+                        .await
+                        .map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_optional_user_endpoint_with_control<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(
+                synctv_core::provider::ExecutionControl,
+                Option<synctv_core::service::AuthenticatedToken>,
+            ) -> Fut
+            + Send
+            + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_optional_user_with_control(
+                metadata,
+                category,
+                move |request_control, authenticated| async move {
+                    operation(request_control, authenticated)
+                        .await
+                        .map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_user_endpoint<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => {
+                executor.execute_user(metadata, category, move |authenticated| async move {
+                    operation(authenticated).await.map_err(Into::into)
+                })
+            }
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_user_endpoint_with_context<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(RequestContext, synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_user_with_context(
+                metadata,
+                category,
+                move |request_context, authenticated| async move {
+                    operation(request_context, authenticated)
+                        .await
+                        .map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
+    }
+
+    pub fn execute_user_endpoint_with_control<'a, T, E, F, Fut>(
+        &'a self,
+        metadata: &'a RequestMetadata,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(
+                synctv_core::provider::ExecutionControl,
+                synctv_core::service::AuthenticatedToken,
+            ) -> Fut
+            + Send
+            + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        match self.request_executor() {
+            Ok(executor) => executor.execute_user_with_control(
+                metadata,
+                category,
+                move |request_control, authenticated| async move {
+                    operation(request_control, authenticated)
+                        .await
+                        .map_err(Into::into)
+                },
+            ),
+            Err(err) => Box::pin(async move { Err(err) }),
+        }
     }
 }

@@ -1,3 +1,4 @@
+use synctv_common::ExecutionControlError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -55,7 +56,9 @@ impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Self {
         match &err {
             // Map "no rows" to NotFound
-            sqlx::Error::RowNotFound => Self::NotFound("Resource not found".to_string()),
+            sqlx::Error::RowNotFound => {
+                Self::NotFound(synctv_common::messages::RESOURCE_NOT_FOUND.to_string())
+            }
             // Map unique constraint violations to AlreadyExists
             sqlx::Error::Database(db_err) => {
                 let code = db_err.code().unwrap_or_default();
@@ -99,6 +102,19 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+impl From<ExecutionControlError> for Error {
+    fn from(err: ExecutionControlError) -> Self {
+        match err {
+            ExecutionControlError::Cancelled => {
+                Self::ServiceUnavailable(synctv_common::messages::REQUEST_CANCELLED.to_string())
+            }
+            ExecutionControlError::DeadlineExceeded => {
+                Self::Timeout(synctv_common::messages::REQUEST_TIMED_OUT.to_string())
+            }
+        }
+    }
+}
+
 impl From<crate::provider::ProviderError> for Error {
     fn from(err: crate::provider::ProviderError) -> Self {
         use crate::provider::ProviderError;
@@ -121,10 +137,12 @@ impl From<crate::provider::ProviderError> for Error {
                 Self::InvalidInput(format!("Missing required field: {field}"))
             }
             ProviderError::MissingInstance | ProviderError::InstanceNotFound(_) => {
-                Self::NotFound("Provider instance not found".to_string())
+                Self::NotFound(synctv_common::messages::PROVIDER_INSTANCE_NOT_FOUND.to_string())
             }
             // Not found
-            ProviderError::NotFound => Self::NotFound("Provider resource not found".to_string()),
+            ProviderError::NotFound => {
+                Self::NotFound(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND.to_string())
+            }
             // Invalid URL
             ProviderError::InvalidUrl(msg) => Self::InvalidInput(format!("Invalid URL: {msg}")),
             // Upstream HTTP errors
@@ -134,7 +152,7 @@ impl From<crate::provider::ProviderError> for Error {
                     Self::Authentication("Provider authentication failed".to_string())
                 } else if status == 404 {
                     tracing::info!(status, "Provider upstream resource not found");
-                    Self::NotFound("Provider resource not found".to_string())
+                    Self::NotFound(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND.to_string())
                 } else if status == 408 || status == 429 || status >= 500 {
                     tracing::warn!(status, "Provider upstream unavailable");
                     Self::Timeout(

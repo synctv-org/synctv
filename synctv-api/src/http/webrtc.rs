@@ -7,9 +7,11 @@ use axum::{
     extract::{Path, State},
     response::Json,
 };
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::middleware::AuthUser;
+use crate::http::middleware::RequestMetadata;
 use crate::http::{error::map_api_error, AppResult, AppState};
+use crate::impls::EndpointRateLimitCategory;
 
 // M-10: Use proto types directly instead of duplicating response structs.
 // Proto types already derive serde::Serialize/Deserialize.
@@ -44,21 +46,26 @@ use crate::proto::client::GetIceServersResponse;
     )
 )]
 pub async fn get_ice_servers(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
-    let user_id = auth.user_id;
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
     let room_id = synctv_core::models::RoomId::from_string(path.room_id);
+    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let client_api = state.client_api.clone();
 
-    // Membership check is performed inside client_api.get_ice_servers()
-    // Errors are mapped via map_api_error for proper HTTP status codes:
-    // - Authorization errors -> 403 Forbidden
-    // - Other errors -> appropriate status codes based on error kind
     let response: GetIceServersResponse = state
         .client_api
-        .get_ice_servers(&room_id, &user_id)
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                client_api
+                    .get_ice_servers(&room_id, &authenticated.user_id)
+                    .await
+            },
+        )
         .await
         .map_err(map_api_error)?;
 

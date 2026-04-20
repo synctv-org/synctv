@@ -4,8 +4,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::providers::{alist, bilibili, emby, live};
 use crate::http::{
-    AppState, admin, auth, email_verification, health, notifications, oauth2, provider_common,
-    public, publish_key, room, room_extra, ticket, user, webrtc, websocket,
+    admin, auth, email_verification, health, notifications, oauth2, provider_common, public,
+    publish_key, room, room_extra, ticket, user, webrtc, websocket, AppState,
 };
 use crate::proto::client;
 

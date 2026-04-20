@@ -98,6 +98,7 @@ use crate::{
     Error, InternalExt, Result,
 };
 use std::{future::Future, sync::Arc};
+use synctv_common::ExecutionControl;
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -2835,6 +2836,17 @@ impl RoomService {
         password: &str,
         client_ip: Option<IpAddr>,
     ) -> Result<bool> {
+        self.check_room_password_with_rate_limit_with_control(room_id, password, client_ip, None)
+            .await
+    }
+
+    pub async fn check_room_password_with_rate_limit_with_control(
+        &self,
+        room_id: &RoomId,
+        password: &str,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<bool> {
         // Build the rate limit key: room_id + client_ip (or just room_id if no IP)
         let rate_limit_key = match client_ip {
             Some(ip) => format!("{}:{}", room_id.as_str(), ip),
@@ -2844,7 +2856,7 @@ impl RoomService {
         // Check rate limit if brute-force service is configured
         if let Some(ref brute_force) = self.brute_force_service {
             brute_force
-                .check_allowed(&rate_limit_key, client_ip)
+                .check_allowed_with_control(&rate_limit_key, client_ip, control)
                 .await?;
         }
 
@@ -2863,7 +2875,10 @@ impl RoomService {
         if let Some(ref brute_force) = self.brute_force_service {
             if is_valid {
                 // Reset failure counter on successful verification
-                if let Err(e) = brute_force.reset(&rate_limit_key).await {
+                if let Err(e) = brute_force
+                    .reset_with_control(&rate_limit_key, control)
+                    .await
+                {
                     // Log warning for monitoring
                     tracing::warn!(
                         room_id = %room_id,
@@ -2897,7 +2912,7 @@ impl RoomService {
             } else {
                 // Record failure on incorrect password
                 brute_force
-                    .record_failure(&rate_limit_key, client_ip)
+                    .record_failure_with_control(&rate_limit_key, client_ip, control)
                     .await?;
             }
         }
@@ -3316,7 +3331,7 @@ impl RoomService {
             Ok(())
         } else {
             Err(Error::Authorization(
-                "Not a member of this room".to_string(),
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             ))
         }
     }
@@ -3429,7 +3444,9 @@ impl RoomService {
             )
             .await?
         {
-            return Err(Error::Authorization("Permission denied".to_string()));
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
         }
 
         let media_items = self
@@ -3466,7 +3483,9 @@ impl RoomService {
             )
             .await?
         {
-            return Err(Error::Authorization("Permission denied".to_string()));
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
         }
         if has_foreign_media
             && !has_room_permission_in_tx(
@@ -3477,7 +3496,9 @@ impl RoomService {
             )
             .await?
         {
-            return Err(Error::Authorization("Permission denied".to_string()));
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
         }
 
         let impact =

@@ -18,10 +18,12 @@ pub use google::{GoogleConfig, GoogleProvider};
 pub use logto::{LogtoConfig, LogtoProvider};
 pub use oidc::{OidcConfig, OidcProvider};
 
-use crate::{resilience::timeout::HTTP_REQUEST_TIMEOUT, Error, InternalExt};
+use crate::{Error, InternalExt};
 use oauth2::{AsyncHttpClient, HttpClientError, HttpRequest, HttpResponse};
 use reqwest::Client;
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+#[cfg(test)]
+use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc};
 use url::{Host, Url};
 
 pub(super) struct OAuth2HttpClient {
@@ -62,6 +64,7 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
     }
 }
 
+#[cfg(test)]
 fn build_ssrf_safe_provider_client(timeout: Duration) -> Result<reqwest::Client, Error> {
     synctv_common::http::SsrfSafeClientBuilder::provider()
         .request_timeout(timeout)
@@ -116,16 +119,16 @@ pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Err
     Ok(parsed)
 }
 
-pub(super) fn build_provider_http_client_with_timeout(timeout: Duration) -> Result<Client, Error> {
-    build_ssrf_safe_provider_client(timeout)
-}
-
 pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
-    Ok(Arc::new(build_provider_http_client_with_timeout(
-        HTTP_REQUEST_TIMEOUT,
-    )?))
+    Ok(Arc::new(
+        synctv_common::http::SsrfSafeClientBuilder::provider()
+            .disable_request_timeout()
+            .build()
+            .internal_with_err("Failed to build HTTP client")?,
+    ))
 }
 
+#[cfg(test)]
 pub(super) fn build_oauth2_http_client_with_timeout(
     timeout: Duration,
 ) -> Result<OAuth2HttpClient, Error> {
@@ -135,9 +138,13 @@ pub(super) fn build_oauth2_http_client_with_timeout(
 }
 
 pub(super) fn build_oauth2_http_client() -> Result<Arc<OAuth2HttpClient>, Error> {
-    Ok(Arc::new(build_oauth2_http_client_with_timeout(
-        HTTP_REQUEST_TIMEOUT,
-    )?))
+    Ok(Arc::new(
+        synctv_common::http::SsrfSafeClientBuilder::provider()
+            .disable_request_timeout()
+            .build()
+            .internal_with_err("Failed to build OAuth2 HTTP client")
+            .map(OAuth2HttpClient::new)?,
+    ))
 }
 
 pub(super) fn map_provider_http_error<E>(context: &str, err: E) -> Error

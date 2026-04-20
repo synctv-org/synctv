@@ -28,6 +28,8 @@ async fn test_dns_resolver_blocks_loopback() {
         url: "http://127.0.0.1/admin",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
+        request_control: None,
+        upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(result.is_err(), "Should block loopback IP via DNS resolver");
@@ -50,6 +52,8 @@ async fn test_dns_resolver_blocks_private_ips() {
             url,
             provider_headers: &HashMap::new(),
             client_headers: &headers,
+            request_control: None,
+            upstream_header_timeout: None,
         };
         let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
         assert!(
@@ -69,6 +73,8 @@ async fn test_dns_resolver_blocks_cloud_metadata() {
         url: "http://169.254.169.254/latest/meta-data/",
         provider_headers: &HashMap::new(),
         client_headers: &headers,
+        request_control: None,
+        upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(

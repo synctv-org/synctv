@@ -1,15 +1,14 @@
 //! Shared security pipeline for HTTP and gRPC authentication.
 //!
-//! Both the HTTP `AuthUser` extractor and the gRPC `BlacklistCheckLayer` enforce
-//! identical security checks in a fixed order:
+//! Both transports enforce identical security checks in a fixed order:
 //!
 //! 1. **JWT verification** -- validate signature, expiration, and access token type
 //! 2. **Password invalidation** -- reject tokens issued before a password change
 //! 3. **User status** -- reject banned, pending, or soft-deleted users
 //! 4. **Access token blacklist** -- reject revoked access tokens (e.g., after logout)
 //!
-//! This module provides [`SecurityPipeline`] so both transport layers can delegate
-//! to a single implementation, preventing divergence.
+//! This module provides [`SecurityPipeline`] so all request execution paths can
+//! delegate to a single implementation, preventing divergence.
 
 use std::sync::Arc;
 

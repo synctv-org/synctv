@@ -9,13 +9,10 @@ use synctv_proto::providers::bilibili::bilibili_provider_service_server::Bilibil
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
 
 pub mod admin_service;
-pub mod blacklist_layer;
 pub mod client_service;
 pub mod interceptors;
 pub mod notification_service;
 pub mod oauth2_service;
-pub mod rate_limit_layer;
-pub mod timeout_layer;
 
 // Provider gRPC services (local implementations)
 // Provider-specific gRPC services are registered from provider instances
@@ -23,7 +20,7 @@ pub mod providers;
 
 pub use admin_service::AdminServiceImpl;
 pub use client_service::{ClientServiceConfig, ClientServiceImpl};
-pub use interceptors::{AuthInterceptor, ClusterAuthInterceptor, LoggingInterceptor};
+pub use interceptors::ClusterAuthInterceptor;
 pub use notification_service::NotificationServiceImpl;
 
 /// Trait to apply gRPC message size limits to tonic service servers.
@@ -98,6 +95,7 @@ pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
         ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
         ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),
+        ErrorKind::Timeout => tonic::Status::deadline_exceeded(msg),
         ErrorKind::Internal => {
             tracing::error!("API internal error: {msg}");
             tonic::Status::internal("Internal error")
@@ -127,6 +125,7 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
 ///
 /// Uses typed matching on the `ProviderError` enum instead of
 /// keyword-based string heuristics.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> tonic::Status {
     use synctv_core::provider::ProviderError;
     let msg = err.to_string();
@@ -138,7 +137,7 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
             if *status == 401 || *status == 403 {
                 tonic::Status::unauthenticated("Provider authentication failed")
             } else if *status == 404 {
-                tonic::Status::not_found("Provider resource not found")
+                tonic::Status::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND)
             } else if *status == 408 || *status == 429 {
                 tonic::Status::unavailable("Upstream provider service is temporarily unavailable.")
             } else if (400..500).contains(status) {
@@ -213,6 +212,30 @@ pub fn extract_client_ip<T>(
     }
 
     remote_addr
+}
+
+#[must_use]
+pub fn request_metadata<T>(
+    request: &tonic::Request<T>,
+    config: &synctv_core::Config,
+    timeout: Option<std::time::Duration>,
+) -> crate::impls::RequestMetadata {
+    let authorization = request
+        .metadata()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let user_agent = request
+        .metadata()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Grpc)
+        .with_authorization(authorization)
+        .with_client_ip(extract_client_ip(request, config))
+        .with_user_agent(user_agent)
+        .with_timeout(timeout)
 }
 
 const fn should_register_cluster_grpc_service(
@@ -327,6 +350,7 @@ const fn grpc_service_registration_plan(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 const fn effective_grpc_request_timeout() -> Option<std::time::Duration> {
     // Tonic's server-wide timeout applies to the entire RPC lifetime, which
     // breaks long-lived streaming calls such as MessageStream. Keep it disabled
@@ -557,7 +581,6 @@ use crate::runtime::{
     RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
 };
 use std::sync::Arc;
-use synctv_core::Config;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
@@ -565,6 +588,7 @@ use synctv_core::service::{
     RemoteProviderManager, RequestRateLimiterService, RoomService as CoreRoomService,
     SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
+use synctv_core::Config;
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -822,7 +846,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
 
     // Clone services for all uses before unwrapping
     let user_service_for_client = user_service.clone();
-    let user_service_for_admin = user_service.clone();
 
     let room_service_for_client = room_service.clone();
 
@@ -851,7 +874,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         )
     });
 
-    let rate_limiter_for_layer = rate_limiter.clone();
     let event_service_for_rt = event_service.clone();
     let chat_service = chat_service.ok_or_else(|| {
         anyhow::anyhow!(
@@ -882,54 +904,12 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         .clone()
         .expect("shared or fallback API runtime must provide admin API wiring");
 
-    let admin_service = AdminServiceImpl::new(
-        user_service_for_admin,
-        admin_api.clone(),
-        Arc::new(config.clone()),
-    );
+    let admin_service = AdminServiceImpl::new(admin_api.clone(), Arc::new(config.clone()));
 
-    // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
-    let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
-
-    // Create JwtValidator for rate limiting layer (needs to verify JWT to extract user_id)
-    let jwt_validator_for_rate_limit = shared_api_runtime.jwt_validator.as_ref().clone();
-
-    // Create server builder with the security checking tower layer.
-    // This layer extracts the raw JWT bearer token from the HTTP Authorization
-    // header and performs async security checks via the shared SecurityPipeline:
-    // 1. JWT verification (validate signature, expiration, access token type)
-    // 2. Password invalidation check (tokens issued before password change)
-    // 3. User status check (banned/pending/deleted)
-    // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
-    // pass through without security checks.
-    let security_pipeline = shared_api_runtime.security_pipeline.as_ref().clone();
-    let blacklist_layer =
-        blacklist_layer::BlacklistCheckLayer::new(jwt_service.clone(), security_pipeline);
-    // Distributed rate limiting layer: uses Redis when available (shared across
-    // replicas), falls back to in-memory governor when Redis is unavailable.
-    // Determines tier per-request from the gRPC service path.
-    // Uses verified user_id from JWT claims as rate limit key to ensure all tokens
-    // belonging to the same user share a single quota.
-    let distributed_rate_limit_layer = rate_limit_layer::GrpcRateLimitLayer::new(
-        rate_limiter_for_layer,
-        Arc::new(config.clone()),
-        jwt_validator_for_rate_limit,
-    );
-    let grpc_request_timeout = effective_grpc_request_timeout();
     let grpc_unary_request_timeout = grpc_unary_request_timeout();
-    let unary_timeout_layer =
-        timeout_layer::GrpcRequestTimeoutLayer::new(grpc_unary_request_timeout);
-    if let Some(timeout) = grpc_request_timeout {
-        tracing::info!(
-            grpc_request_timeout_secs = timeout.as_secs(),
-            "gRPC request timeout configured"
-        );
-    } else {
-        tracing::info!("gRPC server-wide request timeout disabled");
-    }
     tracing::info!(
         grpc_unary_request_timeout_secs = grpc_unary_request_timeout.as_secs(),
-        "gRPC unary request timeout configured"
+        "gRPC impl-level unary request timeout configured"
     );
 
     // Get the configured max message size (prevents OOM from oversized messages)
@@ -940,16 +920,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         "gRPC message size limit configured"
     );
 
-    // Clone interceptors for different services
-    let user_interceptor = auth_interceptor.clone();
-    let admin_interceptor = auth_interceptor.clone();
-    let room_interceptor1 = auth_interceptor.clone();
-
-    // Rate limiting is handled by the distributed_rate_limit_layer applied at the
-    // server level (above). Per-service interceptors only handle auth concerns.
-
-    // Build router - register all client services with auth interceptors
-    // All services have message size limits applied to prevent OOM attacks
+    // Build router - all services have message size limits applied to prevent OOM attacks
     let client_service_clone1 = client_service.clone();
     let client_service_clone2 = client_service.clone();
     let client_service_clone3 = client_service.clone();
@@ -983,17 +954,15 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     if grpc_registration_plan.health_state.user_registered {
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(
             UserServiceServer::new(client_service_clone1).with_message_size_limit(max_message_size),
-            move |req| user_interceptor.inject_user(req),
-        ));
+        );
     }
 
     if grpc_registration_plan.health_state.room_registered {
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(
             RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
-            move |req| room_interceptor1.inject_room(req),
-        ));
+        );
     }
 
     if grpc_registration_plan.health_state.public_registered {
@@ -1004,10 +973,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     if grpc_registration_plan.health_state.admin_registered {
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        routes.add_service(
             AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
-            move |req| admin_interceptor.inject_user(req),
-        ));
+        );
     }
 
     if grpc_registration_plan.health_state.email_registered {
@@ -1021,16 +989,18 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     if grpc_registration_plan.health_state.notification_registered {
         let notif_svc = notification_service
             .expect("notification service presence must match registration plan");
-        let notification_interceptor = auth_interceptor.clone();
         let notification_api = shared_api_runtime
             .notification_api
             .clone()
             .unwrap_or_else(|| Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone())));
-        let notif_impl = NotificationServiceImpl::new(notification_api);
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        let notif_impl = NotificationServiceImpl::new(
+            notification_api,
+            shared_api_runtime.request_executor.clone(),
+            Arc::new(config.clone()),
+        );
+        routes.add_service(
             NotificationServiceServer::new(notif_impl).with_message_size_limit(max_message_size),
-            move |req| notification_interceptor.inject_user(req),
-        ));
+        );
         tracing::info!("NotificationService gRPC registered");
 
         // RT-1: Spawn a background task that bridges notification creation events
@@ -1110,15 +1080,14 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     }
 
     // Register OAuth2Service if oauth2_service is configured.
-    // Uses a single service with NO global auth interceptor. Public endpoints
-    // (GetAuthorizationUrl, ExchangeAuthorizationCode, ListAvailableProviders)
-    // require no authentication. Private endpoints (GetAuthorizationUrlForBind,
-    // UnlinkProvider, GetLinkedProviders) perform inline JWT validation using
-    // the auth interceptor passed to the service constructor.
+    // Uses a single service with no transport-level auth middleware. Public
+    // endpoints (GetAuthorizationUrl, ExchangeAuthorizationCode,
+    // ListAvailableProviders) require no authentication. Private endpoints
+    // (GetAuthorizationUrlForBind, UnlinkProvider, GetLinkedProviders) execute
+    // the shared impl-level auth pipeline inline through RequestExecutor.
     if grpc_registration_plan.health_state.oauth2_registered {
         let oauth2_svc =
             oauth2_service.expect("oauth2 service presence must match registration plan");
-        let oauth2_auth_interceptor = auth_interceptor.clone();
         let oauth2_api = shared_api_runtime.oauth2_api.clone().unwrap_or_else(|| {
             Arc::new(crate::impls::OAuth2ApiImpl::new(
                 oauth2_svc,
@@ -1128,10 +1097,10 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
             oauth2_api,
             Arc::new(config.clone()),
-            oauth2_auth_interceptor,
+            shared_api_runtime.request_executor.clone(),
         );
-        // No global interceptor: public endpoints are unauthenticated,
-        // private endpoints call require_auth() inline.
+        // Public endpoints are unauthenticated; private endpoints invoke the
+        // shared impl-level auth pipeline inline.
         routes.add_service(
             OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size),
         );
@@ -1148,34 +1117,34 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
 
         let shared_api_runtime = shared_api_runtime.clone();
 
-        // Register provider gRPC services with auth interceptor
-        let provider_interceptor1 = auth_interceptor.clone();
-        let provider_interceptor2 = auth_interceptor.clone();
-        let provider_interceptor3 = auth_interceptor.clone();
-
-        // Register provider services with interceptors and message size limits
-        // Using InterceptedService::new() to apply message size limits before the interceptor
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        // Register provider gRPC services. Auth, blacklist, rate limiting, and
+        // timeouts are enforced explicitly inside the shared impl layer.
+        routes.add_service(
             AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
                 shared_api_runtime.clone(),
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(config.clone()),
             ))
             .with_message_size_limit(max_message_size),
-            move |req| provider_interceptor1.inject_user(req),
-        ));
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        );
+        routes.add_service(
             BilibiliProviderServiceServer::new(
-                providers::bilibili::BilibiliProviderGrpcService::new(&shared_api_runtime),
+                providers::bilibili::BilibiliProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(config.clone()),
+                ),
             )
             .with_message_size_limit(max_message_size),
-            move |req| provider_interceptor2.inject_user(req),
-        ));
-        routes.add_service(tonic::codegen::InterceptedService::new(
+        );
+        routes.add_service(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
-                shared_api_runtime,
+                shared_api_runtime.clone(),
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(config.clone()),
             ))
             .with_message_size_limit(max_message_size),
-            move |req| provider_interceptor3.inject_user(req),
-        ));
+        );
     }
 
     // Register cluster gRPC service only in cluster mode.
@@ -1281,12 +1250,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let router = routes
         .routes()
         .into_axum_router()
-        .layer(
-            tower::ServiceBuilder::new()
-                .layer(blacklist_layer)
-                .layer(distributed_rate_limit_layer)
-                .layer(unary_timeout_layer),
-        )
         .layer(axum::middleware::from_fn(grpc_transport_only_middleware));
 
     let _ = health_reporter;
@@ -1339,16 +1302,16 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        FallbackHttpAppStateDeps, GrpcHealthRegistrationState, build_fallback_http_app_state,
-        cluster_node_id, effective_grpc_request_timeout, extract_client_ip,
-        grpc_service_registration_plan, grpc_unary_request_timeout, map_provider_error,
-        resolve_provider_proxy_runtime, set_registered_grpc_services_not_serving,
-        set_registered_grpc_services_serving, should_mark_cluster_service_serving,
-        should_mark_email_service_serving, should_mark_livestream_relay_serving,
-        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
-        should_mark_provider_services_serving, should_register_cluster_grpc_service,
-        should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements,
+        build_fallback_http_app_state, cluster_node_id, effective_grpc_request_timeout,
+        extract_client_ip, grpc_service_registration_plan, grpc_unary_request_timeout,
+        map_api_error, map_provider_error, resolve_provider_proxy_runtime,
+        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
+        should_mark_cluster_service_serving, should_mark_email_service_serving,
+        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
+        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
+        should_register_cluster_grpc_service, should_register_email_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -1366,17 +1329,26 @@ mod tests {
     };
     use synctv_core::repository::{SettingsRepository, UserProviderCredentialRepository};
     use synctv_core::service::{
-        AuditService, ContentFilter, RateLimitConfig, RateLimiter, RemoteProviderManager,
-        RoomService, SettingsRegistry, SettingsService, UserService, auth::JwtService,
+        auth::JwtService, AuditService, ContentFilter, RateLimitConfig, RateLimiter,
+        RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
     };
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use tokio::sync::{broadcast, mpsc};
+
+    #[test]
+    fn test_map_api_error_timeout_maps_to_deadline_exceeded() {
+        let status = map_api_error(crate::impls::ApiError::Timeout(
+            "request budget exceeded".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        assert_eq!(status.message(), "request budget exceeded");
+    }
     use tonic::metadata::{MetadataKey, MetadataValue};
-    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health;
+    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::server::HealthService;
     use tower::ServiceExt;
 
@@ -2102,33 +2074,27 @@ mod tests {
     fn test_user_notification_fanout_requires_distributed_delivery_only_when_available() {
         let requirement = RealtimeDeliveryRequirement::DistributedIfAvailable;
 
-        assert!(
-            !RealtimeDeliveryOutcome::from_publish_only(
-                false,
-                RealtimeMetrics {
-                    distributed_enabled: true,
-                },
-            )
-            .satisfies(requirement)
-        );
-        assert!(
-            RealtimeDeliveryOutcome::from_publish_only(
-                true,
-                RealtimeMetrics {
-                    distributed_enabled: true,
-                },
-            )
-            .satisfies(requirement)
-        );
-        assert!(
-            RealtimeDeliveryOutcome::from_publish_only(
-                false,
-                RealtimeMetrics {
-                    distributed_enabled: false,
-                },
-            )
-            .satisfies(requirement)
-        );
+        assert!(!RealtimeDeliveryOutcome::from_publish_only(
+            false,
+            RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        )
+        .satisfies(requirement));
+        assert!(RealtimeDeliveryOutcome::from_publish_only(
+            true,
+            RealtimeMetrics {
+                distributed_enabled: true,
+            },
+        )
+        .satisfies(requirement));
+        assert!(RealtimeDeliveryOutcome::from_publish_only(
+            false,
+            RealtimeMetrics {
+                distributed_enabled: false,
+            },
+        )
+        .satisfies(requirement));
     }
 
     #[test]
@@ -2290,7 +2256,10 @@ mod tests {
         });
 
         assert_eq!(status.code(), tonic::Code::NotFound);
-        assert_eq!(status.message(), "Provider resource not found");
+        assert_eq!(
+            status.message(),
+            synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND
+        );
     }
 
     #[test]

@@ -6,10 +6,14 @@ use axum::{
     extract::{Path, RawQuery, State},
     Json,
 };
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use std::future::Future;
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use super::validation::{validate_playback_position, ValidatedQuery, ValidationError};
-use super::{middleware::AuthUser, AppResult, AppState, WithMediaId, WithPlaylistId};
-use crate::impls::client::{build_update_playback_request, PlaybackUpdateCommand};
+use super::validation::ValidatedQuery;
+use super::{middleware::RequestMetadata, AppResult, AppState, WithMediaId, WithPlaylistId};
+use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
     ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
@@ -84,25 +88,61 @@ fn validate_room_path(
     Ok(path.room_id)
 }
 
-fn map_validation_error(err: &ValidationError) -> super::AppError {
-    match err {
-        ValidationError::TooLong { field, .. } => {
-            super::AppError::validation_failed(field, "value is too long")
-        }
-        ValidationError::TooShort { field, .. } => {
-            super::AppError::validation_failed(field, "value is too short")
-        }
-        ValidationError::InvalidFormat { field } => {
-            super::AppError::validation_failed(field, "contains invalid characters")
-        }
-        ValidationError::InvalidValue(message) => super::AppError::bad_request(*message),
-        ValidationError::Required(field) => {
-            super::AppError::validation_failed(field, "field is required")
-        }
-        ValidationError::SecurityRisk => {
-            super::AppError::bad_request("Potential security issue detected in input")
-        }
+fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+}
+
+fn execute_public_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> BoxFuture<'a, Result<T, super::AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(std::sync::Arc<crate::impls::ClientApiImpl>) -> Fut + Send + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let executor = state.client_api.clone();
+        let client_api = state.client_api.clone();
+        executor
+            .execute_public_endpoint(&request_meta, category, move || operation(client_api))
+            .await
+            .map_err(super::error::map_api_error)
     }
+    .boxed()
+}
+
+fn execute_user_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> BoxFuture<'a, Result<T, super::AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+            std::sync::Arc<crate::impls::ClientApiImpl>,
+            synctv_core::service::AuthenticatedToken,
+        ) -> Fut
+        + Send
+        + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let executor = state.client_api.clone();
+        let client_api = state.client_api.clone();
+        executor
+            .execute_user_endpoint(&request_meta, category, move |authenticated| {
+                operation(client_api, authenticated)
+            })
+            .await
+            .map_err(super::error::map_api_error)
+    }
+    .boxed()
 }
 
 /// Create a new room
@@ -123,25 +163,32 @@ fn map_validation_error(err: &ValidationError) -> super::AppError {
         )
     )
 )]
-#[tracing::instrument(name = "http_create_room", skip(state), fields(user_id = %auth.user_id))]
 pub async fn create_room(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<CreateRoomRequest>,
 ) -> AppResult<Json<CreateRoomResponse>> {
-    tracing::info!(user_id = %auth.user_id, room_name = %req.name, "Creating new room");
+    tracing::info!(room_name = %req.name, "Creating new room");
 
-    let response = state
-        .client_api
-        .create_room(&auth.user_id.to_string(), req)
-        .await
-        .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, error = %e, "Failed to create room");
-            super::error::map_api_error(e)
-        })?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .create_room(authenticated.user_id.as_str(), req)
+                .await
+        },
+    )
+    .await?;
 
-    let room_id = response.room.as_ref().map_or("unknown", |r| r.id.as_str());
-    tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Room created successfully");
+    tracing::info!(
+        room_id = response
+            .room
+            .as_ref()
+            .map_or("unknown", |room| room.id.as_str()),
+        "Room created successfully"
+    );
     Ok(Json(response))
 }
 
@@ -166,16 +213,22 @@ pub async fn create_room(
     )
 )]
 pub async fn get_room(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetRoomResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .get_room(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_room(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -204,22 +257,36 @@ pub async fn get_room(
     )
 )]
 pub async fn join_room(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(mut req): Json<JoinRoomBody>,
 ) -> AppResult<Json<JoinRoomResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let room_id = validate_room_path(path)?;
     req.room_id = room_id.clone();
-    let client_ip =
-        super::auth::extract_client_ip(&state.config, connect_info.0, &headers).to_string();
-    let response = state
-        .client_api
-        .join_room(&auth.user_id.to_string(), &room_id, req, Some(&client_ip))
-        .await
-        .map_err(super::error::map_api_error)?;
+    let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |request_control, authenticated| async move {
+                client_api
+                    .join_room_with_control(
+                        authenticated.user_id.as_str(),
+                        &room_id,
+                        req,
+                        client_ip.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await?;
 
     Ok(Json(response))
 }
@@ -245,16 +312,22 @@ pub async fn join_room(
     )
 )]
 pub async fn leave_room(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<LeaveRoomResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .leave_room(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .leave_room(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -280,25 +353,28 @@ pub async fn leave_room(
         )
     )
 )]
-#[tracing::instrument(name = "http_delete_room", skip(state), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn delete_room(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<DeleteRoomResponse>> {
     let room_id = validate_room_path(path)?;
-    tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Deleting room");
+    tracing::info!(room_id = %room_id, "Deleting room");
+    let room_id_for_log = room_id.clone();
 
-    let response = state
-        .client_api
-        .delete_room(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete room");
-            super::error::map_api_error(e)
-        })?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .delete_room(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
-    tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Room deleted successfully");
+    tracing::info!(room_id = %room_id_for_log, "Room deleted successfully");
     Ok(Json(response))
 }
 
@@ -324,17 +400,23 @@ pub async fn delete_room(
     )
 )]
 pub async fn add_media(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .add_media(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .add_media(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -362,7 +444,7 @@ pub async fn add_media(
     )
 )]
 pub async fn delete_media(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
     ValidatedQuery(query): ValidatedQuery<DeleteMediaQuery>,
@@ -373,11 +455,17 @@ pub async fn delete_media(
         media_id,
         force: query.force,
     };
-    let response = state
-        .client_api
-        .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .delete_media(authenticated.user_id.as_str(), &room_id, proto_req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -403,22 +491,24 @@ pub async fn delete_media(
         )
     )
 )]
-#[tracing::instrument(name = "http_delete_entries", skip(state, req), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn delete_entries(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<DeleteEntriesBody>,
 ) -> AppResult<Json<DeleteEntriesResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .delete_entries(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete entries");
-            super::error::map_api_error(e)
-        })?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .delete_entries(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -444,22 +534,24 @@ pub async fn delete_entries(
         )
     )
 )]
-#[tracing::instrument(name = "http_move_media", skip(state, req), fields(user_id = %auth.user_id, room_id = %path.room_id))]
 pub async fn move_media(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<MoveMediaRequest>,
 ) -> AppResult<Json<MoveMediaResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .move_media(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to move media");
-            super::error::map_api_error(e)
-        })?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .move_media(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -486,17 +578,23 @@ pub async fn move_media(
     )
 )]
 pub async fn list_playlist_items(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .list_playlist_items(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .list_playlist_items(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -524,17 +622,23 @@ pub async fn list_playlist_items(
     )
 )]
 pub async fn start_playback(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .start_playback(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .start_playback(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -561,17 +665,23 @@ pub async fn start_playback(
     )
 )]
 pub async fn stop_playback(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .stop_playback(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .stop_playback(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -597,14 +707,29 @@ pub async fn stop_playback(
     )
 )]
 pub async fn get_playback(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .get_playback(&auth.user_id.to_string(), &room_id, GetPlaybackRequest {})
+    let request_meta = request_metadata(request_meta);
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |request_control, authenticated| async move {
+                client_api
+                    .get_playback_with_context(
+                        authenticated.user_id.as_str(),
+                        &room_id,
+                        GetPlaybackRequest {},
+                        &request_control,
+                    )
+                    .await
+            },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -633,17 +758,23 @@ pub async fn get_playback(
     )
 )]
 pub async fn get_room_members(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     ValidatedQuery(req): ValidatedQuery<GetRoomMembersRequest>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .get_room_members(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_room_members(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -665,14 +796,17 @@ pub async fn get_room_members(
     )
 )]
 pub async fn check_room(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<crate::proto::client::CheckRoomRequest>,
 ) -> AppResult<Json<CheckRoomResponse>> {
-    let response = state
-        .client_api
-        .check_room(req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.check_room(req).await },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -699,17 +833,23 @@ pub async fn check_room(
     )
 )]
 pub async fn set_room_password(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .set_room_password(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .set_room_password(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -735,16 +875,22 @@ pub async fn set_room_password(
     )
 )]
 pub async fn get_room_settings(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetRoomSettingsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .get_room_settings(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_room_settings(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -771,17 +917,23 @@ pub async fn get_room_settings(
     )
 )]
 pub async fn push_media_batch(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .add_media_batch(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .add_media_batch(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -809,7 +961,7 @@ pub async fn push_media_batch(
     )
 )]
 pub async fn edit_media(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
     Json(req): Json<EditMediaBody>,
@@ -817,11 +969,17 @@ pub async fn edit_media(
     crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let req = req.with_media_id(media_id);
-    let response = state
-        .client_api
-        .edit_media(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .edit_media(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -846,16 +1004,22 @@ pub async fn edit_media(
     )
 )]
 pub async fn clear_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ClearPlaylistResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .clear_playlist(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_playlist(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -882,17 +1046,23 @@ pub async fn clear_playlist(
     )
 )]
 pub async fn get_media(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::Media>> {
     crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let media = state
-        .client_api
-        .get_media(auth.user_id.as_str(), &room_id, &media_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let media = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_media(authenticated.user_id.as_str(), &room_id, &media_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(media))
 }
@@ -919,7 +1089,7 @@ pub async fn get_media(
     )
 )]
 pub async fn get_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetPlaylistResponse>> {
@@ -928,11 +1098,17 @@ pub async fn get_playlist(
         room_id,
         playlist_id,
     } = path;
-    let response = state
-        .client_api
-        .get_playlist(auth.user_id.as_str(), &room_id, &playlist_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_playlist(authenticated.user_id.as_str(), &room_id, &playlist_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -957,14 +1133,17 @@ pub async fn get_playlist(
     )
 )]
 pub async fn list_or_get_rooms(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<ListRoomsRequest>,
 ) -> AppResult<Json<ListRoomsResponse>> {
-    let response = state
-        .client_api
-        .list_rooms(req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.list_rooms(req).await },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -995,17 +1174,23 @@ pub async fn list_or_get_rooms(
     )
 )]
 pub async fn update_room_settings(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .update_room_settings(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_room_settings(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1032,17 +1217,23 @@ pub async fn update_room_settings(
     )
 )]
 pub async fn transfer_room_ownership(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<TransferRoomOwnershipBody>,
 ) -> AppResult<Json<TransferRoomOwnershipResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .transfer_room_ownership(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .transfer_room_ownership(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1076,60 +1267,24 @@ pub async fn transfer_room_ownership(
     )
 )]
 pub async fn update_playback(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdatePlaybackRequest>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
-    use synctv_core::models::{RoomId, UserId};
-
-    let user_id = auth.user_id.to_string();
     let room_id = validate_room_path(path)?;
-    let command = build_update_playback_request(req).map_err(super::error::map_api_error)?;
-
-    let rid = RoomId::from_string(room_id.clone());
-    let uid = UserId::from_string(user_id.clone());
-
-    match command {
-        PlaybackUpdateCommand::Switch {
-            media_id,
-            playlist_id,
-            target,
-        } => {
-            state
-                .room_service
-                .playback_service()
-                .switch(rid, uid, media_id, playlist_id, target)
-                .await?;
-        }
-        PlaybackUpdateCommand::Patch {
-            playing,
-            position,
-            speed,
-            version,
-        } => {
-            // Apply all non-target fields atomically in a single DB update.
-            // When a version is provided, the update uses optimistic locking (CAS)
-            // to prevent concurrent modification conflicts.
-            if let Some(position) = position {
-                validate_playback_position(position)
-                    .map_err(|error| map_validation_error(&error))?;
-            }
-            state
-                .room_service
-                .playback_service()
-                .update_multiple_with_version(rid, uid, playing, position, speed, version)
-                .await?;
-        }
-    }
-
-    // Return final playback state and playback info
-    let pb = state
-        .client_api
-        .get_playback(&user_id, &room_id, GetPlaybackRequest {})
-        .await
-        .map_err(super::error::map_api_error)?;
-    Ok(Json(pb))
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_playback(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(response))
 }
 
 /// Reset room settings to defaults
@@ -1153,16 +1308,22 @@ pub async fn update_playback(
     )
 )]
 pub async fn reset_room_settings(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ResetRoomSettingsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .reset_room_settings(&auth.user_id.to_string(), &room_id)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        move |client_api, authenticated| async move {
+            client_api
+                .reset_room_settings(authenticated.user_id.as_str(), &room_id)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1190,7 +1351,7 @@ pub async fn reset_room_settings(
     )
 )]
 pub async fn get_chat_history(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     RawQuery(raw_query): RawQuery,
@@ -1203,11 +1364,17 @@ pub async fn get_chat_history(
     } else {
         req.limit.clamp(1, 100)
     };
-    let response = state
-        .client_api
-        .get_chat_history(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_chat_history(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1249,17 +1416,23 @@ fn validate_chat_history_query(raw_query: Option<&str>) -> AppResult<()> {
     )
 )]
 pub async fn create_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .create_playlist(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .create_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1288,7 +1461,7 @@ pub async fn create_playlist(
     )
 )]
 pub async fn update_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
     Json(req): Json<UpdatePlaylistBody>,
@@ -1299,11 +1472,17 @@ pub async fn update_playlist(
         playlist_id,
     } = path;
     let req = req.with_playlist_id(playlist_id);
-    let response = state
-        .client_api
-        .update_playlist(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .update_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1330,7 +1509,7 @@ pub async fn update_playlist(
     )
 )]
 pub async fn move_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
     Json(req): Json<MovePlaylistBody>,
@@ -1341,11 +1520,17 @@ pub async fn move_playlist(
         playlist_id,
     } = path;
     let req = req.with_playlist_id(playlist_id);
-    let response = state
-        .client_api
-        .move_playlist(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .move_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1374,7 +1559,7 @@ pub async fn move_playlist(
     )
 )]
 pub async fn delete_playlist(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
     ValidatedQuery(query): ValidatedQuery<DeletePlaylistQuery>,
@@ -1388,11 +1573,17 @@ pub async fn delete_playlist(
         playlist_id,
         force: query.force,
     };
-    let response = state
-        .client_api
-        .delete_playlist(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        move |client_api, authenticated| async move {
+            client_api
+                .delete_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1419,17 +1610,23 @@ pub async fn delete_playlist(
     )
 )]
 pub async fn list_playlists(
-    auth: AuthUser,
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     ValidatedQuery(req): ValidatedQuery<ListPlaylistsRequest>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = state
-        .client_api
-        .list_playlists(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .list_playlists(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
@@ -1449,6 +1646,7 @@ pub async fn list_playlists(
     )
 )]
 pub async fn get_hot_rooms(
+    request_meta: RequestMetadata,
     State(state): State<AppState>,
     ValidatedQuery(mut req): ValidatedQuery<GetHotRoomsRequest>,
 ) -> AppResult<Json<GetHotRoomsResponse>> {
@@ -1457,11 +1655,13 @@ pub async fn get_hot_rooms(
     } else {
         req.limit.min(50)
     };
-    let response = state
-        .client_api
-        .get_hot_rooms(req)
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api| async move { client_api.get_hot_rooms(req).await },
+    )
+    .await?;
 
     Ok(Json(response))
 }

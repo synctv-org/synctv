@@ -182,7 +182,6 @@ redis:
 
   # Deployment mode: standalone, sentinel, or cluster
   deployment_mode: "standalone"
-
   # --- Sentinel Mode Configuration (for high availability) ---
   # When deployment_mode is "sentinel", these fields are required:
   # sentinel_master_name: "mymaster"
@@ -248,18 +247,18 @@ livestream:
   # This is runtime-owned storage, unlike *_file secrets or metrics TLS files.
   # hls_storage_path: "livestream/hls"
 
-# ============================================================================
-# Email Configuration (SMTP)
-# ============================================================================
-#
-# Configure SMTP to enable email features (verification, notifications).
-# Leave smtp_host empty to disable email functionality.
+  # ============================================================================
+  # Email Configuration (SMTP)
+  # ============================================================================
+  #
+  # Configure SMTP to enable email features (verification, notifications).
+  # Leave smtp_host empty to disable email functionality.
 
 email:
   smtp_host: ""
   smtp_port: 587
   smtp_username: ""
-  smtp_password: ""  # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  smtp_password: "" # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
   # smtp_password_file is a static config input. Relative paths stay relative to this config file.
   # smtp_password_file: "/run/secrets/smtp_password"
   from_email: ""
@@ -340,15 +339,15 @@ bootstrap:
   # root_password: ""
   # root_password_file: "/run/secrets/bootstrap_root_password"
 
-# ============================================================================
-# Cluster Configuration
-# ============================================================================
-#
-# Controls multi-node cluster mode and internal channel buffer sizes.
-#
-# When enabled=true, Redis is MANDATORY and cluster_secret must be set.
-# When enabled=false (default), this is a standalone single-node deployment
-# and Redis is optional.
+  # ============================================================================
+  # Cluster Configuration
+  # ============================================================================
+  #
+  # Controls multi-node cluster mode and internal channel buffer sizes.
+  #
+  # When enabled=true, Redis is MANDATORY and cluster_secret must be set.
+  # When enabled=false (default), this is a standalone single-node deployment
+  # and Redis is optional.
 
 cluster:
   # Enable cluster mode for multi-node deployments.
@@ -545,31 +544,31 @@ webrtc:
   #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
   #       [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
 
-# ============================================================================
-# Dynamic ICE Servers Configuration
-# ============================================================================
-#
-# External ICE servers are managed via the settings API at runtime.
-#
-# Setting key: "webrtc.external_ice_servers"
-# Value: JSON array of ICE server objects
-#   Default:
-#   [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["stun:stun1.l.google.com:19302"]}]
-#
-# Changes take effect immediately without restarting the server.
+  # ============================================================================
+  # Dynamic ICE Servers Configuration
+  # ============================================================================
+  #
+  # External ICE servers are managed via the settings API at runtime.
+  #
+  # Setting key: "webrtc.external_ice_servers"
+  # Value: JSON array of ICE server objects
+  #   Default:
+  #   [{"urls":["stun:stun.l.google.com:19302"]},{"urls":["stun:stun1.l.google.com:19302"]}]
+  #
+  # Changes take effect immediately without restarting the server.
 
-# ============================================================================
-# Buffer Size Tuning
-# ============================================================================
-#
-# Controls internal channel buffer sizes. Larger values provide more resilience
-# during traffic spikes but use more memory. Defaults match the current
-# built-in runtime values.
-#
-# Additional buffer sizes are configured in their respective sections:
-#   - cluster.critical_channel_capacity (default: 1000)
-#   - cluster.publish_channel_capacity (default: 10000)
-#   - livestream.stream_hub_event_channel_capacity (default: 4096)
+  # ============================================================================
+  # Buffer Size Tuning
+  # ============================================================================
+  #
+  # Controls internal channel buffer sizes. Larger values provide more resilience
+  # during traffic spikes but use more memory. Defaults match the current
+  # built-in runtime values.
+  #
+  # Additional buffer sizes are configured in their respective sections:
+  #   - cluster.critical_channel_capacity (default: 1000)
+  #   - cluster.publish_channel_capacity (default: 10000)
+  #   - livestream.stream_hub_event_channel_capacity (default: 4096)
 
 buffer_sizes:
   # Per-connection WebSocket outbound message queue.

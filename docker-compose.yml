@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres18_data:/var/lib/postgresql
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U synctv" ]
+      test: ["CMD-SHELL", "pg_isready -U synctv"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,7 +29,7 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -52,7 +52,8 @@ services:
       SYNCTV_JWT_SECRET: ${SYNCTV_JWT_SECRET:?SYNCTV_JWT_SECRET must be set (min 32 chars)}
       SYNCTV_SERVER_CLUSTER_SECRET: ${SYNCTV_SERVER_CLUSTER_SECRET:-changeme-generate-a-random-secret}
       SYNCTV_BOOTSTRAP_CREATE_ROOT_USER: "true"
-      SYNCTV_BOOTSTRAP_ROOT_PASSWORD: ${SYNCTV_BOOTSTRAP_ROOT_PASSWORD:?SYNCTV_BOOTSTRAP_ROOT_PASSWORD must be set (min 12 chars, mixed case + digit)}
+      SYNCTV_BOOTSTRAP_ROOT_PASSWORD: ${SYNCTV_BOOTSTRAP_ROOT_PASSWORD:?SYNCTV_BOOTSTRAP_ROOT_PASSWORD
+        must be set (min 12 chars, mixed case + digit)}
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,7 +63,7 @@ services:
       - synctv
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8080/health/ready" ]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
       interval: 30s
       timeout: 3s
       start_period: 40s

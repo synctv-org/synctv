@@ -1307,9 +1307,9 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id);
-        let room = self
+        let (room, settings) = self
             .room_service
-            .get_room(&rid)
+            .get_room_with_settings(&rid)
             .await
             .map_err(ApiError::from)?;
         let creator_username = self
@@ -1323,7 +1323,7 @@ impl AdminApiImpl {
         Ok(crate::proto::admin::GetRoomResponse {
             room: Some(admin_room_to_proto(
                 &room,
-                None,
+                Some(&settings),
                 self.connection_service
                     .room_online_user_count_distributed(&room.id)
                     .await

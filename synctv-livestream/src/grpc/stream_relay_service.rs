@@ -47,7 +47,7 @@ fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubEr
 pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 async fn forward_rtmp_packets(
-    mut frame_receiver: tokio::sync::mpsc::Receiver<synctv_xiu::streamhub::define::FrameData>,
+    mut frame_receiver: synctv_xiu::streamhub::define::FrameDataReceiver,
     tx: mpsc::Sender<Result<RtmpPacket, Status>>,
     cancel_token: CancellationToken,
     room_id: &str,
@@ -520,7 +520,7 @@ mod tests {
         drop(frame_tx);
 
         let handle = tokio::spawn(forward_rtmp_packets(
-            frame_rx,
+            synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
             packet_tx,
             cancel.clone(),
             "room1",
@@ -575,7 +575,7 @@ mod tests {
         let cancel_for_task = cancel.clone();
         let handle = tokio::spawn(async move {
             forward_rtmp_packets(
-                frame_rx,
+                synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
                 packet_tx,
                 cancel_for_task,
                 "room1",
@@ -728,7 +728,9 @@ mod tests {
         result_sender
             .send(Ok((
                 DataReceiver {
-                    frame_receiver: Some(frame_rx),
+                    frame_receiver: Some(
+                        synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
+                    ),
                     packet_receiver: None,
                 },
                 None,

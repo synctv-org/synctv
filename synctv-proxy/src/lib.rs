@@ -424,7 +424,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
                 "Upstream returned retryable server error, retrying once after delay"
             );
             run_with_proxy_cancellation("proxy retry delay", cfg.request_control, async move {
-                tokio::time::sleep(retry_delay).await
+                tokio::time::sleep(retry_delay).await;
             })
             .await?;
 

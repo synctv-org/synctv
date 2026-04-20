@@ -208,7 +208,7 @@ impl PublicSettings {
             enable_guest: true,
             movie_proxy: true,
             live_proxy: true,
-            ts_disguised_as_png: true,
+            ts_disguised_as_png: false,
             custom_publish_host: String::new(),
             email_whitelist_enabled: false,
         }
@@ -435,7 +435,7 @@ impl SettingsRegistry {
                 storage.clone(),
                 String::new()
             ),
-            ts_disguised_as_png: setting!(bool, "rtmp.ts_disguised_as_png", storage.clone(), true),
+            ts_disguised_as_png: setting!(bool, "rtmp.ts_disguised_as_png", storage.clone(), false),
 
             // Email settings
             email_whitelist_enabled: setting!(

@@ -96,6 +96,10 @@ pub struct GlobalConfigArgs {
     /// Emit verbose configuration-loading diagnostics to stderr.
     #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
+
+    /// SyncTV management daemon endpoint (`unix:///path` or `http://host:port`)
+    #[arg(long, global = true, env = "SYNCTV_MANAGEMENT_ENDPOINT")]
+    pub endpoint: Option<String>,
 }
 
 impl GlobalConfigArgs {
@@ -118,6 +122,7 @@ impl GlobalConfigArgs {
             data_dir: self.data_dir.clone().or_else(|| parent.data_dir.clone()),
             no_dotenv: self.no_dotenv || parent.no_dotenv,
             verbose: self.verbose.max(parent.verbose),
+            endpoint: self.endpoint.clone().or_else(|| parent.endpoint.clone()),
         }
     }
 }
@@ -174,7 +179,7 @@ impl RemoteCliContext {
     fn new(args: &RemoteAccessArgs) -> Self {
         Self {
             config: CliConfigContext::new(args.global.clone()),
-            explicit_endpoint: resolve_remote_endpoint(args.endpoint.as_deref()),
+            explicit_endpoint: resolve_remote_endpoint(args.global.endpoint.as_deref()),
             resolved_config_endpoint: Arc::new(OnceLock::new()),
         }
     }
@@ -506,11 +511,12 @@ pub struct RoomPlaybackCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RoomPlaybackSubcommand {
-    /// Get current playback state
+    #[command(visible_alias = "status")]
+    /// Get the current playback state and signed pull URLs for the room's active item
     Get(RoomPlaybackGetArgs),
-    /// Start playback as a specific real user for a static media item or dynamic playlist target
+    /// Start playback for a static media item or dynamic playlist target
     Start(RoomPlaybackStartArgs),
-    /// Stop current playback
+    /// Stop the room's current playback item
     Stop(RoomPlaybackStopArgs),
 }
 
@@ -522,11 +528,13 @@ pub struct RoomStreamCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RoomStreamSubcommand {
-    /// List active streams in a room
+    /// List active RTMP publish sessions in a room
     List(RoomStreamListArgs),
-    /// Get one room stream by media ID
+    #[command(visible_alias = "info")]
+    /// Get one active room stream by media ID; playback pull URLs are exposed by `room playback get`
     Get(RoomStreamInfoArgs),
-    /// Create an RTMP publish key for a media item as a specific real user
+    #[command(visible_alias = "key")]
+    /// Create a single-use RTMP publish key for a media item as a specific real user
     PublishKey(RoomStreamPublishKeyArgs),
 }
 
@@ -570,6 +578,7 @@ pub struct SystemCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SystemSubcommand {
+    #[command(visible_alias = "status")]
     /// Show system statistics
     Stats(SystemStatsArgs),
     /// Active stream inspection and control
@@ -618,10 +627,6 @@ pub enum ProviderSubcommand {
 pub struct RemoteAccessArgs {
     #[command(flatten)]
     pub global: GlobalConfigArgs,
-
-    /// SyncTV management daemon endpoint (`unix:///path` or `http://host:port`)
-    #[arg(long, env = "SYNCTV_MANAGEMENT_ENDPOINT")]
-    pub endpoint: Option<String>,
 
     /// Output format for management command results
     #[arg(long, short = 'o', value_enum, default_value_t = RemoteOutputFormat::Human)]
@@ -1329,12 +1334,21 @@ pub struct RoomGetArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("room_member_scope")
+        .args(["room_id", "room_id_flag"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct RoomMembersArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub room_id: String,
+    #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
+    pub room_id: Option<String>,
+
+    #[arg(long = "room-id", value_name = "ROOM_ID", allow_hyphen_values = true)]
+    pub room_id_flag: Option<String>,
 
     #[arg(long, default_value_t = 1)]
     pub page: i32,
@@ -1356,6 +1370,15 @@ pub struct RoomMembersArgs {
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Asc)]
     pub sort_dir: CliSortDirection,
+}
+
+impl RoomMembersArgs {
+    fn resolved_room_id(&self) -> &str {
+        self.room_id
+            .as_deref()
+            .or(self.room_id_flag.as_deref())
+            .expect("clap should require one room identifier for room member list")
+    }
 }
 
 #[derive(Debug, Args)]
@@ -2517,6 +2540,7 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
     )
     .await?;
 
+    let mut events = Vec::new();
     let mut saw_terminal = false;
     let mut last_stage = None;
     loop {
@@ -2528,11 +2552,20 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
         .await
         {
             Ok(Some(event)) => {
-                let message = event.message.trim();
-                if !message.is_empty() {
+                let stage = management_proto::StopServerStage::try_from(event.stage).ok();
+                let message = event.message.trim().to_string();
+                if args.remote.output == RemoteOutputFormat::Human && !message.is_empty() {
                     println!("{message}");
                 }
-                last_stage = management_proto::StopServerStage::try_from(event.stage).ok();
+                events.push(StopServerEventOutput {
+                    stage: stage.map_or_else(
+                        || format!("UNKNOWN_STAGE_{}", event.stage),
+                        stop_server_stage_name,
+                    ),
+                    message,
+                    terminal: event.terminal,
+                });
+                last_stage = stage;
                 if event.terminal {
                     saw_terminal = true;
                     break;
@@ -2540,12 +2573,30 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
             }
             Ok(None) => {
                 if stop_stream_end_can_be_treated_as_success(last_stage) {
+                    print_stop_output(
+                        args.remote.output,
+                        &StopServerOutput {
+                            success: true,
+                            terminal_received: saw_terminal,
+                            final_stage: last_stage.map(stop_server_stage_name),
+                            events,
+                        },
+                    )?;
                     return Ok(());
                 }
                 break;
             }
             Err(error) => {
                 if stop_stream_disconnect_can_be_treated_as_success(last_stage, &error) {
+                    print_stop_output(
+                        args.remote.output,
+                        &StopServerOutput {
+                            success: true,
+                            terminal_received: saw_terminal,
+                            final_stage: last_stage.map(stop_server_stage_name),
+                            events,
+                        },
+                    )?;
                     return Ok(());
                 }
                 return Err(error);
@@ -2556,6 +2607,16 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
     if !saw_terminal {
         bail!("management stop stream ended before terminal shutdown status")
     }
+
+    print_stop_output(
+        args.remote.output,
+        &StopServerOutput {
+            success: true,
+            terminal_received: saw_terminal,
+            final_stage: last_stage.map(stop_server_stage_name),
+            events,
+        },
+    )?;
 
     Ok(())
 }
@@ -2582,6 +2643,33 @@ fn stop_stream_disconnect_can_be_treated_as_success(
         || message.contains("connection closed")
         || message.contains("error reading a body from connection")
         || message.contains("transport error")
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct StopServerEventOutput {
+    stage: String,
+    message: String,
+    terminal: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct StopServerOutput {
+    success: bool,
+    terminal_received: bool,
+    final_stage: Option<String>,
+    events: Vec<StopServerEventOutput>,
+}
+
+fn stop_server_stage_name(stage: management_proto::StopServerStage) -> String {
+    stage.as_str_name().to_ascii_lowercase()
+}
+
+fn print_stop_output(format: RemoteOutputFormat, output: &StopServerOutput) -> Result<()> {
+    match format {
+        RemoteOutputFormat::Human => Ok(()),
+        RemoteOutputFormat::Json => print_json(output),
+        RemoteOutputFormat::Yaml => print_yaml(output),
+    }
 }
 
 fn execute_config(config_command: ConfigCommand) -> Result<()> {
@@ -3029,7 +3117,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room members",
                     get_room_members,
                     management_proto::GetRoomMembersRequest {
-                        room_id: args.room_id,
+                        room_id: args.resolved_room_id().to_string(),
                         page: args.page,
                         page_size: args.page_size,
                         search: args.search.unwrap_or_default(),
@@ -5717,7 +5805,7 @@ mod tests {
                     Some(std::path::Path::new("/tmp/synctv.yaml"))
                 );
                 assert_eq!(
-                    args.remote.endpoint.as_deref(),
+                    args.remote.global.endpoint.as_deref(),
                     Some(socket_endpoint.as_str())
                 );
                 assert_eq!(args.remote.output, RemoteOutputFormat::Human);
@@ -5851,6 +5939,8 @@ mod tests {
             "synctv",
             "--config",
             "/tmp/root.yaml",
+            "--endpoint",
+            "http://127.0.0.1:50052",
             "--no-dotenv",
             "-vvv",
             "user",
@@ -5865,8 +5955,35 @@ mod tests {
                     args.remote.global.config.as_deref(),
                     Some(std::path::Path::new("/tmp/root.yaml"))
                 );
+                assert_eq!(
+                    args.remote.global.endpoint.as_deref(),
+                    Some("http://127.0.0.1:50052")
+                );
                 assert!(args.remote.global.no_dotenv);
                 assert_eq!(args.remote.global.verbose, 3);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_root_global_endpoint_after_remote_subcommand_name() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "user",
+            "--endpoint",
+            "http://127.0.0.1:50052",
+            "list",
+        ]);
+        let cli = apply_root_global_overrides(cli);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::List(args),
+            }) => {
+                assert_eq!(
+                    args.remote.global.endpoint.as_deref(),
+                    Some("http://127.0.0.1:50052")
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -5928,6 +6045,90 @@ mod tests {
     }
 
     #[test]
+    fn cli_room_playback_get_help_mentions_pull_urls() {
+        let mut command = Cli::command();
+        let room = command
+            .find_subcommand_mut("room")
+            .expect("room subcommand should exist");
+        let playback = room
+            .find_subcommand_mut("playback")
+            .expect("room playback subcommand should exist");
+        let get = playback
+            .find_subcommand_mut("get")
+            .expect("room playback get subcommand should exist");
+        let mut help = Vec::new();
+        get.write_long_help(&mut help)
+            .expect("room playback get help should render");
+        let help = String::from_utf8(help).expect("room playback get help should be utf-8");
+        assert!(
+            help.contains("signed pull URLs"),
+            "room playback get help should mention pull URLs: {help}"
+        );
+
+        let mut playback_help = Vec::new();
+        playback
+            .write_long_help(&mut playback_help)
+            .expect("room playback help should render");
+        let playback_help =
+            String::from_utf8(playback_help).expect("room playback help should be utf-8");
+        assert!(
+            playback_help.contains("status"),
+            "room playback help should show the status alias: {playback_help}"
+        );
+    }
+
+    #[test]
+    fn cli_room_stream_help_clarifies_publish_vs_playback() {
+        let mut command = Cli::command();
+        let room = command
+            .find_subcommand_mut("room")
+            .expect("room subcommand should exist");
+        let stream = room
+            .find_subcommand_mut("stream")
+            .expect("room stream subcommand should exist");
+
+        let get = stream
+            .find_subcommand_mut("get")
+            .expect("room stream get subcommand should exist");
+        let mut get_help = Vec::new();
+        get.write_long_help(&mut get_help)
+            .expect("room stream get help should render");
+        let get_help = String::from_utf8(get_help).expect("room stream get help should be utf-8");
+        assert!(
+            get_help.contains("room playback get"),
+            "room stream get help should point users to playback URLs: {get_help}"
+        );
+
+        let mut stream_help = Vec::new();
+        stream
+            .write_long_help(&mut stream_help)
+            .expect("room stream help should render");
+        let stream_help = String::from_utf8(stream_help).expect("room stream help should be utf-8");
+        assert!(
+            stream_help.contains("info"),
+            "room stream help should show the info alias: {stream_help}"
+        );
+
+        let publish_key = stream
+            .find_subcommand_mut("publish-key")
+            .expect("room stream publish-key subcommand should exist");
+        let mut key_help = Vec::new();
+        publish_key
+            .write_long_help(&mut key_help)
+            .expect("room stream publish-key help should render");
+        let key_help =
+            String::from_utf8(key_help).expect("room stream publish-key help should be utf-8");
+        assert!(
+            key_help.contains("single-use"),
+            "room stream publish-key help should mention single-use keys: {key_help}"
+        );
+        assert!(
+            stream_help.contains("key"),
+            "room stream help should show the key alias: {stream_help}"
+        );
+    }
+
+    #[test]
     fn cli_parses_remote_user_list_without_explicit_management_identity() {
         let cli = Cli::parse_from([
             "synctv",
@@ -5954,7 +6155,7 @@ mod tests {
                 );
                 assert!(args.remote.global.no_dotenv);
                 assert_eq!(
-                    args.remote.endpoint.as_deref(),
+                    args.remote.global.endpoint.as_deref(),
                     Some("http://127.0.0.1:8080")
                 );
                 assert_eq!(args.page, 2);
@@ -6017,9 +6218,36 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room_id, "room-123");
+                assert_eq!(args.resolved_room_id(), "room-123");
                 assert_eq!(args.page, 3);
                 assert_eq!(args.page_size, 10);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_remote_room_members_with_room_id_flag() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "member",
+            "list",
+            "--room-id",
+            "room-123",
+            "--page",
+            "2",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Member(RoomMemberCommand {
+                        command: RoomMemberSubcommand::List(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.resolved_room_id(), "room-123");
+                assert_eq!(args.page, 2);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -6815,7 +7043,6 @@ mod tests {
             room: RoomScopedRemoteArgs {
                 remote: RemoteAccessArgs {
                     global: GlobalConfigArgs::default(),
-                    endpoint: None,
                     output: RemoteOutputFormat::Human,
                 },
                 room_id: "room-123".to_string(),
@@ -6847,7 +7074,6 @@ mod tests {
             room: RoomScopedRemoteArgs {
                 remote: RemoteAccessArgs {
                     global: GlobalConfigArgs::default(),
-                    endpoint: None,
                     output: RemoteOutputFormat::Human,
                 },
                 room_id: "room-123".to_string(),
@@ -6873,7 +7099,6 @@ mod tests {
             room: RoomScopedRemoteArgs {
                 remote: RemoteAccessArgs {
                     global: GlobalConfigArgs::default(),
-                    endpoint: None,
                     output: RemoteOutputFormat::Human,
                 },
                 room_id: "room-123".to_string(),
@@ -7314,7 +7539,6 @@ mod tests {
             room: RoomScopedRemoteArgs {
                 remote: RemoteAccessArgs {
                     global: GlobalConfigArgs::default(),
-                    endpoint: None,
                     output: RemoteOutputFormat::Human,
                 },
                 room_id: "room-123".to_string(),
@@ -7387,7 +7611,6 @@ mod tests {
             config_json: None,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
-                endpoint: None,
                 output: RemoteOutputFormat::Human,
             },
         };
@@ -7488,7 +7711,6 @@ mod tests {
             config_json: None,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
-                endpoint: None,
                 output: RemoteOutputFormat::Human,
             },
         };
@@ -7841,6 +8063,30 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_room_playback_status_alias() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "playback",
+            "status",
+            "--room-id",
+            "room-1",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Playback(RoomPlaybackCommand {
+                        command: RoomPlaybackSubcommand::Get(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_parses_room_stream_publish_key_subcommand() {
         let cli = Cli::parse_from([
             "synctv",
@@ -7870,12 +8116,67 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_room_stream_key_alias() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "stream",
+            "key",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "media-1",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Stream(RoomStreamCommand {
+                        command: RoomStreamSubcommand::PublishKey(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.media_id, "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_parses_room_stream_get() {
         let cli = Cli::parse_from([
             "synctv",
             "room",
             "stream",
             "get",
+            "--room-id",
+            "room-1",
+            "media-1",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Stream(RoomStreamCommand {
+                        command: RoomStreamSubcommand::Get(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.media_id, "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_stream_info_alias() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "stream",
+            "info",
             "--room-id",
             "room-1",
             "media-1",
@@ -8060,6 +8361,18 @@ mod tests {
     #[test]
     fn cli_parses_system_stats() {
         let cli = Cli::parse_from(["synctv", "system", "stats"]);
+        match cli.command {
+            Commands::System(SystemCommand {
+                command: SystemSubcommand::Stats(_args),
+                ..
+            }) => {}
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_system_status_alias() {
+        let cli = Cli::parse_from(["synctv", "system", "status"]);
         match cli.command {
             Commands::System(SystemCommand {
                 command: SystemSubcommand::Stats(_args),
@@ -8537,7 +8850,6 @@ mod tests {
             config_json: None,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
-                endpoint: None,
                 output: RemoteOutputFormat::Human,
             },
         };
@@ -8591,8 +8903,8 @@ management:
                 data_dir: None,
                 no_dotenv: true,
                 verbose: 0,
+                endpoint: None,
             },
-            endpoint: None,
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);
@@ -8628,8 +8940,8 @@ management:
                 data_dir: None,
                 no_dotenv: true,
                 verbose: 0,
+                endpoint: Some("http://127.0.0.1:50052".to_string()),
             },
-            endpoint: Some("http://127.0.0.1:50052".to_string()),
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);
@@ -8684,6 +8996,7 @@ management:
             data_dir: Some(PathBuf::from("/tmp/synctv-state")),
             no_dotenv: true,
             verbose: 2,
+            endpoint: None,
         };
 
         assert_eq!(
@@ -8821,5 +9134,25 @@ management:
             management_proto::StopServerStage::RuntimeDraining
         )));
         assert!(!stop_stream_end_can_be_treated_as_success(None));
+    }
+
+    #[test]
+    fn print_stop_output_json_is_machine_readable() {
+        let output = StopServerOutput {
+            success: true,
+            terminal_received: false,
+            final_stage: Some("stop_server_stage_finalizing".to_string()),
+            events: vec![StopServerEventOutput {
+                stage: "stop_server_stage_runtime_draining".to_string(),
+                message: "runtime draining".to_string(),
+                terminal: false,
+            }],
+        };
+
+        let rendered = serde_json::to_value(&output).expect("stop output should serialize");
+        assert_eq!(rendered["success"], true);
+        assert_eq!(rendered["terminal_received"], false);
+        assert_eq!(rendered["final_stage"], "stop_server_stage_finalizing");
+        assert_eq!(rendered["events"][0]["message"], "runtime draining");
     }
 }

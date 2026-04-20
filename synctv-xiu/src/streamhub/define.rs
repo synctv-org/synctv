@@ -173,11 +173,87 @@ pub enum PacketData {
     Audio { timestamp: u32, data: Bytes },
 }
 
-//used to transfer a/v frame between different protocols(rtmp/rtsp/webrtc/http-flv/hls)
-//or send a/v frame data from publisher to subscribers.
-// Bounded to provide backpressure - when full, packets are dropped.
-pub type FrameDataSender = mpsc::Sender<FrameData>;
-pub type FrameDataReceiver = mpsc::Receiver<FrameData>;
+#[derive(Debug)]
+pub enum FrameTrySendError<T> {
+    Full(T),
+    Closed(T),
+}
+
+// Used to transfer a/v frame between different protocols (rtmp/rtsp/webrtc/http-flv/hls)
+// or send a/v frame data from publisher to subscribers.
+//
+// We intentionally support both bounded and unbounded channels:
+// - bounded: external viewers / lossy consumers where backpressure must stay bounded
+// - unbounded: internal remuxers / relays where silent frame loss would corrupt output
+#[derive(Debug, Clone)]
+pub enum FrameDataSender {
+    Bounded(mpsc::Sender<FrameData>),
+    Unbounded(mpsc::UnboundedSender<FrameData>),
+}
+
+impl FrameDataSender {
+    #[must_use]
+    pub const fn bounded(sender: mpsc::Sender<FrameData>) -> Self {
+        Self::Bounded(sender)
+    }
+
+    #[must_use]
+    pub const fn unbounded(sender: mpsc::UnboundedSender<FrameData>) -> Self {
+        Self::Unbounded(sender)
+    }
+
+    pub fn try_send(&self, value: FrameData) -> Result<(), FrameTrySendError<FrameData>> {
+        match self {
+            Self::Bounded(sender) => match sender.try_send(value) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(value)) => Err(FrameTrySendError::Full(value)),
+                Err(mpsc::error::TrySendError::Closed(value)) => {
+                    Err(FrameTrySendError::Closed(value))
+                }
+            },
+            Self::Unbounded(sender) => sender
+                .send(value)
+                .map_err(|err| FrameTrySendError::Closed(err.0)),
+        }
+    }
+
+    pub async fn send(&self, value: FrameData) -> Result<(), FrameTrySendError<FrameData>> {
+        match self {
+            Self::Bounded(sender) => sender
+                .send(value)
+                .await
+                .map_err(|err| FrameTrySendError::Closed(err.0)),
+            Self::Unbounded(sender) => sender
+                .send(value)
+                .map_err(|err| FrameTrySendError::Closed(err.0)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum FrameDataReceiver {
+    Bounded(mpsc::Receiver<FrameData>),
+    Unbounded(mpsc::UnboundedReceiver<FrameData>),
+}
+
+impl FrameDataReceiver {
+    #[must_use]
+    pub const fn bounded(receiver: mpsc::Receiver<FrameData>) -> Self {
+        Self::Bounded(receiver)
+    }
+
+    #[must_use]
+    pub const fn unbounded(receiver: mpsc::UnboundedReceiver<FrameData>) -> Self {
+        Self::Unbounded(receiver)
+    }
+
+    pub async fn recv(&mut self) -> Option<FrameData> {
+        match self {
+            Self::Bounded(receiver) => receiver.recv().await,
+            Self::Unbounded(receiver) => receiver.recv().await,
+        }
+    }
+}
 
 /// Default capacity for frame data channels.
 ///
@@ -208,17 +284,11 @@ pub const STREAM_HUB_EVENT_CHANNEL_CAPACITY: usize = 4096;
 pub type BroadcastEventSender = broadcast::Sender<BroadcastEvent>;
 pub type BroadcastEventReceiver = broadcast::Receiver<BroadcastEvent>;
 
-pub type TransceiverEventSender = mpsc::Sender<TransceiverEvent>;
-pub type TransceiverEventReceiver = mpsc::Receiver<TransceiverEvent>;
+pub type TransceiverEventSender = mpsc::UnboundedSender<TransceiverEvent>;
+pub type TransceiverEventReceiver = mpsc::UnboundedReceiver<TransceiverEvent>;
 
-/// Capacity for bounded transceiver event channels.
-pub const TRANSCEIVER_EVENT_CHANNEL_CAPACITY: usize = 1024;
-
-pub type StatisticDataSender = mpsc::Sender<StatisticData>;
-pub type StatisticDataReceiver = mpsc::Receiver<StatisticData>;
-
-/// Capacity for bounded statistic data channels.
-pub const STATISTIC_DATA_CHANNEL_CAPACITY: usize = 1024;
+pub type StatisticDataSender = mpsc::UnboundedSender<StatisticData>;
+pub type StatisticDataReceiver = mpsc::UnboundedReceiver<StatisticData>;
 
 pub type SubEventExecuteResultSender =
     oneshot::Sender<Result<(DataReceiver, Option<StatisticDataSender>), StreamHubError>>;

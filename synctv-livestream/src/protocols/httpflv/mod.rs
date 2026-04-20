@@ -253,7 +253,9 @@ mod tests {
             result_sender
                 .send(Ok((
                     synctv_xiu::streamhub::define::DataReceiver {
-                        frame_receiver: Some(frame_rx),
+                        frame_receiver: Some(
+                            synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
+                        ),
                         packet_receiver: None,
                     },
                     None,

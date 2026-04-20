@@ -248,6 +248,7 @@ ipnet = "2.12.0"
 lettre = { version = "0.11", default-features = false, features = [
     "tokio1-rustls",
     "rustls-no-provider",
+    "webpki-roots",
     "builder",
     "smtp-transport",
     "hostname",

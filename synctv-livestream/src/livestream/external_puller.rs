@@ -778,15 +778,21 @@ impl ExternalStreamPuller {
 
                 // Use try_send for non-blocking behavior
                 // If channel is full, drop the packet (backpressure)
-                if let Err(mpsc::error::TrySendError::Full(_)) = data_sender.try_send(frame) {
-                    dropped_frames += 1;
-                    if dropped_frames % drop_log_interval == 1 {
-                        warn!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            total_dropped = dropped_frames,
-                            "FLV frame dropped due to backpressure"
-                        );
+                match data_sender.try_send(frame) {
+                    Ok(()) => {}
+                    Err(synctv_xiu::streamhub::define::FrameTrySendError::Full(_)) => {
+                        dropped_frames += 1;
+                        if dropped_frames % drop_log_interval == 1 {
+                            warn!(
+                                room_id = %self.room_id,
+                                media_id = %self.media_id,
+                                total_dropped = dropped_frames,
+                                "FLV frame dropped due to backpressure"
+                            );
+                        }
+                    }
+                    Err(synctv_xiu::streamhub::define::FrameTrySendError::Closed(_)) => {
+                        anyhow::bail!("HTTP-FLV consumer stream channel closed");
                     }
                 }
             }
@@ -1111,7 +1117,11 @@ mod tests {
             while let Some(event) = receiver.recv().await {
                 if let StreamHubEvent::Publish { result_sender, .. } = event {
                     let (data_sender, _) = tokio::sync::mpsc::channel(8);
-                    let _ = result_sender.send(Ok((Some(data_sender), None, None)));
+                    let _ = result_sender.send(Ok((
+                        Some(FrameDataSender::bounded(data_sender)),
+                        None,
+                        None,
+                    )));
                 }
             }
         })

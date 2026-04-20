@@ -146,7 +146,7 @@ impl SplitCache {
                     samplerate: aac.mpeg4_aac.sampling_frequency,
                     channels: aac.mpeg4_aac.channels,
                 };
-                if let Err(err) = sender.try_send(statistic_audio_codec) {
+                if let Err(err) = sender.send(statistic_audio_codec) {
                     tracing::error!("send statistic_data err: {err}");
                 }
             }
@@ -160,7 +160,7 @@ impl SplitCache {
                 aac_packet_type: tag_header.aac_packet_type,
                 duration: 0,
             };
-            if let Err(err) = sender.try_send(statistic_audio_data) {
+            if let Err(err) = sender.send(statistic_audio_data) {
                 tracing::error!("send statistic_data err: {err}");
             }
         }
@@ -236,7 +236,7 @@ impl SplitCache {
                         width: hevc_processor.mpeg4_hevc.width,
                         height: hevc_processor.mpeg4_hevc.height,
                     };
-                    if let Err(err) = sender.try_send(statistic_hevc_codec) {
+                    if let Err(err) = sender.send(statistic_hevc_codec) {
                         tracing::error!("send statistic_data err: {err}");
                     }
                 } else {
@@ -251,7 +251,7 @@ impl SplitCache {
                         width: avc_processor.mpeg4_avc.width,
                         height: avc_processor.mpeg4_avc.height,
                     };
-                    if let Err(err) = sender.try_send(statistic_video_codec) {
+                    if let Err(err) = sender.send(statistic_video_codec) {
                         tracing::error!("send statistic_data err: {err}");
                     }
                 }
@@ -267,7 +267,7 @@ impl SplitCache {
                 is_key_frame: Some(is_key_frame),
                 duration: 0,
             };
-            if let Err(err) = sender.try_send(statistic_video_data) {
+            if let Err(err) = sender.send(statistic_video_data) {
                 tracing::error!("send statistic_data err: {err}");
             }
         }
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_save_video_data_hevc_sends_hevc_codec_statistics() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let cache = SplitCache::new(1, None, Some(tx));
 
         let hevc_data = create_hevc_sequence_header();
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_save_video_data_h264_sends_video_codec_statistics() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let cache = SplitCache::new(1, None, Some(tx));
 
         let avc_data = create_avc_sequence_header();
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_save_video_data_non_keyframe_no_codec_statistics() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let cache = SplitCache::new(1, None, Some(tx));
 
         let mut data = BytesMut::new();

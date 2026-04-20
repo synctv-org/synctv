@@ -540,7 +540,9 @@ mod tests {
             event_sender,
             response_tx,
         );
-        session.data_receiver = Some(frame_rx);
+        session.data_receiver = Some(crate::streamhub::define::FrameDataReceiver::bounded(
+            frame_rx,
+        ));
 
         let session_task = tokio::spawn(async move { session.send_media_stream().await });
 
@@ -573,7 +575,9 @@ mod tests {
             event_sender,
             response_tx,
         );
-        session.data_receiver = Some(frame_rx);
+        session.data_receiver = Some(crate::streamhub::define::FrameDataReceiver::bounded(
+            frame_rx,
+        ));
         session.has_send_header = true;
         session.has_audio = true;
         session.has_video = true;
@@ -627,7 +631,9 @@ mod tests {
         result_sender
             .send(Ok((
                 crate::streamhub::define::DataReceiver {
-                    frame_receiver: Some(frame_rx),
+                    frame_receiver: Some(crate::streamhub::define::FrameDataReceiver::bounded(
+                        frame_rx,
+                    )),
                     packet_receiver: None,
                 },
                 None,

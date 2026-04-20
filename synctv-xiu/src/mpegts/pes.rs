@@ -201,7 +201,7 @@ impl PesMuxer {
             )?;
             self.bytes_writer.write_u8_at(
                 5,
-                u8::try_from(pes_payload_length).map_err(|_| {
+                u8::try_from(pes_payload_length & 0xFF).map_err(|_| {
                     std::io::Error::other("PES payload length low byte exceeds u8 range")
                 })?,
             )?;
@@ -213,7 +213,7 @@ impl PesMuxer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pes, PesMuxer};
+    use super::{define, Pes, PesMuxer};
 
     #[test]
     fn write_pes_header_accepts_large_valid_pts_values() {
@@ -232,5 +232,24 @@ mod tests {
         assert_eq!(bytes[11], 19);
         assert_eq!(bytes[12], 134);
         assert_eq!(bytes[13], 161);
+    }
+
+    #[test]
+    fn write_pes_header_encodes_payload_length_low_byte_with_masked_bits() {
+        let mut pes = Pes::new();
+        pes.stream_id = 0xE0;
+
+        let payload_data_length = 0x1234;
+        let mut muxer = PesMuxer::new();
+        muxer
+            .write_pes_header(payload_data_length, &pes, true)
+            .expect("valid PES payload length should encode without range errors");
+
+        let bytes = muxer.bytes_writer.extract_current_bytes();
+        let expected_length =
+            bytes.len() - usize::from(define::PES_HEADER_LEN) + payload_data_length;
+
+        assert_eq!(bytes[4], ((expected_length >> 8) & 0xFF) as u8);
+        assert_eq!(bytes[5], (expected_length & 0xFF) as u8);
     }
 }

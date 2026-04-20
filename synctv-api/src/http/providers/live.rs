@@ -82,6 +82,13 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
         return map_stream_error(context, stream_error);
     }
 
+    let message = error.to_string();
+    if message.contains("Segment not found")
+        || message.contains("Failed to read segment: Key not found:")
+    {
+        return AppError::not_found("Live stream segment is not currently available");
+    }
+
     tracing::error!(context, error = %error, "Unexpected livestream error");
     AppError::internal_server_error("Live streaming request failed")
 }
@@ -468,7 +475,7 @@ fn live_segments_disguised_as_png(state: &AppState) -> bool {
         .settings_registry
         .as_ref()
         .and_then(|registry| registry.ts_disguised_as_png.get().ok())
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn build_hls_segment_path(
@@ -747,6 +754,17 @@ mod tests {
         let mapped = map_livestream_error("Failed to create FLV session", err.as_ref());
         assert_eq!(mapped.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(mapped.message, "Live streaming request failed");
+    }
+
+    #[test]
+    fn livestream_missing_segment_maps_to_404() {
+        let err = anyhow::anyhow!("Failed to read segment: Key not found: room/media/seg001");
+        let mapped = map_livestream_error("Failed to get HLS segment", err.as_ref());
+        assert_eq!(mapped.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            mapped.message,
+            "Live stream segment is not currently available"
+        );
     }
 
     #[test]

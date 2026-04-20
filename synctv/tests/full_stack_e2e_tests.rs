@@ -3260,6 +3260,16 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
     )
     .await;
     assert_eq!(room_password_set["success"], true);
+    let room_after_password_set = run_synctv_remote_cli_json(
+        &server,
+        &["room", "get", &room_id],
+        "get room after set-password",
+    )
+    .await;
+    assert_eq!(
+        room_after_password_set["room"]["settings"]["require_password"],
+        true
+    );
 
     let member_join = join_room_http(&server, &room_id, room_password, &member_token).await;
     assert_eq!(
@@ -3457,6 +3467,16 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
     )
     .await;
     assert_eq!(room_password_cleared["success"], true);
+    let room_after_password_clear = run_synctv_remote_cli_json(
+        &server,
+        &["room", "get", &room_id],
+        "get room after clear password",
+    )
+    .await;
+    assert_eq!(
+        room_after_password_clear["room"]["settings"]["require_password"],
+        false
+    );
 
     let rejoined_without_password = join_room_http(&server, &room_id, "", &subject_token).await;
     assert_eq!(

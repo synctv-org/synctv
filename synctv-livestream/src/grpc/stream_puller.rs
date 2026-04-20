@@ -687,13 +687,14 @@ mod tests {
     #[tokio::test]
     async fn test_send_frame_with_backpressure_times_out_instead_of_dropping_silently() {
         let (data_sender, mut data_receiver) = mpsc::channel(1);
+        let data_sender = FrameDataSender::bounded(data_sender);
         data_sender
             .send(FrameData::MetaData {
                 timestamp: 1,
                 data: bytes::Bytes::from_static(b"first"),
             })
             .await
-            .expect("initial send should fill channel");
+            .unwrap_or_else(|_| panic!("initial send should fill channel"));
 
         let send_future = send_frame_with_backpressure(
             &data_sender,
@@ -747,7 +748,11 @@ mod tests {
                 stream_hub_event_receiver.recv().await
             {
                 let (data_sender, _) = mpsc::channel(4);
-                let _ = result_sender.send(Ok((Some(data_sender), None, None)));
+                let _ = result_sender.send(Ok((
+                    Some(FrameDataSender::bounded(data_sender)),
+                    None,
+                    None,
+                )));
             } else {
                 panic!("expected publish event after backpressure cleared");
             }

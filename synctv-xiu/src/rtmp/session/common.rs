@@ -18,8 +18,9 @@ use {
     },
     crate::streamhub::{
         define::{
-            FrameData, FrameDataReceiver, FrameDataSender, NotifyInfo, PublishType, PublisherInfo,
-            StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo, TStreamHandler,
+            FrameData, FrameDataReceiver, FrameDataSender, FrameTrySendError, NotifyInfo,
+            PublishType, PublisherInfo, StreamHubEvent, StreamHubEventSender, SubscribeType,
+            SubscriberInfo, TStreamHandler,
         },
         errors::{StreamHubError, StreamHubErrorValue},
         send_event_with_backpressure_timeout,
@@ -35,7 +36,6 @@ use {
     std::fmt,
     std::time::{Duration, Instant},
     std::{net::SocketAddr, sync::Arc},
-    tokio::sync::mpsc,
 };
 
 // Rate limiting constants for DoS prevention
@@ -57,14 +57,18 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-fn try_send_prior<T>(sender: &mpsc::Sender<T>, data: T, name: &str) -> Result<(), StreamHubError> {
+fn try_send_prior(
+    sender: &FrameDataSender,
+    data: FrameData,
+    name: &str,
+) -> Result<(), StreamHubError> {
     match sender.try_send(data) {
         Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Full(_)) => {
+        Err(FrameTrySendError::Full(_)) => {
             tracing::warn!("send_prior_data: {} dropped due to channel full", name);
             Ok(())
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
+        Err(FrameTrySendError::Closed(_)) => Err(StreamHubError {
             value: StreamHubErrorValue::SubscriberClosed,
         }),
     }
@@ -181,7 +185,7 @@ impl Common {
                                 data_size,
                                 duration: 0,
                             };
-                            if let Err(err) = sender.try_send(statistic_audio_data) {
+                            if let Err(err) = sender.send(statistic_audio_data) {
                                 tracing::error!("send statistic_data err: {err}");
                             }
                         }
@@ -199,7 +203,7 @@ impl Common {
                                 is_key_frame: None,
                                 duration: 0,
                             };
-                            if let Err(err) = sender.try_send(statistic_video_data) {
+                            if let Err(err) = sender.send(statistic_video_data) {
                                 tracing::error!("send statistic_data err: {err}");
                             }
                         }
@@ -303,10 +307,10 @@ impl Common {
         if let Some(sender) = &self.data_sender {
             match sender.try_send(channel_data) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(FrameTrySendError::Full(_)) => {
                     tracing::warn!("Video frame dropped due to channel full");
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(FrameTrySendError::Closed(_)) => {
                     return Err(SessionError {
                         value: SessionErrorValue::SendFrameDataErr,
                     });
@@ -347,10 +351,10 @@ impl Common {
         if let Some(sender) = &self.data_sender {
             match sender.try_send(channel_data) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(FrameTrySendError::Full(_)) => {
                     tracing::warn!("Audio frame dropped due to channel full");
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(FrameTrySendError::Closed(_)) => {
                     return Err(SessionError {
                         value: SessionErrorValue::SendFrameDataErr,
                     });
@@ -389,10 +393,10 @@ impl Common {
         if let Some(sender) = &self.data_sender {
             match sender.try_send(channel_data) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(FrameTrySendError::Full(_)) => {
                     tracing::warn!("Metadata frame dropped due to channel full");
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(FrameTrySendError::Closed(_)) => {
                     return Err(SessionError {
                         value: SessionErrorValue::SendFrameDataErr,
                     });
@@ -500,7 +504,7 @@ impl Common {
                 start_time: chrono::Local::now(),
                 sub_type: SubscribeType::RtmpPull,
             };
-            if let Err(err) = sender.try_send(statistic_subscriber) {
+            if let Err(err) = sender.send(statistic_subscriber) {
                 tracing::error!("send statistic_subscriber err: {err}");
             }
         }
@@ -577,7 +581,7 @@ impl Common {
                 remote_addr,
                 start_time: chrono::Local::now(),
             };
-            if let Err(err) = sender.try_send(statistic_publisher) {
+            if let Err(err) = sender.send(statistic_publisher) {
                 tracing::error!("send statistic_publisher err: {err}");
             }
         }

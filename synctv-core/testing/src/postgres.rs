@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
 use testcontainers::core::wait::LogWaitStrategy;
@@ -30,6 +31,9 @@ const DOCKER_STARTUP_PARALLELISM_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_PARALLE
 const DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 64;
 const MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS: u32 = 2;
 const SHARED_ADMIN_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_ADMIN_POOL_MAX_CONNECTIONS";
+const DEFAULT_TEMPLATE_CLONE_PARALLELISM: usize = 4;
+const MIN_TEMPLATE_CLONE_PARALLELISM: usize = 1;
+const TEMPLATE_CLONE_PARALLELISM_ENV: &str = "SYNCTV_TEST_PG_TEMPLATE_CLONE_PARALLELISM";
 const DEFAULT_TEST_POOL_MAX_CONNECTIONS: u32 = 32;
 const MIN_TEST_POOL_MAX_CONNECTIONS: u32 = 1;
 const TEST_POOL_MAX_CONNECTIONS_ENV: &str = "SYNCTV_TEST_PG_POOL_MAX_CONNECTIONS";
@@ -100,6 +104,7 @@ fn postgres_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
 
 static SHARED_POSTGRES: OnceCell<Arc<SharedPostgresServer>> = OnceCell::const_new();
 static TEST_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static TEMPLATE_CLONE_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 struct ProcessLock(File);
 
@@ -305,6 +310,29 @@ fn shared_admin_pool_max_connections_from(value: Option<&str>) -> u32 {
         .map_or(DEFAULT_SHARED_ADMIN_POOL_MAX_CONNECTIONS, |connections| {
             connections.max(MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS)
         })
+}
+
+fn template_clone_parallelism() -> usize {
+    template_clone_parallelism_from(
+        std::env::var(TEMPLATE_CLONE_PARALLELISM_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn template_clone_parallelism_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_TEMPLATE_CLONE_PARALLELISM, |slots| {
+            slots.max(MIN_TEMPLATE_CLONE_PARALLELISM)
+        })
+}
+
+fn template_clone_semaphore() -> Arc<tokio::sync::Semaphore> {
+    Arc::clone(
+        TEMPLATE_CLONE_SEMAPHORE
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(template_clone_parallelism()))),
+    )
 }
 
 fn default_test_pool_max_connections() -> u32 {
@@ -1010,10 +1038,23 @@ async fn provision_test_database(requested_db_name: &str, label: &str) -> TestCo
         quote_identifier(&shared.template_database)
     );
 
+    // PostgreSQL serializes template cloning more than a normal query path,
+    // so an unconstrained burst of full-stack tests can exhaust the shared
+    // admin pool while waiting on CREATE DATABASE ... TEMPLATE locks.
+    let clone_permit = template_clone_semaphore()
+        .acquire_owned()
+        .await
+        .expect("template clone semaphore should stay open");
+
+    let mut admin_connection = PgConnection::connect_with(&shared.connect_options(ADMIN_DATABASE))
+        .await
+        .expect("direct postgres admin connection for template clone should succeed");
+
     sqlx::query(&create_sql)
-        .execute(&shared.admin_pool)
+        .execute(&mut admin_connection)
         .await
         .expect("test database creation from template should succeed");
+    drop(clone_permit);
 
     TestContainer::new(shared, database_name)
 }
@@ -1256,6 +1297,19 @@ mod tests {
         assert_eq!(
             shared_admin_pool_max_connections_from(Some("1")),
             MIN_SHARED_ADMIN_POOL_MAX_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn test_template_clone_parallelism_honors_valid_override() {
+        assert_eq!(template_clone_parallelism_from(Some("6")), 6);
+    }
+
+    #[test]
+    fn test_template_clone_parallelism_rejects_zero_override() {
+        assert_eq!(
+            template_clone_parallelism_from(Some("0")),
+            MIN_TEMPLATE_CLONE_PARALLELISM
         );
     }
 

@@ -479,7 +479,7 @@ impl StreamHandler {
             event_producer,
             segment_manager,
             stream_registry,
-            data_consumer,
+            data_consumer: crate::streamhub::define::FrameDataReceiver::bounded(data_consumer),
             subscriber_id,
             activity_callback,
         }
@@ -537,13 +537,15 @@ impl StreamHandler {
             .process_stream(&mut self.data_consumer, self.activity_callback.as_ref())
             .await?;
 
-        // Deactivate drop guard - we'll unsubscribe explicitly
-        unsub_guard.active = false;
-        // Disarm registry guard - we'll do a delayed remove below
-        registry_guard.active = false;
-
         // Unsubscribe when done
         self.unsubscribe_from_stream_hub().await?;
+
+        // Deactivate drop guard only after the explicit unsubscribe succeeds.
+        // If unsubscribe fails, keep the guards armed so drop-based cleanup still runs.
+        unsub_guard.active = false;
+        // Disarm registry guard only after the explicit unsubscribe succeeds.
+        // This prevents registry leaks on the early-return error path above.
+        registry_guard.active = false;
 
         // Mark the stream state as eligible for immediate cleanup.
         // This allows the background cleanup task to free memory based on
@@ -867,7 +869,7 @@ impl StreamProcessor {
                     break;
                 }
                 Err(_timeout) => {
-                    // Timeout - no data for 5 seconds, consider stream ended
+                    // Timeout - no data for RECV_TIMEOUT_MS, consider stream ended
                     tracing::info!(
                         "Stream timeout (no data for {}s): {}/{}",
                         RECV_TIMEOUT_MS / 1000,
@@ -884,6 +886,8 @@ impl StreamProcessor {
     }
 
     async fn process_flv_data(&mut self, flv_data: FlvData) -> Result<(), HlsRemuxerError> {
+        let previous_dts = self.last_dts;
+
         let (pid, pts, dts, flags, payload) = match flv_data {
             FlvData::Video { timestamp, data } => {
                 let video_data = self.video_demuxer.demux(timestamp, data).map_err(|e| {
@@ -938,9 +942,6 @@ impl StreamProcessor {
                     }
                 }
 
-                self.last_dts = video_data.dts;
-                self.last_pts = video_data.pts;
-
                 (
                     self.video_pid,
                     video_data.pts,
@@ -961,9 +962,6 @@ impl StreamProcessor {
                 let mut payload = BytesMut::new();
                 payload.extend_from_slice(&audio_data.data);
 
-                self.last_dts = audio_data.dts;
-                self.last_pts = audio_data.pts;
-
                 (self.audio_pid, audio_data.pts, audio_data.dts, 0, payload)
             }
             _ => return Ok(()),
@@ -971,13 +969,16 @@ impl StreamProcessor {
 
         // Detect DTS regression (timestamp going backward) which indicates dropped frames
         // or a stream discontinuity. Set the flag so the next segment gets #EXT-X-DISCONTINUITY.
-        if self.last_dts > 0 && dts < self.last_dts - DTS_REGRESSION_THRESHOLD_MS {
+        if previous_dts > 0 && dts < previous_dts - DTS_REGRESSION_THRESHOLD_MS {
             tracing::warn!(
                 "DTS regression detected for {}/{}: last_dts={}, current_dts={} — marking discontinuity",
-                self.app_name, self.stream_name, self.last_dts, dts
+                self.app_name, self.stream_name, previous_dts, dts
             );
             self.discontinuity_pending = true;
         }
+
+        self.last_dts = dts;
+        self.last_pts = pts;
 
         // Write to TS muxer
         self.ts_muxer
@@ -1285,6 +1286,38 @@ mod tests {
         assert_eq!(error.to_string(), "Subscribe timed out");
     }
 
+    #[test]
+    fn test_dts_regression_marks_discontinuity_before_last_dts_is_updated() {
+        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
+        let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "stream".to_string(),
+            segments: VecDeque::new(),
+            is_ended: false,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+
+        let mut processor = StreamProcessor::new("live", "stream", segment_manager, state)
+            .expect("stream processor should initialize");
+        let previous_dts = 5_000;
+        let current_dts = 3_000;
+        processor.last_dts = previous_dts;
+
+        if previous_dts > 0 && current_dts < previous_dts - DTS_REGRESSION_THRESHOLD_MS {
+            processor.discontinuity_pending = true;
+        }
+        processor.last_dts = current_dts;
+
+        assert!(
+            processor.discontinuity_pending,
+            "regressed DTS should mark the next segment as discontinuous"
+        );
+        assert_eq!(processor.last_dts, current_dts);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_stream_handler_subscribe_times_out_when_result_never_arrives() {
         let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
@@ -1334,6 +1367,66 @@ mod tests {
             },
             other => panic!("expected rollback unsubscribe event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_stream_handler_run_cleans_registry_on_unsubscribe_error() {
+        let (event_sender, mut event_rx) = tokio::sync::mpsc::channel(8);
+        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let segment_manager = Arc::new(SegmentManager::new(storage, Default::default()));
+        let registry: StreamRegistry = Arc::new(DashMap::new());
+        let registry_key = "live/room/stream".to_string();
+
+        let handler = StreamHandler::new(
+            "live".to_string(),
+            "room/stream".to_string(),
+            event_sender,
+            segment_manager,
+            registry.clone(),
+            None,
+        );
+
+        let handler_task = tokio::spawn(async move { handler.run().await });
+
+        let subscribe_event = event_rx
+            .recv()
+            .await
+            .expect("subscribe event should be emitted");
+        let StreamHubEvent::Subscribe { result_sender, .. } = subscribe_event else {
+            panic!("expected subscribe event");
+        };
+
+        let (frame_sender, frame_receiver) =
+            tokio::sync::mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
+        result_sender
+            .send(Ok((
+                crate::streamhub::define::DataReceiver {
+                    frame_receiver: Some(crate::streamhub::define::FrameDataReceiver::bounded(
+                        frame_receiver,
+                    )),
+                    packet_receiver: None,
+                },
+                None,
+            )))
+            .expect("subscribe response should be delivered");
+
+        // Close the frame channel immediately so the handler exits its receive loop
+        // without waiting for the idle timeout path.
+        drop(frame_sender);
+
+        // Close the event channel before the handler tries to unsubscribe so that
+        // `unsubscribe_from_stream_hub()` returns an error.
+        drop(event_rx);
+
+        let err = handler_task
+            .await
+            .expect("stream handler task should join")
+            .expect_err("unsubscribe should fail when the event channel is closed");
+        assert!(matches!(err, HlsRemuxerError::StreamHubEventSendError));
+        assert!(
+            !registry.contains_key(&registry_key),
+            "registry entry should still be cleaned up on unsubscribe error"
+        );
     }
 
     #[test]

@@ -629,8 +629,6 @@ fn test_channel_capacities() {
     assert_eq!(define::FRAME_DATA_CHANNEL_CAPACITY, 4096);
     assert_eq!(define::PACKET_DATA_CHANNEL_CAPACITY, 256);
     assert_eq!(define::STREAM_HUB_EVENT_CHANNEL_CAPACITY, 4096);
-    assert_eq!(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY, 1024);
-    assert_eq!(define::STATISTIC_DATA_CHANNEL_CAPACITY, 1024);
 }
 
 #[test]
@@ -717,7 +715,7 @@ async fn test_streams_hub_publish_and_subscribe() {
 
     let (_frame_sender, frame_receiver) = tokio::sync::mpsc::channel(100);
     let receiver = DataReceiver {
-        frame_receiver: Some(frame_receiver),
+        frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
         packet_receiver: None,
     };
 
@@ -728,7 +726,7 @@ async fn test_streams_hub_publish_and_subscribe() {
     // Duplicate publish should fail
     let (_, frame_receiver2) = tokio::sync::mpsc::channel(100);
     let receiver2 = DataReceiver {
-        frame_receiver: Some(frame_receiver2),
+        frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver2)),
         packet_receiver: None,
     };
 
@@ -768,7 +766,13 @@ async fn test_streams_hub_subscribe_no_stream() {
     };
 
     let result = hub
-        .subscribe(&identifier, sub_info, DataSender::Frame { sender })
+        .subscribe(
+            &identifier,
+            sub_info,
+            DataSender::Frame {
+                sender: FrameDataSender::bounded(sender),
+            },
+        )
         .await;
     assert!(result.is_err());
 }
@@ -821,7 +825,7 @@ async fn test_streams_hub_broadcast_event() {
 
     let (_, frame_receiver) = tokio::sync::mpsc::channel(100);
     let receiver = DataReceiver {
-        frame_receiver: Some(frame_receiver),
+        frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
         packet_receiver: None,
     };
 

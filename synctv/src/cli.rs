@@ -1,6 +1,5 @@
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -20,9 +19,6 @@ use synctv_management::proto as management_proto;
 use crate::admin_client::{AdminConnectionOptions, RemoteAdminSession};
 use crate::app::Application;
 
-const INTERNAL_DAEMON_CHILD_ENV: &str = "SYNCTV_INTERNAL_DAEMON_CHILD";
-const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const DAEMON_READY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const MANAGEMENT_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_STOP_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -68,9 +64,9 @@ pub enum Commands {
     Media(MediaCommand),
     /// Remote media provider instance lifecycle management
     Provider(ProviderCommand),
-    /// Runtime settings management through the management daemon endpoint
+    /// Runtime settings management through the management endpoint
     Settings(SettingsCommand),
-    /// System inspection commands through the management daemon endpoint
+    /// System inspection commands through the management endpoint
     System(SystemCommand),
     /// Generate shell completions
     Completion(CompletionArgs),
@@ -85,7 +81,7 @@ pub struct GlobalConfigArgs {
     pub config: Option<PathBuf>,
 
     /// Shared local data directory for runtime-owned files such as the
-    /// management socket, daemon log, HLS storage, and proxy slice cache.
+    /// management socket, HLS storage, and proxy slice cache.
     /// Does not rebase static inputs like `*_file` secrets or metrics TLS files.
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
@@ -98,7 +94,7 @@ pub struct GlobalConfigArgs {
     #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
 
-    /// SyncTV management daemon endpoint (`unix:///path` or `http://host:port`)
+    /// SyncTV management endpoint (`unix:///path` or `http://host:port`)
     #[arg(long, global = true, env = "SYNCTV_MANAGEMENT_ENDPOINT")]
     pub endpoint: Option<String>,
 }
@@ -217,10 +213,6 @@ impl RemoteCliContext {
 pub struct ServeArgs {
     #[command(flatten)]
     pub global: GlobalConfigArgs,
-
-    /// Run the server in the background and return after the management endpoint is ready
-    #[arg(long, default_value_t = false)]
-    pub daemon: bool,
 
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
@@ -2433,14 +2425,7 @@ fn merge_system_command_globals(command: &mut SystemCommand, root: &GlobalConfig
 async fn execute_serve(args: ServeArgs) -> Result<()> {
     let context = CliConfigContext::new(args.global.clone());
     let config = context.validated_config()?;
-
-    if args.daemon && args.dry_run {
-        bail!("--daemon cannot be combined with --dry-run");
-    }
-
-    if args.daemon && std::env::var_os(INTERNAL_DAEMON_CHILD_ENV).is_none() {
-        return spawn_daemonized_serve(&config, &args.global).await;
-    }
+    switch_process_working_dir_to_data_dir(&config)?;
 
     crate::install_panic_hook(config.logging.backtrace);
     let _log_guard = synctv_core::logging::init_logging(&config.logging)?;
@@ -2458,132 +2443,27 @@ async fn execute_serve(args: ServeArgs) -> Result<()> {
     Box::pin(app.run()).await
 }
 
-async fn spawn_daemonized_serve(
-    config: &synctv_core::Config,
-    global: &GlobalConfigArgs,
-) -> Result<()> {
-    let readiness_probe = daemon_readiness_probe(config, global);
-    let readiness_target = daemon_readiness_probe_target(&readiness_probe);
+fn switch_process_working_dir_to_data_dir(config: &synctv_core::Config) -> Result<()> {
+    let data_dir = PathBuf::from(config.data_dir.trim());
 
-    if daemon_probe_is_ready(&readiness_probe).await.is_ok() {
-        bail!("daemon readiness target {readiness_target} is already serving");
-    }
-
-    let log_path = daemon_log_path(config)?;
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| {
-            format!(
-                "failed to open daemon log file {}",
-                absolute_display_path(&log_path)
-            )
-        })?;
-    let stderr = stdout.try_clone().with_context(|| {
+    std::fs::create_dir_all(&data_dir).with_context(|| {
         format!(
-            "failed to clone daemon log file {}",
-            absolute_display_path(&log_path)
+            "failed to create data_dir {} before switching working directory",
+            absolute_display_path(&data_dir)
         )
     })?;
 
-    let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let mut command = tokio::process::Command::new(current_exe);
-    command
-        .args(std::env::args_os().skip(1))
-        .env(INTERNAL_DAEMON_CHILD_ENV, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    #[cfg(unix)]
-    command.process_group(0);
-    let mut child = command
-        .spawn()
-        .context("failed to spawn daemon child process")?;
+    std::env::set_current_dir(&data_dir).with_context(|| {
+        format!(
+            "failed to switch working directory to data_dir {}",
+            absolute_display_path(&data_dir)
+        )
+    })?;
 
-    let deadline = tokio::time::Instant::now() + DAEMON_READY_TIMEOUT;
-    let mut last_error = None;
-
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("failed to poll daemon child process state")?
-        {
-            let detail = last_error
-                .map(|error| format!("; last readiness error: {error}"))
-                .unwrap_or_default();
-            bail!("daemon child exited before becoming ready: {status}{detail}");
-        }
-
-        match daemon_probe_is_ready(&readiness_probe).await {
-            Ok(()) => {
-                println!("daemon started");
-                if config.management.enabled {
-                    println!("management endpoint: {readiness_target}");
-                } else {
-                    println!("api health: {readiness_target}");
-                }
-                println!("log file: {}", absolute_display_path(&log_path));
-                return Ok(());
-            }
-            Err(error) => last_error = Some(error.to_string()),
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            let detail = last_error.unwrap_or_else(|| "unknown readiness failure".to_string());
-            bail!(
-                "daemon child did not become ready within {}s: {detail}",
-                DAEMON_READY_TIMEOUT.as_secs()
-            );
-        }
-
-        tokio::time::sleep(DAEMON_READY_POLL_INTERVAL).await;
-    }
+    Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DaemonReadinessProbe {
-    ManagementEndpoint {
-        endpoint: String,
-        config_path: Option<String>,
-        data_dir: Option<String>,
-        load_dotenv: bool,
-        verbose: bool,
-    },
-    ApiTcpAddress(String),
-}
-
-fn daemon_readiness_probe(
-    config: &synctv_core::Config,
-    global: &GlobalConfigArgs,
-) -> DaemonReadinessProbe {
-    if config.management.enabled {
-        DaemonReadinessProbe::ManagementEndpoint {
-            endpoint: config.management_endpoint(),
-            config_path: global
-                .config
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            data_dir: global
-                .data_dir
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            load_dotenv: !global.no_dotenv,
-            verbose: global.verbose > 0,
-        }
-    } else {
-        DaemonReadinessProbe::ApiTcpAddress(daemon_local_api_probe_address(config))
-    }
-}
-
-fn daemon_readiness_probe_target(probe: &DaemonReadinessProbe) -> &str {
-    match probe {
-        DaemonReadinessProbe::ManagementEndpoint { endpoint, .. }
-        | DaemonReadinessProbe::ApiTcpAddress(endpoint) => endpoint,
-    }
-}
-
-fn daemon_local_api_probe_address(config: &synctv_core::Config) -> String {
+fn local_api_probe_address(config: &synctv_core::Config) -> String {
     let host = match config.server.host.trim() {
         "" | "0.0.0.0" => "127.0.0.1".to_string(),
         "::" | "[::]" => "::1".to_string(),
@@ -2591,53 +2471,6 @@ fn daemon_local_api_probe_address(config: &synctv_core::Config) -> String {
         host => host.to_string(),
     };
     format!("{host}:{}", config.server.port)
-}
-
-async fn daemon_probe_is_ready(probe: &DaemonReadinessProbe) -> Result<()> {
-    match probe {
-        DaemonReadinessProbe::ManagementEndpoint {
-            endpoint,
-            config_path,
-            data_dir,
-            load_dotenv,
-            verbose,
-        } => RemoteAdminSession::connect(AdminConnectionOptions {
-            endpoint: Some(endpoint.clone()),
-            config_path: config_path.clone(),
-            data_dir: data_dir.clone(),
-            load_dotenv: *load_dotenv,
-            verbose: *verbose,
-            resolved_config_endpoint: None,
-            allow_config_auth_for_explicit_endpoint: true,
-        })
-        .await
-        .map(|_| ()),
-        DaemonReadinessProbe::ApiTcpAddress(address) => {
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                tokio::net::TcpStream::connect(address),
-            )
-            .await
-            .with_context(|| format!("timed out probing daemon API listener {address}"))?
-            .with_context(|| format!("failed to connect to daemon API listener {address}"))?;
-            Ok(())
-        }
-    }
-}
-
-fn daemon_log_path(config: &synctv_core::Config) -> Result<PathBuf> {
-    let runtime_dir = daemon_runtime_dir(config);
-    std::fs::create_dir_all(&runtime_dir).with_context(|| {
-        format!(
-            "failed to create daemon runtime directory {}",
-            absolute_display_path(&runtime_dir)
-        )
-    })?;
-    Ok(runtime_dir.join("synctv-daemon.log"))
-}
-
-fn daemon_runtime_dir(config: &synctv_core::Config) -> PathBuf {
-    Path::new(&config.management.data_dir).join("run")
 }
 
 async fn execute_stop(args: StopArgs) -> Result<()> {
@@ -4231,7 +4064,7 @@ fn infer_cli_api_base_url(global: &GlobalConfigArgs) -> Option<String> {
         return None;
     }
     let config = CliConfigContext::new(global.clone()).config().ok()?;
-    Some(format!("http://{}", daemon_local_api_probe_address(&config)))
+    Some(format!("http://{}", local_api_probe_address(&config)))
 }
 
 fn absolutize_cli_url(raw: &str, api_base_url: Option<&str>) -> Option<String> {
@@ -4273,12 +4106,13 @@ fn build_get_playback_cli_output(
 
     if let Some(snapshot) = playback_snapshot.as_ref() {
         let mut modes = snapshot.playback_infos.iter().collect::<Vec<_>>();
-        modes.sort_by(|(left_mode, _), (right_mode, _)| left_mode.cmp(right_mode));
+        modes.sort_by_key(|(mode, _)| *mode);
 
         for (mode, info) in modes {
             for (index, playback_url) in info.urls.iter().enumerate() {
-                let is_default =
-                    mode == &snapshot.default_mode && info.default_url_index == index as i32;
+                let is_default = mode == &snapshot.default_mode
+                    && i32::try_from(index)
+                        .is_ok_and(|index| info.default_url_index == index);
                 let absolute_url =
                     absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
@@ -4294,17 +4128,17 @@ fn build_get_playback_cli_output(
 
                 if is_default {
                     default_pull_url = Some(output.url.clone());
-                    default_absolute_pull_url = output.absolute_url.clone();
+                    default_absolute_pull_url.clone_from(&output.absolute_url);
                 }
 
                 match info.format.as_str() {
                     "m3u8" if hls_pull_url.is_none() => {
                         hls_pull_url = Some(output.url.clone());
-                        hls_absolute_pull_url = output.absolute_url.clone();
+                        hls_absolute_pull_url.clone_from(&output.absolute_url);
                     }
                     "flv" if flv_pull_url.is_none() => {
                         flv_pull_url = Some(output.url.clone());
-                        flv_absolute_pull_url = output.absolute_url.clone();
+                        flv_absolute_pull_url.clone_from(&output.absolute_url);
                     }
                     _ => {}
                 }
@@ -6183,11 +6017,20 @@ mod tests {
     use super::*;
     use clap::Parser;
     use serde_json::json;
+    use std::path::Path;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn acquire_time_test_lock() -> MutexGuard<'static, ()> {
         static TIME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         TIME_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn acquire_current_dir_test_lock() -> MutexGuard<'static, ()> {
+        static CURRENT_DIR_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        CURRENT_DIR_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -6208,6 +6051,24 @@ mod tests {
     impl Drop for TimeZoneGuard {
         fn drop(&mut self) {
             let _ = synctv_core::time::set_default_timezone_name(&self.previous);
+        }
+    }
+
+    struct CurrentDirGuard {
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir should be readable");
+            std::env::set_current_dir(path).expect("current dir should be settable");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("current dir should be restored");
         }
     }
 
@@ -6246,15 +6107,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_serve_daemon_mode() {
-        let cli = Cli::parse_from(["synctv", "serve", "--daemon"]);
-        match cli.command {
-            Commands::Serve(args) => assert!(args.daemon),
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
-    }
-
-    #[test]
     fn cli_parses_global_data_dir() {
         let cli = Cli::parse_from(["synctv", "--data-dir", "/tmp/synctv-state", "serve"]);
         match cli.command {
@@ -6264,6 +6116,33 @@ mod tests {
             ),
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn switch_process_working_dir_to_data_dir_creates_and_enters_directory() {
+        let _lock = acquire_current_dir_test_lock();
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(temp_dir.path());
+        let target = temp_dir.path().join("state");
+
+        let config = synctv_core::Config {
+            data_dir: target.display().to_string(),
+            ..synctv_core::Config::default()
+        };
+
+        switch_process_working_dir_to_data_dir(&config)
+            .expect("data_dir working directory switch should succeed");
+
+        assert!(target.is_dir(), "data_dir should be created before switching");
+        assert_eq!(
+            std::env::current_dir()
+                .expect("current dir should resolve")
+                .canonicalize()
+                .expect("current dir should canonicalize"),
+            target
+                .canonicalize()
+                .expect("target dir should canonicalize")
+        );
     }
 
     #[test]
@@ -9672,72 +9551,6 @@ management:
                 .resolved_config_endpoint()
                 .expect("explicit endpoint mode should not resolve a config endpoint"),
             None
-        );
-    }
-
-    #[test]
-    fn daemon_readiness_probe_uses_management_endpoint_when_enabled() {
-        let config = synctv_core::Config::default();
-        let global = GlobalConfigArgs::default();
-
-        assert_eq!(
-            daemon_readiness_probe(&config, &global),
-            DaemonReadinessProbe::ManagementEndpoint {
-                endpoint: config.management_endpoint(),
-                config_path: None,
-                data_dir: None,
-                load_dotenv: true,
-                verbose: false,
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_readiness_probe_uses_api_health_when_management_is_disabled() {
-        let mut config = synctv_core::Config::default();
-        let global = GlobalConfigArgs::default();
-        config.management.enabled = false;
-        config.server.host = "0.0.0.0".to_string();
-        config.server.port = 58080;
-
-        assert_eq!(
-            daemon_readiness_probe(&config, &global),
-            DaemonReadinessProbe::ApiTcpAddress("127.0.0.1:58080".to_string())
-        );
-    }
-
-    #[test]
-    fn daemon_readiness_probe_preserves_explicit_config_context_for_management_auth() {
-        let config = synctv_core::Config::default();
-        let global = GlobalConfigArgs {
-            config: Some(PathBuf::from("/tmp/synctv-daemon-auth.yaml")),
-            data_dir: Some(PathBuf::from("/tmp/synctv-state")),
-            no_dotenv: true,
-            verbose: 2,
-            endpoint: None,
-        };
-
-        assert_eq!(
-            daemon_readiness_probe(&config, &global),
-            DaemonReadinessProbe::ManagementEndpoint {
-                endpoint: config.management_endpoint(),
-                config_path: Some("/tmp/synctv-daemon-auth.yaml".to_string()),
-                data_dir: Some("/tmp/synctv-state".to_string()),
-                load_dotenv: false,
-                verbose: true,
-            }
-        );
-    }
-
-    #[test]
-    fn daemon_runtime_dir_uses_data_dir_not_socket_parent() {
-        let mut config = synctv_core::Config::default();
-        config.management.data_dir = "/tmp/synctv-state".to_string();
-        config.management.unix_socket_path = "/tmp/other-socket-dir/management.sock".to_string();
-
-        assert_eq!(
-            daemon_runtime_dir(&config),
-            PathBuf::from("/tmp/synctv-state/run")
         );
     }
 

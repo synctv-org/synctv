@@ -3180,30 +3180,37 @@ async fn scenario_provider_instance_parse_timeout() {
 }
 
 fn install_rustls_provider_once() {
-    if let Some(provider) = default_rustls_provider() {
-        let _ = rustls::crypto::CryptoProvider::install_default(provider);
-    }
+    install_rustls_provider_once_with_selected_backend();
 }
 
-fn default_rustls_provider() -> Option<rustls::crypto::CryptoProvider> {
-    #[cfg(feature = "tls-aws-lc")]
-    {
-        return Some(rustls::crypto::aws_lc_rs::default_provider());
-    }
+#[cfg(feature = "tls-aws-lc")]
+fn install_rustls_provider_once_with_selected_backend() {
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    );
+}
 
-    #[cfg(all(
-        not(feature = "tls-aws-lc"),
-        any(
-            feature = "tls-ring",
-            feature = "tls-webpki-roots",
-            feature = "tls-native-roots"
-        )
-    ))]
-    {
-        return Some(rustls::crypto::ring::default_provider());
-    }
+#[cfg(all(
+    not(feature = "tls-aws-lc"),
+    any(
+        feature = "tls-ring",
+        feature = "tls-webpki-roots",
+        feature = "tls-native-roots"
+    )
+))]
+fn install_rustls_provider_once_with_selected_backend() {
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::ring::default_provider(),
+    );
+}
 
-    None
+#[cfg(not(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+)))]
+fn install_rustls_provider_once_with_selected_backend() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

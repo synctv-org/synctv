@@ -852,8 +852,10 @@ mod tests {
 
     #[test]
     fn normalize_created_room_settings_preserves_other_fields() {
-        let mut source = synctv_core::models::RoomSettings::default();
-        source.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+        let source = synctv_core::models::RoomSettings {
+            allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+            ..synctv_core::models::RoomSettings::default()
+        };
 
         let settings = normalize_created_room_settings(Some(&source), false);
 

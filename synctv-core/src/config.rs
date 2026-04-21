@@ -204,36 +204,6 @@ fn load_config_string_from_file(
     Ok(contents.trim().to_string())
 }
 
-fn inject_top_level_data_dir_alias(
-    parsed_value: &mut serde_json::Value,
-) -> Result<(), ConfigError> {
-    let Some(root) = parsed_value.as_object_mut() else {
-        return Ok(());
-    };
-    let Some(data_dir) = root.remove("data_dir") else {
-        return Ok(());
-    };
-
-    if !data_dir.is_string() {
-        return Err(ConfigError::Message(
-            "config key 'data_dir' must be a string path".to_string(),
-        ));
-    }
-
-    let management = root
-        .entry("management")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let Some(management_obj) = management.as_object_mut() else {
-        return Err(ConfigError::Message(
-            "config key 'management' must be a table/object when data_dir is set".to_string(),
-        ));
-    };
-    management_obj
-        .entry("data_dir".to_string())
-        .or_insert(data_dir);
-    Ok(())
-}
-
 fn resolve_relative_path_from(reference: &str, base_dir: &Path) -> PathBuf {
     let path = Path::new(reference.trim());
     if path.is_absolute() {
@@ -384,11 +354,21 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
 }
 
 /// Application configuration
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
     pub time: TimeConfig,
+    /// Shared root directory for runtime-owned local files.
+    ///
+    /// This affects default runtime paths and relative overrides for
+    /// `management.unix_socket_path`, `logging.file_path`,
+    /// `livestream.hls_storage_path`, and
+    /// `cache.proxy_slice_file_cache_dir`.
+    ///
+    /// It does not rebase static input files such as `*_file` secrets or
+    /// `metrics.tls.cert_path` / `metrics.tls.key_path`.
+    pub data_dir: String,
     pub metrics: MetricsConfig,
     pub management: ManagementConfig,
     pub database: DatabaseConfig,
@@ -416,6 +396,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("server", &self.server)
             .field("time", &self.time)
+            .field("data_dir", &self.data_dir)
             .field("metrics", &self.metrics)
             .field("management", &self.management)
             .field("database", &"<redacted>")
@@ -437,6 +418,36 @@ impl std::fmt::Debug for Config {
             .field("http_rate_limits", &self.http_rate_limits)
             .field("grpc_rate_limits", &self.grpc_rate_limits)
             .finish()
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig::default(),
+            time: TimeConfig::default(),
+            data_dir: default_data_dir().display().to_string(),
+            metrics: MetricsConfig::default(),
+            management: ManagementConfig::default(),
+            database: DatabaseConfig::default(),
+            redis: RedisConfig::default(),
+            jwt: JwtConfig::default(),
+            logging: LoggingConfig::default(),
+            livestream: LivestreamConfig::default(),
+            oauth2: OAuth2Config::default(),
+            email: EmailConfig::default(),
+            media_providers: MediaProvidersConfig::default(),
+            webrtc: WebRTCConfig::default(),
+            connection_limits: ConnectionLimitsConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
+            messaging_rate_limits: MessagingRateLimitConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
+        }
     }
 }
 
@@ -674,16 +685,6 @@ impl std::str::FromStr for ManagementTransport {
 #[serde(default)]
 pub struct ManagementConfig {
     pub enabled: bool,
-    /// Shared root directory for runtime-owned local files.
-    ///
-    /// This affects default runtime paths and relative overrides for
-    /// `management.unix_socket_path`, `logging.file_path`,
-    /// `livestream.hls_storage_path`, and
-    /// `cache.proxy_slice_file_cache_dir`.
-    ///
-    /// It does not rebase static input files such as `*_file` secrets or
-    /// `metrics.tls.cert_path` / `metrics.tls.key_path`.
-    pub data_dir: String,
     pub transport: ManagementTransport,
     pub port: u16,
     pub unix_socket_path: String,
@@ -695,7 +696,6 @@ impl Default for ManagementConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            data_dir: default_data_dir().display().to_string(),
             transport: if cfg!(unix) {
                 ManagementTransport::Unix
             } else {
@@ -713,7 +713,6 @@ impl std::fmt::Debug for ManagementConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManagementConfig")
             .field("enabled", &self.enabled)
-            .field("data_dir", &self.data_dir)
             .field("transport", &self.transport)
             .field("port", &self.port)
             .field("unix_socket_path", &self.unix_socket_path)
@@ -1371,7 +1370,6 @@ impl Config {
                 ));
             }
         };
-        inject_top_level_data_dir_alias(&mut parsed_value)?;
         let config_base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_secret_file_references_in_json_value(&mut parsed_value, path, "", config_base_dir)?;
         let normalized_contents = serde_json::to_string(&parsed_value)
@@ -1746,7 +1744,7 @@ impl Config {
 
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
 
-        env_override_str("SYNCTV_DATA_DIR", &mut self.management.data_dir);
+        env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
         env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
         env_override_parse("SYNCTV_SERVER_PORT", &mut self.server.port)?;
@@ -2312,7 +2310,7 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(|value| resolve_relative_path_from(value, &runtime_base_dir))
             .or_else(|| {
-                let configured = self.management.data_dir.trim();
+                let configured = self.data_dir.trim();
                 if configured.is_empty() {
                     None
                 } else if Path::new(configured).is_absolute() {
@@ -2322,7 +2320,7 @@ impl Config {
                 }
             })
             .unwrap_or_else(default_data_dir);
-        self.management.data_dir = data_dir.display().to_string();
+        self.data_dir = data_dir.display().to_string();
 
         let default_socket_path = default_management_unix_socket_path();
         let socket_path = self.management.unix_socket_path.trim();
@@ -2730,6 +2728,12 @@ impl Config {
             ));
         }
 
+        if self.data_dir.trim().is_empty() {
+            errors.push("data_dir must not be empty".to_string());
+        } else if !Path::new(&self.data_dir).is_absolute() {
+            errors.push("data_dir must be an absolute path".to_string());
+        }
+
         if self.management.enabled {
             match self.management.transport {
                 ManagementTransport::Tcp => {
@@ -2749,12 +2753,6 @@ impl Config {
                     }
                 }
                 ManagementTransport::Unix => {
-                    if self.management.data_dir.trim().is_empty() {
-                        errors.push("management.data_dir must not be empty".to_string());
-                    } else if !Path::new(&self.management.data_dir).is_absolute() {
-                        errors.push("management.data_dir must be an absolute path".to_string());
-                    }
-
                     if self.management.unix_socket_path.trim().is_empty() {
                         errors.push(
                             "management.unix_socket_path must not be empty when transport=unix"
@@ -3719,6 +3717,7 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
+            data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
             database: DatabaseConfig::default(),
@@ -3749,6 +3748,7 @@ mod tests {
         let config = Config {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
+            data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig {
                 enabled: true,
                 host: "127.0.0.1".to_string(),
@@ -3964,6 +3964,7 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
+            data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig {
                 auth_token: "test-management-auth-token".to_string(),
@@ -4351,7 +4352,7 @@ livestream:
             .expect("config file with data_dir should load");
         let expected_data_dir = config_dir.join("state");
 
-        assert_eq!(Path::new(&config.management.data_dir), expected_data_dir);
+        assert_eq!(Path::new(&config.data_dir), expected_data_dir);
         assert_eq!(
             Path::new(&config.management.unix_socket_path),
             expected_data_dir.join("sockets").join("admin.sock")
@@ -4395,11 +4396,11 @@ management:
 
         let unknown_keys =
             Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
-                .expect("top-level data_dir alias should deserialize cleanly");
+                .expect("top-level data_dir should deserialize cleanly");
 
         assert!(
             unknown_keys.is_empty(),
-            "top-level data_dir alias should not be reported as unknown: {unknown_keys:?}"
+            "top-level data_dir should not be reported as unknown: {unknown_keys:?}"
         );
     }
 
@@ -4433,7 +4434,7 @@ management:
         let config = Config::from_env_map(&env).expect("env-backed config should load");
         let expected_data_dir = cwd.join("var").join("synctv");
 
-        assert_eq!(Path::new(&config.management.data_dir), expected_data_dir);
+        assert_eq!(Path::new(&config.data_dir), expected_data_dir);
         assert_eq!(
             Path::new(&config.management.unix_socket_path),
             expected_data_dir.join("ops").join("management.sock")

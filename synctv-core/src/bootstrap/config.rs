@@ -484,7 +484,7 @@ jwt:
         .expect("cli data_dir should be applied to default runtime paths");
 
         assert_eq!(
-            std::path::Path::new(&config.management.data_dir),
+            std::path::Path::new(&config.data_dir),
             data_dir.as_path()
         );
         assert_eq!(
@@ -514,7 +514,7 @@ jwt:
         .expect("cli data_dir should override SYNCTV_DATA_DIR");
 
         assert_eq!(
-            std::path::Path::new(&config.management.data_dir),
+            std::path::Path::new(&config.data_dir),
             cli_data_dir.as_path()
         );
         assert_eq!(

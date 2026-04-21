@@ -717,46 +717,6 @@ async fn wait_until_unix_grpc_ready_or_server_exit(
     }
 }
 
-#[cfg(unix)]
-async fn wait_until_unix_grpc_ready(socket_path: &std::path::Path) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-
-    loop {
-        let path = socket_path.to_path_buf();
-        let status = match tonic::transport::Endpoint::try_from("http://[::]:50052")
-            .expect("valid synthetic unix gRPC endpoint")
-            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                let path = path.clone();
-                async move {
-                    let stream = tokio::net::UnixStream::connect(path).await?;
-                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-                }
-            }))
-            .await
-        {
-            Ok(channel) => {
-                let mut health = HealthClient::new(channel);
-                health
-                    .check(HealthCheckRequest {
-                        service: String::new(),
-                    })
-                    .await
-                    .map(|response| response.into_inner().status)
-            }
-            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
-        };
-
-        match status {
-            Ok(status) if status == ServingStatus::Serving as i32 => return,
-            Ok(_) | Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok(status) => panic!("unix gRPC health never became serving, last status: {status}"),
-            Err(error) => panic!("unix gRPC health never became ready: {error}"),
-        }
-    }
-}
-
 async fn grpc_health_status(
     grpc_base_url: &str,
     service: &str,
@@ -885,42 +845,6 @@ fn synctv_binary_path() -> std::path::PathBuf {
     panic!(
         "failed to locate the freshly built synctv binary: CARGO_BIN_EXE_synctv is not available"
     );
-}
-
-#[cfg(unix)]
-fn write_daemon_test_config(
-    path: &std::path::Path,
-    database_url: &str,
-    redis_url: &str,
-    api_port: u16,
-    management_socket_path: &std::path::Path,
-    rtmp_port: u16,
-) {
-    let mut config = Config::default();
-    config.server.host = "127.0.0.1".to_string();
-    config.server.port = api_port;
-    config.server.enable_reflection = false;
-    config.server.advertise_host = "127.0.0.1".to_string();
-    config.server.shutdown_drain_timeout_seconds = 3;
-    config.metrics.enabled = false;
-    config.metrics.host = "127.0.0.1".to_string();
-    config.metrics.port = 9090;
-    config.management.enabled = true;
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
-    config.management.unix_socket_path = management_socket_path.display().to_string();
-    config.management.enable_reflection = false;
-    config.management.auth_token.clear();
-    config.database.url = database_url.to_string();
-    config.redis.url = redis_url.to_string();
-    config.redis.key_prefix = "synctv:test:daemon".to_string();
-    config.jwt.secret = "test-jwt-secret-key-for-daemon-e2e-123456".to_string();
-    config.bootstrap.create_root_user = true;
-    config.bootstrap.root_username = "admin".to_string();
-    config.bootstrap.root_password = "StrongPwd12345!".to_string();
-    config.livestream.rtmp_port = rtmp_port;
-    config.webrtc.enable_builtin_stun = false;
-
-    write_cli_test_config(path, &config);
 }
 
 /// Creates a test HTTP client with reasonable timeouts for E2E tests.
@@ -5889,53 +5813,6 @@ async fn full_stack_cli_completion_fish_emits_completion_directives() {
 }
 
 #[tokio::test]
-async fn full_stack_cli_serve_rejects_daemon_and_dry_run_combination() {
-    let api_port = reserve_local_port();
-    let management_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
-    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-    let config_path = temp_dir.path().join("synctv-invalid-serve.yaml");
-
-    let config = test_config(
-        "postgresql://postgres:password@127.0.0.1:5432/synctv_invalid_serve".to_string(),
-        "redis://127.0.0.1:6379/0".to_string(),
-        api_port,
-        management_port,
-        rtmp_port,
-    );
-    write_cli_test_config(&config_path, &config);
-
-    let invalid_output = run_synctv_cli_with_env_async(
-        &[
-            "serve",
-            "--daemon",
-            "--dry-run",
-            "--config",
-            config_path.to_str().expect("config path should be utf-8"),
-            "--no-dotenv",
-        ],
-        &[],
-    )
-    .await;
-    assert!(
-        !invalid_output.status.success(),
-        "serve should reject --daemon with --dry-run\nstdout:\n{}\nstderr:\n{}",
-        cli_stdout(&invalid_output),
-        cli_stderr(&invalid_output),
-    );
-
-    let combined_output = format!(
-        "{}\n{}",
-        cli_stdout(&invalid_output),
-        cli_stderr(&invalid_output)
-    );
-    assert!(
-        combined_output.contains("--daemon cannot be combined with --dry-run"),
-        "invalid serve combination should explain the rejection\noutput:\n{combined_output}"
-    );
-}
-
-#[tokio::test]
 async fn full_stack_cli_system_stats_reports_unreachable_management_endpoint() {
     let output = run_synctv_cli_with_env_async(
         &[
@@ -6042,67 +5919,6 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
         .expect("server should stop after CLI force stop request")
         .expect("server task should join");
     server_result.expect("server should shut down cleanly after CLI force stop");
-
-    drop(postgres);
-    drop(redis);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_cli_serve_daemon_starts_background_server_and_stop_shuts_it_down() {
-    let (postgres, database_url) =
-        create_test_database_url_with_label("synctv_e2e_serve_daemon", "full-stack-serve-daemon")
-            .await;
-    let (redis, redis_url) = start_redis_url_with_label("full-stack-serve-daemon").await;
-    let api_port = reserve_local_port();
-    let rtmp_port = reserve_local_port();
-    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-    let socket_path = temp_dir.path().join("management.sock");
-    let config_path = temp_dir.path().join("synctv.yaml");
-
-    write_daemon_test_config(
-        &config_path,
-        &database_url,
-        &redis_url,
-        api_port,
-        &socket_path,
-        rtmp_port,
-    );
-
-    let serve_output = run_synctv_cli_with_env_async(
-        &[
-            "serve",
-            "--daemon",
-            "--config",
-            config_path.to_str().expect("config path should be utf-8"),
-            "--no-dotenv",
-        ],
-        &[],
-    )
-    .await;
-
-    assert!(
-        serve_output.status.success(),
-        "serve --daemon should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&serve_output.stdout),
-        String::from_utf8_lossy(&serve_output.stderr),
-    );
-
-    wait_until_unix_grpc_ready(&socket_path).await;
-
-    let management_endpoint = format!("unix://{}", socket_path.display());
-    let stop_output = run_synctv_cli_with_env_async(
-        &["stop"],
-        &[("SYNCTV_MANAGEMENT_ENDPOINT", management_endpoint.as_str())],
-    )
-    .await;
-    assert!(
-        stop_output.status.success(),
-        "stop should shut down daemonized server\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&stop_output.stdout),
-        String::from_utf8_lossy(&stop_output.stderr),
-    );
 
     drop(postgres);
     drop(redis);

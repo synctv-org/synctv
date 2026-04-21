@@ -71,6 +71,7 @@ async fn connect_live_danmaku_websocket(
 }
 
 #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+#[allow(clippy::unused_async)]
 async fn connect_live_danmaku_websocket(
     _ws_url: &str,
     _socket: TcpStream,

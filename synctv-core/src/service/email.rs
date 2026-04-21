@@ -8,7 +8,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use synctv_common::ExecutionControl;
 
 use super::email_templates::EmailTemplateManager;
@@ -57,7 +57,7 @@ pub struct EmailService {
     config: Option<EmailConfig>,
     template_manager: Arc<EmailTemplateManager>,
     /// Reusable SMTP transport (connection-pooled by lettre).
-    smtp_transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
+    smtp_transport: OnceLock<std::result::Result<AsyncSmtpTransport<Tokio1Executor>, String>>,
 }
 
 impl std::fmt::Debug for EmailService {
@@ -169,16 +169,10 @@ impl EmailService {
     /// Create a new email service.
     pub fn new(config: Option<EmailConfig>) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = match config.as_ref() {
-            Some(cfg) => Some(Self::build_smtp_transport(cfg).map_err(|e| {
-                Error::Internal(format!("Failed to initialize SMTP transport: {e}"))
-            })?),
-            None => None,
-        };
         Ok(Self {
             config,
             template_manager: Arc::new(template_manager),
-            smtp_transport,
+            smtp_transport: OnceLock::new(),
         })
     }
 
@@ -528,8 +522,10 @@ impl EmailService {
 
         let transport = self
             .smtp_transport
+            .get_or_init(|| Self::build_smtp_transport(config).map_err(|error| error.to_string()));
+        let transport = transport
             .as_ref()
-            .ok_or_else(|| EmailError::SendError("SMTP transport not initialized".to_string()))?;
+            .map_err(|error| EmailError::SendError(error.clone()))?;
 
         Self::run_with_control(control, async {
             transport
@@ -607,6 +603,26 @@ mod tests {
         assert!(
             configured_service.is_configured(),
             "Service with Some config should be configured"
+        );
+    }
+
+    #[test]
+    fn test_configured_service_initializes_without_building_transport() {
+        let configured_service = EmailService::new(Some(EmailConfig {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "user".to_string(),
+            smtp_password: "password".to_string(),
+            from_email: "noreply@example.com".to_string(),
+            from_name: "SyncTV".to_string(),
+            use_tls: true,
+        }))
+        .expect("configured service should initialize without creating transport eagerly");
+
+        assert!(configured_service.is_configured());
+        assert!(
+            configured_service.smtp_transport.get().is_none(),
+            "SMTP transport should be created lazily on first send"
         );
     }
 

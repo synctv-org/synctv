@@ -21,6 +21,9 @@ pub struct ProviderContext<'a> {
     /// Room ID (optional)
     pub room_id: Option<&'a str>,
 
+    /// Media ID currently being resolved (optional)
+    pub media_id: Option<&'a str>,
+
     /// Base URL for generating proxy URLs
     pub base_url: Option<&'a str>,
 
@@ -53,6 +56,7 @@ impl<'a> ProviderContext<'a> {
         Self {
             user_id: None,
             room_id: None,
+            media_id: None,
             base_url: None,
             key_prefix,
             db: None,
@@ -75,6 +79,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_room_id(mut self, room_id: &'a str) -> Self {
         self.room_id = Some(room_id);
+        self
+    }
+
+    /// Set media ID
+    #[must_use]
+    pub const fn with_media_id(mut self, media_id: &'a str) -> Self {
+        self.media_id = Some(media_id);
         self
     }
 
@@ -148,7 +159,7 @@ impl<'a> ProviderContext<'a> {
     /// Validate that all required fields are present for playback generation.
     ///
     /// Returns an error listing missing required fields (`base_url`, `db`).
-    /// Optional fields (`user_id`, `room_id`, `store`) are not checked.
+    /// Optional fields (`user_id`, `room_id`, `media_id`, `store`) are not checked.
     pub fn validate(&self) -> Result<(), crate::Error> {
         let mut missing = Vec::new();
         if self.base_url.is_none() {

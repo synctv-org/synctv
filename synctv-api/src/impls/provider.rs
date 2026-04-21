@@ -32,12 +32,16 @@ pub struct ProviderPlaybackDeps<'a> {
 fn build_provider_context<'a>(
     user_id: &'a UserId,
     room_id: &'a RoomId,
+    media_id: Option<&'a MediaId>,
     deps: ProviderPlaybackDeps<'a>,
 ) -> ProviderContext<'a> {
     let mut ctx = ProviderContext::new("synctv")
         .with_user_id(user_id.as_str())
         .with_room_id(room_id.as_str())
         .with_request_context(deps.request_context.cloned());
+    if let Some(media_id) = media_id {
+        ctx = ctx.with_media_id(media_id.as_str());
+    }
     if let Some(enc) = deps.credential_encryption {
         ctx = ctx.with_credential_encryption(enc);
     }
@@ -102,7 +106,7 @@ pub async fn resolve_provider_playback_url(
     deps: ProviderPlaybackDeps<'_>,
 ) -> Result<(String, HashMap<String, String>), ApiError> {
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
-    let ctx = build_provider_context(user_id, room_id, deps);
+    let ctx = build_provider_context(user_id, room_id, Some(media_id), deps);
 
     let playback_result = provider
         .generate_playback(&ctx, &media.source_config)
@@ -139,7 +143,7 @@ pub async fn resolve_provider_playback_result(
     deps: ProviderPlaybackDeps<'_>,
 ) -> Result<ProviderPlaybackResult, ApiError> {
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
-    let ctx = build_provider_context(user_id, room_id, deps);
+    let ctx = build_provider_context(user_id, room_id, Some(media_id), deps);
 
     provider
         .generate_playback(&ctx, &media.source_config)
@@ -162,6 +166,7 @@ mod tests {
             .expect("lazy pool");
         let user_id = synctv_core::models::UserId::from_string("user-provider".to_string());
         let room_id = synctv_core::models::RoomId::from_string("room-provider".to_string());
+        let media_id = synctv_core::models::MediaId::from_string("media-provider".to_string());
         let credential_repo = UserProviderCredentialRepository::new(pool);
         let credential_encryption =
             CredentialEncryption::new(b"0123456789abcdef0123456789abcdef").expect("encryption");
@@ -171,6 +176,7 @@ mod tests {
         let ctx = build_provider_context(
             &user_id,
             &room_id,
+            Some(&media_id),
             ProviderPlaybackDeps {
                 credential_encryption: Some(&credential_encryption),
                 credential_repo: Some(&credential_repo),
@@ -182,6 +188,7 @@ mod tests {
 
         assert_eq!(ctx.user_id, Some(user_id.as_str()));
         assert_eq!(ctx.room_id, Some(room_id.as_str()));
+        assert_eq!(ctx.media_id, Some(media_id.as_str()));
         assert!(ctx.credential_encryption.is_some());
         assert!(ctx.credential_repo.is_some());
         assert!(ctx.signing_key.is_some());
@@ -196,10 +203,11 @@ mod tests {
         let user_id = synctv_core::models::UserId::from_string("user-provider".to_string());
         let room_id = synctv_core::models::RoomId::from_string("room-provider".to_string());
 
-        let ctx = build_provider_context(&user_id, &room_id, ProviderPlaybackDeps::default());
+        let ctx = build_provider_context(&user_id, &room_id, None, ProviderPlaybackDeps::default());
 
         assert_eq!(ctx.user_id, Some(user_id.as_str()));
         assert_eq!(ctx.room_id, Some(room_id.as_str()));
+        assert!(ctx.media_id.is_none());
         assert!(ctx.credential_encryption.is_none());
         assert!(ctx.credential_repo.is_none());
         assert!(ctx.signing_key.is_none());

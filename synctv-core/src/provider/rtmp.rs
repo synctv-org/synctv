@@ -13,7 +13,8 @@ use serde_json::Value;
 use std::time::Duration;
 
 /// Fields that should not be allowed in `source_config`.
-/// `RtmpProvider` only uses `room_id` and `media_id`; any URL field could be abused.
+/// `RtmpProvider` only serves the current SyncTV media from runtime context.
+/// Any external URL field could be abused.
 const FORBIDDEN_URL_FIELDS: &[&str] = &[
     "url",
     "rtmp_url",
@@ -33,7 +34,51 @@ impl RtmpProvider {
         Self {}
     }
 
-    fn build_live_proxy_action(
+    fn resolve_live_binding<'a>(
+        ctx: &'a ProviderContext<'a>,
+    ) -> Result<(&'a str, &'a str), ProviderError> {
+        let room_id = ctx.room_id.ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "Missing room_id in provider context for internal RTMP playback".to_string(),
+            )
+        })?;
+
+        let media_id = ctx.media_id.ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "Missing media_id in provider context for internal RTMP playback".to_string(),
+            )
+        })?;
+
+        Ok((room_id, media_id))
+    }
+
+    fn validate_config_fields(source_config: &Value) -> Result<(), ProviderError> {
+        // SSRF protection: reject any URL fields in source_config.
+        // RtmpProvider only accepts synctv-managed live stream bindings.
+        for field in FORBIDDEN_URL_FIELDS {
+            if source_config.get(field).is_some() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Field '{field}' is not supported. RtmpProvider does not accept external URLs."
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_config_shape(source_config: &Value) -> Result<(), ProviderError> {
+        for field in ["room_id", "media_id"] {
+            if source_config.get(field).is_some() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Field '{field}' is not supported. Internal RTMP media identity comes from runtime context."
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_proxy_action(
         rest: &str,
         versioned: &VersionedPlayback,
         verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
@@ -99,24 +144,18 @@ impl MediaProvider for RtmpProvider {
 
     async fn generate_playback(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        let media_id = source_config
-            .get("media_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
-
-        let room_id = source_config
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
+        Self::validate_config_fields(source_config)?;
+        Self::validate_config_shape(source_config)?;
+        let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
         let result = super::build_live_playback(media_id, room_id);
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
+        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, ctx).await
     }
 
     async fn validate_source_config(
@@ -124,28 +163,8 @@ impl MediaProvider for RtmpProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<(), ProviderError> {
-        // Validate required fields
-        source_config
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
-
-        source_config
-            .get("media_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
-
-        // SSRF protection: reject any URL fields in source_config
-        // RtmpProvider only uses room_id and media_id; URL fields are not supported
-        // and could indicate an attempt to inject external URLs for SSRF attacks.
-        for field in FORBIDDEN_URL_FIELDS {
-            if source_config.get(field).is_some() {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Field '{field}' is not supported. RtmpProvider does not accept external URLs."
-                )));
-            }
-        }
-
+        Self::validate_config_fields(source_config)?;
+        Self::validate_config_shape(source_config)?;
         Ok(())
     }
 
@@ -166,7 +185,7 @@ impl ProviderProxy for RtmpProvider {
             .ok_or(ProviderError::NotFound)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
-        Self::build_live_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 
@@ -179,6 +198,7 @@ mod tests {
         ProviderContext::new("synctv")
             .with_user_id("test_user")
             .with_room_id("test_room")
+            .with_media_id("test_media")
     }
 
     #[tokio::test]
@@ -187,9 +207,9 @@ mod tests {
         let ctx = create_context();
 
         let configs_with_urls = vec![
-            json!({"room_id": "r1", "media_id": "m1", "url": "http://evil.com"}),
-            json!({"room_id": "r1", "media_id": "m1", "rtmp_url": "rtmp://evil.com"}),
-            json!({"room_id": "r1", "media_id": "m1", "source_url": "http://evil.com"}),
+            json!({"url": "http://evil.com"}),
+            json!({"rtmp_url": "rtmp://evil.com"}),
+            json!({"source_url": "http://evil.com"}),
         ];
 
         for config in configs_with_urls {
@@ -202,21 +222,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_source_config_accepts_valid_config() {
+    async fn test_validate_source_config_accepts_empty_config() {
         let provider = RtmpProvider::new();
         let ctx = create_context();
 
-        let valid_config = json!({
-            "room_id": "room123",
-            "media_id": "media456"
-        });
-
-        let result = provider.validate_source_config(&ctx, &valid_config).await;
+        let result = provider.validate_source_config(&ctx, &json!({})).await;
         assert!(
             result.is_ok(),
-            "validate_source_config should accept valid config: {:?}",
+            "validate_source_config should accept empty config: {:?}",
             result.err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_rejects_identity_fields() {
+        let provider = RtmpProvider::new();
+        let ctx = create_context();
+
+        let result = provider
+            .validate_source_config(&ctx, &json!({"room_id": "room123"}))
+            .await;
+        assert!(
+            matches!(result, Err(ProviderError::InvalidConfig(_))),
+            "identity fields must be rejected for internal RTMP media"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_accepts_empty_config_without_context_binding() {
+        let provider = RtmpProvider::new();
+        let ctx = ProviderContext::new("synctv");
+
+        let result = provider.validate_source_config(&ctx, &json!({})).await;
+        assert!(
+            result.is_ok(),
+            "creation-time validation should allow deferred room/media binding: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_requires_provider_context_identity() {
+        let provider = RtmpProvider::new();
+        let ctx = ProviderContext::new("synctv");
+
+        let result = provider.generate_playback(&ctx, &json!({})).await;
+        assert!(
+            matches!(result, Err(ProviderError::InvalidConfig(_))),
+            "generate_playback must fail closed when room/media identity is missing from context"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_uses_context_binding_when_source_config_is_empty() {
+        let provider = RtmpProvider::new();
+        let ctx = create_context();
+
+        let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
+
+        assert_eq!(result.metadata.get("room_id"), Some(&json!("test_room")));
+        assert_eq!(result.metadata.get("media_id"), Some(&json!("test_media")));
+        assert!(result.playback_infos.contains_key("hls"));
+        assert!(result.playback_infos.contains_key("flv"));
     }
 
     #[tokio::test]
@@ -230,12 +297,10 @@ mod tests {
         let ctx = ProviderContext::new("synctv")
             .with_user_id("user1")
             .with_room_id("room1")
+            .with_media_id("media1")
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
-        let result = provider
-            .generate_playback(&ctx, &json!({"room_id": "room1", "media_id": "media1"}))
-            .await
-            .unwrap();
+        let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
 
         let hls = result
             .playback_infos
@@ -270,22 +335,18 @@ mod tests {
         let ctx1 = ProviderContext::new("synctv")
             .with_user_id("user1")
             .with_room_id("room1")
+            .with_media_id("media1")
             .with_signing_key(&signing_key)
             .with_store(store.clone());
-        let first = provider
-            .generate_playback(&ctx1, &json!({"room_id": "room1", "media_id": "media1"}))
-            .await
-            .unwrap();
+        let first = provider.generate_playback(&ctx1, &json!({})).await.unwrap();
 
         let ctx2 = ProviderContext::new("synctv")
             .with_user_id("user2")
             .with_room_id("room1")
+            .with_media_id("media1")
             .with_signing_key(&signing_key)
             .with_store(store);
-        let second = provider
-            .generate_playback(&ctx2, &json!({"room_id": "room1", "media_id": "media1"}))
-            .await
-            .unwrap();
+        let second = provider.generate_playback(&ctx2, &json!({})).await.unwrap();
 
         let first_hls = first
             .playback_infos
@@ -337,8 +398,7 @@ mod tests {
             user_id: "user1".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 30,
         };
-        let action =
-            RtmpProvider::build_live_proxy_action("stream", &versioned, Some(&claims)).unwrap();
+        let action = RtmpProvider::build_proxy_action("stream", &versioned, Some(&claims)).unwrap();
         match action {
             ProxyAction::LiveFlv {
                 user_id,
@@ -370,7 +430,7 @@ mod tests {
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let err = RtmpProvider::build_live_proxy_action("stream", &versioned, None).unwrap_err();
+        let err = RtmpProvider::build_proxy_action("stream", &versioned, None).unwrap_err();
         assert!(matches!(err, ProviderError::ApiError(_)));
     }
 }

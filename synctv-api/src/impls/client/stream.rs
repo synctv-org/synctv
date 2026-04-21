@@ -487,4 +487,17 @@ mod stream_tests {
 
         assert_eq!(url, "rtmp://stream.example.com:1935/room_123");
     }
+
+    #[test]
+    fn build_publish_rtmp_url_falls_back_to_local_bind_host_without_explicit_public_host() {
+        let mut config = synctv_core::Config::default();
+        config.server.host = "0.0.0.0".to_string();
+        config.server.advertise_host.clear();
+        config.livestream.public_rtmp_host.clear();
+        config.livestream.rtmp_port = 1935;
+
+        let url = build_publish_rtmp_url(&config, "room_123");
+
+        assert_eq!(url, "rtmp://127.0.0.1:1935/room_123");
+    }
 }

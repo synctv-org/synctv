@@ -1962,10 +1962,10 @@ impl StreamMessageHandler {
 
         if let Some(outcome) = result {
             if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
-                && !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable)
+                && outcome.distributed_delivery_missed()
             {
-                // Critical UserLeft event failed to reach any destination.
-                // This can happen when Redis is temporarily unavailable.
+                // Retry only when distributed delivery was expected but did not happen.
+                // A room with zero remaining subscribers on a single node is not an error.
                 // Spawn a background task to retry the broadcast with exponential backoff.
                 // Use a global semaphore to limit concurrent retry tasks. During mass
                 // disconnects with Redis down, thousands of connections may all try to
@@ -1986,7 +1986,7 @@ impl StreamMessageHandler {
                             user = %username,
                             room = %room_id.as_str(),
                             connection = %connection_id,
-                            "UserLeft broadcast reached no subscribers; starting retry task"
+                            "UserLeft distributed publish missed; starting retry task"
                         );
 
                         spawn_monitored("userleft_retry", async move {
@@ -8973,6 +8973,28 @@ mod tests {
         assert!(
             outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable),
             "single-node mode should not spawn retries when the local subscriber already received UserLeft"
+        );
+        assert!(
+            !outcome.distributed_delivery_missed(),
+            "single-node mode should not treat missing redis delivery as a retry condition"
+        );
+    }
+
+    #[test]
+    fn test_user_left_does_not_retry_when_no_subscribers_exist_and_distributed_backend_is_off() {
+        let outcome = RealtimeDeliveryOutcome::from_broadcast(
+            &synctv_cluster::sync::BroadcastResult {
+                local_sent: 0,
+                redis_sent: false,
+            },
+            crate::runtime::RealtimeMetrics {
+                distributed_enabled: false,
+            },
+        );
+
+        assert!(
+            !outcome.distributed_delivery_missed(),
+            "absence of subscribers without distributed fan-out must not trigger UserLeft retries"
         );
     }
 

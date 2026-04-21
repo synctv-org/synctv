@@ -142,7 +142,7 @@ redis = { version = "1.0", features = [
 
 # Security
 argon2 = "0.5.3"
-jsonwebtoken = { version = "10.3.0" }
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
 aes-gcm = "0.10.3"
 ammonia = "4.1.2"

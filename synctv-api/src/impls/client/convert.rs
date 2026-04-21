@@ -175,6 +175,16 @@ pub(super) fn hot_room_to_proto(
 }
 
 #[must_use]
+pub(crate) fn normalize_created_room_settings(
+    settings: Option<&synctv_core::models::RoomSettings>,
+    has_password: bool,
+) -> synctv_core::models::RoomSettings {
+    let mut room_settings = settings.cloned().unwrap_or_default();
+    room_settings.require_password = synctv_core::models::room_settings::RequirePassword(has_password);
+    room_settings
+}
+
+#[must_use]
 pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::client::Media {
     media_to_proto_with_availability(media, true)
 }
@@ -640,8 +650,8 @@ fn danmaku_to_proto(
 mod tests {
     use super::{
         bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-        media_to_proto, playlist_to_proto, provider_playback_info_to_model, room_to_proto_basic,
-        sign_local_bilibili_danmaku_urls,
+        media_to_proto, normalize_created_room_settings, playlist_to_proto,
+        provider_playback_info_to_model, room_to_proto_basic, sign_local_bilibili_danmaku_urls,
     };
     use std::collections::HashMap;
     use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
@@ -832,6 +842,23 @@ mod tests {
                 .map(String::as_str),
             Some("dm-secret")
         );
+    }
+
+    #[test]
+    fn normalize_created_room_settings_sets_require_password_when_password_present() {
+        let settings = normalize_created_room_settings(None, true);
+        assert!(settings.require_password.0);
+    }
+
+    #[test]
+    fn normalize_created_room_settings_preserves_other_fields() {
+        let mut source = synctv_core::models::RoomSettings::default();
+        source.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+
+        let settings = normalize_created_room_settings(Some(&source), false);
+
+        assert!(settings.allow_guest_join.0);
+        assert!(!settings.require_password.0);
     }
 
     #[test]

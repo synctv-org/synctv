@@ -233,11 +233,17 @@ impl ClientApiImpl {
 
         // Batch-fetch distributed online user counts (single Redis-backed lookup) to avoid N+1 queries
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
+        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
         let counts = self
             .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
+        let room_settings_map = self
+            .room_service
+            .get_room_settings_batch(&room_id_strs)
+            .await
+            .unwrap_or_default();
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (r, count) in rooms.iter().zip(counts) {
@@ -245,9 +251,10 @@ impl ClientApiImpl {
             let availability = *availability_map
                 .get(&r.id)
                 .unwrap_or(&ClientResourceAvailability::Available);
+            let settings = room_settings_map.get(r.id.as_str());
             room_list.push(room_to_proto_with_availability(
                 r,
-                None,
+                settings,
                 member_count,
                 availability,
             ));
@@ -356,6 +363,10 @@ impl ClientApiImpl {
             validate_password_for_set(&req.password)?;
             Some(req.password)
         };
+        let response_settings = crate::impls::client::convert::normalize_created_room_settings(
+            settings.as_ref(),
+            password.is_some(),
+        );
         let cluster_event = self.room_lifecycle_fanout.reserve_room_created().await?;
 
         let (room, _member) = self
@@ -376,7 +387,7 @@ impl ClientApiImpl {
             .ok();
 
         Ok(crate::proto::client::CreateRoomResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(&room, Some(&response_settings), member_count)),
         })
     }
 

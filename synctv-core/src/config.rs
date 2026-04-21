@@ -1610,6 +1610,20 @@ impl Config {
             || get_env("POD_IP").is_some_and(|value| !value.is_empty())
     }
 
+    fn local_publish_host(&self) -> String {
+        let host = match self.server.host.trim() {
+            "" | "0.0.0.0" => "127.0.0.1".to_string(),
+            "::" | "[::]" => "::1".to_string(),
+            host => host.to_string(),
+        };
+
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host
+        }
+    }
+
     /// Get the unified API address advertised to other cluster nodes.
     #[must_use]
     pub fn advertise_api_address(&self) -> String {
@@ -1619,11 +1633,19 @@ impl Config {
     /// Public RTMP host for publisher-facing URLs.
     #[must_use]
     pub fn public_rtmp_host(&self) -> String {
-        if self.livestream.public_rtmp_host.is_empty() {
-            self.advertise_host()
-        } else {
-            self.livestream.public_rtmp_host.clone()
+        if !self.livestream.public_rtmp_host.is_empty() {
+            return self.livestream.public_rtmp_host.clone();
         }
+
+        if !self.server.advertise_host.is_empty() {
+            return self.server.advertise_host.clone();
+        }
+
+        if let Some(pod_ip) = process_env("POD_IP").filter(|value| !value.is_empty()) {
+            return pod_ip;
+        }
+
+        self.local_publish_host()
     }
 
     /// Apply environment variable overrides using single-underscore format.
@@ -3237,7 +3259,10 @@ impl Config {
 }
 
 fn is_cli_only_synctv_env_var(key: &str) -> bool {
-    matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT")
+    matches!(
+        key,
+        "SYNCTV_MANAGEMENT_ENDPOINT" | "SYNCTV_CREDENTIAL_ENCRYPTION_KEY"
+    )
 }
 
 /// Connection limits configuration
@@ -5227,6 +5252,45 @@ jwt:
         config.livestream.public_rtmp_host = "stream.example.com".to_string();
 
         assert_eq!(config.public_rtmp_host(), "stream.example.com");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_prefers_explicit_advertise_host_when_no_public_override() {
+        let mut config = Config::default();
+        config.server.host = "0.0.0.0".to_string();
+        config.server.advertise_host = "10.0.0.12".to_string();
+
+        assert_eq!(config.public_rtmp_host(), "10.0.0.12");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_falls_back_to_local_loopback_for_wildcard_bind() {
+        let mut config = Config::default();
+        config.server.host = "0.0.0.0".to_string();
+        config.server.advertise_host.clear();
+        config.livestream.public_rtmp_host.clear();
+
+        assert_eq!(config.public_rtmp_host(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_falls_back_to_bound_host_when_specific() {
+        let mut config = Config::default();
+        config.server.host = "192.168.10.15".to_string();
+        config.server.advertise_host.clear();
+        config.livestream.public_rtmp_host.clear();
+
+        assert_eq!(config.public_rtmp_host(), "192.168.10.15");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_formats_ipv6_bind_host_for_urls() {
+        let mut config = Config::default();
+        config.server.host = "::".to_string();
+        config.server.advertise_host.clear();
+        config.livestream.public_rtmp_host.clear();
+
+        assert_eq!(config.public_rtmp_host(), "[::1]");
     }
 
     #[test]

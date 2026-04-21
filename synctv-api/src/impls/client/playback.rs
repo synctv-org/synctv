@@ -219,7 +219,8 @@ impl ClientApiImpl {
         };
 
         let ctx = self.attach_provider_store(
-            self.build_provider_context(user_id, room_id, request_control),
+            self.build_provider_context(user_id, room_id, request_control)
+                .with_media_id(media.id.as_str()),
             provider.as_ref(),
         );
         let provider_result = provider

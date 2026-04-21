@@ -1781,30 +1781,54 @@ fn stop_server_event_stream(
     receiver: tokio::sync::broadcast::Receiver<LifecycleEvent>,
 ) -> impl Stream<Item = Result<StopServerEvent, Status>> + Send + 'static {
     futures::stream::unfold(
-        (Some(snapshot), Some(requested_event), receiver, false),
-        |(snapshot, requested_event, mut receiver, done)| async move {
+        (
+            Some(snapshot),
+            Some(requested_event),
+            receiver,
+            None::<u64>,
+            false,
+        ),
+        |(snapshot, requested_event, mut receiver, last_sequence, done)| async move {
             if done {
                 return None;
             }
 
             if let Some(snapshot) = snapshot {
-                let done = snapshot.terminal;
+                let (event, done) = stop_server_stream_event(&snapshot);
                 return Some((
-                    Ok(snapshot.to_proto()),
-                    (None, requested_event, receiver, done),
+                    Ok(event),
+                    (
+                        None,
+                        requested_event,
+                        receiver,
+                        Some(snapshot.sequence),
+                        done,
+                    ),
                 ));
             }
 
             if let Some(requested_event) = requested_event {
-                let done = requested_event.terminal;
-                return Some((Ok(requested_event.to_proto()), (None, None, receiver, done)));
+                if last_sequence == Some(requested_event.sequence) {
+                    // The broadcast receiver may observe the same shutdown-request event.
+                    // Suppress the duplicate and continue with later lifecycle updates.
+                } else {
+                    let (event, done) = stop_server_stream_event(&requested_event);
+                    return Some((
+                        Ok(event),
+                        (None, None, receiver, Some(requested_event.sequence), done),
+                    ));
+                }
             }
 
             loop {
                 match receiver.recv().await {
                     Ok(event) => {
-                        let done = event.terminal;
-                        return Some((Ok(event.to_proto()), (None, None, receiver, done)));
+                        if last_sequence == Some(event.sequence) {
+                            continue;
+                        }
+                        let sequence = event.sequence;
+                        let (event, done) = stop_server_stream_event(&event);
+                        return Some((Ok(event), (None, None, receiver, Some(sequence), done)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
@@ -1812,6 +1836,14 @@ fn stop_server_event_stream(
             }
         },
     )
+}
+
+fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
+    let terminal =
+        event.terminal || matches!(event.stage, crate::lifecycle::LifecycleStage::Finalizing);
+    let mut proto = event.to_proto();
+    proto.terminal = terminal;
+    (proto, terminal)
 }
 
 fn map_user_role(role: i32) -> i32 {
@@ -1918,7 +1950,9 @@ fn map_api_error(err: &ApiError) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_client_actor_user, ManagementAccessController};
+    use super::{stop_server_event_stream, validate_client_actor_user, ManagementAccessController};
+    use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
+    use futures::TryStreamExt;
     use synctv_core::models::{SignupMethod, User, UserStatus};
     use tonic::{Code, Request};
 
@@ -2044,5 +2078,37 @@ mod tests {
         controller
             .authorize(&request)
             .expect("matching management bearer token should be accepted");
+    }
+
+    #[tokio::test]
+    async fn stop_server_stream_ends_at_finalizing_without_duplicate_shutdown_requested() {
+        let controller = ManagementLifecycleController::new();
+        let subscription = controller.subscribe();
+        let requested_event = controller.request_shutdown(ShutdownMode::Graceful);
+        controller.publish_finalizing();
+        controller.publish_completed();
+
+        let events = stop_server_event_stream(
+            subscription.snapshot,
+            requested_event,
+            subscription.receiver,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("stop server stream should not fail");
+
+        let stages = events.iter().map(|event| event.stage).collect::<Vec<_>>();
+        assert_eq!(
+            stages,
+            vec![
+                LifecycleStage::Ready.as_proto(),
+                LifecycleStage::ShutdownRequested.as_proto(),
+                LifecycleStage::Finalizing.as_proto(),
+            ]
+        );
+        assert!(
+            events.last().is_some_and(|event| event.terminal),
+            "finalizing must terminate the stop stream before server shutdown waits on the RPC"
+        );
     }
 }

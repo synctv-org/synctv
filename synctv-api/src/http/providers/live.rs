@@ -244,7 +244,7 @@ pub(crate) async fn handle_room_streams(
 )]
 pub(crate) const fn live_proxy_room_streams_doc() {}
 
-pub(crate) async fn execute_live_proxy_action(
+pub(crate) async fn execute_live_stream_action(
     state: &AppState,
     action: ProxyAction,
     raw_query: Option<&str>,
@@ -290,8 +290,8 @@ pub(crate) async fn execute_live_proxy_action(
             disguised_as_png,
         } => execute_hls_segment(state, &room_id, &media_id, &segment_name, disguised_as_png).await,
         other => {
-            tracing::error!(action = ?other, "execute_live_proxy_action received unsupported action");
-            Err(AppError::internal("Unsupported live proxy action"))
+            tracing::error!(action = ?other, "execute_live_stream_action received unsupported action");
+            Err(AppError::internal("Unsupported live stream proxy action"))
         }
     }
 }

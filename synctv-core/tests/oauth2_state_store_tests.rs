@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use synctv_core::service::{oauth2::RedisOAuthStateStore, OAuth2State, OAuthStateStore};
-use synctv_core_testing::start_redis as start_test_redis;
+use synctv_core_testing::{start_redis as start_test_redis, test_redis_key_prefix};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (
@@ -16,6 +16,23 @@ async fn start_redis() -> (
     redis::aio::ConnectionManager,
 ) {
     start_test_redis().await
+}
+
+fn prefixed_store(
+    conn: redis::aio::ConnectionManager,
+    label: &str,
+) -> (
+    RedisOAuthStateStore,
+    Arc<RwLock<redis::aio::ConnectionManager>>,
+    String,
+) {
+    let shared_conn = Arc::new(RwLock::new(conn));
+    let key_prefix = test_redis_key_prefix(label);
+    let store = RedisOAuthStateStore::from_runtime(
+        synctv_core::shared_runtime(shared_conn.clone()),
+        key_prefix.clone(),
+    );
+    (store, shared_conn, key_prefix)
 }
 
 fn make_state(instance_name: &str) -> OAuth2State {
@@ -32,10 +49,7 @@ fn make_state(instance_name: &str) -> OAuth2State {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_store_and_consume() {
     let (_container, conn) = start_redis().await;
-    let store = RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    );
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-store-consume");
 
     let state = make_state("github");
     let ttl = std::time::Duration::from_mins(1);
@@ -63,10 +77,8 @@ async fn test_redis_oauth_state_store_and_consume() {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_consume_is_atomic() {
     let (_container, conn) = start_redis().await;
-    let store = Arc::new(RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    ));
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-atomic");
+    let store = Arc::new(store);
 
     let state = make_state("atomic_test");
     let ttl = std::time::Duration::from_mins(1);
@@ -105,10 +117,7 @@ async fn test_redis_oauth_state_consume_is_atomic() {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_ttl_expiry() {
     let (_container, conn) = start_redis().await;
-    let store = RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    );
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-ttl");
 
     let state = make_state("ttl_test");
     let ttl = std::time::Duration::from_secs(1);
@@ -135,10 +144,8 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
     use tokio::sync::Barrier;
 
     let (_container, conn) = start_redis().await;
-    let store = Arc::new(RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    ));
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-barrier");
+    let store = Arc::new(store);
 
     let state = make_state("barrier_test");
     let ttl = std::time::Duration::from_mins(1);
@@ -196,10 +203,7 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_multiple_tokens_isolated() {
     let (_container, conn) = start_redis().await;
-    let store = RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    );
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-multi");
 
     let ttl = std::time::Duration::from_mins(1);
 
@@ -241,10 +245,7 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
 #[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_created_at_expiry_check() {
     let (_container, conn) = start_redis().await;
-    let store = RedisOAuthStateStore::from_runtime(
-        synctv_core::shared_runtime(Arc::new(RwLock::new(conn))),
-        "",
-    );
+    let (store, _shared_conn, _key_prefix) = prefixed_store(conn, "oauth2-state-created-at");
 
     let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
@@ -275,9 +276,10 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
 async fn test_redis_oauth_state_store_uses_configured_key_prefix() {
     let (_container, conn) = start_redis().await;
     let shared_conn = Arc::new(RwLock::new(conn));
+    let key_prefix = format!("{}tenant-a", test_redis_key_prefix("oauth2-state-prefixed"));
     let store = RedisOAuthStateStore::from_runtime(
         synctv_core::shared_runtime(shared_conn.clone()),
-        "tenant-a",
+        key_prefix.clone(),
     );
 
     let state = make_state("prefixed");
@@ -289,7 +291,7 @@ async fn test_redis_oauth_state_store_uses_configured_key_prefix() {
     let mut raw_conn = shared_conn.read().await.clone();
 
     let prefixed_exists: bool = raw_conn
-        .exists("tenant-a:oauth2:state:prefixed_token")
+        .exists(format!("{key_prefix}:oauth2:state:prefixed_token"))
         .await
         .expect("prefixed key existence check should succeed");
     assert!(

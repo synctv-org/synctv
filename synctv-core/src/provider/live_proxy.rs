@@ -1,7 +1,8 @@
 //! `LiveProxy` `MediaProvider`
 //!
 //! Provides playback URLs for live streams sourced from external URLs.
-//! The external source URL is stored in `source_config`, and playback URLs
+//! The external source URL is stored in `source_config`, while the internal
+//! room/media binding comes from the runtime provider context. Playback URLs
 //! point to synctv's own HTTP-FLV and HLS endpoints (same as `RtmpProvider`).
 //!
 //! The `PullStreamManager` handles the actual pulling from the external source.
@@ -19,7 +20,8 @@ use std::time::Duration;
 ///
 /// Generates playback URLs for live streams from external sources.
 /// The external URL is stored in `source_config.url` and validated on creation.
-/// Playback URLs point to synctv's own HLS/FLV endpoints.
+/// Playback URLs point to synctv's own HLS/FLV endpoints. Internal room/media
+/// identity is injected at playback time through `ProviderContext`.
 pub struct LiveProxyProvider {}
 
 impl Default for LiveProxyProvider {
@@ -74,7 +76,43 @@ impl LiveProxyProvider {
         Ok(())
     }
 
-    fn build_live_proxy_action(
+    fn resolve_live_binding<'a>(
+        ctx: &'a ProviderContext<'a>,
+    ) -> Result<(&'a str, &'a str), ProviderError> {
+        let room_id = ctx.room_id.ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "Missing room_id in provider context for live proxy playback".to_string(),
+            )
+        })?;
+
+        let media_id = ctx.media_id.ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "Missing media_id in provider context for live proxy playback".to_string(),
+            )
+        })?;
+
+        Ok((room_id, media_id))
+    }
+
+    fn validate_config_shape(source_config: &Value) -> Result<(), ProviderError> {
+        for field in [
+            "room_id",
+            "media_id",
+            "rtmp_url",
+            "source_url",
+            "stream_url",
+        ] {
+            if source_config.get(field).is_some() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Field '{field}' is not supported. Live proxy source_config only accepts 'url'; internal room/media identity comes from runtime context."
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_proxy_action(
         rest: &str,
         versioned: &VersionedPlayback,
         verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
@@ -134,18 +172,11 @@ impl MediaProvider for LiveProxyProvider {
 
     async fn generate_playback(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        let media_id = source_config
-            .get("media_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
-
-        let room_id = source_config
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
+        Self::validate_config_shape(source_config)?;
+        let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
         let source_url = source_config
             .get("url")
@@ -167,7 +198,7 @@ impl MediaProvider for LiveProxyProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
+        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, ctx).await
     }
 
     async fn validate_source_config(
@@ -175,21 +206,13 @@ impl MediaProvider for LiveProxyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<(), ProviderError> {
+        Self::validate_config_shape(source_config)?;
+
         // Validate required fields
         let url = source_config
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
-
-        source_config
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
-
-        source_config
-            .get("media_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
 
         Self::validate_live_source_url(url)
     }
@@ -211,7 +234,7 @@ impl ProviderProxy for LiveProxyProvider {
             .ok_or(ProviderError::NotFound)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
-        Self::build_live_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_proxy_action(rest, &versioned, ctx.verified_claims)
     }
 }
 
@@ -223,12 +246,12 @@ mod tests {
     #[tokio::test]
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
         let provider = LiveProxyProvider::new();
-        let ctx = ProviderContext::new("test");
+        let ctx = ProviderContext::new("test")
+            .with_room_id("room-123")
+            .with_media_id("media-456");
 
         let source_config = json!({
-            "url": "rtmp://secret-internal-server.local/live/stream-key",
-            "room_id": "room-123",
-            "media_id": "media-456"
+            "url": "rtmp://secret-internal-server.local/live/stream-key"
         });
 
         let result = provider
@@ -263,12 +286,12 @@ mod tests {
     #[tokio::test]
     async fn test_live_proxy_metadata_contains_provider_tag() {
         let provider = LiveProxyProvider::new();
-        let ctx = ProviderContext::new("test");
+        let ctx = ProviderContext::new("test")
+            .with_room_id("room-1")
+            .with_media_id("media-1");
 
         let source_config = json!({
-            "url": "rtmp://example.com/live/stream",
-            "room_id": "room-1",
-            "media_id": "media-1"
+            "url": "rtmp://example.com/live/stream"
         });
 
         let result = provider
@@ -293,13 +316,11 @@ mod tests {
         let ctx = ProviderContext::new("synctv")
             .with_user_id("user1")
             .with_room_id("room1")
+            .with_media_id("media1")
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
         let result = provider
-            .generate_playback(
-                &ctx,
-                &json!({"room_id": "room1", "media_id": "media1", "url": "rtmp://example.com/live/stream"}),
-            )
+            .generate_playback(&ctx, &json!({"url": "rtmp://example.com/live/stream"}))
             .await
             .unwrap();
 
@@ -330,14 +351,10 @@ mod tests {
 
         for config in [
             json!({
-                "url": "rtmp://localhost/live/stream",
-                "room_id": "room-123",
-                "media_id": "media-456"
+                "url": "rtmp://localhost/live/stream"
             }),
             json!({
-                "url": "http://127.0.0.1/live/stream.flv",
-                "room_id": "room-123",
-                "media_id": "media-456"
+                "url": "http://127.0.0.1/live/stream.flv"
             }),
         ] {
             let err = provider
@@ -349,5 +366,38 @@ mod tests {
                 ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_rejects_internal_identity_fields() {
+        let provider = LiveProxyProvider::new();
+        let ctx = ProviderContext::new("test");
+
+        let err = provider
+            .validate_source_config(
+                &ctx,
+                &json!({"url": "rtmp://example.com/live/stream", "room_id": "room-123"}),
+            )
+            .await
+            .expect_err("live_proxy source_config must not persist internal identity");
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg) if msg.contains("runtime context")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_generate_playback_requires_runtime_binding() {
+        let provider = LiveProxyProvider::new();
+        let ctx = ProviderContext::new("test");
+
+        let err = provider
+            .generate_playback(&ctx, &json!({"url": "rtmp://example.com/live/stream"}))
+            .await
+            .expect_err("live proxy playback must fail closed without room/media binding");
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg) if msg.contains("provider context")
+        ));
     }
 }

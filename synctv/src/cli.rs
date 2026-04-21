@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
@@ -990,7 +991,12 @@ impl ActorUserArgs {
 ))]
 pub struct RoomCreatorRefArgs {
     /// Exact creator username used to filter rooms
-    #[arg(long, value_name = "USERNAME", group = "room_creator_ref")]
+    #[arg(
+        long = "creator-username",
+        visible_alias = "creator",
+        value_name = "USERNAME",
+        group = "room_creator_ref"
+    )]
     pub creator: Option<String>,
 
     /// Explicit creator internal user ID used to filter rooms
@@ -1182,8 +1188,8 @@ pub struct UserAddArgs {
     #[arg(long, value_enum, default_value_t = CliUserRole::User)]
     pub role: CliUserRole,
 
-    #[arg(long, value_enum)]
-    pub status: Option<CliUserStatus>,
+    #[arg(long, value_enum, default_value_t = CliUserStatus::Active)]
+    pub status: CliUserStatus,
 }
 
 #[derive(Debug, Args)]
@@ -1226,6 +1232,12 @@ pub struct UserApproveArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("user_role_input")
+        .args(["role", "role_arg"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct UserSetRoleArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -1233,8 +1245,19 @@ pub struct UserSetRoleArgs {
     #[command(flatten)]
     pub user: UserRefArgs,
 
-    #[arg(long, value_enum)]
-    pub role: CliUserRole,
+    #[arg(long, value_enum, group = "user_role_input")]
+    pub role: Option<CliUserRole>,
+
+    #[arg(value_enum, hide = true, group = "user_role_input")]
+    pub role_arg: Option<CliUserRole>,
+}
+
+impl UserSetRoleArgs {
+    fn resolved_role(&self) -> CliUserRole {
+        self.role
+            .or(self.role_arg)
+            .expect("clap should require one role value for user set-role")
+    }
 }
 
 #[derive(Debug, Args)]
@@ -1436,12 +1459,36 @@ pub struct RoomMemberUnbanArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("room_settings_scope")
+        .args(["room_id", "room_id_flag"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct RoomSettingsScopeArgs {
+    #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
+    pub room_id: Option<String>,
+
+    #[arg(long = "room-id", value_name = "ROOM_ID", allow_hyphen_values = true)]
+    pub room_id_flag: Option<String>,
+}
+
+impl RoomSettingsScopeArgs {
+    fn resolved_room_id(&self) -> &str {
+        self.room_id
+            .as_deref()
+            .or(self.room_id_flag.as_deref())
+            .expect("clap should require one room identifier for room settings")
+    }
+}
+
+#[derive(Debug, Args)]
 pub struct RoomSettingsGetArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub room_id: String,
+    #[command(flatten)]
+    pub room: RoomSettingsScopeArgs,
 }
 
 #[derive(Debug, Args)]
@@ -1449,9 +1496,10 @@ pub struct RoomSettingsUpdateArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub room_id: String,
+    #[command(flatten)]
+    pub room: RoomSettingsScopeArgs,
 
+    /// Partial JSON object patch merged onto the current room settings before submission
     #[arg(long)]
     pub settings_json: String,
 }
@@ -1461,8 +1509,8 @@ pub struct RoomSettingsResetArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub room_id: String,
+    #[command(flatten)]
+    pub room: RoomSettingsScopeArgs,
 }
 
 #[derive(Debug, Args)]
@@ -1530,24 +1578,67 @@ pub struct RoomApproveArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("room_batch_ids")
+        .args(["room_ids", "room_id_flags"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct RoomBatchBanArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(long = "room-id", value_name = "ROOM_ID", required = true, num_args = 1..)]
+    #[arg(value_name = "ROOM_ID", num_args = 1.., group = "room_batch_ids")]
     pub room_ids: Vec<String>,
+
+    #[arg(long = "room-id", value_name = "ROOM_ID", num_args = 1.., group = "room_batch_ids")]
+    pub room_id_flags: Vec<String>,
 
     #[arg(long)]
     pub reason: Option<String>,
 }
 
+impl RoomBatchBanArgs {
+    fn resolved_room_ids(&self) -> Vec<String> {
+        self.room_ids
+            .iter()
+            .chain(self.room_id_flags.iter())
+            .cloned()
+            .collect()
+    }
+}
+
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("room_batch_delete_ids")
+        .args(["room_ids", "room_id_flags"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct RoomBatchDeleteArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
-    #[arg(long = "room-id", value_name = "ROOM_ID", required = true, num_args = 1..)]
+    #[arg(value_name = "ROOM_ID", num_args = 1.., group = "room_batch_delete_ids")]
     pub room_ids: Vec<String>,
+
+    #[arg(
+        long = "room-id",
+        value_name = "ROOM_ID",
+        num_args = 1..,
+        group = "room_batch_delete_ids"
+    )]
+    pub room_id_flags: Vec<String>,
+}
+
+impl RoomBatchDeleteArgs {
+    fn resolved_room_ids(&self) -> Vec<String> {
+        self.room_ids
+            .iter()
+            .chain(self.room_id_flags.iter())
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Args)]
@@ -1614,6 +1705,12 @@ pub struct RoomStreamInfoArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("stream_publish_media_ref")
+        .args(["media_id", "media_id_flag"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct RoomStreamPublishKeyArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
@@ -1621,8 +1718,25 @@ pub struct RoomStreamPublishKeyArgs {
     #[command(flatten)]
     pub actor: ActorUserArgs,
 
-    #[arg(allow_hyphen_values = true)]
-    pub media_id: String,
+    #[arg(value_name = "MEDIA_ID", allow_hyphen_values = true, group = "stream_publish_media_ref")]
+    pub media_id: Option<String>,
+
+    #[arg(
+        long = "media-id",
+        value_name = "MEDIA_ID",
+        allow_hyphen_values = true,
+        group = "stream_publish_media_ref"
+    )]
+    pub media_id_flag: Option<String>,
+}
+
+impl RoomStreamPublishKeyArgs {
+    fn resolved_media_id(&self) -> &str {
+        self.media_id
+            .as_deref()
+            .or(self.media_id_flag.as_deref())
+            .expect("clap should require one media identifier for room stream publish-key")
+    }
 }
 
 #[derive(Debug, Args)]
@@ -2143,10 +2257,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Provider(provider) => execute_provider(provider).await,
         Commands::Settings(settings) => execute_settings(settings).await,
         Commands::System(system) => execute_system(system).await,
-        Commands::Completion(args) => {
-            execute_completion(&args);
-            Ok(())
-        }
+        Commands::Completion(args) => execute_completion(&args),
         Commands::Version => {
             println!("{}", version_string());
             Ok(())
@@ -2377,12 +2488,16 @@ async fn spawn_daemonized_serve(
     })?;
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let mut child = tokio::process::Command::new(current_exe)
+    let mut command = tokio::process::Command::new(current_exe);
+    command
         .args(std::env::args_os().skip(1))
         .env(INTERNAL_DAEMON_CHILD_ENV, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
+        .stderr(Stdio::from(stderr));
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .context("failed to spawn daemon child process")?;
 
@@ -2572,6 +2687,12 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
                 }
             }
             Ok(None) => {
+                synthesize_stop_completion_if_needed(
+                    args.remote.output,
+                    &mut last_stage,
+                    &mut saw_terminal,
+                    &mut events,
+                );
                 if stop_stream_end_can_be_treated_as_success(last_stage) {
                     print_stop_output(
                         args.remote.output,
@@ -2587,6 +2708,12 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
                 break;
             }
             Err(error) => {
+                synthesize_stop_completion_if_needed(
+                    args.remote.output,
+                    &mut last_stage,
+                    &mut saw_terminal,
+                    &mut events,
+                );
                 if stop_stream_disconnect_can_be_treated_as_success(last_stage, &error) {
                     print_stop_output(
                         args.remote.output,
@@ -2603,6 +2730,13 @@ async fn execute_stop(args: StopArgs) -> Result<()> {
             }
         }
     }
+
+    synthesize_stop_completion_if_needed(
+        args.remote.output,
+        &mut last_stage,
+        &mut saw_terminal,
+        &mut events,
+    );
 
     if !saw_terminal {
         bail!("management stop stream ended before terminal shutdown status")
@@ -2628,6 +2762,32 @@ const fn stop_stream_end_can_be_treated_as_success(
         last_stage,
         Some(management_proto::StopServerStage::Finalizing)
     )
+}
+
+fn synthesize_stop_completion_if_needed(
+    format: RemoteOutputFormat,
+    last_stage: &mut Option<management_proto::StopServerStage>,
+    saw_terminal: &mut bool,
+    events: &mut Vec<StopServerEventOutput>,
+) {
+    if !matches!(
+        *last_stage,
+        Some(management_proto::StopServerStage::Finalizing)
+    ) {
+        return;
+    }
+
+    if format == RemoteOutputFormat::Human {
+        println!("shutdown complete");
+    }
+
+    events.push(StopServerEventOutput {
+        stage: stop_server_stage_name(management_proto::StopServerStage::Completed),
+        message: "shutdown complete".to_string(),
+        terminal: true,
+    });
+    *last_stage = Some(management_proto::StopServerStage::Completed);
+    *saw_terminal = true;
 }
 
 fn stop_stream_disconnect_can_be_treated_as_success(
@@ -2787,10 +2947,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     password: args.password,
                     email: args.email.unwrap_or_default(),
                     role: args.role.to_proto(),
-                    status: args.status.map_or(
-                        management_proto::UserStatus::Unspecified as i32,
-                        CliUserStatus::to_proto,
-                    ),
+                    status: args.status.to_proto(),
                 }
             )?;
             args.remote.print_output(&response)
@@ -2845,16 +3002,20 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let user_id = resolve_user_ref(&session, &args.user).await?;
+            let role = args.resolved_role();
             let response = management_unary_call!(
                 session,
                 "update user role",
                 update_user_role,
                 management_proto::UpdateUserRoleRequest {
                     user_id,
-                    role: args.role.to_proto(),
+                    role: role.to_proto(),
                 }
             )?;
-            args.remote.print_output(&response)
+            args.remote.print_output(&UserMutationCliOutput {
+                success: true,
+                user: response.user,
+            })
         }
         UserSubcommand::SetPassword(args) => {
             let session = connect_remote_access(&args.remote).await?;
@@ -2864,12 +3025,20 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                 "update user password",
                 update_user_password,
                 management_proto::UpdateUserPasswordRequest {
-                    user_id,
+                    user_id: user_id.clone(),
                     new_password: args.new_password,
                     reason: args.reason.unwrap_or_default(),
                 }
             )?;
-            args.remote.print_output(&response)
+            let user = if response.success {
+                fetch_admin_user_for_cli(&session, &user_id).await
+            } else {
+                None
+            };
+            args.remote.print_output(&UserMutationCliOutput {
+                success: response.success,
+                user,
+            })
         }
         UserSubcommand::SetUsername(args) => {
             let session = connect_remote_access(&args.remote).await?;
@@ -2883,7 +3052,10 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     new_username: args.new_username,
                 }
             )?;
-            args.remote.print_output(&response)
+            args.remote.print_output(&UserMutationCliOutput {
+                success: true,
+                user: response.user,
+            })
         }
         UserSubcommand::Rooms(args) => {
             let session = connect_remote_access(&args.remote).await?;
@@ -3075,22 +3247,31 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room settings",
                     get_room_settings,
                     management_proto::GetRoomSettingsRequest {
-                        room_id: args.room_id,
+                        room_id: args.room.resolved_room_id().to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
             }
             RoomSettingsSubcommand::Update(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let room_id = args.room.resolved_room_id().to_string();
+                let current = management_unary_call!(
+                    session,
+                    "get room settings",
+                    get_room_settings,
+                    management_proto::GetRoomSettingsRequest {
+                        room_id: room_id.clone(),
+                    }
+                )?;
                 let response = management_unary_call!(
                     session,
                     "update room settings",
                     update_room_settings,
                     management_proto::UpdateRoomSettingsRequest {
-                        room_id: args.room_id,
-                        settings_json: optional_json_bytes(
-                            "settings_json",
-                            Some(args.settings_json.as_str()),
+                        room_id,
+                        settings_json: merge_room_settings_patch_json(
+                            &current.settings,
+                            args.settings_json.as_str(),
                         )?,
                     }
                 )?;
@@ -3103,7 +3284,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "reset room settings",
                     reset_room_settings,
                     management_proto::ResetRoomSettingsRequest {
-                        room_id: args.room_id,
+                        room_id: args.room.resolved_room_id().to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -3218,37 +3399,48 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         room_id: args.room.room_id,
                     }
                 )?;
-                args.room.remote.print_output(&response)
+                let output = build_get_playback_cli_output(response, &args.room.remote.global);
+                args.room.remote.print_output(&output)
             }
             RoomPlaybackSubcommand::Start(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
-                let response = management_unary_call!(
+                let room_id = args.room.room_id;
+                let media_id = args.media_id;
+                let playlist_id = args.playlist_id;
+                let target_json = args.target_json;
+                management_unary_call!(
                     session,
                     "start room playback",
                     start_playback,
                     management_proto::StartPlaybackRequest {
-                        room_id: args.room.room_id,
-                        media_id: args.media_id.unwrap_or_default(),
-                        playlist_id: args.playlist_id.unwrap_or_default(),
-                        target_json: optional_json_bytes(
-                            "target_json",
-                            args.target_json.as_deref()
-                        )?,
+                        room_id: room_id.clone(),
+                        media_id: media_id.clone().unwrap_or_default(),
+                        playlist_id: playlist_id.clone().unwrap_or_default(),
+                        target_json: optional_json_bytes("target_json", target_json.as_deref())?,
                     }
                 )?;
-                args.room.remote.print_output(&response)
+                args.room.remote.print_output(&PlaybackStartCliOutput {
+                    success: true,
+                    room_id,
+                    media_id,
+                    playlist_id,
+                })
             }
             RoomPlaybackSubcommand::Stop(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
-                let response = management_unary_call!(
+                let room_id = args.room.room_id;
+                management_unary_call!(
                     session,
                     "stop room playback",
                     stop_playback,
                     management_proto::StopPlaybackRequest {
-                        room_id: args.room.room_id,
+                        room_id: room_id.clone(),
                     }
                 )?;
-                args.room.remote.print_output(&response)
+                args.room.remote.print_output(&PlaybackStopCliOutput {
+                    success: true,
+                    room_id,
+                })
             }
         },
         RoomSubcommand::Stream(stream_command) => match stream_command.command {
@@ -3288,14 +3480,16 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             RoomStreamSubcommand::PublishKey(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
                 let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+                let room_id = args.room.room_id.clone();
+                let media_id = args.resolved_media_id().to_string();
                 let response = management_unary_call!(
                     session,
                     "create room publish key",
                     create_publish_key,
                     management_proto::CreatePublishKeyRequest {
                         actor_user_id,
-                        room_id: args.room.room_id,
-                        media_id: args.media_id,
+                        room_id,
+                        media_id,
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -3309,7 +3503,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "batch ban rooms",
                     batch_ban_rooms,
                     management_proto::BatchBanRoomsRequest {
-                        room_ids: args.room_ids,
+                        room_ids: args.resolved_room_ids(),
                         reason: args.reason.unwrap_or_default(),
                     }
                 )?;
@@ -3322,7 +3516,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "batch delete rooms",
                     batch_delete_rooms,
                     management_proto::BatchDeleteRoomsRequest {
-                        room_ids: args.room_ids,
+                        room_ids: args.resolved_room_ids(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -3862,17 +4056,25 @@ async fn execute_system(system_command: SystemCommand) -> Result<()> {
             }
             SystemStreamSubcommand::Kick(args) => {
                 let session = connect_remote_access(&args.remote).await?;
-                let response = management_unary_call!(
+                let room_id = args.room_id;
+                let media_id = args.media_id;
+                let reason = args.reason;
+                management_unary_call!(
                     session,
                     "kick active stream",
                     kick_stream,
                     management_proto::KickStreamRequest {
-                        room_id: args.room_id,
-                        media_id: args.media_id,
-                        reason: args.reason.unwrap_or_default(),
+                        room_id: room_id.clone(),
+                        media_id: media_id.clone(),
+                        reason: reason.clone().unwrap_or_default(),
                     }
                 )?;
-                args.remote.print_output(&response)
+                args.remote.print_output(&KickStreamCliOutput {
+                    success: true,
+                    room_id,
+                    media_id,
+                    reason,
+                })
             }
         },
     }
@@ -4008,6 +4210,129 @@ async fn resolve_user_ref(session: &RemoteAdminSession, user: &UserRefArgs) -> R
     Ok(user.id)
 }
 
+async fn fetch_admin_user_for_cli(
+    session: &RemoteAdminSession,
+    user_id: &str,
+) -> Option<synctv_proto::admin::AdminUser> {
+    management_unary_call!(
+        session,
+        "get user",
+        get_user,
+        management_proto::GetUserRequest {
+            user_id: user_id.to_string(),
+        }
+    )
+    .ok()
+    .and_then(|response| response.user)
+}
+
+fn infer_cli_api_base_url(global: &GlobalConfigArgs) -> Option<String> {
+    if global.endpoint.is_some() {
+        return None;
+    }
+    let config = CliConfigContext::new(global.clone()).config().ok()?;
+    Some(format!("http://{}", daemon_local_api_probe_address(&config)))
+}
+
+fn absolutize_cli_url(raw: &str, api_base_url: Option<&str>) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        return Some(parsed.to_string());
+    }
+
+    let base = api_base_url?;
+    let base = if base.ends_with('/') {
+        base.to_string()
+    } else {
+        format!("{base}/")
+    };
+    let parsed_base = url::Url::parse(&base).ok()?;
+    parsed_base.join(trimmed).ok().map(|url| url.to_string())
+}
+
+fn build_get_playback_cli_output(
+    response: synctv_proto::client::GetPlaybackResponse,
+    global: &GlobalConfigArgs,
+) -> GetPlaybackCliOutput {
+    let synctv_proto::client::GetPlaybackResponse {
+        playback_state,
+        playback_snapshot,
+    } = response;
+    let api_base_url = infer_cli_api_base_url(global);
+    let mut pull_urls = Vec::new();
+    let mut default_pull_url = None;
+    let mut default_absolute_pull_url = None;
+    let mut hls_pull_url = None;
+    let mut hls_absolute_pull_url = None;
+    let mut flv_pull_url = None;
+    let mut flv_absolute_pull_url = None;
+
+    if let Some(snapshot) = playback_snapshot.as_ref() {
+        let mut modes = snapshot.playback_infos.iter().collect::<Vec<_>>();
+        modes.sort_by(|(left_mode, _), (right_mode, _)| left_mode.cmp(right_mode));
+
+        for (mode, info) in modes {
+            for (index, playback_url) in info.urls.iter().enumerate() {
+                let is_default =
+                    mode == &snapshot.default_mode && info.default_url_index == index as i32;
+                let absolute_url =
+                    absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
+                let output = PlaybackPullUrlCliOutput {
+                    mode: mode.clone(),
+                    format: info.format.clone(),
+                    name: playback_url.name.clone(),
+                    url: playback_url.url.clone(),
+                    absolute_url: absolute_url.clone(),
+                    default: is_default,
+                    headers: playback_url.headers.clone(),
+                    expire_at: playback_url.expire_at,
+                };
+
+                if is_default {
+                    default_pull_url = Some(output.url.clone());
+                    default_absolute_pull_url = output.absolute_url.clone();
+                }
+
+                match info.format.as_str() {
+                    "m3u8" if hls_pull_url.is_none() => {
+                        hls_pull_url = Some(output.url.clone());
+                        hls_absolute_pull_url = output.absolute_url.clone();
+                    }
+                    "flv" if flv_pull_url.is_none() => {
+                        flv_pull_url = Some(output.url.clone());
+                        flv_absolute_pull_url = output.absolute_url.clone();
+                    }
+                    _ => {}
+                }
+
+                pull_urls.push(output);
+            }
+        }
+    }
+
+    let default_mode = playback_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.default_mode.clone())
+        .filter(|mode| !mode.is_empty());
+
+    GetPlaybackCliOutput {
+        playback_state,
+        playback_snapshot,
+        default_mode,
+        pull_urls,
+        default_pull_url,
+        default_absolute_pull_url,
+        hls_pull_url,
+        hls_absolute_pull_url,
+        flv_pull_url,
+        flv_absolute_pull_url,
+    }
+}
+
 async fn resolve_user_refs_batch(
     session: &RemoteAdminSession,
     usernames: &[String],
@@ -4055,6 +4380,41 @@ fn optional_json_bytes(field_name: &str, raw: Option<&str>) -> Result<Vec<u8>> {
                 .with_context(|| format!("{field_name} must be valid JSON"))?;
             serde_json::to_vec(&json)
                 .with_context(|| format!("failed to encode {field_name} as JSON bytes"))
+        }
+    }
+}
+
+fn merge_room_settings_patch_json(current: &[u8], patch_raw: &str) -> Result<Vec<u8>> {
+    let mut current_json = if current.is_empty() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_slice(current).context("current room settings must be valid JSON")?
+    };
+
+    let patch_json: Value =
+        serde_json::from_str(patch_raw).context("settings_json must be valid JSON")?;
+    if !patch_json.is_object() {
+        bail!("settings_json must be a JSON object patch");
+    }
+
+    merge_json_value(&mut current_json, patch_json);
+    serde_json::to_vec(&current_json).context("failed to encode merged room settings as JSON")
+}
+
+fn merge_json_value(base: &mut Value, patch: Value) {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                match base_map.get_mut(&key) {
+                    Some(base_value) => merge_json_value(base_value, patch_value),
+                    None => {
+                        base_map.insert(key, patch_value);
+                    }
+                }
+            }
+        }
+        (base_slot, patch_value) => {
+            *base_slot = patch_value;
         }
     }
 }
@@ -4244,21 +4604,34 @@ fn print_toml(value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn execute_completion(args: &CompletionArgs) {
+fn execute_completion(args: &CompletionArgs) -> Result<()> {
     let mut command = Cli::command();
     match args.shell {
-        CompletionShell::Bash => print_completion(&mut command, clap_complete::Shell::Bash),
-        CompletionShell::Zsh => print_completion(&mut command, clap_complete::Shell::Zsh),
-        CompletionShell::Fish => print_completion(&mut command, clap_complete::Shell::Fish),
+        CompletionShell::Bash => print_completion(&mut command, clap_complete::Shell::Bash)?,
+        CompletionShell::Zsh => print_completion(&mut command, clap_complete::Shell::Zsh)?,
+        CompletionShell::Fish => print_completion(&mut command, clap_complete::Shell::Fish)?,
         CompletionShell::PowerShell => {
-            print_completion(&mut command, clap_complete::Shell::PowerShell);
+            print_completion(&mut command, clap_complete::Shell::PowerShell)?;
         }
-        CompletionShell::Elvish => print_completion(&mut command, clap_complete::Shell::Elvish),
+        CompletionShell::Elvish => print_completion(&mut command, clap_complete::Shell::Elvish)?,
     }
+    Ok(())
 }
 
-fn print_completion(command: &mut clap::Command, shell: clap_complete::Shell) {
-    clap_complete::generate(shell, command, "synctv", &mut std::io::stdout());
+fn print_completion(command: &mut clap::Command, shell: clap_complete::Shell) -> Result<()> {
+    let mut buffer = Vec::new();
+    clap_complete::generate(shell, command, "synctv", &mut buffer);
+
+    let mut stdout = io::stdout().lock();
+    write_completion_output(&mut stdout, &buffer)
+}
+
+fn write_completion_output<W: Write>(writer: &mut W, buffer: &[u8]) -> Result<()> {
+    match writer.write_all(buffer).and_then(|()| writer.flush()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error).context("failed to write shell completion output"),
+    }
 }
 
 pub fn version_string() -> String {
@@ -4553,6 +4926,20 @@ struct HumanUserResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct UserMutationCliOutput {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<synctv_proto::admin::AdminUser>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUserMutationCliOutput {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<HumanAdminUser>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct HumanUsersResponse<T> {
     users: Vec<T>,
     total: i32,
@@ -4635,6 +5022,81 @@ struct HumanPlaylistItemsResponse<P, M> {
 struct HumanGetPlaybackResponse<T> {
     playback_state: Option<T>,
     playback_snapshot: Option<synctv_proto::client::PlaybackSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_mode: Option<String>,
+    pull_urls: Vec<PlaybackPullUrlCliOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_absolute_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hls_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hls_absolute_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flv_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flv_absolute_pull_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PlaybackPullUrlCliOutput {
+    mode: String,
+    format: String,
+    name: String,
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    absolute_url: Option<String>,
+    default: bool,
+    headers: std::collections::HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expire_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GetPlaybackCliOutput {
+    playback_state: Option<synctv_proto::client::PlaybackState>,
+    playback_snapshot: Option<synctv_proto::client::PlaybackSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_mode: Option<String>,
+    pull_urls: Vec<PlaybackPullUrlCliOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_absolute_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hls_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hls_absolute_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flv_pull_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flv_absolute_pull_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PlaybackStartCliOutput {
+    success: bool,
+    room_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playlist_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PlaybackStopCliOutput {
+    success: bool,
+    room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KickStreamCliOutput {
+    success: bool,
+    room_id: String,
+    media_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4921,6 +5383,17 @@ impl ToHuman for synctv_proto::admin::GetUserResponse {
 
     fn to_human(&self) -> Self::Human {
         HumanUserResponse {
+            user: self.user.to_human(),
+        }
+    }
+}
+
+impl ToHuman for UserMutationCliOutput {
+    type Human = HumanUserMutationCliOutput;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUserMutationCliOutput {
+            success: self.success,
             user: self.user.to_human(),
         }
     }
@@ -5368,13 +5841,21 @@ impl ToHuman for synctv_proto::client::ListPlaylistItemsResponse {
     }
 }
 
-impl ToHuman for synctv_proto::client::GetPlaybackResponse {
+impl ToHuman for GetPlaybackCliOutput {
     type Human = HumanGetPlaybackResponse<HumanPlaybackState>;
 
     fn to_human(&self) -> Self::Human {
         HumanGetPlaybackResponse {
             playback_state: self.playback_state.to_human(),
             playback_snapshot: self.playback_snapshot.clone(),
+            default_mode: self.default_mode.clone(),
+            pull_urls: self.pull_urls.clone(),
+            default_pull_url: self.default_pull_url.clone(),
+            default_absolute_pull_url: self.default_absolute_pull_url.clone(),
+            hls_pull_url: self.hls_pull_url.clone(),
+            hls_absolute_pull_url: self.hls_absolute_pull_url.clone(),
+            flv_pull_url: self.flv_pull_url.clone(),
+            flv_absolute_pull_url: self.flv_absolute_pull_url.clone(),
         }
     }
 }
@@ -5440,12 +5921,12 @@ impl_identity_to_human!(
     synctv_proto::client::BanMemberResponse,
     synctv_proto::client::UnbanMemberResponse,
     synctv_proto::client::DeletePlaylistResponse,
-    synctv_proto::client::StartPlaybackResponse,
-    synctv_proto::client::StopPlaybackResponse,
     synctv_proto::client::DeleteMediaResponse,
     synctv_proto::client::DeleteEntriesResponse,
     synctv_proto::client::ClearPlaylistResponse
 );
+
+impl_identity_to_human!(PlaybackStartCliOutput, PlaybackStopCliOutput, KickStreamCliOutput);
 
 #[cfg(test)]
 fn render_human_output<T>(value: &T) -> Result<Value>
@@ -6318,6 +6799,27 @@ mod tests {
 
     #[test]
     fn cli_parses_room_list_creator_username_filter() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "list",
+            "--creator-username",
+            "alice",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command: RoomSubcommand::List(args),
+                ..
+            }) => {
+                assert_eq!(args.creator.creator.as_deref(), Some("alice"));
+                assert_eq!(args.creator.creator_id, None);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_list_creator_legacy_alias() {
         let cli = Cli::parse_from(["synctv", "room", "list", "--creator", "alice"]);
         match cli.command {
             Commands::Room(RoomCommand {
@@ -6340,6 +6842,47 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.is_banned, Some(true));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_settings_with_positional_room_id() {
+        let cli = Cli::parse_from(["synctv", "room", "settings", "get", "room-123"]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Settings(RoomSettingsCommand {
+                        command: RoomSettingsSubcommand::Get(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.resolved_room_id(), "room-123");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_settings_with_room_id_flag() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "settings",
+            "get",
+            "--room-id",
+            "room-123",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Settings(RoomSettingsCommand {
+                        command: RoomSettingsSubcommand::Get(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.resolved_room_id(), "room-123");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -6476,7 +7019,7 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room_id, "room-123");
+                assert_eq!(args.room.resolved_room_id(), "room-123");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -6501,7 +7044,7 @@ mod tests {
                     }),
                 ..
             }) => {
-                assert_eq!(args.room_id, "room-123");
+                assert_eq!(args.room.resolved_room_id(), "room-123");
                 assert_eq!(args.settings_json, "{\"chat_enabled\":false}");
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -6592,7 +7135,22 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(args.user.username.as_deref(), Some("alice"));
-                assert!(matches!(args.role, CliUserRole::Admin));
+                assert!(matches!(args.resolved_role(), CliUserRole::Admin));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_user_set_role_with_positional_role() {
+        let cli = Cli::parse_from(["synctv", "user", "set-role", "alice", "admin"]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::SetRole(args),
+                ..
+            }) => {
+                assert_eq!(args.user.username.as_deref(), Some("alice"));
+                assert!(matches!(args.resolved_role(), CliUserRole::Admin));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -6711,6 +7269,7 @@ mod tests {
                 assert_eq!(args.username, "alice");
                 assert_eq!(args.email.as_deref(), Some("alice@example.com"));
                 assert_eq!(args.password, "StrongPass123");
+                assert!(matches!(args.status, CliUserStatus::Active));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -8009,6 +8568,59 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_room_batch_ban_with_positional_room_ids() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "batch",
+            "ban",
+            "room-1",
+            "room-2",
+            "--reason",
+            "moderation",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Batch(RoomBatchCommand {
+                        command: RoomBatchSubcommand::Ban(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.resolved_room_ids(), vec!["room-1", "room-2"]);
+                assert_eq!(args.reason.as_deref(), Some("moderation"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_batch_delete_with_room_id_flags() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "batch",
+            "delete",
+            "--room-id",
+            "room-1",
+            "--room-id",
+            "room-2",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Batch(RoomBatchCommand {
+                        command: RoomBatchSubcommand::Delete(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.resolved_room_ids(), vec!["room-1", "room-2"]);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_parses_room_member_kick_with_explicit_user_id() {
         let cli = Cli::parse_from([
             "synctv",
@@ -8109,7 +8721,7 @@ mod tests {
                 assert_eq!(args.room.room_id, "room-1");
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
-                assert_eq!(args.media_id, "media-1");
+                assert_eq!(args.resolved_media_id(), "media-1");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -8138,7 +8750,37 @@ mod tests {
             }) => {
                 assert_eq!(args.room.room_id, "room-1");
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.media_id, "media-1");
+                assert_eq!(args.resolved_media_id(), "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_room_stream_publish_key_with_media_id_flag() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "stream",
+            "publish-key",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "--media-id",
+            "media-1",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command:
+                    RoomSubcommand::Stream(RoomStreamCommand {
+                        command: RoomStreamSubcommand::PublishKey(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.resolved_media_id(), "media-1");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -8235,8 +8877,8 @@ mod tests {
                     management_proto::UserRole::Admin as i32
                 );
                 assert_eq!(
-                    args.status.map(CliUserStatus::to_proto),
-                    Some(management_proto::UserStatus::Active as i32)
+                    args.status.to_proto(),
+                    management_proto::UserStatus::Active as i32
                 );
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -8825,6 +9467,52 @@ mod tests {
     }
 
     #[test]
+    fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode() {
+        let output = build_get_playback_cli_output(
+            synctv_proto::client::GetPlaybackResponse {
+                playback_state: None,
+                playback_snapshot: Some(synctv_proto::client::PlaybackSnapshot {
+                    media_id: "media-1".into(),
+                    playlist_id: String::new(),
+                    room_id: "room-1".into(),
+                    name: "Example".into(),
+                    position: 1.0,
+                    playback_infos: std::collections::HashMap::from([(
+                        "direct".to_string(),
+                        synctv_proto::client::PlaybackInfo {
+                            urls: vec![synctv_proto::client::PlaybackUrl {
+                                name: String::new(),
+                                url: "/api/providers/proxy/direct/abc/stream".into(),
+                                headers: std::collections::HashMap::new(),
+                                expire_at: None,
+                                metadata: None,
+                            }],
+                            default_url_index: 0,
+                            subtitles: Vec::new(),
+                            default_subtitle_index: None,
+                            danmakus: Vec::new(),
+                            format: "mp4".into(),
+                        },
+                    )]),
+                    default_mode: "direct".into(),
+                    metadata: std::collections::HashMap::new(),
+                    version: "1".into(),
+                    expires_at: None,
+                }),
+            },
+            &GlobalConfigArgs {
+                endpoint: Some("http://127.0.0.1:50339".into()),
+                ..GlobalConfigArgs::default()
+            },
+        );
+
+        assert_eq!(output.default_pull_url.as_deref(), Some("/api/providers/proxy/direct/abc/stream"));
+        assert_eq!(output.default_absolute_pull_url, None);
+        assert_eq!(output.pull_urls.len(), 1);
+        assert_eq!(output.pull_urls[0].absolute_url, None);
+    }
+
+    #[test]
     fn parse_setting_entries_rejects_invalid_and_duplicate_entries() {
         let invalid = parse_setting_entries(&["signup_enabled".to_string()]);
         assert!(invalid.is_err(), "missing '=' must be rejected");
@@ -8834,6 +9522,36 @@ mod tests {
             "signup_enabled=true".to_string(),
         ]);
         assert!(duplicate.is_err(), "duplicate keys must be rejected");
+    }
+
+    #[test]
+    fn merge_room_settings_patch_json_applies_partial_updates_recursively() {
+        let merged = merge_room_settings_patch_json(
+            br#"{"allow_guest_join":false,"auto_play":{"enabled":true,"delay":3,"mode":"sequential"}}"#,
+            r#"{"allow_guest_join":true,"auto_play":{"delay":8}}"#,
+        )
+        .expect("room settings patch should merge");
+
+        let merged: Value = serde_json::from_slice(&merged).expect("merged settings should be json");
+        assert_eq!(merged["allow_guest_join"], Value::Bool(true));
+        assert_eq!(merged["auto_play"]["enabled"], Value::Bool(true));
+        assert_eq!(merged["auto_play"]["delay"], Value::from(8));
+        assert_eq!(
+            merged["auto_play"]["mode"],
+            Value::String("sequential".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_room_settings_patch_json_rejects_non_object_patch() {
+        let error =
+            merge_room_settings_patch_json(br#"{"allow_guest_join":false}"#, "true").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("settings_json must be a JSON object patch"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -9023,6 +9741,25 @@ management:
         );
     }
 
+    #[test]
+    fn write_completion_output_ignores_broken_pipe() {
+        struct BrokenPipeWriter;
+
+        impl Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BrokenPipeWriter;
+        write_completion_output(&mut writer, b"synctv completion")
+            .expect("broken pipe should be treated as a clean completion exit");
+    }
+
     #[tokio::test]
     async fn management_unary_response_times_out_when_rpc_never_returns() {
         let result = management_unary_response_with_timeout::<()>(
@@ -9134,6 +9871,54 @@ management:
             management_proto::StopServerStage::RuntimeDraining
         )));
         assert!(!stop_stream_end_can_be_treated_as_success(None));
+    }
+
+    #[test]
+    fn synthesize_stop_completion_appends_terminal_completed_event_after_finalizing() {
+        let mut last_stage = Some(management_proto::StopServerStage::Finalizing);
+        let mut saw_terminal = false;
+        let mut events = vec![StopServerEventOutput {
+            stage: stop_server_stage_name(management_proto::StopServerStage::Finalizing),
+            message: "final shutdown tasks in progress".to_string(),
+            terminal: true,
+        }];
+
+        synthesize_stop_completion_if_needed(
+            RemoteOutputFormat::Json,
+            &mut last_stage,
+            &mut saw_terminal,
+            &mut events,
+        );
+
+        assert_eq!(
+            last_stage,
+            Some(management_proto::StopServerStage::Completed)
+        );
+        assert!(saw_terminal);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].message, "shutdown complete");
+        assert!(events[1].terminal);
+    }
+
+    #[test]
+    fn synthesize_stop_completion_is_noop_when_not_finalizing() {
+        let mut last_stage = Some(management_proto::StopServerStage::ConnectionDraining);
+        let mut saw_terminal = false;
+        let mut events = Vec::new();
+
+        synthesize_stop_completion_if_needed(
+            RemoteOutputFormat::Json,
+            &mut last_stage,
+            &mut saw_terminal,
+            &mut events,
+        );
+
+        assert_eq!(
+            last_stage,
+            Some(management_proto::StopServerStage::ConnectionDraining)
+        );
+        assert!(!saw_terminal);
+        assert!(events.is_empty());
     }
 
     #[test]

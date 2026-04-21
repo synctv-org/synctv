@@ -736,6 +736,7 @@ impl AdminApiImpl {
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(user_id)
             .with_room_id(room_id)
+            .with_media_id(media.id.as_str())
             .with_signing_key(&signing_key);
         if let Some(repo) = self.room_service.media_service().credential_repo() {
             ctx = ctx.with_credential_repo(repo.as_ref());
@@ -945,6 +946,104 @@ impl AdminApiImpl {
             version: state.version.to_string(),
             expires_at: None,
         })
+    }
+
+    async fn resolve_management_playback_snapshot_user_id(
+        &self,
+        room_id: &RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<UserId, ApiError> {
+        let mut candidate_ids = Vec::new();
+
+        if let Some(media_id) = state.playing_media_id.as_ref() {
+            if let Some(media) = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
+                .await
+                .map_err(ApiError::from)?
+            {
+                if let Some(creator_id) = media.creator_id {
+                    candidate_ids.push(creator_id);
+                }
+            }
+        }
+
+        if let Some(playlist_id) = state.playing_playlist_id.as_ref() {
+            if let Some(playlist) = self
+                .room_service
+                .playlist_service()
+                .get_playlist(playlist_id)
+                .await
+                .map_err(ApiError::from)?
+            {
+                if let Some(creator_id) = playlist.creator_id {
+                    candidate_ids.push(creator_id);
+                }
+            }
+        }
+
+        let room = self
+            .room_service
+            .get_room(room_id)
+            .await
+            .map_err(ApiError::from)?;
+        candidate_ids.push(room.created_by.clone());
+
+        for member in self
+            .room_service
+            .member_service()
+            .list_members(room_id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            if member.is_active {
+                candidate_ids.push(member.user_id);
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for candidate_id in candidate_ids {
+            if !seen.insert(candidate_id.as_str().to_string()) {
+                continue;
+            }
+
+            let Ok(user) = self.user_service.get_user(&candidate_id).await else {
+                continue;
+            };
+            if user.status != UserStatus::Active || user.deleted_at.is_some() {
+                continue;
+            }
+            if self
+                .room_service
+                .check_membership(room_id, &candidate_id)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+
+            return Ok(candidate_id);
+        }
+
+        Err(ApiError::NotFound(
+            "No active room member available to sign management playback URLs".to_string(),
+        ))
+    }
+
+    async fn resolve_playback_snapshot_user_id(
+        &self,
+        admin_user_id: &UserId,
+        room_id: &RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<UserId, ApiError> {
+        if admin_user_id.as_str() == LOCAL_MANAGEMENT_ACTOR_USER_ID {
+            return self
+                .resolve_management_playback_snapshot_user_id(room_id, state)
+                .await;
+        }
+
+        Ok(admin_user_id.clone())
     }
 
     fn serialize_admin_settings_group(
@@ -1275,11 +1374,17 @@ impl AdminApiImpl {
         // Batch-fetch distributed online user counts so same-user multi-connection
         // sessions are not overcounted as multiple online members.
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
+        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
         let counts = self
             .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
+        let room_settings_map = self
+            .room_service
+            .get_room_settings_batch(&room_id_strs)
+            .await
+            .unwrap_or_default();
 
         let room_list: Vec<_> = rooms
             .into_iter()
@@ -1291,7 +1396,8 @@ impl AdminApiImpl {
                     .get(&r.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Rejected);
-                admin_room_to_proto(&r, None, member_count, creator_username, creator_status)
+                let settings = room_settings_map.get(r.id.as_str());
+                admin_room_to_proto(&r, settings, member_count, creator_username, creator_status)
             })
             .collect();
 
@@ -1362,6 +1468,10 @@ impl AdminApiImpl {
             crate::impls::client::validate_password_for_set(&req.password)?;
             Some(req.password)
         };
+        let response_settings = crate::impls::client::convert::normalize_created_room_settings(
+            settings.as_ref(),
+            password.is_some(),
+        );
 
         let cluster_event = self.room_lifecycle_fanout.reserve_room_created().await?;
 
@@ -1387,7 +1497,7 @@ impl AdminApiImpl {
             .ok();
 
         Ok(crate::proto::client::CreateRoomResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(&room, Some(&response_settings), member_count)),
         })
     }
 
@@ -3261,11 +3371,17 @@ impl AdminApiImpl {
         // Batch-fetch distributed online user counts for all rooms
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|room| &room.id).collect();
+        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
         let counts = self
             .connection_service
             .room_online_user_count_distributed_batch(&room_id_refs)
             .await
             .map_err(ApiError::Internal)?;
+        let room_settings_map = self
+            .room_service
+            .get_room_settings_batch(&room_id_strs)
+            .await
+            .unwrap_or_default();
         let admin_rooms: Vec<crate::proto::admin::AdminRoom> = rooms
             .iter()
             .zip(counts)
@@ -3275,9 +3391,10 @@ impl AdminApiImpl {
                     .get(&room.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Rejected);
+                let settings = room_settings_map.get(room.id.as_str());
                 admin_room_to_proto(
                     room,
-                    None,
+                    settings,
                     count.try_into().ok(),
                     creator_username,
                     creator_status,
@@ -3511,6 +3628,12 @@ impl AdminApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
+        let creator_username = self
+            .user_service
+            .get_usernames(std::slice::from_ref(&room.created_by))
+            .await
+            .ok()
+            .and_then(|usernames| usernames.into_values().next());
 
         Ok(crate::proto::admin::UpdateRoomSettingsResponse {
             room: Some(admin_room_to_proto(
@@ -3522,7 +3645,7 @@ impl AdminApiImpl {
                     .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
-                None,
+                creator_username.as_deref(),
                 load_room_creator_status(&self.user_service, &room).await?,
             )),
         })
@@ -3549,6 +3672,12 @@ impl AdminApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
+        let creator_username = self
+            .user_service
+            .get_usernames(std::slice::from_ref(&room.created_by))
+            .await
+            .ok()
+            .and_then(|usernames| usernames.into_values().next());
         // Look up admin username for cluster event
         let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
             |_| admin_user_id.as_str().to_string(),
@@ -3576,7 +3705,7 @@ impl AdminApiImpl {
                     .map_err(ApiError::Internal)?
                     .try_into()
                     .ok(),
-                None,
+                creator_username.as_deref(),
                 load_room_creator_status(&self.user_service, &room).await?,
             )),
         })
@@ -4147,10 +4276,25 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
         let playback_snapshot = match self
-            .build_playback_snapshot_from_state(admin_user_id, &rid, &state)
+            .resolve_playback_snapshot_user_id(admin_user_id, &rid, &state)
             .await
         {
-            Ok(snapshot) => Some(snapshot),
+            Ok(snapshot_user_id) => match self
+                .build_playback_snapshot_from_state(&snapshot_user_id, &rid, &state)
+                .await
+            {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %rid.as_str(),
+                        admin_user_id = %admin_user_id.as_str(),
+                        signing_user_id = %snapshot_user_id.as_str(),
+                        error = %error,
+                        "Admin playback snapshot generation failed; returning playback state only"
+                    );
+                    None
+                }
+            },
             Err(error) => {
                 tracing::warn!(
                     room_id = %rid.as_str(),
@@ -10452,6 +10596,115 @@ mod tests {
         assert!(
             direct.urls[0].headers.is_empty(),
             "proxy-backed playback should not require client-side secret headers"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_management_actor() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool.clone());
+        let media_repo = MediaRepository::new(pool.clone());
+
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "room_owner_local_mgmt_playback_get_signed".to_string(),
+            email: Some("room_owner_local_mgmt_playback_get_signed@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo.create(&owner).await.expect("create owner");
+
+        let room = admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room provider playback get local management test".to_string(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+
+        let media = synctv_core::models::Media::from_provider(
+            None,
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "provider-playback-media".to_string(),
+            serde_json::json!({
+                "url": "https://example.com/video.mp4",
+                "headers": {
+                    "Authorization": "Bearer admin-provider-token"
+                }
+            }),
+            "direct_url",
+            String::new(),
+            0.0,
+        );
+        let media = media_repo
+            .create(&media)
+            .await
+            .expect("create provider media");
+
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(
+                room.id.clone(),
+                owner.id.clone(),
+                Some(media.id.clone()),
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("owner should be able to seed playback state");
+
+        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let response = admin_api
+            .get_playback(room.id.as_str(), &management_actor)
+            .await
+            .expect("local management actor should get signed provider playback");
+
+        let result = response
+            .playback_snapshot
+            .expect("playback snapshot should be present");
+        let direct = result
+            .playback_infos
+            .get("direct")
+            .expect("direct mode should be present");
+        assert_eq!(direct.urls.len(), 1);
+        assert!(
+            direct.urls[0]
+                .url
+                .starts_with("/api/providers/proxy/direct_url/"),
+            "signed provider playback should expose proxy URL, got {}",
+            direct.urls[0].url
+        );
+        assert!(
+            direct.urls[0]
+                .url
+                .contains(&format!("uid={}", owner.id.as_str())),
+            "local management playback must sign proxy URLs with a real room member, got {}",
+            direct.urls[0].url
+        );
+        assert!(
+            !direct.urls[0]
+                .url
+                .contains(LOCAL_MANAGEMENT_ACTOR_USER_ID),
+            "local management playback must not sign proxy URLs with the synthetic management actor"
         );
     }
 

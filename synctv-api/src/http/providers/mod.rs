@@ -115,7 +115,7 @@ pub(crate) async fn execute_proxy_action_with_state(
         ProxyAction::LiveFlv { .. }
         | ProxyAction::LiveHlsPlaylist { .. }
         | ProxyAction::LiveHlsSegment { .. } => {
-            live::execute_live_proxy_action(state, action, None).await
+            live::execute_live_stream_action(state, action, None).await
         }
         ProxyAction::FetchAndForward { url, headers } => {
             let cache_enabled =
@@ -328,7 +328,7 @@ fn execute_unified_proxy_handler(
             ProxyAction::LiveFlv { .. }
             | ProxyAction::LiveHlsPlaylist { .. }
             | ProxyAction::LiveHlsSegment { .. } => {
-                live::execute_live_proxy_action(&state, action, Some(query_str.as_str()))
+                live::execute_live_stream_action(&state, action, Some(query_str.as_str()))
                     .await
                     .map_err(app_error_to_api_error)
                     .map_err(map_api_error)

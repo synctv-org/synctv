@@ -96,12 +96,13 @@ pub struct DirectUrlSourceConfig {
 
 /// RTMP Provider Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RtmpSourceConfig {
-    /// RTMP stream key or URL
-    pub stream_key: String,
+pub struct RtmpSourceConfig {}
 
-    /// Room ID this stream belongs to
-    pub room_id: String,
+/// Live proxy provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveProxySourceConfig {
+    /// External RTMP or HTTP-FLV source URL
+    pub url: String,
 }
 
 const fn default_true() -> bool {

@@ -13,6 +13,7 @@ fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
         .with_user_id("test_user")
         .with_room_id("test_room")
+        .with_media_id("test_media")
 }
 
 // validate_source_config should not accept external URLs
@@ -24,18 +25,12 @@ async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
 
     let malicious_configs = vec![
         json!({
-            "room_id": "room123",
-            "media_id": "media456",
             "url": "http://192.168.1.1/internal"
         }),
         json!({
-            "room_id": "room123",
-            "media_id": "media456",
             "rtmp_url": "rtmp://localhost/live/stream"
         }),
         json!({
-            "room_id": "room123",
-            "media_id": "media456",
             "source_url": "http://169.254.169.254/metadata"
         }),
     ];
@@ -62,15 +57,37 @@ async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
     let provider = RtmpProvider::new();
     let ctx = create_context();
 
-    let valid_config = json!({
-        "room_id": "room123",
-        "media_id": "media456"
-    });
-
-    let result = provider.validate_source_config(&ctx, &valid_config).await;
+    let result = provider.validate_source_config(&ctx, &json!({})).await;
     assert!(
         result.is_ok(),
         "RtmpProvider should accept valid source_config: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_rtmp_provider_validate_source_config_accepts_empty_config_with_context_binding() {
+    let provider = RtmpProvider::new();
+    let ctx = create_context();
+
+    let result = provider.validate_source_config(&ctx, &json!({})).await;
+    assert!(
+        result.is_ok(),
+        "RtmpProvider should accept empty source_config when context provides room/media binding: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_rtmp_provider_validate_source_config_rejects_identity_fields() {
+    let provider = RtmpProvider::new();
+    let ctx = create_context();
+
+    let result = provider
+        .validate_source_config(&ctx, &json!({"room_id": "room123"}))
+        .await;
+    assert!(
+        matches!(result, Err(ProviderError::InvalidConfig(_))),
+        "RtmpProvider should reject source_config identity fields for internal streams"
     );
 }

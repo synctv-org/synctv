@@ -3180,22 +3180,30 @@ async fn scenario_provider_instance_parse_timeout() {
 }
 
 fn install_rustls_provider_once() {
-    let _ = rustls::crypto::CryptoProvider::install_default(default_rustls_provider());
+    if let Some(provider) = default_rustls_provider() {
+        let _ = rustls::crypto::CryptoProvider::install_default(provider);
+    }
 }
 
-fn default_rustls_provider() -> rustls::crypto::CryptoProvider {
+fn default_rustls_provider() -> Option<rustls::crypto::CryptoProvider> {
     #[cfg(feature = "tls-aws-lc")]
     {
-        rustls::crypto::aws_lc_rs::default_provider()
+        return Some(rustls::crypto::aws_lc_rs::default_provider());
     }
 
-    #[cfg(all(not(feature = "tls-aws-lc"), feature = "tls-ring"))]
+    #[cfg(all(
+        not(feature = "tls-aws-lc"),
+        any(
+            feature = "tls-ring",
+            feature = "tls-webpki-roots",
+            feature = "tls-native-roots"
+        )
+    ))]
     {
-        rustls::crypto::ring::default_provider()
+        return Some(rustls::crypto::ring::default_provider());
     }
 
-    #[cfg(not(any(feature = "tls-aws-lc", feature = "tls-ring")))]
-    compile_error!("remote_provider_manager_tests require a rustls crypto provider feature");
+    None
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

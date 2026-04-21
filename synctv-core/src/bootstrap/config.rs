@@ -483,10 +483,7 @@ jwt:
         })
         .expect("cli data_dir should be applied to default runtime paths");
 
-        assert_eq!(
-            std::path::Path::new(&config.data_dir),
-            data_dir.as_path()
-        );
+        assert_eq!(std::path::Path::new(&config.data_dir), data_dir.as_path());
         assert_eq!(
             std::path::Path::new(&config.management.unix_socket_path),
             data_dir.join("run").join("synctv.sock").as_path()

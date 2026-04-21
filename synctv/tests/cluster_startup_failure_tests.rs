@@ -29,7 +29,9 @@ fn standalone_test_config() -> Config {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        data_dir: synctv_core::config::default_data_dir().display().to_string(),
+        data_dir: synctv_core::config::default_data_dir()
+            .display()
+            .to_string(),
         metrics: synctv_core::config::MetricsConfig::default(),
         management: synctv_core::config::ManagementConfig {
             enabled: false,
@@ -108,7 +110,9 @@ fn cluster_test_config() -> Config {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        data_dir: synctv_core::config::default_data_dir().display().to_string(),
+        data_dir: synctv_core::config::default_data_dir()
+            .display()
+            .to_string(),
         metrics: synctv_core::config::MetricsConfig::default(),
         management: synctv_core::config::ManagementConfig {
             enabled: false,

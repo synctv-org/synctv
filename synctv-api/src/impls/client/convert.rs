@@ -180,7 +180,8 @@ pub(crate) fn normalize_created_room_settings(
     has_password: bool,
 ) -> synctv_core::models::RoomSettings {
     let mut room_settings = settings.cloned().unwrap_or_default();
-    room_settings.require_password = synctv_core::models::room_settings::RequirePassword(has_password);
+    room_settings.require_password =
+        synctv_core::models::room_settings::RequirePassword(has_password);
     room_settings
 }
 

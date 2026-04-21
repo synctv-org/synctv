@@ -3199,9 +3199,8 @@ fn install_rustls_provider_once_with_selected_backend() {
     )
 ))]
 fn install_rustls_provider_once_with_selected_backend() {
-    let _ = rustls::crypto::CryptoProvider::install_default(
-        rustls::crypto::ring::default_provider(),
-    );
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 }
 
 #[cfg(not(any(
@@ -3210,8 +3209,7 @@ fn install_rustls_provider_once_with_selected_backend() {
     feature = "tls-webpki-roots",
     feature = "tls-native-roots"
 )))]
-fn install_rustls_provider_once_with_selected_backend() {
-}
+fn install_rustls_provider_once_with_selected_backend() {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]

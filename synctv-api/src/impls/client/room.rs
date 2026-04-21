@@ -387,7 +387,11 @@ impl ClientApiImpl {
             .ok();
 
         Ok(crate::proto::client::CreateRoomResponse {
-            room: Some(room_to_proto_basic(&room, Some(&response_settings), member_count)),
+            room: Some(room_to_proto_basic(
+                &room,
+                Some(&response_settings),
+                member_count,
+            )),
         })
     }
 

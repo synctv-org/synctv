@@ -1710,7 +1710,11 @@ pub struct RoomStreamPublishKeyArgs {
     #[command(flatten)]
     pub actor: ActorUserArgs,
 
-    #[arg(value_name = "MEDIA_ID", allow_hyphen_values = true, group = "stream_publish_media_ref")]
+    #[arg(
+        value_name = "MEDIA_ID",
+        allow_hyphen_values = true,
+        group = "stream_publish_media_ref"
+    )]
     pub media_id: Option<String>,
 
     #[arg(
@@ -4111,10 +4115,8 @@ fn build_get_playback_cli_output(
         for (mode, info) in modes {
             for (index, playback_url) in info.urls.iter().enumerate() {
                 let is_default = mode == &snapshot.default_mode
-                    && i32::try_from(index)
-                        .is_ok_and(|index| info.default_url_index == index);
-                let absolute_url =
-                    absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
+                    && i32::try_from(index).is_ok_and(|index| info.default_url_index == index);
+                let absolute_url = absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
                     mode: mode.clone(),
                     format: info.format.clone(),
@@ -5760,7 +5762,11 @@ impl_identity_to_human!(
     synctv_proto::client::ClearPlaylistResponse
 );
 
-impl_identity_to_human!(PlaybackStartCliOutput, PlaybackStopCliOutput, KickStreamCliOutput);
+impl_identity_to_human!(
+    PlaybackStartCliOutput,
+    PlaybackStopCliOutput,
+    KickStreamCliOutput
+);
 
 #[cfg(test)]
 fn render_human_output<T>(value: &T) -> Result<Value>
@@ -6133,7 +6139,10 @@ mod tests {
         switch_process_working_dir_to_data_dir(&config)
             .expect("data_dir working directory switch should succeed");
 
-        assert!(target.is_dir(), "data_dir should be created before switching");
+        assert!(
+            target.is_dir(),
+            "data_dir should be created before switching"
+        );
         assert_eq!(
             std::env::current_dir()
                 .expect("current dir should resolve")
@@ -6678,13 +6687,7 @@ mod tests {
 
     #[test]
     fn cli_parses_room_list_creator_username_filter() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "list",
-            "--creator-username",
-            "alice",
-        ]);
+        let cli = Cli::parse_from(["synctv", "room", "list", "--creator-username", "alice"]);
         match cli.command {
             Commands::Room(RoomCommand {
                 command: RoomSubcommand::List(args),
@@ -6745,14 +6748,7 @@ mod tests {
 
     #[test]
     fn cli_parses_room_settings_with_room_id_flag() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "settings",
-            "get",
-            "--room-id",
-            "room-123",
-        ]);
+        let cli = Cli::parse_from(["synctv", "room", "settings", "get", "--room-id", "room-123"]);
         match cli.command {
             Commands::Room(RoomCommand {
                 command:
@@ -9385,7 +9381,10 @@ mod tests {
             },
         );
 
-        assert_eq!(output.default_pull_url.as_deref(), Some("/api/providers/proxy/direct/abc/stream"));
+        assert_eq!(
+            output.default_pull_url.as_deref(),
+            Some("/api/providers/proxy/direct/abc/stream")
+        );
         assert_eq!(output.default_absolute_pull_url, None);
         assert_eq!(output.pull_urls.len(), 1);
         assert_eq!(output.pull_urls[0].absolute_url, None);
@@ -9411,7 +9410,8 @@ mod tests {
         )
         .expect("room settings patch should merge");
 
-        let merged: Value = serde_json::from_slice(&merged).expect("merged settings should be json");
+        let merged: Value =
+            serde_json::from_slice(&merged).expect("merged settings should be json");
         assert_eq!(merged["allow_guest_join"], Value::Bool(true));
         assert_eq!(merged["auto_play"]["enabled"], Value::Bool(true));
         assert_eq!(merged["auto_play"]["delay"], Value::from(8));

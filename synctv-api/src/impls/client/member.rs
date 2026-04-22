@@ -170,7 +170,7 @@ impl ClientApiImpl {
             .await
             .unwrap_or_default();
         let proto_members = members_to_proto(
-            members,
+            &members,
             &room_settings,
             self.room_service.permission_service(),
         );

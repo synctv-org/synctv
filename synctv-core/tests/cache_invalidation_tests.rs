@@ -443,7 +443,7 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_node() {
+async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let stream_key = unique_stream_key();
@@ -504,13 +504,12 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
         .expect("Failed to start restarted service");
 
     let mut receiver = service.subscribe();
-    let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), receiver.recv())
-        .await
-        .expect("Timed out waiting for pending invalidation")
-        .expect("Failed to receive pending invalidation");
-    assert_eq!(received, InvalidationMessage::All);
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    assert!(
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), receiver.recv())
+            .await
+            .is_err(),
+        "restart should not replay pending invalidations for the same node"
+    );
 
     let pending: Vec<redis::Value> = redis::cmd("XPENDING")
         .arg(&stream_key)
@@ -521,7 +520,7 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
     let summary = format!("{pending:?}");
     assert!(
         summary.contains("int(0)"),
-        "pending entry should be acknowledged after restart, got: {summary}"
+        "restart should recreate the consumer group without inherited pending entries, got: {summary}"
     );
 
     let groups: Vec<Vec<redis::Value>> = redis::cmd("XINFO")
@@ -533,7 +532,159 @@ async fn test_cache_invalidation_restart_preserves_pending_messages_for_same_nod
     let groups_summary = format!("{groups:?}");
     assert!(
         groups_summary.contains(&consumer_group),
-        "restart must not destroy the existing consumer group: {groups_summary}"
+        "restart must recreate the consumer group: {groups_summary}"
+    );
+
+    service.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_stop_destroys_current_consumer_group() {
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
+    let node_id = "shutdown-node";
+    let consumer_group = format!("cache-invalidation-{node_id}");
+
+    let service =
+        distributed_invalidation_service(redis_client.clone(), node_id, stream_key.clone()).await;
+    service.start().await.expect("Failed to start service");
+    service.stop().await;
+
+    let mut conn = redis::aio::ConnectionManager::new(redis_client)
+        .await
+        .expect("Failed to create Redis connection manager");
+    let groups: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(&stream_key)
+        .query_async(&mut conn)
+        .await;
+
+    match groups {
+        Ok(groups) => {
+            let summary = format!("{groups:?}");
+            assert!(
+                !summary.contains(&consumer_group),
+                "shutdown should remove the node's consumer group: {summary}"
+            );
+        }
+        Err(error) => {
+            let message = error.to_string().to_ascii_lowercase();
+            assert!(
+                message.contains("no such key"),
+                "unexpected XINFO GROUPS error after shutdown: {error}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_start_cleans_empty_foreign_orphan_group() {
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
+    let foreign_group = "cache-invalidation-old-node";
+
+    let mut conn = redis::aio::ConnectionManager::new(redis_client.clone())
+        .await
+        .expect("Failed to create Redis connection manager");
+
+    let _: () = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(&stream_key)
+        .arg(foreign_group)
+        .arg("$")
+        .arg("MKSTREAM")
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to create orphan foreign group");
+
+    let service =
+        distributed_invalidation_service(redis_client.clone(), "current-node", stream_key.clone())
+            .await;
+    service.start().await.expect("Failed to start service");
+
+    let groups: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(&stream_key)
+        .query_async(&mut conn)
+        .await;
+
+    let summary = format!("{groups:?}");
+    assert!(
+        !summary.contains(foreign_group),
+        "startup should clean empty foreign orphan groups: {summary}"
+    );
+
+    service.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let stream_key = unique_stream_key();
+    let foreign_group = "cache-invalidation-remote-node";
+    let foreign_consumer = "remote-node";
+
+    let mut conn = redis::aio::ConnectionManager::new(redis_client.clone())
+        .await
+        .expect("Failed to create Redis connection manager");
+
+    let _: String = redis::cmd("XADD")
+        .arg(&stream_key)
+        .arg("*")
+        .arg("origin")
+        .arg("origin-node")
+        .arg("payload")
+        .arg(
+            serde_json::to_string(&InvalidationMessage::All)
+                .expect("Failed to serialize invalidation"),
+        )
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to seed stream");
+
+    let _: () = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(&stream_key)
+        .arg(foreign_group)
+        .arg("0")
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to create foreign group");
+
+    let _: redis::streams::StreamReadReply = redis::cmd("XREADGROUP")
+        .arg("GROUP")
+        .arg(foreign_group)
+        .arg(foreign_consumer)
+        .arg("COUNT")
+        .arg(1)
+        .arg("STREAMS")
+        .arg(&stream_key)
+        .arg(">")
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to mark foreign consumer as active");
+
+    let service =
+        distributed_invalidation_service(redis_client.clone(), "current-node", stream_key.clone())
+            .await;
+    service.start().await.expect("Failed to start service");
+
+    let groups: Vec<Vec<redis::Value>> = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(&stream_key)
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to inspect groups after startup");
+    let summary = format!("{groups:?}");
+    assert!(
+        summary.contains(foreign_group),
+        "startup must preserve recently active foreign groups: {summary}"
     );
 
     service.stop().await;

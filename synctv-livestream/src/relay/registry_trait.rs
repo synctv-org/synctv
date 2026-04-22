@@ -9,6 +9,14 @@ use async_trait::async_trait;
 pub enum PublisherRefreshOutcome {
     Refreshed,
     Missing,
+    OwnershipChanged,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivePublisherEntry {
+    pub room_id: String,
+    pub media_id: String,
+    pub publisher: PublisherInfo,
 }
 
 /// `StreamRegistry` trait for publisher registration
@@ -40,12 +48,15 @@ pub trait StreamRegistryTrait: Send + Sync {
     ) -> Result<bool>;
 
     /// Refresh TTL for a publisher (called by heartbeat).
-    /// `user_id` is used to also refresh the user reverse-index TTL (pass "" to skip).
+    /// `user_id` and `node_id` are used to also refresh reverse-index TTLs
+    /// (pass "" to skip either index).
     async fn refresh_publisher_ttl(
         &self,
         room_id: &str,
         media_id: &str,
         user_id: &str,
+        node_id: &str,
+        expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome>;
 
     /// Unregister a publisher unconditionally.
@@ -65,8 +76,18 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// Check if a stream is active (has a publisher)
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool>;
 
+    /// List all active publishers with their current registry snapshot.
+    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>>;
+
     /// List all active streams (returns tuples of (`room_id`, `media_id`))
-    async fn list_active_streams(&self) -> Result<Vec<(String, String)>>;
+    async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .list_active_publishers()
+            .await?
+            .into_iter()
+            .map(|entry| (entry.room_id, entry.media_id))
+            .collect())
+    }
 
     /// List active streams for a specific room (returns `media_id` values).
     /// Default implementation filters `list_active_streams`; backends can
@@ -135,8 +156,18 @@ impl StreamRegistryTrait for StreamRegistry {
         room_id: &str,
         media_id: &str,
         user_id: &str,
+        node_id: &str,
+        expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome> {
-        Self::refresh_publisher_ttl_with_user(self, room_id, media_id, user_id).await
+        Self::refresh_publisher_ttl_with_owner(
+            self,
+            room_id,
+            media_id,
+            user_id,
+            node_id,
+            Some(expected_epoch),
+        )
+        .await
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
@@ -158,6 +189,10 @@ impl StreamRegistryTrait for StreamRegistry {
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
         Self::is_stream_active_immut(self, room_id, media_id).await
+    }
+
+    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+        Self::list_active_publishers_immut(self).await
     }
 
     async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {

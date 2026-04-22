@@ -37,6 +37,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -66,7 +67,6 @@ const MIN_FILE_SIZE: u64 = 8;
 /// larger signals corruption or an attacker-crafted file.  64 KB is far more
 /// than enough for a bincode-serialized header.
 const MAX_HEADER_LEN: usize = 64 * 1024;
-
 // File entry header (serialized into each cache file)
 
 /// On-disk header written at the start of every cache file.
@@ -606,7 +606,7 @@ impl SliceCacheBackend for FileBackend {
             .collect();
 
         // Sort by last_accessed ascending (oldest first = LRU).
-        candidates.sort_by_key(|(_k, ts, _sz)| *ts);
+        candidates.par_sort_by_key(|(_k, ts, _sz)| *ts);
 
         let mut freed = 0u64;
         for (key, _ts, size) in candidates {

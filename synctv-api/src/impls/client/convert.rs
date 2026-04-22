@@ -1,9 +1,76 @@
 //! Proto conversion helper functions
+use rayon::prelude::*;
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::Serialize;
 
 use synctv_core::service::room::ClientResourceAvailability;
 
+const PARALLEL_PROTO_MAP_THRESHOLD: usize = 128;
+const REDACTED_SOURCE_CONFIG_VALUE: &str = "[REDACTED]";
+const SOURCE_CONFIG_CREDENTIAL_FIELDS: &[&str] = &[
+    "token",
+    "api_key",
+    "password",
+    "cookies",
+    "secret",
+    "access_token",
+    "credential_ref",
+];
+
 fn usize_to_i32_saturating(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+pub(crate) fn map_slice_preserve_order<T, U, F>(items: &[T], map: F) -> Vec<U>
+where
+    T: Sync,
+    U: Send,
+    F: Fn(&T) -> U + Sync + Send,
+{
+    items
+        .par_iter()
+        .with_min_len(PARALLEL_PROTO_MAP_THRESHOLD)
+        .map(&map)
+        .collect()
+}
+
+struct SanitizedSourceConfig<'a>(&'a serde_json::Value);
+
+impl Serialize for SanitizedSourceConfig<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0 {
+            serde_json::Value::Null => serializer.serialize_unit(),
+            serde_json::Value::Bool(value) => serializer.serialize_bool(*value),
+            serde_json::Value::Number(value) => value.serialize(serializer),
+            serde_json::Value::String(value) => serializer.serialize_str(value),
+            serde_json::Value::Array(values) => {
+                let mut seq = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    seq.serialize_element(&SanitizedSourceConfig(value))?;
+                }
+                seq.end()
+            }
+            serde_json::Value::Object(values) => {
+                let mut map = serializer.serialize_map(Some(values.len()))?;
+                for (key, value) in values {
+                    map.serialize_key(key)?;
+                    if SOURCE_CONFIG_CREDENTIAL_FIELDS.contains(&key.as_str()) {
+                        map.serialize_value(REDACTED_SOURCE_CONFIG_VALUE)?;
+                    } else {
+                        map.serialize_value(&SanitizedSourceConfig(value))?;
+                    }
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+fn serialize_sanitized_source_config(source_config: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&SanitizedSourceConfig(source_config)).unwrap_or_default()
 }
 
 pub(super) const fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
@@ -201,10 +268,6 @@ pub fn media_to_proto_with_availability(
         .map(|m| serde_json::to_vec(m).unwrap_or_default())
         .unwrap_or_default();
 
-    // Strip credentials from source_config before sending to clients
-    let sanitized_config =
-        synctv_core::provider::strip_source_config_credentials(&media.source_config);
-
     crate::proto::client::Media {
         id: media.id.as_str().to_string(),
         room_id: media.room_id.as_str().to_string(),
@@ -218,7 +281,7 @@ pub fn media_to_proto_with_availability(
             .as_ref()
             .map_or(String::new(), |id| id.as_str().to_string()),
         provider_instance_name: media.provider_instance_name.clone(),
-        source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
+        source_config: serialize_sanitized_source_config(&media.source_config),
         availability: resource_availability_to_proto(is_available),
         version: i64::from(media.version),
     }
@@ -317,18 +380,43 @@ pub(super) fn room_member_to_proto(
 ///   1. Fetch room settings
 ///   2. For each member: `calculate_role_default_permissions` + `room_member_to_proto`
 pub(super) fn members_to_proto(
-    members: Vec<synctv_core::models::RoomMemberWithUser>,
+    members: &[synctv_core::models::RoomMemberWithUser],
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
 ) -> Vec<synctv_proto::common::RoomMember> {
-    members
-        .into_iter()
-        .map(|m| {
-            let role_default =
-                permission_service.calculate_role_default_permissions(&m.role, room_settings);
-            room_member_to_proto(&m, role_default)
-        })
-        .collect()
+    map_slice_preserve_order(members, |m| {
+        let role_default =
+            permission_service.calculate_role_default_permissions(&m.role, room_settings);
+        room_member_to_proto(m, role_default)
+    })
+}
+
+pub(crate) fn media_list_to_proto(
+    media: &[synctv_core::models::Media],
+) -> Vec<crate::proto::client::Media> {
+    map_slice_preserve_order(media, media_to_proto)
+}
+
+pub(crate) fn media_list_to_proto_with_availability<T, F>(
+    items: &[T],
+    map: F,
+) -> Vec<crate::proto::client::Media>
+where
+    T: Sync,
+    F: Fn(&T) -> crate::proto::client::Media + Sync + Send,
+{
+    map_slice_preserve_order(items, map)
+}
+
+pub(crate) fn playlist_list_to_proto<T, F>(
+    items: &[T],
+    map: F,
+) -> Vec<crate::proto::client::Playlist>
+where
+    T: Sync,
+    F: Fn(&T) -> crate::proto::client::Playlist + Sync + Send,
+{
+    map_slice_preserve_order(items, map)
 }
 
 /// Convert provider `PlaybackInfo` to models `PlaybackInfo`
@@ -338,38 +426,30 @@ pub(crate) fn provider_playback_info_to_model(
 ) -> synctv_core::models::media::PlaybackInfo {
     use synctv_core::models::media::{PlaybackInfo, PlaybackUrl, Subtitle, SubtitleUrl};
 
-    let urls = info
-        .urls
-        .iter()
-        .map(|url| PlaybackUrl {
-            name: String::new(),
-            url: url.clone(),
-            headers: info.headers.clone(),
-            expire_at: info
-                .expires_at
-                .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
-            metadata: None,
-        })
-        .collect();
+    let urls = map_slice_preserve_order(&info.urls, |url| PlaybackUrl {
+        name: String::new(),
+        url: url.clone(),
+        headers: info.headers.clone(),
+        expire_at: info
+            .expires_at
+            .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+        metadata: None,
+    });
 
-    let subtitles = info
-        .subtitles
-        .iter()
-        .map(|sub| {
-            let url = SubtitleUrl {
-                name: String::new(),
-                url: sub.url.clone(),
-                headers: sub.headers.clone(),
-                format: sub.format.clone(),
-            };
-            Subtitle {
-                name: sub.name.clone(),
-                language: sub.language.clone(),
-                urls: vec![url],
-                default_url_index: 0,
-            }
-        })
-        .collect();
+    let subtitles = map_slice_preserve_order(&info.subtitles, |sub| {
+        let url = SubtitleUrl {
+            name: String::new(),
+            url: sub.url.clone(),
+            headers: sub.headers.clone(),
+            format: sub.format.clone(),
+        };
+        Subtitle {
+            name: sub.name.clone(),
+            language: sub.language.clone(),
+            urls: vec![url],
+            default_url_index: 0,
+        }
+    });
 
     PlaybackInfo {
         urls,
@@ -570,11 +650,11 @@ fn playback_info_to_proto(
     info: &synctv_core::models::media::PlaybackInfo,
 ) -> crate::proto::client::PlaybackInfo {
     crate::proto::client::PlaybackInfo {
-        urls: info.urls.iter().map(playback_url_to_proto).collect(),
+        urls: map_slice_preserve_order(&info.urls, playback_url_to_proto),
         default_url_index: usize_to_i32_saturating(info.default_url_index),
-        subtitles: info.subtitles.iter().map(subtitle_to_proto).collect(),
+        subtitles: map_slice_preserve_order(&info.subtitles, subtitle_to_proto),
         default_subtitle_index: info.default_subtitle_index.map(usize_to_i32_saturating),
-        danmakus: info.danmakus.iter().map(danmaku_to_proto).collect(),
+        danmakus: map_slice_preserve_order(&info.danmakus, danmaku_to_proto),
         format: info.format.clone(),
     }
 }
@@ -618,7 +698,7 @@ fn subtitle_to_proto(
     crate::proto::client::Subtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
-        urls: subtitle.urls.iter().map(subtitle_url_to_proto).collect(),
+        urls: map_slice_preserve_order(&subtitle.urls, subtitle_url_to_proto),
         default_url_index: usize_to_i32_saturating(subtitle.default_url_index),
     }
 }
@@ -653,6 +733,7 @@ mod tests {
         bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
         media_to_proto, normalize_created_room_settings, playlist_to_proto,
         provider_playback_info_to_model, room_to_proto_basic, sign_local_bilibili_danmaku_urls,
+        REDACTED_SOURCE_CONFIG_VALUE,
     };
     use std::collections::HashMap;
     use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
@@ -937,6 +1018,59 @@ mod tests {
 
         let proto = media_to_proto(&media);
         assert_eq!(proto.version, 42);
+    }
+
+    #[test]
+    fn media_to_proto_redacts_nested_credentials_without_cloning_sanitized_value() {
+        let media = Media {
+            id: MediaId::from_string("media_secret".to_string()),
+            playlist_id: None,
+            room_id: RoomId::from_string("room_proto".to_string()),
+            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            name: "Secret Media".to_string(),
+            position: 1.0,
+            source_provider: "alist".to_string(),
+            source_config: serde_json::json!({
+                "url": "https://example.com/video.mp4",
+                "token": "top-level-token",
+                "nested": {
+                    "password": "nested-password",
+                    "safe": true
+                },
+                "items": [
+                    {
+                        "api_key": "nested-api-key",
+                        "path": "/tv"
+                    }
+                ],
+                "metadata": {
+                    "title": "Secret Media"
+                }
+            }),
+            provider_instance_name: "alist-main".to_string(),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        let proto = media_to_proto(&media);
+        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
+            .expect("proto source config should be JSON");
+
+        assert_eq!(source_config["token"], REDACTED_SOURCE_CONFIG_VALUE);
+        assert_eq!(
+            source_config["nested"]["password"],
+            REDACTED_SOURCE_CONFIG_VALUE
+        );
+        assert_eq!(
+            source_config["items"][0]["api_key"],
+            REDACTED_SOURCE_CONFIG_VALUE
+        );
+        assert_eq!(source_config["nested"]["safe"], serde_json::json!(true));
+        assert_eq!(
+            source_config["metadata"]["title"],
+            serde_json::json!("Secret Media")
+        );
     }
 
     #[test]

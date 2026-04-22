@@ -268,6 +268,50 @@ async fn test_redis_stream_catchup() {
 
 #[tokio::test]
 #[ignore = "requires Docker"]
+async fn test_room_stream_key_uses_ttl_for_inactive_room_cleanup() {
+    let redis = TestRedis::start().await;
+    let key_prefix = redis.key_prefix.clone();
+    let node =
+        create_node_with_prefix(&redis.redis_url, "publisher_node", key_prefix.clone()).await;
+
+    let room_id = RoomId::from_string("ttl_room".to_string());
+    let event = ClusterEvent::ChatMessage {
+        event_id: synctv_common::snanoid!(16),
+        room_id: room_id.clone(),
+        user_id: UserId::from_string("publisher".to_string()),
+        username: "publisher".to_string(),
+        message: "ttl check".to_string(),
+        timestamp: Utc::now(),
+        position: None,
+        color: None,
+    };
+    let _ = node.broadcast(event);
+
+    let stream_key = format!("{key_prefix}room:{}:events", room_id.as_str());
+    wait_for_stream_len(&redis.redis_url, &stream_key, 1).await;
+
+    let client =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Failed to open Redis connection");
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(&stream_key)
+        .query_async(&mut conn)
+        .await
+        .expect("Failed to read room stream TTL");
+
+    assert!(
+        (840..=900).contains(&ttl),
+        "room stream key should use a bounded inactivity TTL, got {ttl}s"
+    );
+
+    node.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_redis_failure_and_recovery() {
     let redis = TestRedis::start().await;
     let key_prefix = redis.key_prefix.clone();

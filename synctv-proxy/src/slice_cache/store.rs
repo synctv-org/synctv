@@ -5,7 +5,7 @@
 //! [`CacheBackend`] (memory or file) with per-key locking to prevent
 //! thundering herd.
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +27,8 @@ use super::status::CacheStatus;
 
 /// Number of lock cleanup cycles before triggering a stale-lock sweep.
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
+const MAX_META_ENTRIES: usize = 100_000;
+const META_RETENTION_TARGET_DIVISOR: usize = 2;
 
 // SliceCache
 
@@ -41,6 +43,12 @@ pub(super) struct FullBodyWrite<'a> {
     pub(super) last_modified: Option<&'a str>,
     pub(super) content_type: Option<&'a str>,
     pub(super) ttl: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MetaEvictionCandidate {
+    last_accessed: std::time::SystemTime,
+    key: String,
 }
 
 /// A slice cache backed by a [`CacheBackend`] (memory or file).
@@ -1037,27 +1045,49 @@ impl SliceCache {
         self.locks.retain(|_key, lock| Arc::strong_count(lock) > 1);
     }
 
-    /// Remove stale metadata entries to prevent unbounded growth of the
-    /// `meta` DashMap. Uses a simple size cap: when the map exceeds
-    /// `MAX_META_ENTRIES`, sorts by `last_accessed` and evicts the oldest
-    /// entries until the map is at half capacity.
-    pub fn cleanup_stale_meta(&self) {
-        const MAX_META_ENTRIES: usize = 100_000;
-        if self.meta.len() <= MAX_META_ENTRIES {
+    fn cleanup_stale_meta_with_limit(&self, max_meta_entries: usize) {
+        if self.meta.len() <= max_meta_entries {
             return;
         }
-        // Collect keys with their last_accessed timestamps, sort by oldest first,
-        // and remove the oldest entries until we are at half capacity.
-        let target_removals = self.meta.len() - MAX_META_ENTRIES / 2;
-        let mut entries: Vec<(String, std::time::SystemTime)> = self
-            .meta
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().last_accessed))
-            .collect();
-        entries.sort_by_key(|(_, ts)| *ts);
-        for (key, _) in entries.into_iter().take(target_removals) {
-            self.meta.remove(&key);
+
+        let retention_target = max_meta_entries / META_RETENTION_TARGET_DIVISOR;
+        let target_removals = self.meta.len().saturating_sub(retention_target);
+        if target_removals == 0 {
+            return;
         }
+
+        let mut oldest_candidates = BinaryHeap::with_capacity(target_removals);
+        for entry in self.meta.iter() {
+            let candidate = MetaEvictionCandidate {
+                key: entry.key().clone(),
+                last_accessed: entry.value().last_accessed,
+            };
+
+            if oldest_candidates.len() < target_removals {
+                oldest_candidates.push(candidate);
+                continue;
+            }
+
+            let Some(newest_eviction_candidate) = oldest_candidates.peek() else {
+                continue;
+            };
+            if candidate < *newest_eviction_candidate {
+                oldest_candidates.pop();
+                oldest_candidates.push(candidate);
+            }
+        }
+
+        for candidate in oldest_candidates {
+            self.meta.remove(&candidate.key);
+        }
+    }
+
+    /// Remove stale metadata entries to prevent unbounded growth of the
+    /// `meta` DashMap. Uses a simple size cap: when the map exceeds
+    /// `MAX_META_ENTRIES`, evicts the least recently accessed entries until
+    /// the map is at half capacity.
+    pub fn cleanup_stale_meta(&self) {
+        self.cleanup_stale_meta_with_limit(MAX_META_ENTRIES);
     }
 
     /// Return the current number of per-key locks (for diagnostics/testing).
@@ -1085,5 +1115,66 @@ impl SliceCache {
     /// `entry_count()` reflects recent inserts.
     pub async fn sync_seen_keys(&self) {
         self.seen_keys.run_pending_tasks().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_cache() -> SliceCache {
+        SliceCache::new(SliceCacheConfig::default())
+    }
+
+    #[test]
+    fn cleanup_stale_meta_evicts_oldest_entries() {
+        let cache = test_cache();
+        let now = std::time::SystemTime::now();
+
+        for index in 0_u64..6 {
+            cache.meta.insert(
+                format!("meta-{index}"),
+                CachedResourceMeta {
+                    etag: None,
+                    last_modified: None,
+                    total_size: None,
+                    content_type: None,
+                    last_accessed: now + Duration::from_secs(index),
+                },
+            );
+        }
+
+        cache.cleanup_stale_meta_with_limit(4);
+
+        assert_eq!(cache.meta_count(), 2);
+        assert!(!cache.meta.contains_key("meta-0"));
+        assert!(!cache.meta.contains_key("meta-1"));
+        assert!(!cache.meta.contains_key("meta-2"));
+        assert!(!cache.meta.contains_key("meta-3"));
+        assert!(cache.meta.contains_key("meta-4"));
+        assert!(cache.meta.contains_key("meta-5"));
+    }
+
+    #[test]
+    fn cleanup_stale_meta_skips_when_within_limit() {
+        let cache = test_cache();
+        let now = std::time::SystemTime::now();
+
+        for index in 0..4 {
+            cache.meta.insert(
+                format!("meta-{index}"),
+                CachedResourceMeta {
+                    etag: None,
+                    last_modified: None,
+                    total_size: None,
+                    content_type: None,
+                    last_accessed: now,
+                },
+            );
+        }
+
+        cache.cleanup_stale_meta_with_limit(4);
+
+        assert_eq!(cache.meta_count(), 4);
     }
 }

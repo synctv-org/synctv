@@ -625,11 +625,11 @@ impl PublisherManager {
     /// `active_publishers`. Without heartbeat maintenance, these publishers
     /// would silently expire from Redis when their TTL runs out.
     async fn reconcile_missing_from_registry(&self) {
-        let all_streams = match self.registry.list_active_streams().await {
+        let active_publishers = match self.registry.list_active_publishers().await {
             Ok(streams) => streams,
             Err(e) => {
                 error!(
-                    "Reconcile (reverse): failed to list active streams from registry: {}",
+                    "Reconcile (reverse): failed to list active publishers from registry: {}",
                     e
                 );
                 return;
@@ -637,28 +637,26 @@ impl PublisherManager {
         };
 
         let mut added = 0u32;
-        for (room_id, media_id) in &all_streams {
-            let publisher_key = format!("{room_id}:{media_id}");
+        for publisher in active_publishers {
+            let publisher_key = format!("{}:{}", publisher.room_id, publisher.media_id);
             // Skip if already tracked locally
             if self.active_publishers.contains_key(&publisher_key) {
                 continue;
             }
-            // Check if this publisher belongs to our node
-            match self.registry.get_publisher(room_id, media_id).await {
-                Ok(Some(info)) if info.node_id == self.local_node_id => {
-                    info!(
-                        "Reconcile (reverse): adding missing publisher room={} media={} to local tracking",
-                        room_id, media_id
-                    );
-                    let entry =
-                        Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch));
-                    self.active_publishers.insert(publisher_key, entry);
-                    added += 1;
-                }
-                _ => {
-                    // Not our publisher or query failed -- skip
-                }
+            if publisher.publisher.node_id != self.local_node_id {
+                continue;
             }
+
+            info!(
+                "Reconcile (reverse): adding missing publisher room={} media={} to local tracking",
+                publisher.room_id, publisher.media_id
+            );
+            let entry = Arc::new(PublisherEntry::with_registration(
+                publisher.publisher.user_id,
+                publisher.publisher.epoch,
+            ));
+            self.active_publishers.insert(publisher_key, entry);
+            added += 1;
         }
 
         if added > 0 {
@@ -882,7 +880,13 @@ impl PublisherManager {
                         // Entry exists in registry - refresh TTL instead
                         match self
                             .registry
-                            .refresh_publisher_ttl(room_id, media_id, &entry.user_id)
+                            .refresh_publisher_ttl(
+                                room_id,
+                                media_id,
+                                &entry.user_id,
+                                &self.local_node_id,
+                                entry.epoch,
+                            )
                             .await
                         {
                             Ok(PublisherRefreshOutcome::Refreshed) => {
@@ -908,6 +912,19 @@ impl PublisherManager {
                                     entry,
                                     room_id,
                                     media_id,
+                                )
+                                .await;
+                            }
+                            Ok(PublisherRefreshOutcome::OwnershipChanged) => {
+                                warn!(
+                                    "Publisher room {} / media {} changed ownership during re-register TTL refresh; cleaning up local publisher",
+                                    room_id, media_id
+                                );
+                                self.cleanup_publisher(
+                                    room_id,
+                                    media_id,
+                                    entry.epoch,
+                                    "publisher ownership changed during restart recovery",
                                 )
                                 .await;
                             }
@@ -1126,7 +1143,13 @@ impl PublisherManager {
             for attempt in 0..MAX_HEARTBEAT_RETRIES {
                 match self
                     .registry
-                    .refresh_publisher_ttl(room_id, media_id, user_id)
+                    .refresh_publisher_ttl(
+                        room_id,
+                        media_id,
+                        user_id,
+                        &self.local_node_id,
+                        entry.epoch,
+                    )
                     .await
                 {
                     Ok(PublisherRefreshOutcome::Refreshed) => {
@@ -1138,6 +1161,20 @@ impl PublisherManager {
                         last_error = Some(anyhow::anyhow!(
                             "publisher registration missing from registry"
                         ));
+                        break;
+                    }
+                    Ok(PublisherRefreshOutcome::OwnershipChanged) => {
+                        warn!(
+                            "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
+                            room_id, media_id
+                        );
+                        self.spawn_cleanup_publisher(
+                            room_id.to_string(),
+                            media_id.to_string(),
+                            entry.epoch,
+                            "publisher ownership changed in registry".to_string(),
+                        );
+                        cycle_succeeded = true;
                         break;
                     }
                     Err(e) => {
@@ -1290,7 +1327,7 @@ impl PublisherManager {
 mod tests {
     use super::super::MockStreamRegistry;
     use super::*;
-    use crate::relay::PublisherInfo;
+    use crate::relay::{ActivePublisherEntry, PublisherInfo};
     use anyhow::Result;
     use chrono::Utc;
 
@@ -1403,6 +1440,23 @@ mod tests {
             .insert(key.to_string(), Arc::new(PublisherEntry::new()));
     }
 
+    async fn insert_registered_entry(
+        manager: &PublisherManager,
+        registry: &dyn StreamRegistryTrait,
+        room_id: &str,
+        media_id: &str,
+    ) {
+        let info = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .expect("registry lookup should succeed")
+            .expect("publisher should exist in registry");
+        manager.active_publishers.insert(
+            format!("{room_id}:{media_id}"),
+            Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch)),
+        );
+    }
+
     struct RecreateOnReregisterRegistry {
         publisher: tokio::sync::Mutex<Option<PublisherInfo>>,
         next_epoch: AtomicU64,
@@ -1496,6 +1550,8 @@ mod tests {
             _room_id: &str,
             _media_id: &str,
             _user_id: &str,
+            _node_id: &str,
+            _expected_epoch: u64,
         ) -> Result<PublisherRefreshOutcome> {
             let mut publisher = self.publisher.lock().await;
             if self
@@ -1548,6 +1604,21 @@ mod tests {
 
         async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> Result<bool> {
             Ok(self.publisher.lock().await.is_some())
+        }
+
+        async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+            Ok(self
+                .publisher
+                .lock()
+                .await
+                .clone()
+                .into_iter()
+                .map(|publisher| ActivePublisherEntry {
+                    room_id: "room-reregister".to_string(),
+                    media_id: "media-reregister".to_string(),
+                    publisher,
+                })
+                .collect())
         }
 
         async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
@@ -2631,7 +2702,7 @@ mod tests {
         drop(broadcast_tx);
         start_handle.await.unwrap();
 
-        let sync_before_shutdown = registry.list_active_streams_call_count();
+        let sync_before_shutdown = registry.list_active_publishers_call_count();
 
         tokio::time::advance(Duration::from_secs(
             PERIODIC_SYNC_INTERVAL_SECS + HEARTBEAT_INTERVAL_SECS + 5,
@@ -2645,7 +2716,7 @@ mod tests {
             "heartbeat task must stop when publisher manager exits"
         );
         assert_eq!(
-            registry.list_active_streams_call_count(),
+            registry.list_active_publishers_call_count(),
             sync_before_shutdown,
             "periodic sync task must stop when publisher manager exits"
         );
@@ -2750,7 +2821,7 @@ mod tests {
             .unwrap();
 
         // 2. Track it locally
-        insert_entry(&manager, "room1:media1");
+        insert_registered_entry(&manager, registry.as_ref(), "room1", "media1").await;
 
         // 3. Verify tracking
         assert_eq!(manager.active_publishers.len(), 1);
@@ -2790,9 +2861,9 @@ mod tests {
             .unwrap();
 
         // 2. Track all three locally
-        insert_entry(&manager, "room1:media1");
-        insert_entry(&manager, "room2:media2");
-        insert_entry(&manager, "room3:media3");
+        insert_registered_entry(&manager, registry.as_ref(), "room1", "media1").await;
+        insert_registered_entry(&manager, registry.as_ref(), "room2", "media2").await;
+        insert_registered_entry(&manager, registry.as_ref(), "room3", "media3").await;
 
         // 3. Verify all tracked
         assert_eq!(manager.active_publishers.len(), 3);

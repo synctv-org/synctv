@@ -34,8 +34,8 @@ const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 /// or deregisters may not appear/disappear from `get_all_nodes()` for up to 2s.
 ///
 /// Trade-offs:
-/// - **Lower value** (1-2s): fresher view of the cluster, but more Redis SCAN
-///   calls under high query rates (health probes run every ~5-15s, so this is
+/// - **Lower value** (1-2s): fresher view of the cluster, but more Redis index
+///   reads under high query rates (health probes run every ~5-15s, so this is
 ///   usually negligible).
 /// - **Higher value** (5-10s): fewer Redis round-trips, but stale membership
 ///   data may cause load balancer to route to a recently-departed node or miss
@@ -46,8 +46,8 @@ const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 /// still coalescing bursts of `get_all_nodes()` calls within the same tick.
 const NODES_CACHE_TTL_SECS: u64 = 2;
 
-/// Maximum number of SCAN iterations when listing cluster node keys.
-const MAX_SCAN_ITERATIONS: usize = 1000;
+/// Maximum number of SSCAN iterations when listing node IDs from the index set.
+const MAX_INDEX_SCAN_ITERATIONS: usize = 1000;
 
 /// Create a failsafe circuit breaker for Redis operations.
 ///
@@ -305,6 +305,10 @@ impl NodeRegistry {
         self.last_refreshed.store(0, Ordering::Relaxed);
     }
 
+    fn node_index_key(&self) -> String {
+        format!("{}:index", self.key_prefix)
+    }
+
     fn filter_routable_nodes(&self, nodes: Vec<NodeInfo>) -> Vec<NodeInfo> {
         if self.local_only {
             return nodes;
@@ -426,6 +430,96 @@ impl NodeRegistry {
             reregister_backoff_ms: AtomicU64::new(INITIAL_REREGISTER_BACKOFF_SECS * 1000),
             local_only: true,
         })
+    }
+
+    async fn fetch_indexed_node_ids(
+        &self,
+        conn: &mut redis::aio::MultiplexedConnection,
+    ) -> Result<Vec<String>> {
+        let index_key = self.node_index_key();
+        let mut node_ids = Vec::new();
+        let mut cursor: u64 = 0;
+        let mut scan_iterations = 0usize;
+
+        loop {
+            if scan_iterations >= MAX_INDEX_SCAN_ITERATIONS {
+                tracing::warn!(
+                    index_key = %index_key,
+                    iterations = scan_iterations,
+                    node_ids_found = node_ids.len(),
+                    "SSCAN loop reached maximum iteration limit; node index may be larger than expected or cursor is cycling"
+                );
+                break;
+            }
+            scan_iterations += 1;
+
+            let op_result: std::result::Result<(u64, Vec<String>), Error> = timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                redis::cmd("SSCAN")
+                    .arg(&index_key)
+                    .arg(cursor)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(conn),
+            )
+            .await
+            .map_err(|_| Error::Timeout("Redis SSCAN timed out".to_string()))
+            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis SSCAN failed: {e}"))));
+            self.record_operation_result(&op_result);
+            let scan_result = op_result?;
+
+            cursor = scan_result.0;
+            node_ids.extend(scan_result.1);
+
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(node_ids)
+    }
+
+    async fn prune_node_index_members(
+        &self,
+        conn: &mut redis::aio::MultiplexedConnection,
+        node_ids: &[String],
+    ) {
+        if node_ids.is_empty() {
+            return;
+        }
+
+        let index_key = self.node_index_key();
+        let mut pipe = redis::pipe();
+        for node_id in node_ids {
+            pipe.cmd("SREM").arg(&index_key).arg(node_id).ignore();
+        }
+
+        let op_result: std::result::Result<(), Error> = timeout(
+            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            pipe.query_async(conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis node index cleanup timed out".to_string()))
+        .and_then(|r| {
+            r.map_err(|e| Error::Database(format!("Redis node index cleanup failed: {e}")))
+        });
+        self.record_operation_result(&op_result);
+
+        match op_result {
+            Ok(()) => {
+                tracing::debug!(
+                    removed_members = node_ids.len(),
+                    "Pruned stale node IDs from Redis node index"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    removed_members = node_ids.len(),
+                    error = %error,
+                    "Failed to prune stale node IDs from Redis node index"
+                );
+            }
+        }
     }
 
     /// Get or create a cached multiplexed Redis connection with periodic health checks.
@@ -749,6 +843,7 @@ impl NodeRegistry {
         let mut conn = self.get_conn_with_breaker().await?;
 
         let key = self.node_key(&self.node_id);
+        let index_key = self.node_index_key();
         let local_epoch = self.current_epoch.load(Ordering::SeqCst);
         let ttl = self.heartbeat_timeout_secs * 2;
 
@@ -770,6 +865,7 @@ impl NodeRegistry {
         let script = redis::Script::new(
             r"
             local key = KEYS[1]
+            local index_key = KEYS[2]
             local new_node_json = ARGV[1]
             local ttl = tonumber(ARGV[2])
             local local_epoch = tonumber(ARGV[3])
@@ -800,6 +896,8 @@ impl NodeRegistry {
             -- Write with TTL
             local final_json = cjson.encode(new_node)
             redis.call('SETEX', key, ttl, final_json)
+            redis.call('SADD', index_key, node_id)
+            redis.call('EXPIRE', index_key, ttl)
 
             return new_epoch
             ",
@@ -810,6 +908,7 @@ impl NodeRegistry {
             Duration::from_secs(REDIS_TIMEOUT_SECS),
             script
                 .key(&key)
+                .key(&index_key)
                 .arg(&node_json)
                 .arg(ttl)
                 .arg(local_epoch)
@@ -875,6 +974,7 @@ impl NodeRegistry {
             let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&self.node_id);
+            let index_key = self.node_index_key();
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
             let now = Utc::now();
             let now_rfc3339 = now.to_rfc3339();
@@ -921,10 +1021,12 @@ impl NodeRegistry {
             let script = redis::Script::new(
                 r"
                 local key = KEYS[1]
+                local index_key = KEYS[2]
                 local expected_epoch = tonumber(ARGV[1])
                 local new_node_json = ARGV[2]
                 local ttl = tonumber(ARGV[3])
                 local now_str = ARGV[4]
+                local node_id = ARGV[5]
 
                 local existing = redis.call('GET', key)
                 if not existing then
@@ -945,6 +1047,8 @@ impl NodeRegistry {
                 node['epoch'] = expected_epoch
                 local final_json = cjson.encode(node)
                 redis.call('SETEX', key, ttl, final_json)
+                redis.call('SADD', index_key, node_id)
+                redis.call('EXPIRE', index_key, ttl)
                 return expected_epoch
                 ",
             );
@@ -953,10 +1057,12 @@ impl NodeRegistry {
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
                 script
                     .key(&key)
+                    .key(&index_key)
                     .arg(current_epoch)
                     .arg(&node_json)
                     .arg(ttl)
                     .arg(&now_rfc3339)
+                    .arg(&self.node_id)
                     .invoke_async(&mut conn),
             )
             .await
@@ -1092,6 +1198,7 @@ impl NodeRegistry {
             let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&self.node_id);
+            let index_key = self.node_index_key();
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
 
             // Atomic Lua script: only delete if existing epoch <= our epoch
@@ -1099,7 +1206,9 @@ impl NodeRegistry {
             let script = redis::Script::new(
                 r"
                 local key = KEYS[1]
+                local index_key = KEYS[2]
                 local local_epoch = tonumber(ARGV[1])
+                local node_id = ARGV[2]
 
                 local existing = redis.call('GET', key)
                 if not existing then
@@ -1115,13 +1224,19 @@ impl NodeRegistry {
                 end
 
                 redis.call('DEL', key)
+                redis.call('SREM', index_key, node_id)
                 return 1
                 ",
             );
 
             let op_result: std::result::Result<i64, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script.key(&key).arg(current_epoch).invoke_async(&mut conn),
+                script
+                    .key(&key)
+                    .key(&index_key)
+                    .arg(current_epoch)
+                    .arg(&self.node_id)
+                    .invoke_async(&mut conn),
             )
             .await
             .map_err(|_| Error::Timeout("Redis unregister script timed out".to_string()))
@@ -1157,6 +1272,7 @@ impl NodeRegistry {
             let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&node_info.node_id);
+            let index_key = self.node_index_key();
             let value = serde_json::to_string(&node_info)
                 .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
             let ttl = self.heartbeat_timeout_secs * 2;
@@ -1166,9 +1282,11 @@ impl NodeRegistry {
             let script = redis::Script::new(
                 r"
                 local key = KEYS[1]
+                local index_key = KEYS[2]
                 local new_json = ARGV[1]
                 local ttl = tonumber(ARGV[2])
                 local incoming_epoch = tonumber(ARGV[3])
+                local node_id = ARGV[4]
 
                 local existing = redis.call('GET', key)
                 if existing then
@@ -1180,6 +1298,8 @@ impl NodeRegistry {
                 end
 
                 redis.call('SETEX', key, ttl, new_json)
+                redis.call('SADD', index_key, node_id)
+                redis.call('EXPIRE', index_key, ttl)
                 return 1
                 ",
             );
@@ -1188,9 +1308,11 @@ impl NodeRegistry {
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
                 script
                     .key(&key)
+                    .key(&index_key)
                     .arg(&value)
                     .arg(ttl)
                     .arg(node_info.epoch)
+                    .arg(&node_info.node_id)
                     .invoke_async(&mut conn),
             )
             .await
@@ -1223,6 +1345,7 @@ impl NodeRegistry {
         let mut conn = self.get_conn_with_breaker().await?;
 
         let key = self.node_key(node_id);
+        let index_key = self.node_index_key();
         let now = Utc::now().to_rfc3339();
         let ttl = self.heartbeat_timeout_secs * 2;
 
@@ -1235,13 +1358,21 @@ impl NodeRegistry {
             obj['last_heartbeat'] = ARGV[1]
             local updated = cjson.encode(obj)
             redis.call('SETEX', KEYS[1], ARGV[2], updated)
+            redis.call('SADD', KEYS[2], ARGV[3])
+            redis.call('EXPIRE', KEYS[2], ARGV[2])
             return updated
             ",
         );
 
         let op_result: std::result::Result<Option<String>, Error> = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            script.key(&key).arg(&now).arg(ttl).invoke_async(&mut conn),
+            script
+                .key(&key)
+                .key(&index_key)
+                .arg(&now)
+                .arg(ttl)
+                .arg(node_id)
+                .invoke_async(&mut conn),
         )
         .await
         .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
@@ -1277,6 +1408,7 @@ impl NodeRegistry {
             let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(node_id);
+            let index_key = self.node_index_key();
 
             // Use epoch validation if provided, otherwise just delete
             if let Some(epoch) = expected_epoch {
@@ -1284,7 +1416,9 @@ impl NodeRegistry {
                 let script = redis::Script::new(
                     r"
                     local key = KEYS[1]
+                    local index_key = KEYS[2]
                     local expected_epoch = tonumber(ARGV[1])
+                    local node_id = ARGV[2]
 
                     local existing = redis.call('GET', key)
                     if not existing then
@@ -1299,13 +1433,19 @@ impl NodeRegistry {
                     end
 
                     redis.call('DEL', key)
+                    redis.call('SREM', index_key, node_id)
                     return 1
                     ",
                 );
 
                 let op_result: std::result::Result<i64, Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    script.key(&key).arg(epoch).invoke_async(&mut conn),
+                    script
+                        .key(&key)
+                        .key(&index_key)
+                        .arg(epoch)
+                        .arg(node_id)
+                        .invoke_async(&mut conn),
                 )
                 .await
                 .map_err(|_| Error::Timeout("Redis unregister_remote script timed out".to_string()))
@@ -1381,55 +1521,14 @@ impl NodeRegistry {
     async fn get_all_nodes_uncached(&self) -> Result<Vec<NodeInfo>> {
         {
             let mut conn = self.get_conn_with_breaker().await?;
-
-            // Use SCAN instead of KEYS for better performance on large datasets
-            // SCAN is non-blocking and returns results incrementally
-            let pattern = format!("{}:*", self.key_prefix);
-            let mut keys = Vec::new();
-            let mut cursor: u64 = 0;
-            let mut scan_iterations: usize = 0;
-
-            loop {
-                if scan_iterations >= MAX_SCAN_ITERATIONS {
-                    tracing::warn!(
-                        pattern = %pattern,
-                        iterations = scan_iterations,
-                        keys_found = keys.len(),
-                        "SCAN loop reached maximum iteration limit; \
-                         keyspace may be larger than expected or cursor is cycling"
-                    );
-                    break;
-                }
-                scan_iterations += 1;
-
-                let op_result: std::result::Result<(u64, Vec<String>), Error> = timeout(
-                    Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(&pattern)
-                        .arg("COUNT")
-                        .arg(100) // Scan 100 keys at a time
-                        .query_async(&mut conn),
-                )
-                .await
-                .map_err(|_| Error::Timeout("Redis SCAN timed out".to_string()))
-                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis SCAN failed: {e}"))));
-                self.record_operation_result(&op_result);
-                let scan_result = op_result?;
-
-                cursor = scan_result.0;
-                keys.extend(scan_result.1);
-
-                // cursor 0 means iteration complete
-                if cursor == 0 {
-                    break;
-                }
-            }
+            let node_ids = self.fetch_indexed_node_ids(&mut conn).await?;
+            let keys: Vec<String> = node_ids
+                .iter()
+                .map(|node_id| self.node_key(node_id))
+                .collect();
 
             let mut nodes = Vec::new();
             if !keys.is_empty() {
-                // Use MGET to fetch all values in one round trip instead of N individual GETs
                 let mut cmd = redis::cmd("MGET");
                 for key in &keys {
                     cmd.arg(key);
@@ -1444,13 +1543,29 @@ impl NodeRegistry {
                 self.record_operation_result(&mget_result);
                 let values = mget_result?;
 
-                for value in values.into_iter().flatten() {
-                    if let Ok(node_info) = serde_json::from_str::<NodeInfo>(&value) {
-                        if !node_info.is_stale(self.heartbeat_timeout_secs) {
-                            nodes.push(node_info);
-                        }
+                let mut stale_index_members = Vec::new();
+                for (node_id, value) in node_ids.into_iter().zip(values) {
+                    match value {
+                        Some(value) => match serde_json::from_str::<NodeInfo>(&value) {
+                            Ok(node_info) if !node_info.is_stale(self.heartbeat_timeout_secs) => {
+                                nodes.push(node_info);
+                            }
+                            _ => stale_index_members.push(node_id),
+                        },
+                        None => stale_index_members.push(node_id),
                     }
                 }
+
+                if !stale_index_members.is_empty() {
+                    self.prune_node_index_members(&mut conn, &stale_index_members)
+                        .await;
+                }
+            }
+
+            if keys.is_empty() {
+                let mut local_nodes = self.local_nodes.write().await;
+                local_nodes.retain(|_, info| !info.is_stale(self.heartbeat_timeout_secs));
+                return Ok(self.merge_verified_discovery_nodes(nodes, &local_nodes));
             }
 
             // Merge Redis results into local cache instead of destructively clearing.

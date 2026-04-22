@@ -1,7 +1,7 @@
 // Mock StreamRegistry for testing without Redis
 
 use super::registry::PublisherInfo;
-use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
+use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -23,6 +23,8 @@ pub struct MockStreamRegistry {
     unregister_if_epoch_matches_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Counter for list_active_streams calls (for periodic sync lifecycle tests)
     list_active_streams_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Counter for list_active_publishers calls (for periodic sync lifecycle tests)
+    list_active_publishers_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// When true, `get_publisher` returns an error (simulates Redis failure)
     fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// When true, `refresh_publisher_ttl` returns a Redis-like connectivity error.
@@ -52,6 +54,9 @@ impl MockStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             list_active_streams_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            list_active_publishers_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -85,6 +90,9 @@ impl MockStreamRegistry {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             list_active_streams_call_count: std::sync::Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            list_active_publishers_call_count: std::sync::Arc::new(
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -128,6 +136,13 @@ impl MockStreamRegistry {
     #[must_use]
     pub fn list_active_streams_call_count(&self) -> usize {
         self.list_active_streams_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Get the count of `list_active_publishers` calls.
+    #[must_use]
+    pub fn list_active_publishers_call_count(&self) -> usize {
+        self.list_active_publishers_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -241,7 +256,9 @@ impl StreamRegistryTrait for MockStreamRegistry {
         &self,
         room_id: &str,
         media_id: &str,
-        _user_id: &str,
+        user_id: &str,
+        node_id: &str,
+        expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome> {
         self.refresh_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -273,10 +290,16 @@ impl StreamRegistryTrait for MockStreamRegistry {
         }
         let publishers = self.publishers.lock().await;
         Ok(
-            if publishers.contains_key(&(room_id.to_string(), media_id.to_string())) {
-                PublisherRefreshOutcome::Refreshed
-            } else {
-                PublisherRefreshOutcome::Missing
+            match publishers.get(&(room_id.to_string(), media_id.to_string())) {
+                Some(publisher)
+                    if (!user_id.is_empty() && publisher.user_id != user_id)
+                        || (!node_id.is_empty() && publisher.node_id != node_id)
+                        || publisher.epoch != expected_epoch =>
+                {
+                    PublisherRefreshOutcome::OwnershipChanged
+                }
+                Some(_) => PublisherRefreshOutcome::Refreshed,
+                None => PublisherRefreshOutcome::Missing,
             },
         )
     }
@@ -334,6 +357,28 @@ impl StreamRegistryTrait for MockStreamRegistry {
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
         let publishers = self.publishers.lock().await;
         Ok(publishers.contains_key(&(room_id.to_string(), media_id.to_string())))
+    }
+
+    async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+        self.list_active_publishers_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .fail_get_publisher
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(anyhow::anyhow!(
+                "Simulated Redis failure in list_active_publishers"
+            ));
+        }
+        let publishers = self.publishers.lock().await;
+        Ok(publishers
+            .iter()
+            .map(|((room_id, media_id), publisher)| ActivePublisherEntry {
+                room_id: room_id.clone(),
+                media_id: media_id.clone(),
+                publisher: publisher.clone(),
+            })
+            .collect())
     }
 
     async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {

@@ -185,6 +185,7 @@ where
         if self.l2.is_active() {
             let sf_key = key.as_str().to_string();
             let l2 = self.l2.clone();
+            let l2_prefix = self.key_prefix.clone();
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             let cache_type = self.cache_type.clone();
 
@@ -197,32 +198,33 @@ where
             let global_epoch_arc = self.global_epoch.clone();
             let epoch_key = key.clone();
 
-            let result =
-                self.singleflight
-                    .do_work(sf_key, {
-                        async move {
-                            let json = l2.get(&redis_key).await.map_err(|e| {
-                                format!("Failed to get {cache_type} from cache: {e}")
-                            })?;
+            let result = self
+                .singleflight
+                .do_work(sf_key, {
+                    async move {
+                        let json = l2
+                            .get_scoped(&l2_prefix, &redis_key)
+                            .await
+                            .map_err(|e| format!("Failed to get {cache_type} from cache: {e}"))?;
 
-                            match json {
-                                Some(json) => {
-                                    let value: V = serde_json::from_str(&json).map_err(|e| {
-                                        format!("Failed to deserialize cached {cache_type}: {e}")
-                                    })?;
-                                    Ok(Some(value))
-                                }
-                                None => Ok(None),
+                        match json {
+                            Some(json) => {
+                                let value: V = serde_json::from_str(&json).map_err(|e| {
+                                    format!("Failed to deserialize cached {cache_type}: {e}")
+                                })?;
+                                Ok(Some(value))
                             }
+                            None => Ok(None),
                         }
-                    })
-                    .await
-                    .map_err(|error| match error {
-                        super::SingleFlightError::WorkerFailed => Error::Internal(
-                            "SingleFlight worker failed during L2 cache fetch".to_string(),
-                        ),
-                        super::SingleFlightError::Inner(message) => Error::Internal(message),
-                    })?;
+                    }
+                })
+                .await
+                .map_err(|error| match error {
+                    super::SingleFlightError::WorkerFailed => Error::Internal(
+                        "SingleFlight worker failed during L2 cache fetch".to_string(),
+                    ),
+                    super::SingleFlightError::Inner(message) => Error::Internal(message),
+                })?;
 
             if let Some(ref value) = result {
                 let l2 = String::from("l2");
@@ -297,7 +299,9 @@ where
             // so ttl_with_jitter is always > 0. We use max() as defense-in-depth.
             let ttl_with_jitter = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
-            self.l2.set(&redis_key, &json, ttl_with_jitter).await?;
+            self.l2
+                .set_scoped(&self.key_prefix, &redis_key, &json, ttl_with_jitter)
+                .await?;
 
             tracing::debug!(
                 key = %key,
@@ -342,7 +346,7 @@ where
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             self.l2
-                .delete_with_retry(&redis_key, 3, &self.cache_type)
+                .delete_with_retry_scoped(&self.key_prefix, &redis_key, 3, &self.cache_type)
                 .await?;
         }
 
@@ -385,7 +389,7 @@ where
             // Don't panic if L2 is temporarily unavailable
             if let Err(e) = self
                 .l2
-                .delete_with_retry(&redis_key, 2, &self.cache_type)
+                .delete_with_retry_scoped(&self.key_prefix, &redis_key, 2, &self.cache_type)
                 .await
             {
                 let cross_replica = String::from("cross_replica_invalidate");
@@ -456,12 +460,13 @@ where
                 .map(|k| format!("{}{}", self.key_prefix, k.as_str()))
                 .collect();
             let l2 = self.l2.clone();
+            let l2_prefix = self.key_prefix.clone();
             let cache_type = self.cache_type.clone();
 
             let jsons: Vec<Option<String>> = self
                 .batch_singleflight
                 .do_work(sf_key, async move {
-                    l2.get_batch(&full_keys)
+                    l2.get_batch_scoped(&l2_prefix, &full_keys)
                         .await
                         .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
                 })
@@ -622,7 +627,13 @@ where
 
             let was_set = self
                 .l2
-                .set_if_newer(&redis_key, &new_json, ttl_seconds, &new_ts_iso)
+                .set_if_newer_scoped(
+                    &self.key_prefix,
+                    &redis_key,
+                    &new_json,
+                    ttl_seconds,
+                    &new_ts_iso,
+                )
                 .await?;
 
             if !was_set {

@@ -32,6 +32,23 @@ const STREAM_RETENTION_MS: u64 = 3_600_000;
 /// We only retry the recovery broadcast when such a gap was detected.
 const STATE_SYNC_INTERVAL_SECS: u64 = 60;
 
+/// Interval for reclaiming orphaned consumer groups left by dead processes.
+///
+/// Startup cleanup is not sufficient in pod environments: a replacement pod can
+/// come up before the old pod has been idle long enough to qualify as stale.
+/// Periodic cleanup ensures those groups are eventually reclaimed without
+/// waiting for another restart.
+const ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS: u64 = 300;
+const _: () = assert!(ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS >= STATE_SYNC_INTERVAL_SECS);
+
+/// A consumer group that has not interacted with the stream for longer than the
+/// retention window is considered stale and can be reclaimed.
+///
+/// This is intentionally aligned with `STREAM_RETENTION_MS`: once a dead
+/// consumer has been idle longer than the stream keeps historical entries, its
+/// pending list can no longer provide materially useful catch-up.
+const STALE_CONSUMER_IDLE_MS: u64 = STREAM_RETENTION_MS;
+
 /// Poll interval for stream subscribers when using a shared, non-blocking Redis
 /// connection. We intentionally avoid `BLOCK` reads because the shared
 /// `ConnectionManager` may be used by unrelated request paths and blocking it
@@ -205,14 +222,19 @@ impl CacheInvalidationService {
     /// # Arguments
     /// * `node_id` - Unique identifier for this node (for consumer group and logging).
     ///   **Important**: The consumer group name is derived as `cache-invalidation-{node_id}`.
-    ///   If `node_id` contains a random component (e.g., the shared base62 suffix from
-    ///   `generate_node_id()` in non-K8s environments), each process restart creates
-    ///   a new consumer group and the previous one becomes orphaned in Redis. To
-    ///   avoid orphan accumulation, either:
-    ///   - Use a stable `node_id` (e.g., K8s `POD_NAME`, hostname, or a persisted ID)
-    ///   - Rely on [`start`](Self::start) which calls
-    ///     [`cleanup_orphaned_consumer_groups`](Self::cleanup_orphaned_consumer_groups)
-    ///     to remove groups with zero pending messages and zero active consumers.
+    ///   A restart with the same `node_id` resets the previous incarnation's
+    ///   consumer group during [`start`](Self::start), so the new process does
+    ///   not inherit an obsolete Pending Entry List (PEL).
+    ///
+    ///   Different `node_id` values across restarts are also safe: old groups
+    ///   are reclaimed opportunistically by
+    ///   [`cleanup_orphaned_consumer_groups`](Self::cleanup_orphaned_consumer_groups)
+    ///   once all of their consumers have been idle longer than the stream
+    ///   retention window.
+    ///
+    ///   Using a stable `node_id` such as Kubernetes `POD_NAME` is still
+    ///   preferred for observability because logs and Redis metadata map
+    ///   cleanly to a pod identity.
     /// * `stream_key` - Redis stream key for cache invalidation (e.g., "synctv:cache:invalidate:stream")
     #[must_use]
     pub fn new(node_id: String, stream_key: String) -> Self {
@@ -307,6 +329,11 @@ impl CacheInvalidationService {
         self.shutdown
             .store(false, std::sync::atomic::Ordering::Relaxed);
 
+        // A restarted process should not inherit a previous incarnation's PEL.
+        // Local caches are empty on startup, so catching up old invalidations
+        // is unnecessary and only keeps dead-consumer metadata around.
+        self.reset_current_consumer_group().await;
+
         // Clean up orphaned consumer groups left by previous processes with
         // different node_ids (e.g., non-K8s restarts where node_id has a random suffix).
         self.cleanup_orphaned_consumer_groups().await;
@@ -379,12 +406,17 @@ impl CacheInvalidationService {
         let service = self.clone();
 
         let task = crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
-            interval.tick().await;
+            let mut state_sync_interval =
+                tokio::time::interval(Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            let mut orphan_cleanup_interval = tokio::time::interval(Duration::from_secs(
+                ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS,
+            ));
+            state_sync_interval.tick().await;
+            orphan_cleanup_interval.tick().await;
 
             loop {
                 tokio::select! {
-                    _ = interval.tick() => {
+                    _ = state_sync_interval.tick() => {
                         if service.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                             break;
                         }
@@ -416,6 +448,13 @@ impl CacheInvalidationService {
                                     .store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
+                    }
+                    _ = orphan_cleanup_interval.tick() => {
+                        if service.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+
+                        service.cleanup_orphaned_consumer_groups().await;
                     }
                     () = async {
                         loop {
@@ -497,28 +536,84 @@ impl CacheInvalidationService {
         }
     }
 
+    async fn fetch_consumer_groups(&self) -> Result<Vec<Vec<redis::Value>>> {
+        let mut conn = self.get_conn().await?;
+        redis::cmd("XINFO")
+            .arg("GROUPS")
+            .arg(&self.stream_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to inspect consumer groups: {e}")))
+    }
+
+    async fn destroy_consumer_group_if_present(&self, group_name: &str) -> Result<bool> {
+        let Ok(groups) = self.fetch_consumer_groups().await else {
+            return Ok(false);
+        };
+
+        if !groups
+            .iter()
+            .any(|group_info| Self::extract_group_name(group_info).as_deref() == Some(group_name))
+        {
+            return Ok(false);
+        }
+
+        let mut conn = self.get_conn().await?;
+        let destroyed: i64 = redis::cmd("XGROUP")
+            .arg("DESTROY")
+            .arg(&self.stream_key)
+            .arg(group_name)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to destroy consumer group {group_name}: {e}"
+                ))
+            })?;
+        Ok(destroyed > 0)
+    }
+
+    async fn reset_current_consumer_group(&self) {
+        match self
+            .destroy_consumer_group_if_present(&self.consumer_group)
+            .await
+        {
+            Ok(true) => {
+                info!(
+                    stream = %self.stream_key,
+                    group = %self.consumer_group,
+                    "Destroyed inherited consumer group before cache invalidation startup"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    stream = %self.stream_key,
+                    group = %self.consumer_group,
+                    "Failed to reset inherited consumer group before startup"
+                );
+            }
+        }
+    }
+
     /// Clean up orphaned consumer groups left by previous processes with different
     /// `node_id` values (e.g., due to random suffix in non-K8s deployments).
     ///
     /// Scans all consumer groups on the stream and destroys any group that:
     /// - Starts with the `cache-invalidation-` prefix (i.e., belongs to this service)
     /// - Is **not** the current node's consumer group
-    /// - Has zero active consumers and zero pending messages
+    /// - Has no consumers, or every consumer has been idle longer than
+    ///   `STALE_CONSUMER_IDLE_MS`
     ///
     /// Called from [`start`](Self::start) to prevent unbounded accumulation of
     /// orphaned groups in Redis.
     async fn cleanup_orphaned_consumer_groups(&self) {
-        let Ok(mut conn) = self.get_conn().await else {
+        let Ok(groups) = self.fetch_consumer_groups().await else {
             return;
         };
 
-        let result: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
-            .arg("GROUPS")
-            .arg(&self.stream_key)
-            .query_async(&mut conn)
-            .await;
-
-        let Ok(groups) = result else {
+        let Ok(mut conn) = self.get_conn().await else {
             return;
         };
 
@@ -532,33 +627,53 @@ impl CacheInvalidationService {
                 continue;
             }
 
-            // Check consumers == 0 and pending == 0
-            let consumers = Self::extract_integer_field(group_info, "consumers").unwrap_or(1);
-            let pending = Self::extract_integer_field(group_info, "pending").unwrap_or(1);
+            let consumers_result: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
+                .arg("CONSUMERS")
+                .arg(&self.stream_key)
+                .arg(&name)
+                .query_async(&mut conn)
+                .await;
 
-            if consumers == 0 && pending == 0 {
-                let destroy_result: redis::RedisResult<()> = redis::cmd("XGROUP")
-                    .arg("DESTROY")
-                    .arg(&self.stream_key)
-                    .arg(&name)
-                    .query_async(&mut conn)
-                    .await;
-                match destroy_result {
-                    Ok(()) => {
-                        info!(
-                            stream = %self.stream_key,
-                            group = %name,
-                            "Destroyed orphaned consumer group"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            stream = %self.stream_key,
-                            group = %name,
-                            "Failed to destroy orphaned consumer group"
-                        );
-                    }
+            let consumers = match consumers_result {
+                Ok(consumers) => consumers,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        stream = %self.stream_key,
+                        group = %name,
+                        "Failed to inspect consumers for orphaned consumer group"
+                    );
+                    continue;
+                }
+            };
+
+            if !Self::consumer_group_is_stale(&consumers) {
+                continue;
+            }
+
+            let destroy_result: redis::RedisResult<i64> = redis::cmd("XGROUP")
+                .arg("DESTROY")
+                .arg(&self.stream_key)
+                .arg(&name)
+                .query_async(&mut conn)
+                .await;
+            match destroy_result {
+                Ok(destroyed) if destroyed > 0 => {
+                    info!(
+                        stream = %self.stream_key,
+                        group = %name,
+                        consumers = consumers.len(),
+                        "Destroyed stale orphaned consumer group"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        stream = %self.stream_key,
+                        group = %name,
+                        "Failed to destroy orphaned consumer group"
+                    );
                 }
             }
         }
@@ -611,6 +726,20 @@ impl CacheInvalidationService {
             }
         }
         None
+    }
+
+    fn extract_consumer_idle_ms(consumer_info: &[redis::Value]) -> Option<u64> {
+        Self::extract_integer_field(consumer_info, "inactive")
+            .or_else(|| Self::extract_integer_field(consumer_info, "idle"))
+            .and_then(|value| u64::try_from(value).ok())
+    }
+
+    fn consumer_group_is_stale(consumers: &[Vec<redis::Value>]) -> bool {
+        consumers.is_empty()
+            || consumers.iter().all(|consumer| {
+                Self::extract_consumer_idle_ms(consumer)
+                    .is_some_and(|idle_ms| idle_ms >= STALE_CONSUMER_IDLE_MS)
+            })
     }
 
     /// Maximum delivery attempts for a malformed message before it is
@@ -994,11 +1123,14 @@ impl CacheInvalidationService {
 
     /// Stop the cache invalidation service and trim the stream.
     ///
-    /// Signals the background subscriber to stop, then trims the Redis stream
-    /// to the configured maximum length. XGROUP DESTROY is intentionally NOT
-    /// used here because it would drop the entire Pending Entry List (PEL),
-    /// losing messages that were delivered but not yet acknowledged. XTRIM
-    /// limits stream growth without discarding unacknowledged messages.
+    /// Signals the background subscriber to stop, destroys this process's
+    /// consumer group, then trims the Redis stream to the configured maximum
+    /// length.
+    ///
+    /// Destroying the current consumer group is safe because the process is
+    /// shutting down and will not consume its pending entries again. A future
+    /// process restart begins with empty local caches, so inheriting the old
+    /// Pending Entry List (PEL) is unnecessary.
     pub async fn stop(&self) {
         self.shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1008,9 +1140,33 @@ impl CacheInvalidationService {
         self.join_task("cache invalidation state sync", &self.state_sync_task)
             .await;
 
+        if self.redis_enabled() {
+            match self
+                .destroy_consumer_group_if_present(&self.consumer_group)
+                .await
+            {
+                Ok(true) => {
+                    info!(
+                        stream = %self.stream_key,
+                        group = %self.consumer_group,
+                        "Destroyed cache invalidation consumer group during shutdown"
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        stream = %self.stream_key,
+                        group = %self.consumer_group,
+                        "Failed to destroy cache invalidation consumer group during shutdown"
+                    );
+                }
+            }
+        }
+
         // Trim the stream on shutdown to prevent unbounded growth.
-        // We do NOT call XGROUP DESTROY because that would silently drop the
-        // entire PEL, losing messages that were delivered but not yet XACK'd.
+        // The current consumer group has already been removed above; this
+        // XTRIM only bounds the retained stream data for future restarts.
         if self.redis_enabled() {
             match self.get_conn().await {
                 Ok(mut conn) => {
@@ -1855,10 +2011,78 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_periodic_orphan_cleanup_runs_without_pending_recovery_sync() {
+        let service = CacheInvalidationService::new(
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+        let shutdown = service.shutdown.clone();
+        let cleanup_ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cleanup_ticks_for_task = cleanup_ticks.clone();
+        let needs_state_sync = service.needs_state_sync.clone();
+
+        crate::spawn::spawn_monitored("cache_invalidation_housekeeping_test", async move {
+            let mut state_sync_interval =
+                tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            let mut orphan_cleanup_interval = tokio::time::interval(
+                std::time::Duration::from_secs(ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS),
+            );
+            state_sync_interval.tick().await;
+            orphan_cleanup_interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = state_sync_interval.tick() => {
+                        let _ = needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ = orphan_cleanup_interval.tick() => {
+                        cleanup_ticks_for_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    () = async {
+                        loop {
+                            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(
+            ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS - 1,
+        ))
+        .await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            cleanup_ticks.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "orphan cleanup should wait for its own interval"
+        );
+
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            cleanup_ticks.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "orphan cleanup should still run even when no recovery sync is pending"
+        );
+
+        service
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     #[test]
     fn test_state_sync_interval_constant() {
         // Verify the state sync interval is 60 seconds
         assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
+        assert_eq!(ORPHANED_CONSUMER_GROUP_CLEANUP_INTERVAL_SECS, 300);
     }
 
     #[test]
@@ -1983,5 +2207,56 @@ mod tests {
             service.subscriber_task.lock().await.is_none(),
             "stop() must clear the subscriber task handle after join"
         );
+    }
+
+    #[test]
+    fn test_extract_consumer_idle_ms_prefers_inactive_field() {
+        let consumer = vec![
+            redis::Value::SimpleString("name".to_string()),
+            redis::Value::SimpleString("node-a".to_string()),
+            redis::Value::SimpleString("idle".to_string()),
+            redis::Value::Int(15),
+            redis::Value::SimpleString("inactive".to_string()),
+            redis::Value::Int(25),
+        ];
+
+        assert_eq!(
+            CacheInvalidationService::extract_consumer_idle_ms(&consumer),
+            Some(25)
+        );
+    }
+
+    #[test]
+    fn test_consumer_group_is_stale_when_all_consumers_exceed_threshold() {
+        let stale = vec![vec![
+            redis::Value::SimpleString("name".to_string()),
+            redis::Value::SimpleString("node-a".to_string()),
+            redis::Value::SimpleString("idle".to_string()),
+            redis::Value::Int(i64::try_from(STALE_CONSUMER_IDLE_MS).unwrap_or(i64::MAX)),
+        ]];
+
+        assert!(CacheInvalidationService::consumer_group_is_stale(&stale));
+    }
+
+    #[test]
+    fn test_consumer_group_is_not_stale_when_any_consumer_is_recent() {
+        let consumers = vec![
+            vec![
+                redis::Value::SimpleString("name".to_string()),
+                redis::Value::SimpleString("node-a".to_string()),
+                redis::Value::SimpleString("idle".to_string()),
+                redis::Value::Int(10),
+            ],
+            vec![
+                redis::Value::SimpleString("name".to_string()),
+                redis::Value::SimpleString("node-b".to_string()),
+                redis::Value::SimpleString("idle".to_string()),
+                redis::Value::Int(i64::try_from(STALE_CONSUMER_IDLE_MS).unwrap_or(i64::MAX)),
+            ],
+        ];
+
+        assert!(!CacheInvalidationService::consumer_group_is_stale(
+            &consumers
+        ));
     }
 }

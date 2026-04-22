@@ -6,6 +6,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use synctv_core::models::{
@@ -23,10 +24,11 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use super::client::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-    media_to_proto, media_to_proto_with_availability, member_status_to_proto,
-    playback_snapshot_to_proto, playback_state_to_proto, playlist_path_node_to_proto,
-    playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
-    room_to_proto_basic, sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    map_slice_preserve_order, media_list_to_proto, media_to_proto_with_availability,
+    member_status_to_proto, playback_snapshot_to_proto, playback_state_to_proto,
+    playlist_list_to_proto, playlist_path_node_to_proto, playlist_to_proto,
+    playlist_to_proto_with_availability, provider_playback_info_to_model, room_to_proto_basic,
+    sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
@@ -343,31 +345,10 @@ fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Vec<T> {
 }
 
 fn build_room_stream_list_response(
-    mut media_ids: Vec<String>,
+    media_ids: Vec<String>,
     req: &crate::proto::client::ListRoomStreamsRequest,
 ) -> crate::proto::client::ListRoomStreamsResponse {
-    if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
-        media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(&search));
-    }
-
-    media_ids.sort_unstable();
-    if matches!(
-        crate::proto::client::SortDirection::try_from(req.sort_direction),
-        Ok(crate::proto::client::SortDirection::Desc)
-    ) {
-        media_ids.reverse();
-    }
-
-    let total = usize_to_i32_saturating(media_ids.len());
-    let streams = paginate_vec(media_ids, req.page, req.page_size)
-        .into_iter()
-        .map(|media_id| crate::proto::client::StreamEntry {
-            media_id,
-            active: true,
-        })
-        .collect::<Vec<_>>();
-
-    crate::proto::client::ListRoomStreamsResponse { total, streams }
+    crate::impls::build_room_streams_response(media_ids, req)
 }
 
 fn compare_active_streams(
@@ -1674,7 +1655,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let proto_members: Vec<_> = members.iter().map(admin_room_member_to_proto).collect();
+        let proto_members = map_slice_preserve_order(&members, admin_room_member_to_proto);
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
@@ -3957,7 +3938,7 @@ impl AdminApiImpl {
             .ok_or_else(live_streaming_unavailable_error)?;
 
         let registry = infrastructure.registry();
-        let active_pairs = registry.list_active_streams().await.map_err(|error| {
+        let active_publishers = registry.list_active_publishers().await.map_err(|error| {
             ApiError::Internal(format!("Failed to list active streams: {error}"))
         })?;
         let room_id = normalize_non_empty_filter(&req.room_id);
@@ -3971,24 +3952,19 @@ impl AdminApiImpl {
             .unwrap_or(crate::proto::admin::SortDirection::Desc);
 
         let mut streams = Vec::new();
-        for (rid, mid) in active_pairs {
+        for active_publisher in active_publishers {
             if let Some(filter_room) = room_id.as_deref() {
-                if rid != filter_room {
+                if active_publisher.room_id != filter_room {
                     continue;
                 }
             }
 
-            let (user_id, node_id, started_at) = match registry.get_publisher(&rid, &mid).await {
-                Ok(Some(info)) => (info.user_id, info.node_id, info.started_at.timestamp()),
-                _ => (String::new(), String::new(), 0i64),
-            };
-
             let stream = crate::proto::admin::ActiveStreamInfo {
-                room_id: rid,
-                media_id: mid,
-                user_id,
-                node_id,
-                started_at,
+                room_id: active_publisher.room_id,
+                media_id: active_publisher.media_id,
+                user_id: active_publisher.publisher.user_id,
+                node_id: active_publisher.publisher.node_id,
+                started_at: active_publisher.publisher.started_at.timestamp(),
             };
 
             if let Some(filter_user) = user_filter.as_deref() {
@@ -4017,7 +3993,9 @@ impl AdminApiImpl {
             streams.push(stream);
         }
 
-        streams.sort_by(|left, right| compare_active_streams(left, right, sort_by, sort_direction));
+        streams.par_sort_by(|left, right| {
+            compare_active_streams(left, right, sort_by, sort_direction)
+        });
         let streams = paginate_vec(streams, req.page, req.page_size);
 
         Ok(crate::proto::admin::ListActiveStreamsResponse { streams })
@@ -4792,23 +4770,15 @@ impl AdminApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .unwrap_or_default();
-            let proto_playlists = playlists
-                .iter()
-                .map(|entry| {
-                    let item_count = i64_to_i32_saturating(
-                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                    );
-                    playlist_to_proto_with_availability(
-                        &entry.playlist,
-                        item_count,
-                        entry.is_available,
-                    )
-                })
-                .collect();
-            let proto_media = media
-                .iter()
-                .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
-                .collect();
+            let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+                let item_count = i64_to_i32_saturating(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                );
+                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+            });
+            let proto_media = map_slice_preserve_order(&media, |entry| {
+                media_to_proto_with_availability(&entry.media, entry.is_available)
+            });
 
             let mut response = crate::proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
@@ -5034,19 +5004,14 @@ impl AdminApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .unwrap_or_default();
-        let proto_playlists = playlists
-            .iter()
-            .map(|entry| {
-                let item_count = i64_to_i32_saturating(
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                );
-                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
-            })
-            .collect();
-        let proto_media = media
-            .iter()
-            .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
-            .collect();
+        let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+            let item_count =
+                i64_to_i32_saturating(counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0));
+            playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+        });
+        let proto_media = map_slice_preserve_order(&media, |entry| {
+            media_to_proto_with_availability(&entry.media, entry.is_available)
+        });
 
         let mut response = crate::proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
@@ -5272,7 +5237,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_saturating(media.len()),
-            media: media.iter().map(media_to_proto).collect(),
+            media: media_list_to_proto(&media),
         })
     }
 

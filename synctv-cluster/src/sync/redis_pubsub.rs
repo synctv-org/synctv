@@ -77,6 +77,13 @@ const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 /// Can be overridden via `ClusterChannelConfig::stream_max_length`.
 const DEFAULT_MAX_STREAM_LENGTH: usize = 10000;
 
+/// Minimum TTL for inactive per-room Redis Streams.
+///
+/// Streams are only needed for bounded catch-up after Pub/Sub disconnects. Once a
+/// room has been inactive for well beyond the catch-up window, keeping its stream
+/// key forever only grows Redis metadata without improving recovery guarantees.
+const MIN_ROOM_STREAM_TTL_SECS: u64 = 900;
+
 /// Maximum number of failed events to buffer for retry after reconnection.
 const MAX_RETRY_BUFFER: usize = 10_000;
 
@@ -284,6 +291,11 @@ pub struct RedisPubSub {
     /// How far back (in milliseconds) to replay Redis Stream events on first connect.
     /// Configurable via `ClusterChannelConfig::catchup_window_secs`.
     catchup_window_ms: u128,
+    /// TTL for inactive per-room streams.
+    ///
+    /// Admin events intentionally use a single global stream without TTL because
+    /// that key is bounded to one stream and acts as cluster-wide infrastructure.
+    room_stream_ttl_secs: u64,
     /// Maximum number of entries per Redis Stream (approximate).
     /// Configurable via `ClusterChannelConfig::stream_max_length`.
     stream_max_length: usize,
@@ -429,6 +441,7 @@ impl RedisPubSub {
             deduplicator,
             cancel_token: CancellationToken::new(),
             catchup_window_ms: u128::from(catchup_window_secs) * 1000,
+            room_stream_ttl_secs: Self::room_stream_ttl_secs(catchup_window_secs),
             stream_max_length,
             subscriber_handle: tokio::sync::Mutex::new(None),
         })
@@ -442,6 +455,12 @@ impl RedisPubSub {
     /// Build the Redis Stream key for a specific room
     fn room_stream_key(&self, room_id: &str) -> String {
         format!("{}room:{}:events", self.key_prefix, room_id)
+    }
+
+    fn room_stream_ttl_secs(catchup_window_secs: u64) -> u64 {
+        catchup_window_secs
+            .saturating_mul(2)
+            .max(MIN_ROOM_STREAM_TTL_SECS)
     }
 
     /// Build the admin Pub/Sub pattern
@@ -552,6 +571,7 @@ impl RedisPubSub {
         let node_id = self.node_id.clone();
         let key_prefix = self.key_prefix.clone();
         let cancel_publisher = self.cancel_token.clone();
+        let room_stream_ttl_secs = self.room_stream_ttl_secs;
         let stream_max_length = self.stream_max_length;
 
         // Create shared buffer pressure state for backpressure signaling
@@ -649,6 +669,7 @@ impl RedisPubSub {
                         &mut conn,
                         &node_id,
                         &key_prefix,
+                        room_stream_ttl_secs,
                         stream_max_length,
                     )
                     .await;
@@ -685,6 +706,7 @@ impl RedisPubSub {
                         &mut conn,
                         &node_id,
                         &key_prefix,
+                        room_stream_ttl_secs,
                         stream_max_length,
                     )
                     .await;
@@ -731,7 +753,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Critical buffer event flushed on shutdown");
                                     }
@@ -752,7 +774,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
                                     }
@@ -782,7 +804,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Critical drained event published");
                                     }
@@ -798,7 +820,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), room_stream_ttl_secs, stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Drained event published");
                                     }
@@ -819,6 +841,7 @@ impl RedisPubSub {
                             &node_id,
                             &key_prefix,
                             req.event.clone(),
+                            room_stream_ttl_secs,
                             stream_max_length,
                         )
                         .await
@@ -2049,6 +2072,7 @@ impl RedisPubSub {
         node_id: &str,
         key_prefix: &str,
         event: ClusterEvent,
+        room_stream_ttl_secs: u64,
         stream_max_length: usize,
     ) -> Result<usize> {
         let channel = if let Some(room_id) = event.room_id() {
@@ -2073,6 +2097,7 @@ impl RedisPubSub {
         } else {
             format!("{key_prefix}admin:events:stream")
         };
+        let stream_ttl_secs = event.room_id().map(|_| room_stream_ttl_secs);
 
         let is_critical = event.is_critical();
 
@@ -2086,6 +2111,7 @@ impl RedisPubSub {
                     &stream_key,
                     &channel,
                     &payload,
+                    stream_ttl_secs,
                     stream_max_length,
                 )
                 .await;
@@ -2121,8 +2147,15 @@ impl RedisPubSub {
         }
 
         // Non-critical events: single atomic attempt
-        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload, stream_max_length)
-            .await
+        match Self::publish_event_atomic(
+            conn,
+            &stream_key,
+            &channel,
+            &payload,
+            stream_ttl_secs,
+            stream_max_length,
+        )
+        .await
         {
             Ok(subscribers) => Ok(subscribers),
             Err(e) => {
@@ -2147,6 +2180,7 @@ impl RedisPubSub {
         stream_key: &str,
         channel: &str,
         payload: &str,
+        stream_ttl_secs: Option<u64>,
         stream_max_length: usize,
     ) -> Result<usize> {
         use redis::streams::StreamMaxlen;
@@ -2160,17 +2194,32 @@ impl RedisPubSub {
             "*",
             &[("channel", channel), ("payload", payload)],
         );
+        if let Some(ttl_secs) = stream_ttl_secs {
+            pipe.cmd("EXPIRE").arg(stream_key).arg(ttl_secs);
+        }
         pipe.publish::<_, _>(channel, payload);
 
-        let results: (String, usize) = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
-            pipe.query_async(conn),
-        )
-        .await
-        .context("Timed out executing atomic XADD+PUBLISH")?
-        .context("Failed to execute atomic XADD+PUBLISH")?;
+        let subscriber_count = if stream_ttl_secs.is_some() {
+            let results: (String, bool, usize) = timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                pipe.query_async(conn),
+            )
+            .await
+            .context("Timed out executing atomic XADD+PUBLISH")?
+            .context("Failed to execute atomic XADD+PUBLISH")?;
+            results.2
+        } else {
+            let results: (String, usize) = timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                pipe.query_async(conn),
+            )
+            .await
+            .context("Timed out executing atomic XADD+PUBLISH")?
+            .context("Failed to execute atomic XADD+PUBLISH")?;
+            results.1
+        };
 
-        Ok(results.1)
+        Ok(subscriber_count)
     }
 
     /// Get or create a shared multiplexed connection for non-Pub/Sub operations.
@@ -2368,6 +2417,7 @@ async fn retry_publish_batch(
     conn: &mut redis::aio::MultiplexedConnection,
     node_id: &str,
     key_prefix: &str,
+    room_stream_ttl_secs: u64,
     stream_max_length: usize,
 ) -> (Vec<PublishRequest>, usize) {
     let mut failed = Vec::new();
@@ -2379,6 +2429,7 @@ async fn retry_publish_batch(
             node_id,
             key_prefix,
             req.event.clone(),
+            room_stream_ttl_secs,
             stream_max_length,
         )
         .await
@@ -2911,6 +2962,19 @@ mod tests {
             diff < 1000,
             "catchup_start_id should use 60s window, diff: {diff}ms"
         );
+    }
+
+    #[test]
+    fn test_room_stream_ttl_uses_catchup_window_with_floor() {
+        assert_eq!(
+            RedisPubSub::room_stream_ttl_secs(60),
+            MIN_ROOM_STREAM_TTL_SECS
+        );
+        assert_eq!(
+            RedisPubSub::room_stream_ttl_secs(300),
+            MIN_ROOM_STREAM_TTL_SECS
+        );
+        assert_eq!(RedisPubSub::room_stream_ttl_secs(600), 1200);
     }
 
     #[test]

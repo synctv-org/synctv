@@ -16,7 +16,8 @@ use synctv_core::service::room::DeleteEntriesRequest as CoreDeleteEntriesRequest
 use synctv_core::service::MediaService;
 
 use super::convert::{
-    media_to_proto, media_to_proto_with_availability, playlist_path_node_to_proto,
+    media_list_to_proto, media_list_to_proto_with_availability, media_to_proto,
+    media_to_proto_with_availability, playlist_list_to_proto, playlist_path_node_to_proto,
     playlist_to_proto_with_availability,
 };
 use super::ClientApiImpl;
@@ -976,7 +977,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_saturating(media.len()),
-            media: media.iter().map(media_to_proto).collect(),
+            media: media_list_to_proto(&media),
         })
     }
 
@@ -1102,23 +1103,15 @@ impl ClientApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .unwrap_or_default();
-            let proto_playlists = playlists
-                .iter()
-                .map(|entry| {
-                    let item_count = i64_to_i32_saturating(
-                        counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                    );
-                    playlist_to_proto_with_availability(
-                        &entry.playlist,
-                        item_count,
-                        entry.is_available,
-                    )
-                })
-                .collect();
-            let proto_media = media
-                .iter()
-                .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
-                .collect();
+            let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+                let item_count = i64_to_i32_saturating(
+                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                );
+                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+            });
+            let proto_media = media_list_to_proto_with_availability(&media, |entry| {
+                media_to_proto_with_availability(&entry.media, entry.is_available)
+            });
 
             return Ok(finalize_playlist_items_response_version(
                 crate::proto::client::ListPlaylistItemsResponse {
@@ -1356,19 +1349,14 @@ impl ClientApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .unwrap_or_default();
-        let proto_playlists = playlists
-            .iter()
-            .map(|entry| {
-                let item_count = i64_to_i32_saturating(
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                );
-                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
-            })
-            .collect();
-        let proto_media = media
-            .iter()
-            .map(|entry| media_to_proto_with_availability(&entry.media, entry.is_available))
-            .collect();
+        let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
+            let item_count =
+                i64_to_i32_saturating(counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0));
+            playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+        });
+        let proto_media = media_list_to_proto_with_availability(&media, |entry| {
+            media_to_proto_with_availability(&entry.media, entry.is_available)
+        });
 
         Ok(finalize_playlist_items_response_version(
             crate::proto::client::ListPlaylistItemsResponse {

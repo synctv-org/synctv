@@ -30,7 +30,7 @@ use synctv_livestream::{
     api::StreamTracker,
     relay::{
         registry::PublisherInfo,
-        registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait},
+        registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait},
     },
 };
 use testcontainers::ContainerAsync;
@@ -146,6 +146,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
         _room_id: &str,
         _media_id: &str,
         _user_id: &str,
+        _node_id: &str,
+        _expected_epoch: u64,
     ) -> anyhow::Result<PublisherRefreshOutcome> {
         Ok(PublisherRefreshOutcome::Refreshed)
     }
@@ -173,6 +175,10 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
     async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<bool> {
         Ok(false)
+    }
+
+    async fn list_active_publishers(&self) -> anyhow::Result<Vec<ActivePublisherEntry>> {
+        Ok(Vec::new())
     }
 
     async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {

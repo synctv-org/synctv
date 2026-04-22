@@ -155,6 +155,7 @@ garde.workspace = true
 
 # Caching
 moka.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true

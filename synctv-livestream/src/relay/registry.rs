@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-use super::registry_trait::PublisherRefreshOutcome;
+use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
@@ -36,6 +36,10 @@ const REDIS_OPERATION_TIMEOUT_SECS: u64 = 5;
 const EPOCH_KEY_PREFIX: &str = "stream:epoch";
 const PUBLISHER_KEY_PREFIX: &str = "stream:publisher";
 const USER_PUBLISHERS_KEY_PREFIX: &str = "stream:user_publishers";
+const NODE_PUBLISHERS_KEY_PREFIX: &str = "stream:node_publishers";
+const ROOM_PUBLISHERS_KEY_PREFIX: &str = "stream:room_publishers";
+const ACTIVE_PUBLISHERS_KEY: &str = "stream:active_publishers";
+const ACTIVE_PUBLISHER_FETCH_BATCH_SIZE: usize = 128;
 
 #[async_trait]
 pub trait RegistryConnectionRuntime: Send + Sync {
@@ -229,6 +233,145 @@ impl StreamRegistry {
         self.prefixed(&format!("{USER_PUBLISHERS_KEY_PREFIX}:{user_id}"))
     }
 
+    fn node_publishers_key(&self, node_id: &str) -> String {
+        self.prefixed(&format!("{NODE_PUBLISHERS_KEY_PREFIX}:{node_id}"))
+    }
+
+    fn room_publishers_key(&self, room_id: &str) -> String {
+        self.prefixed(&format!("{ROOM_PUBLISHERS_KEY_PREFIX}:{room_id}"))
+    }
+
+    fn active_publishers_key(&self) -> String {
+        self.prefixed(ACTIVE_PUBLISHERS_KEY)
+    }
+
+    fn publisher_member(room_id: &str, media_id: &str) -> String {
+        format!("{room_id}:{media_id}")
+    }
+
+    fn parse_publisher_member(member: &str) -> Option<(String, String)> {
+        member
+            .split_once(':')
+            .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
+    }
+
+    async fn remove_reverse_index_member(&self, set_key: &str, member: &str) -> Result<()> {
+        let mut conn = self.conn().await;
+        let _: () = redis::cmd("SREM")
+            .arg(set_key)
+            .arg(member)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn load_index_members(&self, set_key: &str) -> Result<Vec<String>> {
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await;
+            let members: Vec<String> = redis::cmd("SMEMBERS")
+                .arg(set_key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Ok(members)
+        })
+        .await
+    }
+
+    async fn prune_index_members(&self, set_key: &str, members: &[String]) -> Result<()> {
+        if members.is_empty() {
+            return Ok(());
+        }
+
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await;
+            let mut pipeline = redis::pipe();
+            for member in members {
+                pipeline.cmd("SREM").arg(set_key).arg(member);
+            }
+            pipeline
+                .query_async::<()>(&mut conn)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn load_publishers_from_index(&self, set_key: &str) -> Result<Vec<ActivePublisherEntry>> {
+        let members = self.load_index_members(set_key).await?;
+        if members.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut parsed_members = Vec::with_capacity(members.len());
+        let mut stale_members = Vec::new();
+        for member in members {
+            match Self::parse_publisher_member(&member) {
+                Some((room_id, media_id)) => parsed_members.push((member, room_id, media_id)),
+                None => stale_members.push(member),
+            }
+        }
+
+        if !stale_members.is_empty() {
+            self.prune_index_members(set_key, &stale_members).await?;
+        }
+
+        let mut publishers = Vec::with_capacity(parsed_members.len());
+        let mut missing_publishers = Vec::new();
+
+        for chunk in parsed_members.chunks(ACTIVE_PUBLISHER_FETCH_BATCH_SIZE) {
+            let publisher_jsons: Vec<Option<String>> = with_redis_timeout(|| async {
+                let mut conn = self.conn().await;
+                let mut pipeline = redis::pipe();
+                for (_, room_id, media_id) in chunk {
+                    pipeline
+                        .cmd("HGET")
+                        .arg(self.publisher_key(room_id, media_id))
+                        .arg("publisher");
+                }
+                pipeline
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))
+            })
+            .await?;
+
+            for ((member, room_id, media_id), publisher_json) in chunk.iter().zip(publisher_jsons) {
+                let Some(publisher_json) = publisher_json else {
+                    missing_publishers.push(member.clone());
+                    continue;
+                };
+
+                match serde_json::from_str::<PublisherInfo>(&publisher_json) {
+                    Ok(publisher) => publishers.push(ActivePublisherEntry {
+                        room_id: room_id.clone(),
+                        media_id: media_id.clone(),
+                        publisher,
+                    }),
+                    Err(error) => {
+                        debug!(
+                            set_key = %set_key,
+                            room_id = %room_id,
+                            media_id = %media_id,
+                            error = %error,
+                            "Failed to deserialize publisher info from indexed lookup; pruning stale index member"
+                        );
+                        missing_publishers.push(member.clone());
+                    }
+                }
+            }
+        }
+
+        if !missing_publishers.is_empty() {
+            self.prune_index_members(set_key, &missing_publishers)
+                .await?;
+        }
+
+        Ok(publishers)
+    }
+
     /// Register a publisher for a media in a room (atomic operation).
     /// Returns `true` if registered successfully, `false` if already exists.
     ///
@@ -317,6 +460,12 @@ impl StreamRegistry {
             local ttl = tonumber(ARGV[2])
             local user_key = ARGV[3]
             local user_member = ARGV[4]
+            local node_key = ARGV[5]
+            local node_member = ARGV[6]
+            local room_key = ARGV[7]
+            local room_member = ARGV[8]
+            local active_key = ARGV[9]
+            local active_member = ARGV[10]
 
             -- Check HSETNX FIRST before touching the epoch.
             -- Use a placeholder JSON with epoch=0 for the initial slot reservation.
@@ -352,6 +501,21 @@ impl StreamRegistry {
                 redis.call('EXPIRE', user_key, ttl)
             end
 
+            if node_key ~= '' then
+                redis.call('SADD', node_key, node_member)
+                redis.call('EXPIRE', node_key, ttl)
+            end
+
+            if room_key ~= '' then
+                redis.call('SADD', room_key, room_member)
+                redis.call('EXPIRE', room_key, ttl)
+            end
+
+            if active_key ~= '' then
+                redis.call('SADD', active_key, active_member)
+                redis.call('EXPIRE', active_key, ttl)
+            end
+
             return {1, epoch}
         ";
 
@@ -360,7 +524,15 @@ impl StreamRegistry {
         } else {
             self.user_publishers_key(user_id)
         };
-        let user_member = format!("{room_id}:{media_id}");
+        let user_member = Self::publisher_member(room_id, media_id);
+        let node_key = if node_id.is_empty() {
+            String::new()
+        } else {
+            self.node_publishers_key(node_id)
+        };
+        let node_member = user_member.clone();
+        let room_key = self.room_publishers_key(room_id);
+        let active_key = self.active_publishers_key();
 
         // Add timeout for Redis Lua script execution (5 seconds)
         // Prevents indefinite blocking on Redis server issues or slow Lua execution
@@ -371,6 +543,12 @@ impl StreamRegistry {
                 .arg(&info_json)
                 .arg(PUBLISHER_TTL_SECS)
                 .arg(&user_key)
+                .arg(&user_member)
+                .arg(&node_key)
+                .arg(&node_member)
+                .arg(&room_key)
+                .arg(&user_member)
+                .arg(&active_key)
                 .arg(&user_member)
                 .invoke_async(&mut conn)
                 .await
@@ -407,7 +585,7 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
     ) -> Result<PublisherRefreshOutcome> {
-        self.refresh_publisher_ttl_with_user(room_id, media_id, "")
+        self.refresh_publisher_ttl_with_owner(room_id, media_id, "", "", None)
             .await
     }
 
@@ -418,34 +596,117 @@ impl StreamRegistry {
         media_id: &str,
         user_id: &str,
     ) -> Result<PublisherRefreshOutcome> {
-        let key = self.publisher_key(room_id, media_id);
+        self.refresh_publisher_ttl_with_owner(room_id, media_id, user_id, "", None)
+            .await
+    }
 
-        // Refresh publisher key TTL with timeout protection
+    /// Refresh TTL for a publisher plus its user/node reverse indexes.
+    pub async fn refresh_publisher_ttl_with_owner(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        user_id: &str,
+        node_id: &str,
+        expected_epoch: Option<u64>,
+    ) -> Result<PublisherRefreshOutcome> {
+        let key = self.publisher_key(room_id, media_id);
+        let user_key = if user_id.is_empty() {
+            String::new()
+        } else {
+            self.user_publishers_key(user_id)
+        };
+        let node_key = if node_id.is_empty() {
+            String::new()
+        } else {
+            self.node_publishers_key(node_id)
+        };
+        let member = Self::publisher_member(room_id, media_id);
+        let room_key = self.room_publishers_key(room_id);
+        let active_key = self.active_publishers_key();
+        let epoch_arg =
+            expected_epoch.map_or(-1_i64, |epoch| i64::try_from(epoch).unwrap_or(i64::MAX));
+
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
-            let refreshed: bool = redis::cmd("EXPIRE")
-                .arg(&key)
+            let script = redis::Script::new(
+                r"
+                local hash_key = KEYS[1]
+                local user_key = KEYS[2]
+                local node_key = KEYS[3]
+                local room_key = KEYS[4]
+                local active_key = KEYS[5]
+                local ttl = tonumber(ARGV[1])
+                local expected_user_id = ARGV[2]
+                local expected_node_id = ARGV[3]
+                local expected_epoch = tonumber(ARGV[4])
+                local member = ARGV[5]
+
+                local info_json = redis.call('HGET', hash_key, 'publisher')
+                if not info_json then
+                    return 0
+                end
+
+                local ok, parsed = pcall(cjson.decode, info_json)
+                if not ok or not parsed then
+                    return 0
+                end
+
+                local stored_user_id = parsed.user_id or ''
+                if expected_user_id ~= '' and stored_user_id ~= expected_user_id then
+                    return -1
+                end
+
+                local stored_node_id = parsed.node_id or ''
+                if expected_node_id ~= '' and stored_node_id ~= expected_node_id then
+                    return -1
+                end
+
+                local stored_epoch = tonumber(parsed.epoch or 0)
+                if expected_epoch >= 0 and stored_epoch ~= expected_epoch then
+                    return -1
+                end
+
+                redis.call('EXPIRE', hash_key, ttl)
+
+                if user_key ~= '' then
+                    redis.call('SADD', user_key, member)
+                    redis.call('EXPIRE', user_key, ttl)
+                end
+
+                if node_key ~= '' then
+                    redis.call('SADD', node_key, member)
+                    redis.call('EXPIRE', node_key, ttl)
+                end
+
+                redis.call('SADD', room_key, member)
+                redis.call('EXPIRE', room_key, ttl)
+                redis.call('SADD', active_key, member)
+                redis.call('EXPIRE', active_key, ttl)
+
+                return 1
+                ",
+            );
+
+            let status: i64 = script
+                .key(&key)
+                .key(&user_key)
+                .key(&node_key)
+                .key(&room_key)
+                .key(&active_key)
                 .arg(PUBLISHER_TTL_SECS)
-                .query_async(&mut conn)
+                .arg(user_id)
+                .arg(node_id)
+                .arg(epoch_arg)
+                .arg(&member)
+                .invoke_async(&mut conn)
                 .await
                 .map_err(anyhow::Error::from)?;
 
-            if !refreshed {
-                return Ok(PublisherRefreshOutcome::Missing);
-            }
-
-            // Also refresh user reverse-index TTL if user_id is provided
-            if !user_id.is_empty() {
-                let user_key = self.user_publishers_key(user_id);
-                let _: () = redis::cmd("EXPIRE")
-                    .arg(&user_key)
-                    .arg(PUBLISHER_TTL_SECS)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(anyhow::Error::from)?;
-            }
-
-            Ok(PublisherRefreshOutcome::Refreshed)
+            Ok(match status {
+                1 => PublisherRefreshOutcome::Refreshed,
+                -1 => PublisherRefreshOutcome::OwnershipChanged,
+                _ => PublisherRefreshOutcome::Missing,
+            })
         })
         .await
     }
@@ -488,7 +749,8 @@ impl StreamRegistry {
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
 
- // Atomic Lua script: check epoch (if provided), delete publisher, clean up user index
+            // Atomic Lua script: check epoch (if provided), delete publisher, and
+            // return reverse-index metadata so Rust can clean auxiliary sets.
             let lua_script = r"
                 local hash_key = KEYS[1]
                 local check_epoch = tonumber(ARGV[1])
@@ -496,15 +758,15 @@ impl StreamRegistry {
                 -- Get current publisher info
                 local info_json = redis.call('HGET', hash_key, 'publisher')
                 if not info_json then
-                    return {0, ''}
+                    return {0, '', ''}
                 end
 
                 -- Parse JSON robustly using cjson instead of fragile regex
                 local ok, parsed = pcall(cjson.decode, info_json)
                 if not ok or not parsed then
-                    -- JSON is corrupt; delete the entry but return empty user_id
+                    -- JSON is corrupt; delete the entry but return empty reverse-index metadata
                     redis.call('HDEL', hash_key, 'publisher')
-                    return {1, ''}
+                    return {1, '', ''}
                 end
 
                 -- If epoch check is requested, validate before deleting
@@ -512,17 +774,18 @@ impl StreamRegistry {
                     local stored_epoch = tonumber(parsed.epoch)
                     if stored_epoch and stored_epoch ~= check_epoch then
                         -- Epoch mismatch: a newer publisher registered, do NOT delete
-                        return {-1, ''}
+                        return {-1, '', ''}
                     end
                 end
 
                 -- Extract user_id for reverse-index cleanup
                 local user_id = parsed.user_id or ''
+                local node_id = parsed.node_id or ''
 
                 -- Delete the publisher entry
                 redis.call('HDEL', hash_key, 'publisher')
 
-                return {1, user_id}
+                return {1, user_id, node_id}
             ";
 
             let result: Vec<redis::Value> = redis::Script::new(lua_script)
@@ -532,7 +795,7 @@ impl StreamRegistry {
                 .await
                 .map_err(|e| anyhow!("Unregister Lua script failed: {e}"))?;
 
- // Parse result: [status, user_id]
+            // Parse result: [status, user_id, node_id]
             let status = match &result[0] {
                 redis::Value::Int(v) => *v,
                 _ => 0,
@@ -540,6 +803,11 @@ impl StreamRegistry {
             let user_id = match &result[1] {
                 redis::Value::BulkString(s) => String::from_utf8_lossy(s).to_string(),
                 redis::Value::SimpleString(s) => s.clone(),
+                _ => String::new(),
+            };
+            let node_id = match result.get(2) {
+                Some(redis::Value::BulkString(s)) => String::from_utf8_lossy(s).to_string(),
+                Some(redis::Value::SimpleString(s)) => s.clone(),
                 _ => String::new(),
             };
 
@@ -551,12 +819,39 @@ impl StreamRegistry {
                 return Ok(());
             }
 
- // Clean up user reverse index if user_id was present
-            if status == 1 && !user_id.is_empty() {
-                let user_key = self.user_publishers_key(&user_id);
-                let member = format!("{room_id}:{media_id}");
+            if status == 1 {
+                let member = Self::publisher_member(room_id, media_id);
+                let room_key = self.room_publishers_key(room_id);
+                let active_key = self.active_publishers_key();
+
+                if !user_id.is_empty() {
+                    let user_key = self.user_publishers_key(&user_id);
+                    let _: () = redis::cmd("SREM")
+                        .arg(&user_key)
+                        .arg(&member)
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| anyhow!(e.to_string()))?;
+                }
+
+                if !node_id.is_empty() {
+                    let node_key = self.node_publishers_key(&node_id);
+                    let _: () = redis::cmd("SREM")
+                        .arg(&node_key)
+                        .arg(&member)
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| anyhow!(e.to_string()))?;
+                }
+
                 let _: () = redis::cmd("SREM")
-                    .arg(&user_key)
+                    .arg(&room_key)
+                    .arg(&member)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))?;
+                let _: () = redis::cmd("SREM")
+                    .arg(&active_key)
                     .arg(&member)
                     .query_async(&mut conn)
                     .await
@@ -570,25 +865,12 @@ impl StreamRegistry {
     /// Get all active publishers for a user (via reverse index)
     /// Returns list of (`room_id`, `media_id`) pairs
     pub async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
-        let user_key = self.user_publishers_key(user_id);
-
-        with_redis_timeout(|| async {
-            let mut conn = self.conn().await;
-            let members: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(&user_key)
-                .query_async(&mut conn)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
-
-            Ok(members
-                .into_iter()
-                .filter_map(|m| {
-                    m.split_once(':')
-                        .map(|(r, m)| (r.to_string(), m.to_string()))
-                })
-                .collect())
-        })
-        .await
+        Ok(self
+            .load_publishers_from_index(&self.user_publishers_key(user_id))
+            .await?
+            .into_iter()
+            .map(|entry| (entry.room_id, entry.media_id))
+            .collect())
     }
 
     /// Remove all publisher entries for a user (via reverse index)
@@ -668,101 +950,33 @@ impl StreamRegistry {
         self.list_active_streams_immut().await
     }
 
+    pub async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+        self.list_active_publishers_immut().await
+    }
+
     /// List all active streams (immutable version)
-    ///
-    /// Uses SCAN instead of KEYS to avoid blocking Redis on large datasets.
-    /// SCAN iterates through keys incrementally without blocking the server.
-    /// Each SCAN call has a timeout to prevent indefinite blocking.
     pub async fn list_active_streams_immut(&self) -> Result<Vec<(String, String)>> {
-        let mut streams = Vec::new();
-        let mut cursor: u64 = 0;
+        Ok(self
+            .list_active_publishers_immut()
+            .await?
+            .into_iter()
+            .map(|entry| (entry.room_id, entry.media_id))
+            .collect())
+    }
 
-        loop {
-            // Each SCAN call has its own timeout
-            let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.conn().await;
-                let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:*")))
-                    .arg("COUNT")
-                    .arg(100) // Scan 100 keys per iteration for better performance
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-                Ok((new_cursor, keys))
-            })
-            .await;
-
-            let (new_cursor, keys) = scan_result?;
-
-            // Parse keys into (room_id, media_id) tuples.
-            // Use split_once(':') instead of split(':').collect() to correctly handle
-            // room_ids that contain ':' characters — split(':').collect() + len==2 check
-            // would silently drop any such key, and indexing [0]/[1] would give wrong results.
-            // split_once splits only on the FIRST ':': room_id gets everything before it,
-            // media_id gets everything after (including any embedded colons in media_id).
-            for k in keys {
-                let publisher_prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:"));
-                if let Some(s) = k.strip_prefix(&publisher_prefix) {
-                    if let Some((room_id, media_id)) = s.split_once(':') {
-                        streams.push((room_id.to_string(), media_id.to_string()));
-                    }
-                }
-            }
-
-            cursor = new_cursor;
-            // cursor returns to 0 when scan is complete
-            if cursor == 0 {
-                break;
-            }
-        }
-
-        Ok(streams)
+    pub async fn list_active_publishers_immut(&self) -> Result<Vec<ActivePublisherEntry>> {
+        self.load_publishers_from_index(&self.active_publishers_key())
+            .await
     }
 
     /// List active streams for a specific room, returning only the `media_id` values.
-    /// More efficient than `list_active_streams_immut` followed by a filter because
-    /// the SCAN pattern is scoped to the room's key prefix.
-    /// Each SCAN call has a timeout to prevent indefinite blocking.
     pub async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
-        let mut media_ids = Vec::new();
-        let mut cursor: u64 = 0;
-        let pattern = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:{room_id}:*"));
-        let prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:{room_id}:"));
-
-        loop {
-            // Each SCAN call has its own timeout
-            let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.conn().await;
-                let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&pattern)
-                    .arg("COUNT")
-                    .arg(100)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-                Ok((new_cursor, keys))
-            })
-            .await;
-
-            let (new_cursor, keys) = scan_result?;
-
-            for k in keys {
-                if let Some(media_id) = k.strip_prefix(&prefix) {
-                    media_ids.push(media_id.to_string());
-                }
-            }
-
-            cursor = new_cursor;
-            if cursor == 0 {
-                break;
-            }
-        }
-
-        Ok(media_ids)
+        Ok(self
+            .load_publishers_from_index(&self.room_publishers_key(room_id))
+            .await?
+            .into_iter()
+            .map(|entry| entry.media_id)
+            .collect())
     }
 
     /// Validate that the given epoch matches the current publisher's epoch.
@@ -807,18 +1021,32 @@ impl StreamRegistry {
     /// Clean up all publisher registrations for a specific node.
     /// Used when a node restarts to remove stale entries from Redis.
     ///
-    /// This uses SCAN to iterate through all publisher keys and removes
-    /// those belonging to the specified `node_id`, using epoch validation
-    /// to avoid deleting publishers that were re-registered by a new node
-    /// between the SCAN and the delete (TOCTOU race).
+    /// This walks the node reverse index and removes only entries that still
+    /// belong to the specified `node_id`, using epoch validation to avoid
+    /// deleting publishers that were re-registered by a new node between the
+    /// index read and the delete (TOCTOU race).
     ///
     /// Each Redis operation has its own timeout to prevent indefinite blocking.
     pub async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
-        let mut cursor: u64 = 0;
+        if node_id.is_empty() {
+            return Ok(());
+        }
+
+        let node_key = self.node_publishers_key(node_id);
+        let members: Vec<String> = with_redis_timeout(|| async {
+            let mut conn = self.conn().await;
+            let members: Vec<String> = redis::cmd("SMEMBERS")
+                .arg(&node_key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Ok(members)
+        })
+        .await?;
 
         // Atomic Lua script: check node_id AND epoch before deleting.
         // This prevents a race where a new publisher registers between
-        // our SCAN (which reads epoch) and the delete.
+        // reading the node reverse index and the delete.
         let cleanup_script = r"
             local hash_key = KEYS[1]
             local expected_node_id = ARGV[1]
@@ -858,132 +1086,125 @@ impl StreamRegistry {
             return {1, user_id}
         ";
 
-        loop {
-            // SCAN for publisher keys with timeout
-            let scan_result: Result<(u64, Vec<String>)> = with_redis_timeout(|| async {
-                let mut conn = self.conn().await;
-                let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:*")))
-                    .arg("COUNT")
-                    .arg(100)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-                Ok((new_cursor, keys))
-            })
-            .await;
-
-            let (new_cursor, keys) = scan_result?;
-
-            // Check each key and remove if it belongs to the node
-            for key in keys {
-                // Extract room_id and media_id from key: "stream:publisher:{room_id}:{media_id}"
-                let publisher_prefix = self.prefixed(&format!("{PUBLISHER_KEY_PREFIX}:"));
-                let Some(key_suffix) = key.strip_prefix(&publisher_prefix) else {
-                    continue;
-                };
-                let (room_id, media_id) = match key_suffix.split_once(':') {
-                    Some((r, m)) => (r.to_string(), m.to_string()),
-                    None => continue,
-                };
-
-                // Get publisher info with timeout
-                let info_result: Result<Option<String>> = with_redis_timeout(|| async {
-                    let mut conn = self.conn().await;
-                    let info_json: Option<String> = redis::cmd("HGET")
-                        .arg(&key)
-                        .arg("publisher")
-                        .query_async(&mut conn)
-                        .await
-                        .map_err(|e| anyhow!(e.to_string()))?;
-                    Ok(info_json)
-                })
-                .await;
-
-                let info_json = match info_result {
-                    Ok(json) => json,
-                    Err(e) => {
-                        debug!("Failed to get publisher info for cleanup: {}", e);
-                        continue;
-                    }
-                };
-
-                if let Some(json) = &info_json {
-                    if let Ok(info) = serde_json::from_str::<PublisherInfo>(json) {
-                        if info.node_id == node_id {
-                            // Atomically delete with timeout
-                            let cleanup_result: Result<Vec<redis::Value>> =
-                                with_redis_timeout(|| async {
-                                    let mut conn = self.conn().await;
-                                    let result: Vec<redis::Value> =
-                                        redis::Script::new(cleanup_script)
-                                            .key(&key)
-                                            .arg(node_id)
-                                            .arg(info.epoch)
-                                            .invoke_async(&mut conn)
-                                            .await
-                                            .map_err(|e| {
-                                                anyhow!("Cleanup Lua script failed: {e}")
-                                            })?;
-                                    Ok(result)
-                                })
-                                .await;
-
-                            if let Ok(result) = cleanup_result {
-                                let status = match &result[0] {
-                                    redis::Value::Int(v) => *v,
-                                    _ => 0,
-                                };
-
-                                if status == 1 {
-                                    // Successfully deleted; clean up user reverse index with timeout
-                                    let user_id = match &result[1] {
-                                        redis::Value::BulkString(s) => {
-                                            String::from_utf8_lossy(s).to_string()
-                                        }
-                                        redis::Value::SimpleString(s) => s.clone(),
-                                        _ => String::new(),
-                                    };
-
-                                    if !user_id.is_empty() {
-                                        let user_key = self.user_publishers_key(&user_id);
-                                        let member = format!("{room_id}:{media_id}");
-
-                                        let _srem_result: Result<()> =
-                                            with_redis_timeout(|| async {
-                                                let mut conn = self.conn().await;
-                                                let _: () = redis::cmd("SREM")
-                                                    .arg(&user_key)
-                                                    .arg(&member)
-                                                    .query_async(&mut conn)
-                                                    .await
-                                                    .map_err(|e| anyhow!(e.to_string()))?;
-                                                Ok(())
-                                            })
-                                            .await;
-                                    }
-
-                                    info!(
-                                        "Cleaned up stale publisher entry for node {} (room: {}, media: {})",
-                                        node_id, room_id, media_id
-                                    );
-                                } else if status == -1 {
-                                    info!(
-                                        "Skipped cleanup for node {} (room: {}, media: {}): epoch mismatch (newer publisher exists)",
-                                        node_id, room_id, media_id
-                                    );
-                                }
-                            }
-                        }
+        for chunk in members.chunks(ACTIVE_PUBLISHER_FETCH_BATCH_SIZE) {
+            let mut entries = Vec::with_capacity(chunk.len());
+            for member in chunk {
+                match Self::parse_publisher_member(member) {
+                    Some((room_id, media_id)) => entries.push((
+                        member.clone(),
+                        room_id.clone(),
+                        media_id.clone(),
+                        self.publisher_key(&room_id, &media_id),
+                    )),
+                    None => {
+                        self.remove_reverse_index_member(&node_key, member).await?;
                     }
                 }
             }
 
-            cursor = new_cursor;
-            if cursor == 0 {
-                break;
+            if entries.is_empty() {
+                continue;
+            }
+
+            let publisher_jsons: Vec<Option<String>> = with_redis_timeout(|| async {
+                let mut conn = self.conn().await;
+                let mut pipeline = redis::pipe();
+                for (_, _, _, publisher_key) in &entries {
+                    pipeline.cmd("HGET").arg(publisher_key).arg("publisher");
+                }
+                pipeline
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| anyhow!(e.to_string()))
+            })
+            .await?;
+
+            for ((member, room_id, media_id, publisher_key), publisher_json) in
+                entries.into_iter().zip(publisher_jsons)
+            {
+                let Some(publisher_json) = publisher_json else {
+                    self.remove_reverse_index_member(&node_key, &member).await?;
+                    continue;
+                };
+
+                let info = match serde_json::from_str::<PublisherInfo>(&publisher_json) {
+                    Ok(info) => info,
+                    Err(error) => {
+                        debug!(
+                            node_id = %node_id,
+                            room_id = %room_id,
+                            media_id = %media_id,
+                            error = %error,
+                            "Failed to parse publisher info during node cleanup; pruning reverse-index member"
+                        );
+                        self.remove_reverse_index_member(&node_key, &member).await?;
+                        continue;
+                    }
+                };
+
+                if info.node_id != node_id {
+                    self.remove_reverse_index_member(&node_key, &member).await?;
+                    continue;
+                }
+
+                let cleanup_result: Result<Vec<redis::Value>> = with_redis_timeout(|| async {
+                    let mut conn = self.conn().await;
+                    let result: Vec<redis::Value> = redis::Script::new(cleanup_script)
+                        .key(&publisher_key)
+                        .arg(node_id)
+                        .arg(info.epoch)
+                        .invoke_async(&mut conn)
+                        .await
+                        .map_err(|e| anyhow!("Cleanup Lua script failed: {e}"))?;
+                    Ok(result)
+                })
+                .await;
+
+                if let Ok(result) = cleanup_result {
+                    let status = match &result[0] {
+                        redis::Value::Int(v) => *v,
+                        _ => 0,
+                    };
+
+                    if status == 1 {
+                        let user_id = match &result[1] {
+                            redis::Value::BulkString(s) => String::from_utf8_lossy(s).to_string(),
+                            redis::Value::SimpleString(s) => s.clone(),
+                            _ => String::new(),
+                        };
+                        let room_key = self.room_publishers_key(&room_id);
+                        let active_key = self.active_publishers_key();
+
+                        if !user_id.is_empty() {
+                            let user_key = self.user_publishers_key(&user_id);
+                            self.remove_reverse_index_member(&user_key, &member).await?;
+                        }
+                        self.remove_reverse_index_member(&node_key, &member).await?;
+                        self.remove_reverse_index_member(&room_key, &member).await?;
+                        self.remove_reverse_index_member(&active_key, &member)
+                            .await?;
+
+                        info!(
+                            "Cleaned up stale publisher entry for node {} (room: {}, media: {})",
+                            node_id, room_id, media_id
+                        );
+                    } else if status == -1 {
+                        info!(
+                            "Skipped cleanup for node {} (room: {}, media: {}): epoch mismatch (newer publisher exists)",
+                            node_id, room_id, media_id
+                        );
+                    } else {
+                        self.remove_reverse_index_member(&node_key, &member).await?;
+                    }
+                } else if let Err(error) = cleanup_result {
+                    debug!(
+                        node_id = %node_id,
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %error,
+                        "Failed to cleanup publisher during node cleanup"
+                    );
+                }
             }
         }
 
@@ -1102,6 +1323,105 @@ mod tests {
         assert!(
             !unprefixed_exists,
             "registry must not leak publisher keys into the global Redis namespace"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_refresh_publisher_ttl_repairs_missing_reverse_indexes() {
+        use redis::AsyncCommands;
+
+        let (_container, client, redis) = setup_redis().await;
+        let registry = StreamRegistry::new(redis);
+
+        registry
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await
+            .expect("publisher registration should succeed");
+
+        let publisher = registry
+            .get_publisher("room1", "media1")
+            .await
+            .expect("publisher lookup should succeed")
+            .expect("publisher should exist");
+
+        let member = StreamRegistry::publisher_member("room1", "media1");
+        let user_key = registry.user_publishers_key("user1");
+        let node_key = registry.node_publishers_key("node1");
+        let room_key = registry.room_publishers_key("room1");
+        let active_key = registry.active_publishers_key();
+
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("redis connection");
+        let _: () = conn
+            .srem(&user_key, &member)
+            .await
+            .expect("user index removal");
+        let _: () = conn
+            .srem(&node_key, &member)
+            .await
+            .expect("node index removal");
+        let _: () = conn
+            .srem(&room_key, &member)
+            .await
+            .expect("room index removal");
+        let _: () = conn
+            .srem(&active_key, &member)
+            .await
+            .expect("active index removal");
+
+        let outcome = registry
+            .refresh_publisher_ttl_with_owner(
+                "room1",
+                "media1",
+                "user1",
+                "node1",
+                Some(publisher.epoch),
+            )
+            .await
+            .expect("publisher refresh should succeed");
+        assert_eq!(outcome, PublisherRefreshOutcome::Refreshed);
+
+        let user_indexed: bool = conn
+            .sismember(&user_key, &member)
+            .await
+            .expect("user index lookup should succeed");
+        let node_indexed: bool = conn
+            .sismember(&node_key, &member)
+            .await
+            .expect("node index lookup should succeed");
+        let room_indexed: bool = conn
+            .sismember(&room_key, &member)
+            .await
+            .expect("room index lookup should succeed");
+        let active_indexed: bool = conn
+            .sismember(&active_key, &member)
+            .await
+            .expect("active index lookup should succeed");
+
+        assert!(
+            user_indexed,
+            "refresh must restore missing user reverse index"
+        );
+        assert!(
+            node_indexed,
+            "refresh must restore missing node reverse index"
+        );
+        assert!(
+            room_indexed,
+            "refresh must restore missing room reverse index"
+        );
+        assert!(
+            active_indexed,
+            "refresh must restore missing global active index"
         );
     }
 
@@ -1317,6 +1637,188 @@ mod tests {
             .unregister_publisher("room2", "media2")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_unregister_publisher_cleans_node_reverse_index() {
+        let (_container, client, redis) = setup_redis().await;
+        let registry = StreamRegistry::new(redis);
+
+        registry
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await
+            .unwrap();
+
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
+
+        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(registry.node_publishers_key("node1"))
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        assert!(
+            members.is_empty(),
+            "node reverse index should be empty after unregister"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_cleanup_all_publishers_for_node_prunes_stale_reverse_index_members() {
+        let (_container, client, redis) = setup_redis().await;
+        let registry = StreamRegistry::new(redis);
+
+        registry
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher_with_user(
+                "room2",
+                "media2",
+                "node2",
+                "user2",
+                "localhost:50052",
+            )
+            .await
+            .unwrap();
+
+        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let _: () = redis::cmd("SADD")
+            .arg(registry.node_publishers_key("node1"))
+            .arg("room2:media2")
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+
+        registry
+            .cleanup_all_publishers_for_node("node1")
+            .await
+            .unwrap();
+
+        assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
+        assert!(registry.is_stream_active("room2", "media2").await.unwrap());
+
+        let members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(registry.node_publishers_key("node1"))
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        assert!(
+            members.is_empty(),
+            "cleanup should prune stale node reverse-index members"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_list_queries_prune_stale_active_room_and_user_indexes() {
+        let (_container, client, redis) = setup_redis().await;
+        let registry = StreamRegistry::new(redis);
+
+        registry
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
+            .await
+            .unwrap();
+
+        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let stale_member = "room1:media-stale";
+        let invalid_member = "malformed-member";
+
+        let _: () = redis::cmd("SADD")
+            .arg(registry.active_publishers_key())
+            .arg(stale_member)
+            .arg(invalid_member)
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        let _: () = redis::cmd("SADD")
+            .arg(registry.room_publishers_key("room1"))
+            .arg(stale_member)
+            .arg(invalid_member)
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        let _: () = redis::cmd("SADD")
+            .arg(registry.user_publishers_key("user1"))
+            .arg(stale_member)
+            .arg(invalid_member)
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+
+        let active = registry.list_active_publishers().await.unwrap();
+        assert_eq!(active.len(), 1, "stale active index members must be pruned");
+        assert_eq!(active[0].room_id, "room1");
+        assert_eq!(active[0].media_id, "media1");
+
+        let room_streams = registry.list_streams_for_room("room1").await.unwrap();
+        assert_eq!(
+            room_streams,
+            vec!["media1".to_string()],
+            "stale room index members must be pruned"
+        );
+        let user_publishers = registry.get_user_publishers("user1").await.unwrap();
+        assert_eq!(
+            user_publishers,
+            vec![("room1".to_string(), "media1".to_string())],
+            "stale user index members must be pruned"
+        );
+
+        let active_members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(registry.active_publishers_key())
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        let room_members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(registry.room_publishers_key("room1"))
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+        let user_members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(registry.user_publishers_key("user1"))
+            .query_async(&mut verify_conn)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            active_members,
+            vec!["room1:media1".to_string()],
+            "active publisher index should retain only valid members"
+        );
+        assert_eq!(
+            room_members,
+            vec!["room1:media1".to_string()],
+            "room publisher index should retain only valid members"
+        );
+        assert_eq!(
+            user_members,
+            vec!["room1:media1".to_string()],
+            "user publisher index should retain only valid members"
+        );
     }
 
     #[tokio::test]

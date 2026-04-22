@@ -4,7 +4,7 @@
 
 use super::query_builder::escape_ilike;
 use sqlx::{FromRow, PgPool, Row};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use crate::{
@@ -843,26 +843,21 @@ impl MediaRepository {
         scopes: &[(RoomId, Option<PlaylistId>)],
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        let mut unique_scopes: Vec<(RoomId, Option<PlaylistId>)> = Vec::new();
-        for (room_id, playlist_id) in scopes {
-            if unique_scopes.iter().any(|(seen_room, seen_playlist)| {
-                seen_room == room_id && seen_playlist == playlist_id
-            }) {
-                continue;
-            }
-            unique_scopes.push((room_id.clone(), playlist_id.clone()));
-        }
-
-        unique_scopes.sort_by(|(left_room, left_playlist), (right_room, right_playlist)| {
-            left_room.as_str().cmp(right_room.as_str()).then_with(|| {
-                left_playlist
-                    .as_ref()
-                    .map_or("", PlaylistId::as_str)
-                    .cmp(right_playlist.as_ref().map_or("", PlaylistId::as_str))
+        let unique_scopes: BTreeSet<(String, Option<String>)> = scopes
+            .iter()
+            .map(|(room_id, playlist_id)| {
+                (
+                    room_id.as_str().to_owned(),
+                    playlist_id
+                        .as_ref()
+                        .map(|playlist_id| playlist_id.as_str().to_owned()),
+                )
             })
-        });
+            .collect();
 
         for (room_id, playlist_id) in unique_scopes {
+            let room_id = RoomId::from_string(room_id);
+            let playlist_id = playlist_id.map(PlaylistId::from_string);
             self.lock_scope_with_tx(&room_id, playlist_id.as_ref(), tx)
                 .await?;
         }

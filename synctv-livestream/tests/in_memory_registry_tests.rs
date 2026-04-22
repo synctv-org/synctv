@@ -4,7 +4,9 @@
 //! semantics as the Redis-backed `StreamRegistry`.
 
 #![allow(clippy::unwrap_used)]
-use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
+use synctv_livestream::relay::{
+    registry_trait::PublisherRefreshOutcome, InMemoryStreamRegistry, StreamRegistryTrait,
+};
 
 #[tokio::test]
 async fn test_register_publisher_success() {
@@ -576,7 +578,7 @@ async fn test_refresh_publisher_ttl_no_error() {
 
     // refresh_publisher_ttl should succeed (no-op for in-memory)
     let result = registry
-        .refresh_publisher_ttl("room1", "media1", "user1")
+        .refresh_publisher_ttl("room1", "media1", "user1", "node1", 1)
         .await;
     assert!(result.is_ok());
 }
@@ -587,7 +589,29 @@ async fn test_refresh_publisher_ttl_nonexistent() {
 
     // Should not error even for non-existent publishers
     let result = registry
-        .refresh_publisher_ttl("nonexistent", "media", "user")
+        .refresh_publisher_ttl("nonexistent", "media", "user", "node1", 1)
         .await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_refresh_publisher_ttl_detects_owner_or_epoch_mismatch() {
+    let registry = InMemoryStreamRegistry::new();
+
+    registry
+        .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+        .await
+        .unwrap();
+
+    let wrong_node = registry
+        .refresh_publisher_ttl("room1", "media1", "user1", "node2", 1)
+        .await
+        .unwrap();
+    assert_eq!(wrong_node, PublisherRefreshOutcome::OwnershipChanged);
+
+    let wrong_epoch = registry
+        .refresh_publisher_ttl("room1", "media1", "user1", "node1", 999)
+        .await
+        .unwrap();
+    assert_eq!(wrong_epoch, PublisherRefreshOutcome::OwnershipChanged);
 }

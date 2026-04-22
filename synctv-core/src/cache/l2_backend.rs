@@ -11,6 +11,7 @@ use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
 use async_trait::async_trait;
 use std::future::Future;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 enum L2RedisAttemptError {
     Redis(redis::RedisError),
@@ -53,17 +54,56 @@ pub trait CacheL2Backend: Send + Sync {
     /// Get a JSON value by key. Returns `None` if not found or expired.
     async fn get(&self, key: &str) -> Result<Option<String>>;
 
+    /// Get a JSON value by key within a logical namespace.
+    ///
+    /// The namespace is used by backends that maintain auxiliary indexes for
+    /// efficient prefix invalidation. Backends without namespace tracking can
+    /// ignore it and delegate to [`CacheL2Backend::get`].
+    async fn get_scoped(&self, _prefix: &str, key: &str) -> Result<Option<String>> {
+        self.get(key).await
+    }
+
     /// Set a JSON value with TTL in seconds.
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()>;
+
+    /// Set a JSON value with TTL in seconds within a logical namespace.
+    async fn set_scoped(&self, _prefix: &str, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
+        self.set(key, json, ttl_secs).await
+    }
 
     /// Delete a key.
     async fn delete(&self, key: &str) -> Result<()>;
 
+    /// Delete a key within a logical namespace.
+    async fn delete_scoped(&self, _prefix: &str, key: &str) -> Result<()> {
+        self.delete(key).await
+    }
+
     /// Delete a key with retry logic and exponential backoff.
     async fn delete_with_retry(&self, key: &str, max_retries: u32, cache_type: &str) -> Result<()>;
 
+    /// Delete a key with retry logic within a logical namespace.
+    async fn delete_with_retry_scoped(
+        &self,
+        _prefix: &str,
+        key: &str,
+        max_retries: u32,
+        cache_type: &str,
+    ) -> Result<()> {
+        self.delete_with_retry(key, max_retries, cache_type).await
+    }
+
     /// Get multiple values by key. Returns a `Vec` of the same length as `keys`.
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>>;
+
+    /// Get multiple values by key within a logical namespace.
+    async fn get_batch_scoped(
+        &self,
+        _prefix: &str,
+        keys: &[String],
+    ) -> Result<Vec<Option<String>>> {
+        self.get_batch(keys).await
+    }
 
     /// Atomically set a value only if it's newer than the existing value.
     ///
@@ -77,7 +117,20 @@ pub trait CacheL2Backend: Send + Sync {
         new_ts_iso: &str,
     ) -> Result<bool>;
 
-    /// Delete all keys matching the given prefix using a Redis SCAN + DEL loop.
+    /// Atomically set a value only if it's newer than the existing value within
+    /// a logical namespace.
+    async fn set_if_newer_scoped(
+        &self,
+        _prefix: &str,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        new_ts_iso: &str,
+    ) -> Result<bool> {
+        self.set_if_newer(key, json, ttl_secs, new_ts_iso).await
+    }
+
+    /// Delete all keys matching the given prefix.
     ///
     /// Used during lag-triggered full cache flushes to also evict stale L2
     /// entries, preventing other replicas from re-populating L1 from stale data.
@@ -112,6 +165,23 @@ impl RedisCacheL2 {
     /// Get a clone of the current `ConnectionManager` for use in an operation.
     async fn conn(&self) -> redis::aio::ConnectionManager {
         self.conn.snapshot().await
+    }
+
+    fn namespace_index_key(prefix: &str) -> String {
+        format!("{prefix}__l2_index")
+    }
+
+    fn now_unix_seconds() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .try_into()
+            .unwrap_or(i64::MAX)
+    }
+
+    fn expiry_timestamp(ttl_secs: u64) -> i64 {
+        Self::now_unix_seconds().saturating_add(ttl_secs.try_into().unwrap_or(i64::MAX))
     }
 }
 
@@ -148,6 +218,28 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(result)
     }
 
+    async fn get_scoped(&self, prefix: &str, key: &str) -> Result<Option<String>> {
+        use redis::AsyncCommands;
+
+        let mut conn = self.conn().await;
+        let result =
+            run_l2_redis_op("get from L2 cache", conn.get::<_, Option<String>>(key)).await?;
+
+        if result.is_none() {
+            let index_key = Self::namespace_index_key(prefix);
+            if let Err(error) = conn.zrem::<_, _, usize>(&index_key, key).await {
+                tracing::debug!(
+                    prefix = %prefix,
+                    key = %key,
+                    error = %error,
+                    "Failed to prune missing L2 key from namespace index"
+                );
+            }
+        }
+
+        Ok(result)
+    }
+
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
@@ -160,11 +252,65 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(())
     }
 
+    async fn set_scoped(&self, prefix: &str, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
+        let mut conn = self.conn().await;
+        let index_key = Self::namespace_index_key(prefix);
+        let expires_at = Self::expiry_timestamp(ttl_secs);
+        let now = Self::now_unix_seconds();
+
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("SET")
+            .arg(key)
+            .arg(json)
+            .arg("EX")
+            .arg(ttl_secs)
+            .ignore()
+            .cmd("ZADD")
+            .arg(&index_key)
+            .arg(expires_at)
+            .arg(key)
+            .ignore()
+            .cmd("ZREMRANGEBYSCORE")
+            .arg(&index_key)
+            .arg("-inf")
+            .arg(now)
+            .ignore();
+
+        run_l2_redis_op(
+            format!("set in L2 cache namespace '{prefix}'"),
+            pipe.query_async::<()>(&mut conn),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
 
         run_l2_redis_op("delete from L2 cache", conn.del::<_, ()>(key)).await?;
+        Ok(())
+    }
+
+    async fn delete_scoped(&self, prefix: &str, key: &str) -> Result<()> {
+        let mut conn = self.conn().await;
+        let index_key = Self::namespace_index_key(prefix);
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("DEL")
+            .arg(key)
+            .ignore()
+            .cmd("ZREM")
+            .arg(&index_key)
+            .arg(key)
+            .ignore();
+
+        run_l2_redis_op(
+            format!("delete from L2 cache namespace '{prefix}'"),
+            pipe.query_async::<()>(&mut conn),
+        )
+        .await?;
         Ok(())
     }
 
@@ -235,6 +381,93 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(())
     }
 
+    async fn delete_with_retry_scoped(
+        &self,
+        prefix: &str,
+        key: &str,
+        max_retries: u32,
+        cache_type: &str,
+    ) -> Result<()> {
+        for attempt in 0..max_retries {
+            let mut conn = self.conn().await;
+            let index_key = Self::namespace_index_key(prefix);
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .cmd("DEL")
+                .arg(key)
+                .ignore()
+                .cmd("ZREM")
+                .arg(&index_key)
+                .arg(key)
+                .ignore();
+
+            match run_l2_redis_attempt(pipe.query_async::<()>(&mut conn)).await {
+                Ok(()) => return Ok(()),
+                Err(L2RedisAttemptError::Redis(e)) => {
+                    let is_last_attempt = attempt == max_retries - 1;
+                    if is_last_attempt {
+                        crate::metrics::cache::CACHE_ERRORS
+                            .with_label_values(&[cache_type, "l2_delete"])
+                            .inc();
+                        tracing::error!(
+                            key = %key,
+                            prefix = %prefix,
+                            error = %e,
+                            attempts = max_retries,
+                            cache_type = %cache_type,
+                            "Failed to delete from Redis L2 cache namespace after retries"
+                        );
+                        return Err(Error::Internal(format!(
+                            "Failed to delete from Redis cache namespace: {e}"
+                        )));
+                    }
+                    let backoff_ms = 10 * u64::pow(5, attempt);
+                    tracing::warn!(
+                        key = %key,
+                        prefix = %prefix,
+                        error = %e,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        backoff_ms = backoff_ms,
+                        cache_type = %cache_type,
+                        "Redis L2 cache namespaced delete failed, retrying"
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
+                Err(L2RedisAttemptError::Timeout) => {
+                    let is_last_attempt = attempt == max_retries - 1;
+                    if is_last_attempt {
+                        crate::metrics::cache::CACHE_ERRORS
+                            .with_label_values(&[cache_type, "l2_delete"])
+                            .inc();
+                        tracing::error!(
+                            key = %key,
+                            prefix = %prefix,
+                            attempts = max_retries,
+                            cache_type = %cache_type,
+                            "Redis L2 cache namespaced delete timed out after retries"
+                        );
+                        return Err(Error::Timeout(
+                            "L2 cache timeout: delete from Redis cache namespace".to_string(),
+                        ));
+                    }
+                    let backoff_ms = 10 * u64::pow(5, attempt);
+                    tracing::warn!(
+                        key = %key,
+                        prefix = %prefix,
+                        attempt = attempt + 1,
+                        max_retries = max_retries,
+                        backoff_ms = backoff_ms,
+                        cache_type = %cache_type,
+                        "Redis L2 cache namespaced delete timed out, retrying"
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
         let mut conn = self.conn().await;
         let mut pipe = redis::pipe();
@@ -244,6 +477,39 @@ impl CacheL2Backend for RedisCacheL2 {
 
         let results: Vec<Option<String>> =
             run_l2_redis_op("batch get from L2 cache", pipe.query_async(&mut conn)).await?;
+        Ok(results)
+    }
+
+    async fn get_batch_scoped(&self, prefix: &str, keys: &[String]) -> Result<Vec<Option<String>>> {
+        let mut conn = self.conn().await;
+        let mut pipe = redis::pipe();
+        for key in keys {
+            pipe.get(key);
+        }
+
+        let results: Vec<Option<String>> =
+            run_l2_redis_op("batch get from L2 cache", pipe.query_async(&mut conn)).await?;
+
+        let missing_keys: Vec<&String> = keys
+            .iter()
+            .zip(results.iter())
+            .filter_map(|(key, value)| value.is_none().then_some(key))
+            .collect();
+        if !missing_keys.is_empty() {
+            let index_key = Self::namespace_index_key(prefix);
+            let mut prune_pipe = redis::pipe();
+            for key in missing_keys {
+                prune_pipe.cmd("ZREM").arg(&index_key).arg(key).ignore();
+            }
+            if let Err(error) = prune_pipe.query_async::<()>(&mut conn).await {
+                tracing::debug!(
+                    prefix = %prefix,
+                    error = %error,
+                    "Failed to prune missing L2 batch keys from namespace index"
+                );
+            }
+        }
+
         Ok(results)
     }
 
@@ -290,42 +556,92 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(result == 1)
     }
 
-    async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
-        use redis::AsyncCommands;
+    async fn set_if_newer_scoped(
+        &self,
+        prefix: &str,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        new_ts_iso: &str,
+    ) -> Result<bool> {
         let mut conn = self.conn().await;
+        let index_key = Self::namespace_index_key(prefix);
+        let expires_at = Self::expiry_timestamp(ttl_secs);
+        let now = Self::now_unix_seconds();
 
-        // Use SCAN to iterate keys matching the prefix pattern, then DEL in batches.
-        // This avoids blocking Redis with KEYS * on large keyspaces.
-        let pattern = format!("{prefix}*");
-        let mut cursor: u64 = 0;
-        loop {
-            let scan_result: (u64, Vec<String>) = run_l2_redis_op(
-                format!("scan L2 cache keys for prefix '{prefix}'"),
-                redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&pattern)
-                    .arg("COUNT")
-                    .arg(100u64)
-                    .query_async(&mut conn),
+        let script = redis::Script::new(
+            r"
+            local existing = redis.call('GET', KEYS[1])
+            if existing then
+                local ok, obj = pcall(cjson.decode, existing)
+                if ok and obj and obj.updated_at then
+                    local existing_ts = obj.updated_at
+                    local new_ts = ARGV[3]
+                    if new_ts <= existing_ts then
+                        return 0
+                    end
+                end
+            end
+            redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+            redis.call('ZADD', KEYS[2], ARGV[4], KEYS[1])
+            redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[5])
+            return 1
+            ",
+        );
+
+        let result: i64 = run_l2_redis_op(
+            "run set_if_newer Lua script",
+            script
+                .key(key)
+                .key(&index_key)
+                .arg(json)
+                .arg(ttl_secs.cast_signed())
+                .arg(new_ts_iso)
+                .arg(expires_at)
+                .arg(now)
+                .invoke_async(&mut conn),
+        )
+        .await?;
+
+        Ok(result == 1)
+    }
+
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
+        let mut conn = self.conn().await;
+        let index_key = Self::namespace_index_key(prefix);
+        let keys: Vec<String> = run_l2_redis_op(
+            format!("load L2 cache namespace index for prefix '{prefix}'"),
+            redis::cmd("ZRANGE")
+                .arg(&index_key)
+                .arg(0)
+                .arg(-1)
+                .query_async(&mut conn),
+        )
+        .await?;
+
+        for chunk in keys.chunks(256) {
+            let mut pipe = redis::pipe();
+            pipe.cmd("DEL");
+            for key in chunk {
+                pipe.arg(key);
+            }
+            pipe.ignore();
+
+            run_l2_redis_op(
+                format!("delete indexed L2 cache keys for prefix '{prefix}'"),
+                pipe.query_async::<()>(&mut conn),
             )
             .await?;
-
-            let (next_cursor, keys) = scan_result;
-
-            if !keys.is_empty() {
-                run_l2_redis_op(
-                    format!("delete L2 cache keys for prefix '{prefix}'"),
-                    conn.del::<_, ()>(keys.as_slice()),
-                )
-                .await?;
-            }
-
-            cursor = next_cursor;
-            if cursor == 0 {
-                break;
-            }
         }
+
+        run_l2_redis_op(
+            format!("delete L2 cache namespace index for prefix '{prefix}'"),
+            redis::cmd("DEL")
+                .arg(&index_key)
+                .query_async::<()>(&mut conn),
+        )
+        .await?;
+
         Ok(())
     }
 

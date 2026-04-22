@@ -50,6 +50,7 @@ const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 /// Set higher to tolerate transient bursts (e.g., rapid seek operations) without
 /// prematurely disconnecting clients on slower networks.
 const MAX_CONSECUTIVE_DROPS: u32 = 50;
+const ROOM_INDEX_DIRECTORY_KEY_SUFFIX: &str = "room_hub:room_index";
 
 const fn requires_reliable_target_delivery(event: &ClusterEvent) -> bool {
     event.is_critical() || matches!(event, ClusterEvent::WebRTCSignaling { .. })
@@ -250,6 +251,25 @@ impl std::fmt::Debug for RoomMessageHub {
 }
 
 impl RoomMessageHub {
+    fn room_key(&self, room_id: &RoomId) -> String {
+        format!(
+            "{}room_hub:room:{}",
+            self.redis_key_prefix,
+            room_id.as_str()
+        )
+    }
+
+    fn conn_key(&self, connection_id: &str) -> String {
+        format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id)
+    }
+
+    fn room_index_directory_key(&self) -> String {
+        format!(
+            "{}{}",
+            self.redis_key_prefix, ROOM_INDEX_DIRECTORY_KEY_SUFFIX
+        )
+    }
+
     fn remaining_shutdown_budget(deadline: tokio::time::Instant) -> Duration {
         deadline.saturating_duration_since(tokio::time::Instant::now())
     }
@@ -311,7 +331,7 @@ impl RoomMessageHub {
             lifecycle_tx,
             redis_conn: None,
             redis_key_prefix: String::new(),
-            redis_key_ttl_secs: 300, // 5 minutes default
+            redis_key_ttl_secs: 180, // 3 minutes default
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             pending_redis_cleanup: Arc::new(DashMap::new()),
@@ -518,12 +538,9 @@ impl RoomMessageHub {
         // distributed state cannot be written, the local subscription must be
         // rolled back so callers do not observe a false-success join.
         if let Some(mut conn_clone) = self.redis_conn_clone().await {
-            let room_key = format!(
-                "{}room_hub:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
-            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+            let room_key = self.room_key(&room_id);
+            let conn_key = self.conn_key(&connection_id);
+            let room_index_directory_key = self.room_index_directory_key();
             let user_id_str = user_id.as_str().to_string();
             let room_id_str = room_id.as_str().to_string();
             let ttl_secs = self.redis_key_ttl_secs;
@@ -543,6 +560,29 @@ impl RoomMessageHub {
                 self.rollback_local_subscription(&room_id, &connection_id);
                 return Err(crate::error::Error::Redis(format!(
                     "Failed to refresh room subscription TTL in Redis: {e}"
+                )));
+            }
+            if let Err(e) = conn_clone
+                .sadd::<_, _, ()>(&room_index_directory_key, &room_key)
+                .await
+            {
+                let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
+                self.rollback_local_subscription(&room_id, &connection_id);
+                return Err(crate::error::Error::Redis(format!(
+                    "Failed to persist room index directory membership to Redis: {e}"
+                )));
+            }
+            if let Err(e) = conn_clone
+                .expire::<_, ()>(&room_index_directory_key, ttl_secs)
+                .await
+            {
+                let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
+                let _ = conn_clone
+                    .srem::<_, _, ()>(&room_index_directory_key, &room_key)
+                    .await;
+                self.rollback_local_subscription(&room_id, &connection_id);
+                return Err(crate::error::Error::Redis(format!(
+                    "Failed to refresh room index directory TTL in Redis: {e}"
                 )));
             }
 
@@ -618,12 +658,9 @@ impl RoomMessageHub {
             // Redis delete completes, the stale keys will be cleaned up by their
             // TTL (set during subscribe). No manual intervention is needed.
             if let Some(redis_conn) = self.redis_conn.clone() {
-                let room_key = format!(
-                    "{}room_hub:room:{}",
-                    self.redis_key_prefix,
-                    room_id.as_str()
-                );
-                let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+                let room_key = self.room_key(&room_id);
+                let conn_key = self.conn_key(connection_id);
+                let room_index_directory_key = self.room_index_directory_key();
                 let connection_id_owned = connection_id.to_string();
                 let room_id_for_retry = room_id.clone();
                 let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
@@ -644,6 +681,28 @@ impl RoomMessageHub {
                     {
                         cleanup_failed = true;
                         warn!("Failed to remove room subscription from Redis: {e}");
+                    }
+                    match conn_clone.hlen::<_, usize>(&room_key).await {
+                        Ok(0) => {
+                            if let Err(e) = conn_clone.del::<_, ()>(&room_key).await {
+                                cleanup_failed = true;
+                                warn!(
+                                    "Failed to delete empty room subscription hash from Redis: {e}"
+                                );
+                            }
+                            if let Err(e) = conn_clone
+                                .srem::<_, _, ()>(&room_index_directory_key, &room_key)
+                                .await
+                            {
+                                cleanup_failed = true;
+                                warn!("Failed to remove empty room from room index directory: {e}");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            cleanup_failed = true;
+                            warn!("Failed to inspect room subscription hash cardinality in Redis: {e}");
+                        }
                     }
                     // Remove connection mapping
                     if let Err(e) = conn_clone.del::<_, ()>(&conn_key).await {
@@ -1121,12 +1180,9 @@ impl RoomMessageHub {
             return;
         };
 
-        let room_key = format!(
-            "{}room_hub:room:{}",
-            self.redis_key_prefix,
-            room_id.as_str()
-        );
-        let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+        let room_key = self.room_key(&room_id);
+        let conn_key = self.conn_key(&connection_id);
+        let room_index_directory_key = self.room_index_directory_key();
         let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
         let connection_id_for_log = connection_id.clone();
         let room_id_for_log = room_id.clone();
@@ -1144,6 +1200,26 @@ impl RoomMessageHub {
             {
                 cleanup_failed = true;
                 warn!("Failed to remove room subscription from Redis: {e}");
+            }
+            match conn_clone.hlen::<_, usize>(&room_key).await {
+                Ok(0) => {
+                    if let Err(e) = conn_clone.del::<_, ()>(&room_key).await {
+                        cleanup_failed = true;
+                        warn!("Failed to delete empty room subscription hash from Redis: {e}");
+                    }
+                    if let Err(e) = conn_clone
+                        .srem::<_, _, ()>(&room_index_directory_key, &room_key)
+                        .await
+                    {
+                        cleanup_failed = true;
+                        warn!("Failed to remove empty room from room index directory: {e}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    cleanup_failed = true;
+                    warn!("Failed to inspect room subscription hash cardinality in Redis: {e}");
+                }
             }
             if let Err(e) = conn_clone.del::<_, ()>(&conn_key).await {
                 cleanup_failed = true;
@@ -1191,11 +1267,8 @@ impl RoomMessageHub {
         room_id: &RoomId,
     ) -> Vec<(UserId, ConnectionId)> {
         if let Some(ref conn) = self.redis_conn {
-            let room_key = format!(
-                "{}room_hub:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
+            let room_key = self.room_key(room_id);
+            let room_index_directory_key = self.room_index_directory_key();
             let mut conn_clone = conn.snapshot().await;
 
             match conn_clone
@@ -1203,10 +1276,82 @@ impl RoomMessageHub {
                 .await
             {
                 Ok(entries) => {
-                    return entries
-                        .into_iter()
-                        .map(|(conn_id, user_id_str)| (UserId::from_string(user_id_str), conn_id))
+                    if entries.is_empty() {
+                        let _: Result<(), _> =
+                            conn_clone.srem(&room_index_directory_key, &room_key).await;
+                        return Vec::new();
+                    }
+
+                    let conn_keys: Vec<String> = entries
+                        .iter()
+                        .map(|(conn_id, _)| {
+                            format!("{}room_hub:conn:{}", self.redis_key_prefix, conn_id)
+                        })
                         .collect();
+                    let conn_rooms = match conn_clone
+                        .mget::<_, Vec<Option<String>>>(conn_keys)
+                        .await
+                    {
+                        Ok(conn_rooms) => conn_rooms,
+                        Err(e) => {
+                            warn!(
+                                room_id = %room_id.as_str(),
+                                "Failed to validate distributed room subscribers from Redis, falling back to raw room hash: {e}"
+                            );
+                            return entries
+                                .into_iter()
+                                .map(|(conn_id, user_id_str)| {
+                                    (UserId::from_string(user_id_str), conn_id)
+                                })
+                                .collect();
+                        }
+                    };
+
+                    let mut subscribers = Vec::with_capacity(entries.len());
+                    let mut stale_connection_ids = Vec::new();
+
+                    for ((conn_id, user_id_str), mapped_room_id) in
+                        entries.into_iter().zip(conn_rooms)
+                    {
+                        if mapped_room_id.as_deref() == Some(room_id.as_str()) {
+                            subscribers.push((UserId::from_string(user_id_str), conn_id));
+                        } else {
+                            stale_connection_ids.push(conn_id);
+                        }
+                    }
+
+                    if !stale_connection_ids.is_empty() {
+                        let mut pipe = redis::pipe();
+                        for conn_id in &stale_connection_ids {
+                            pipe.hdel(&room_key, conn_id).ignore();
+                        }
+                        pipe.cmd("HLEN").arg(&room_key);
+
+                        match pipe.query_async::<Vec<i64>>(&mut conn_clone).await {
+                            Ok(results) => {
+                                let room_members_after_prune = results.last().copied().unwrap_or(0);
+                                if room_members_after_prune == 0 {
+                                    let _: Result<(), _> = conn_clone.del(&room_key).await;
+                                    let _: Result<(), _> =
+                                        conn_clone.srem(&room_index_directory_key, &room_key).await;
+                                }
+                                debug!(
+                                    room_id = %room_id.as_str(),
+                                    removed_members = stale_connection_ids.len(),
+                                    "Pruned stale distributed room subscribers on read"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    removed_members = stale_connection_ids.len(),
+                                    "Failed to prune stale distributed room subscribers on read: {e}"
+                                );
+                            }
+                        }
+                    }
+
+                    return subscribers;
                 }
                 Err(e) => {
                     warn!(
@@ -1250,30 +1395,13 @@ impl RoomMessageHub {
             return Err("Redis not configured".to_string());
         };
 
-        let pattern = format!("{}room_hub:room:*", self.redis_key_prefix);
+        let room_index_directory_key = self.room_index_directory_key();
         let mut recovered = 0;
-
-        // Use SCAN instead of KEYS to avoid blocking Redis on large datasets
-        let mut keys = Vec::new();
-        let mut cursor: u64 = 0;
-        loop {
-            let scan_result: (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(100)
-                .query_async(&mut conn_clone)
-                .await
-                .map_err(|e| format!("Failed to SCAN Redis keys: {e}"))?;
-
-            cursor = scan_result.0;
-            keys.extend(scan_result.1);
-
-            if cursor == 0 {
-                break;
-            }
-        }
+        let keys: Vec<String> = conn_clone
+            .smembers(&room_index_directory_key)
+            .await
+            .map_err(|e| format!("Failed to load room subscription index directory: {e}"))?;
+        let mut stale_directory_members = Vec::new();
 
         for key in keys {
             // Extract room_id from key
@@ -1282,10 +1410,22 @@ impl RoomMessageHub {
             let room_id = RoomId::from_string(room_id_str.to_string());
 
             // Fetch all subscribers for this room
-            let entries: Vec<(String, String)> = conn_clone
-                .hgetall(&key)
-                .await
-                .map_err(|e| format!("Failed to fetch room {room_id_str} subscribers: {e}"))?;
+            let entries: Vec<(String, String)> = match conn_clone.hgetall(&key).await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(
+                        room_id = %room_id.as_str(),
+                        error = %e,
+                        "Failed to fetch audited room subscribers from Redis"
+                    );
+                    continue;
+                }
+            };
+            if entries.is_empty() {
+                stale_directory_members.push(key.clone());
+                let _: Result<(), _> = conn_clone.del(&key).await;
+                continue;
+            }
 
             recovered += entries.len();
 
@@ -1294,6 +1434,12 @@ impl RoomMessageHub {
                 subscriber_count = entries.len(),
                 "Audited room subscription state from Redis (observability only)"
             );
+        }
+
+        if !stale_directory_members.is_empty() {
+            let _: Result<(), _> = conn_clone
+                .srem(&room_index_directory_key, stale_directory_members)
+                .await;
         }
 
         Ok(recovered)
@@ -1322,6 +1468,10 @@ impl RoomMessageHub {
                 entry.key().as_str()
             );
             keys_to_refresh.push(room_key);
+        }
+
+        if !self.rooms.is_empty() {
+            keys_to_refresh.push(self.room_index_directory_key());
         }
 
         // Collect connection keys for all active connections

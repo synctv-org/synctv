@@ -1,11 +1,12 @@
 //! `RedisCacheL2` integration tests
 //!
 //! Tests `set_if_newer` (absent key, newer wins, older rejected, concurrent)
-//! and `delete_by_prefix` (100+ keys with SCAN pagination, prefix isolation).
+//! and namespaced prefix invalidation/index maintenance.
 //!
 //! Run with: cargo test --test `redis_cache_l2_tests`
 #![allow(clippy::unwrap_used)]
 
+use redis::AsyncCommands;
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use synctv_core_testing::start_redis as start_test_redis;
 
@@ -135,7 +136,9 @@ async fn test_delete_by_prefix_100_plus_keys() {
     let prefix = "test:dbp:batch:";
     for i in 0..150 {
         let key = format!("{prefix}key_{i}");
-        l2.set(&key, &format!("value_{i}"), 300).await.unwrap();
+        l2.set_scoped(prefix, &key, &format!("value_{i}"), 300)
+            .await
+            .unwrap();
     }
 
     // Verify some keys exist
@@ -167,12 +170,22 @@ async fn test_delete_by_prefix_isolation() {
 
     // Insert keys under both prefixes
     for i in 0..10 {
-        l2.set(&format!("{prefix_a}key_{i}"), &format!("a_{i}"), 300)
-            .await
-            .unwrap();
-        l2.set(&format!("{prefix_b}key_{i}"), &format!("b_{i}"), 300)
-            .await
-            .unwrap();
+        l2.set_scoped(
+            prefix_a,
+            &format!("{prefix_a}key_{i}"),
+            &format!("a_{i}"),
+            300,
+        )
+        .await
+        .unwrap();
+        l2.set_scoped(
+            prefix_b,
+            &format!("{prefix_b}key_{i}"),
+            &format!("b_{i}"),
+            300,
+        )
+        .await
+        .unwrap();
     }
 
     // Delete only prefix_a
@@ -192,4 +205,33 @@ async fn test_delete_by_prefix_isolation() {
             "prefix_b key should NOT be deleted by prefix_a deletion"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_scoped_prunes_missing_namespace_index_member() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+
+    let prefix = "test:dbp:prune:";
+    let missing_key = format!("{prefix}ghost");
+    let index_key = format!("{prefix}__l2_index");
+    let mut raw = conn;
+
+    let _: () = redis::cmd("ZADD")
+        .arg(&index_key)
+        .arg(9_999_999_999_i64)
+        .arg(&missing_key)
+        .query_async(&mut raw)
+        .await
+        .unwrap();
+
+    let result = l2.get_scoped(prefix, &missing_key).await.unwrap();
+    assert!(result.is_none(), "missing key should still read as None");
+
+    let members: Vec<String> = raw.zrange(&index_key, 0, -1).await.unwrap();
+    assert!(
+        members.is_empty(),
+        "missing namespace index member should be pruned on scoped get"
+    );
 }

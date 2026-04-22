@@ -57,6 +57,7 @@ serde.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
 rand.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

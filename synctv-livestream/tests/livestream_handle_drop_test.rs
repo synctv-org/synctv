@@ -50,6 +50,8 @@ impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
         _room_id: &str,
         _media_id: &str,
         _user_id: &str,
+        _node_id: &str,
+        _expected_epoch: u64,
     ) -> anyhow::Result<PublisherRefreshOutcome> {
         Ok(PublisherRefreshOutcome::Refreshed)
     }
@@ -77,6 +79,12 @@ impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
 
     async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<bool> {
         Ok(false)
+    }
+
+    async fn list_active_publishers(
+        &self,
+    ) -> anyhow::Result<Vec<synctv_livestream::relay::ActivePublisherEntry>> {
+        Ok(vec![])
     }
 
     async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {

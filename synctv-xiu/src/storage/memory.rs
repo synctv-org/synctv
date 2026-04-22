@@ -18,6 +18,7 @@
 use super::HlsStorage;
 use async_trait::async_trait;
 use bytes::Bytes;
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,7 +28,6 @@ use std::time::Duration;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 /// Default max keys: 10,000
 const DEFAULT_MAX_KEYS: usize = 10_000;
-
 struct Entry {
     data: Bytes,
     seq: u64,
@@ -373,7 +373,7 @@ impl HlsStorage for MemoryStorage {
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(k, e)| (e.seq, k.clone()))
             .collect();
-        matching.sort_unstable_by_key(|(seq, _)| *seq);
+        matching.par_sort_unstable_by_key(|(seq, _)| *seq);
 
         let total = matching.len();
         if total <= max_count {

@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -18,6 +18,133 @@ use tracing::{debug, info, warn};
 #[cfg(test)]
 type AsyncTestHook =
     Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
+type ConnectionDeadline = (Instant, String);
+
+#[derive(Debug, Default)]
+struct TimeoutIndex {
+    idle_deadlines: BTreeSet<ConnectionDeadline>,
+    idle_by_connection: HashMap<String, Instant>,
+    max_deadlines: BTreeSet<ConnectionDeadline>,
+    max_by_connection: HashMap<String, Instant>,
+    rtc_deadlines: BTreeSet<ConnectionDeadline>,
+    rtc_by_connection: HashMap<String, Instant>,
+}
+
+impl TimeoutIndex {
+    fn update_deadline(
+        deadlines: &mut BTreeSet<ConnectionDeadline>,
+        deadlines_by_connection: &mut HashMap<String, Instant>,
+        connection_id: &str,
+        deadline: Instant,
+    ) {
+        if let Some(previous_deadline) =
+            deadlines_by_connection.insert(connection_id.to_string(), deadline)
+        {
+            deadlines.remove(&(previous_deadline, connection_id.to_string()));
+        }
+        deadlines.insert((deadline, connection_id.to_string()));
+    }
+
+    fn clear_deadline(
+        deadlines: &mut BTreeSet<ConnectionDeadline>,
+        deadlines_by_connection: &mut HashMap<String, Instant>,
+        connection_id: &str,
+    ) {
+        if let Some(previous_deadline) = deadlines_by_connection.remove(connection_id) {
+            deadlines.remove(&(previous_deadline, connection_id.to_string()));
+        }
+    }
+
+    fn schedule_idle(&mut self, connection_id: &str, deadline: Instant) {
+        Self::update_deadline(
+            &mut self.idle_deadlines,
+            &mut self.idle_by_connection,
+            connection_id,
+            deadline,
+        );
+    }
+
+    fn schedule_max_duration(&mut self, connection_id: &str, deadline: Instant) {
+        Self::update_deadline(
+            &mut self.max_deadlines,
+            &mut self.max_by_connection,
+            connection_id,
+            deadline,
+        );
+    }
+
+    fn schedule_rtc(&mut self, connection_id: &str, deadline: Instant) {
+        Self::update_deadline(
+            &mut self.rtc_deadlines,
+            &mut self.rtc_by_connection,
+            connection_id,
+            deadline,
+        );
+    }
+
+    fn clear_rtc(&mut self, connection_id: &str) {
+        Self::clear_deadline(
+            &mut self.rtc_deadlines,
+            &mut self.rtc_by_connection,
+            connection_id,
+        );
+    }
+
+    fn remove_connection(&mut self, connection_id: &str) {
+        Self::clear_deadline(
+            &mut self.idle_deadlines,
+            &mut self.idle_by_connection,
+            connection_id,
+        );
+        Self::clear_deadline(
+            &mut self.max_deadlines,
+            &mut self.max_by_connection,
+            connection_id,
+        );
+        Self::clear_deadline(
+            &mut self.rtc_deadlines,
+            &mut self.rtc_by_connection,
+            connection_id,
+        );
+    }
+
+    fn collect_due(deadlines: &mut BTreeSet<ConnectionDeadline>, now: Instant) -> Vec<String> {
+        let mut due_connection_ids = Vec::new();
+        while let Some((deadline, connection_id)) = deadlines.first().cloned() {
+            if deadline >= now {
+                break;
+            }
+            deadlines.pop_first();
+            due_connection_ids.push(connection_id);
+        }
+        due_connection_ids
+    }
+
+    fn take_due_idle(&mut self, now: Instant) -> Vec<String> {
+        let due = Self::collect_due(&mut self.idle_deadlines, now);
+        for connection_id in &due {
+            self.idle_by_connection.remove(connection_id);
+        }
+        due
+    }
+
+    fn take_due_max_duration(&mut self, now: Instant) -> Vec<String> {
+        let due = Self::collect_due(&mut self.max_deadlines, now);
+        for connection_id in &due {
+            self.max_by_connection.remove(connection_id);
+        }
+        due
+    }
+
+    fn take_due_rtc(&mut self, now: Instant) -> Vec<String> {
+        let due = Self::collect_due(&mut self.rtc_deadlines, now);
+        for connection_id in &due {
+            self.rtc_by_connection.remove(connection_id);
+        }
+        due
+    }
+}
 
 /// Disconnect signal for forcing connections to close
 #[derive(Debug, Clone)]
@@ -201,11 +328,18 @@ const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 120; // 2x TTL refresh interval (60
 /// which will be processed in ~30 batches of 1000 keys each.
 const TTL_REFRESH_BATCH_SIZE: usize = 1000;
 
-/// TTL for connection metadata keys in Redis (seconds).
-/// Set to max_duration (24h) + buffer (1h) so metadata auto-expires if a node
-/// crashes without calling unregister(). The TTL refresh task keeps active
-/// connections alive by periodically resetting this TTL.
-const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
+/// TTL for distributed connection metadata and index keys in Redis (seconds).
+///
+/// These keys back cross-replica presence queries (`conn_mgr:conn:*`,
+/// `conn_mgr:user:*`, `conn_mgr:room:*`). They must expire quickly after a pod
+/// crash so dead connections do not remain visible for hours, but stay alive
+/// through transient missed refreshes while a pod is healthy.
+///
+/// With a 60-second refresh interval, a 180-second TTL survives two missed
+/// refreshes while still letting crashed-pod state drain within a few minutes.
+const CONNECTION_METADATA_TTL_SECONDS: i64 = 180; // 3x 60s refresh interval
+const USER_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:user_indexes";
+const ROOM_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:room_indexes";
 
 /// A failed Redis counter operation that should be retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +397,9 @@ pub struct ConnectionManager {
     /// Atomic total connection count for race-free limit enforcement.
     /// Incremented atomically during `register()`, decremented during `unregister()`.
     total_connections: Arc<AtomicUsize>,
+    /// Deadline index used by timeout cleanup so periodic checks only examine
+    /// connections whose idle/max-duration/RTC deadlines have actually elapsed.
+    timeout_index: Arc<parking_lot::Mutex<TimeoutIndex>>,
 
     /// Metrics
     total_connections_ever: Arc<AtomicU64>,
@@ -368,6 +505,32 @@ const PENDING_DISCONNECT_QUEUE_CAPACITY: usize = 10_000;
 const CONNECTION_LIFECYCLE_LOCK_STRIPES: usize = 256;
 
 impl ConnectionManager {
+    fn conn_metadata_key(&self, connection_id: &str) -> String {
+        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix)
+    }
+
+    fn user_index_key(&self, user_id: &str) -> String {
+        format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix)
+    }
+
+    fn room_index_key(&self, room_id: &str) -> String {
+        format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix)
+    }
+
+    fn user_index_directory_key(&self) -> String {
+        format!(
+            "{}{}",
+            self.redis_key_prefix, USER_INDEX_DIRECTORY_KEY_SUFFIX
+        )
+    }
+
+    fn room_index_directory_key(&self) -> String {
+        format!(
+            "{}{}",
+            self.redis_key_prefix, ROOM_INDEX_DIRECTORY_KEY_SUFFIX
+        )
+    }
+
     /// Create a new `ConnectionManager`.
     ///
     /// **Note**: this constructor does not spawn any background tasks. Call
@@ -395,6 +558,7 @@ impl ConnectionManager {
             room_connections: Arc::new(DashMap::new()),
             limits: Arc::new(limits),
             total_connections: Arc::new(AtomicUsize::new(0)),
+            timeout_index: Arc::new(parking_lot::Mutex::new(TimeoutIndex::default())),
             total_connections_ever: Arc::new(AtomicU64::new(0)),
             total_messages: Arc::new(AtomicU64::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
@@ -493,6 +657,35 @@ impl ConnectionManager {
         let shard_count = u64::try_from(self.connection_lifecycle_locks.len()).unwrap_or(u64::MAX);
         let index = u64_to_usize_saturating(hasher.finish() % shard_count);
         Arc::clone(&self.connection_lifecycle_locks[index])
+    }
+
+    fn schedule_idle_timeout(&self, connection_id: &str, last_activity: Instant) {
+        let deadline = last_activity + self.limits.idle_timeout;
+        self.timeout_index
+            .lock()
+            .schedule_idle(connection_id, deadline);
+    }
+
+    fn schedule_max_duration_timeout(&self, connection_id: &str, connected_at: Instant) {
+        let deadline = connected_at + self.limits.max_duration;
+        self.timeout_index
+            .lock()
+            .schedule_max_duration(connection_id, deadline);
+    }
+
+    fn schedule_rtc_timeout(&self, connection_id: &str, rtc_joined_at: Instant) {
+        let deadline = rtc_joined_at + self.limits.webrtc_session_timeout;
+        self.timeout_index
+            .lock()
+            .schedule_rtc(connection_id, deadline);
+    }
+
+    fn clear_rtc_timeout(&self, connection_id: &str) {
+        self.timeout_index.lock().clear_rtc(connection_id);
+    }
+
+    fn remove_timeout_tracking(&self, connection_id: &str) {
+        self.timeout_index.lock().remove_connection(connection_id);
     }
 
     #[cfg(test)]
@@ -749,12 +942,9 @@ impl ConnectionManager {
             return;
         };
 
-        let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-        let user_index_key = format!(
-            "{}conn_mgr:user:{}",
-            self.redis_key_prefix,
-            user_id.as_str()
-        );
+        let conn_key = self.conn_metadata_key(connection_id);
+        let user_index_key = self.user_index_key(user_id.as_str());
+        let user_index_directory_key = self.user_index_directory_key();
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
         match serde_json::to_string(&persistent) {
@@ -778,6 +968,10 @@ impl ConnectionManager {
         if let Err(e) = conn.sadd::<_, _, ()>(&user_index_key, connection_id).await {
             warn!("Failed to add connection to user index: {e}");
         }
+        let _: Result<(), _> = conn.sadd(&user_index_directory_key, &user_index_key).await;
+        let _: Result<(), _> = conn
+            .expire(&user_index_directory_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await;
         let _: Result<(), _> = conn
             .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
             .await;
@@ -800,19 +994,13 @@ impl ConnectionManager {
             return;
         };
 
-        let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-        let room_index_key = format!(
-            "{}conn_mgr:room:{}",
-            self.redis_key_prefix,
-            transition.room_id.as_str()
-        );
-        let previous_room_index_key = transition.previous_room_id.as_ref().map(|room_id| {
-            format!(
-                "{}conn_mgr:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            )
-        });
+        let conn_key = self.conn_metadata_key(connection_id);
+        let room_index_key = self.room_index_key(transition.room_id.as_str());
+        let room_index_directory_key = self.room_index_directory_key();
+        let previous_room_index_key = transition
+            .previous_room_id
+            .as_ref()
+            .map(|room_id| self.room_index_key(room_id.as_str()));
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
         match serde_json::to_string(&persistent) {
@@ -836,6 +1024,10 @@ impl ConnectionManager {
         if let Err(e) = conn.sadd::<_, _, ()>(&room_index_key, connection_id).await {
             warn!("Failed to add connection to room index: {e}");
         }
+        let _: Result<(), _> = conn.sadd(&room_index_directory_key, &room_index_key).await;
+        let _: Result<(), _> = conn
+            .expire(&room_index_directory_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await;
         if let Some(previous_room_index_key) = previous_room_index_key.as_ref() {
             if let Err(e) = conn
                 .srem::<_, _, ()>(previous_room_index_key, connection_id)
@@ -1506,6 +1698,8 @@ impl ConnectionManager {
         let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
         self.connections
             .insert(connection_id.clone(), conn_info.clone());
+        self.schedule_idle_timeout(&connection_id, conn_info.last_activity);
+        self.schedule_max_duration_timeout(&connection_id, conn_info.connected_at);
         drop(lifecycle_guard);
 
         // Persist connection metadata to Redis (best-effort)
@@ -1604,27 +1798,10 @@ impl ConnectionManager {
 
         let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
-        let transition = if let Some(mut conn) = self.connections.get_mut(connection_id) {
-            let current_room_id = conn.room_id.clone();
-            if current_room_id.as_ref() == Some(&room_id) {
-                drop(lifecycle_guard);
-                if redis_room_incremented {
-                    let redis_key = format!(
-                        "{}connections:room:{}",
-                        self.redis_key_prefix,
-                        room_id.as_str()
-                    );
-                    self.rollback_distributed_counter(redis_key).await;
-                }
-                return Ok(());
-            }
-
-            // Step 3: Commit the room move locally after all checks have passed.
-            // Without Redis, enforce the room limit under the same shard lock as
-            // the insert so concurrent local joins cannot oversubscribe the room.
-            {
-                let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
-                if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+        let (transition, last_activity) =
+            if let Some(mut conn) = self.connections.get_mut(connection_id) {
+                let current_room_id = conn.room_id.clone();
+                if current_room_id.as_ref() == Some(&room_id) {
                     drop(lifecycle_guard);
                     if redis_room_incremented {
                         let redis_key = format!(
@@ -1634,43 +1811,67 @@ impl ConnectionManager {
                         );
                         self.rollback_distributed_counter(redis_key).await;
                     }
-                    return Err(format!(
-                        "Room at capacity ({} connections)",
-                        self.limits.max_per_room
-                    ));
+                    return Ok(());
                 }
-                room_entry.push(connection_id.to_string());
-            }
 
-            if let Some(ref old_room) = current_room_id {
-                if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                    old_room_conns.retain(|id| id != connection_id);
-                    if old_room_conns.is_empty() {
-                        drop(old_room_conns);
-                        self.room_connections.remove(old_room);
+                // Step 3: Commit the room move locally after all checks have passed.
+                // Without Redis, enforce the room limit under the same shard lock as
+                // the insert so concurrent local joins cannot oversubscribe the room.
+                {
+                    let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
+                    if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+                        drop(lifecycle_guard);
+                        if redis_room_incremented {
+                            let redis_key = format!(
+                                "{}connections:room:{}",
+                                self.redis_key_prefix,
+                                room_id.as_str()
+                            );
+                            self.rollback_distributed_counter(redis_key).await;
+                        }
+                        return Err(format!(
+                            "Room at capacity ({} connections)",
+                            self.limits.max_per_room
+                        ));
+                    }
+                    room_entry.push(connection_id.to_string());
+                }
+
+                if let Some(ref old_room) = current_room_id {
+                    if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
+                        old_room_conns.retain(|id| id != connection_id);
+                        if old_room_conns.is_empty() {
+                            drop(old_room_conns);
+                            self.room_connections.remove(old_room);
+                        }
                     }
                 }
-            }
 
-            conn.room_id = Some(room_id.clone());
-            conn.last_activity = Instant::now();
-            Some(RoomTransition {
-                previous_room_id: current_room_id,
-                room_id: room_id.clone(),
-            })
-        } else {
-            drop(lifecycle_guard);
-            if redis_room_incremented {
-                let redis_key = format!(
-                    "{}connections:room:{}",
-                    self.redis_key_prefix,
-                    room_id.as_str()
-                );
-                self.rollback_distributed_counter(redis_key).await;
-            }
-            return Err("Connection not found".to_string());
-        };
+                conn.room_id = Some(room_id.clone());
+                conn.last_activity = Instant::now();
+                (
+                    Some(RoomTransition {
+                        previous_room_id: current_room_id,
+                        room_id: room_id.clone(),
+                    }),
+                    Some(conn.last_activity),
+                )
+            } else {
+                drop(lifecycle_guard);
+                if redis_room_incremented {
+                    let redis_key = format!(
+                        "{}connections:room:{}",
+                        self.redis_key_prefix,
+                        room_id.as_str()
+                    );
+                    self.rollback_distributed_counter(redis_key).await;
+                }
+                return Err("Connection not found".to_string());
+            };
         drop(lifecycle_guard);
+        if let Some(last_activity) = last_activity {
+            self.schedule_idle_timeout(connection_id, last_activity);
+        }
 
         // Step 4: Decrement the old room's distributed counter only after the
         // move succeeds. If it fails, enqueue a retry so Redis eventually matches
@@ -1710,6 +1911,7 @@ impl ConnectionManager {
         if let Some(mut conn) = self.connections.get_mut(connection_id) {
             conn.last_activity = Instant::now();
             conn.message_count += 1;
+            self.schedule_idle_timeout(connection_id, conn.last_activity);
         }
         self.total_messages.fetch_add(1, Ordering::Relaxed);
     }
@@ -1721,6 +1923,7 @@ impl ConnectionManager {
         let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
         let removed = if let Some((_, conn_info)) = self.connections.remove(connection_id) {
+            self.remove_timeout_tracking(connection_id);
             // Decrement the atomic total connection count
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
             let mut user_went_offline = false;
@@ -1883,13 +2086,27 @@ impl ConnectionManager {
     ///
     /// Returns list of connection IDs that should be disconnected
     pub fn check_timeouts(&self) -> Vec<String> {
-        let mut to_disconnect = Vec::new();
-        // Collect RTC timeout mutations to apply after iteration to avoid
-        // DashMap deadlock (iter() holds a read lock, mark_rtc_joined needs write).
-        let mut rtc_timeouts: Vec<(RoomId, UserId, String)> = Vec::new();
+        let now = Instant::now();
+        let (due_idle, due_max_duration, due_rtc) = {
+            let mut timeout_index = self.timeout_index.lock();
+            (
+                timeout_index.take_due_idle(now),
+                timeout_index.take_due_max_duration(now),
+                timeout_index.take_due_rtc(now),
+            )
+        };
 
-        for entry in self.connections.iter() {
-            let conn = entry.value();
+        let mut due_connections = HashSet::new();
+        due_connections.extend(due_idle);
+        due_connections.extend(due_max_duration);
+        due_connections.extend(due_rtc);
+
+        let mut to_disconnect = Vec::new();
+        let mut rtc_timeouts: Vec<(RoomId, UserId, String)> = Vec::new();
+        for connection_id in due_connections {
+            let Some(conn) = self.connections.get(&connection_id) else {
+                continue;
+            };
 
             // Check idle timeout
             if conn.idle_duration() > self.limits.idle_timeout {
@@ -1926,7 +2143,6 @@ impl ConnectionManager {
                             webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
                             "WebRTC session timeout"
                         );
-                        // Defer mutation to after iteration to avoid DashMap deadlock
                         if let Some(room_id) = &conn.room_id {
                             rtc_timeouts.push((
                                 room_id.clone(),
@@ -2258,6 +2474,8 @@ impl ConnectionManager {
         // Collect unique user and room keys from active connections
         let mut counter_keys = std::collections::HashSet::new();
         let mut metadata_keys = std::collections::HashSet::new();
+        let mut has_user_metadata = false;
+        let mut has_room_metadata = false;
 
         for entry in self.user_connections.iter() {
             if !entry.value().is_empty() {
@@ -2272,6 +2490,7 @@ impl ConnectionManager {
                     self.redis_key_prefix,
                     entry.key().as_str()
                 ));
+                has_user_metadata = true;
             }
         }
         for entry in self.room_connections.iter() {
@@ -2287,7 +2506,15 @@ impl ConnectionManager {
                     self.redis_key_prefix,
                     entry.key().as_str()
                 ));
+                has_room_metadata = true;
             }
+        }
+
+        if has_user_metadata {
+            metadata_keys.insert(self.user_index_directory_key());
+        }
+        if has_room_metadata {
+            metadata_keys.insert(self.room_index_directory_key());
         }
 
         // R-P2-4: Refresh per-connection metadata TTLs
@@ -2370,11 +2597,12 @@ impl ConnectionManager {
             );
         }
 
-        // Perform full reconciliation with Redis after TTL refresh.
-        // This handles cases where Redis was temporarily unavailable during
-        // connection registration, ensuring eventual consistency.
-        // Note: This includes sync_local_counts_to_redis plus metadata sync and cleanup.
-        self.reconcile_with_redis().await;
+        // Repair this node's local contribution after the TTL refresh.
+        // Global stale-index cleanup is intentionally not run on every tick:
+        // crashed-pod state now drains via short metadata/index TTLs plus
+        // lazy pruning on distributed read paths.
+        self.sync_local_counts_to_redis(&mut conn).await;
+        self.sync_connection_metadata_to_redis(&mut conn).await;
     }
 
     /// Batch refresh TTLs using a Lua script for efficiency.
@@ -2645,49 +2873,6 @@ impl ConnectionManager {
             }
         }
 
-        for key in [
-            format!("{}connections:user:*", self.redis_key_prefix),
-            format!("{}connections:room:*", self.redis_key_prefix),
-        ] {
-            let mut cursor: u64 = 0;
-            loop {
-                let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&key)
-                    .arg("COUNT")
-                    .arg(100)
-                    .query_async(conn)
-                    .await;
-
-                match scan_result {
-                    Ok((new_cursor, keys)) => {
-                        cursor = new_cursor;
-                        for redis_key in keys {
-                            let is_known = user_counts.contains_key(&redis_key)
-                                || room_counts.contains_key(&redis_key);
-                            if !is_known {
-                                // Never zero a distributed counter based only on this
-                                // node's local view. Another replica may still own the
-                                // corresponding active connections. Stale cleanup is
-                                // handled by TTL expiry and targeted metadata/index
-                                // reconciliation elsewhere.
-                            }
-                        }
-
-                        if cursor == 0 {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        sync_errors += 1;
-                        warn!(pattern = %key, error = %e, "Failed to scan distributed counters");
-                        break;
-                    }
-                }
-            }
-        }
-
         if sync_count > 0 || sync_errors > 0 {
             info!(
                 counters_synced = sync_count,
@@ -2749,13 +2934,19 @@ impl ConnectionManager {
 
         let mut synced = 0u64;
         let mut errors = 0u64;
+        let user_index_directory_key = self.user_index_directory_key();
+        let room_index_directory_key = self.room_index_directory_key();
+        let mut has_user_index = false;
+        let mut has_room_index = false;
 
         for entry in self.connections.iter() {
             let conn_info = entry.value();
-            let key = format!(
-                "{}conn_mgr:conn:{}",
-                self.redis_key_prefix, conn_info.connection_id
-            );
+            let key = self.conn_metadata_key(&conn_info.connection_id);
+            let user_index_key = self.user_index_key(conn_info.user_id.as_str());
+            let room_index_key = conn_info
+                .room_id
+                .as_ref()
+                .map(|room_id| self.room_index_key(room_id.as_str()));
             let persistent = ConnectionInfoPersistent::from(conn_info);
 
             match serde_json::to_string(&persistent) {
@@ -2791,6 +2982,55 @@ impl ConnectionManager {
                     );
                 }
             }
+
+            if let Err(e) = conn
+                .sadd::<_, _, ()>(&user_index_key, &conn_info.connection_id)
+                .await
+            {
+                errors += 1;
+                warn!(
+                    connection_id = %conn_info.connection_id,
+                    user_id = %conn_info.user_id.as_str(),
+                    error = %e,
+                    "Failed to repair user connection index membership in Redis"
+                );
+            }
+            let _: Result<(), _> = conn.sadd(&user_index_directory_key, &user_index_key).await;
+            has_user_index = true;
+            let _: Result<(), _> = conn
+                .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
+
+            if let Some(room_index_key) = room_index_key.as_ref() {
+                if let Err(e) = conn
+                    .sadd::<_, _, ()>(room_index_key, &conn_info.connection_id)
+                    .await
+                {
+                    errors += 1;
+                    warn!(
+                        connection_id = %conn_info.connection_id,
+                        room_id = %room_index_key,
+                        error = %e,
+                        "Failed to repair room connection index membership in Redis"
+                    );
+                }
+                let _: Result<(), _> = conn.sadd(&room_index_directory_key, room_index_key).await;
+                has_room_index = true;
+                let _: Result<(), _> = conn
+                    .expire(room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                    .await;
+            }
+        }
+
+        if has_user_index {
+            let _: Result<(), _> = conn
+                .expire(&user_index_directory_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
+        }
+        if has_room_index {
+            let _: Result<(), _> = conn
+                .expire(&room_index_directory_key, CONNECTION_METADATA_TTL_SECONDS)
+                .await;
         }
 
         if synced > 0 || errors > 0 {
@@ -2800,6 +3040,129 @@ impl ConnectionManager {
                 "Synced connection metadata to Redis"
             );
         }
+    }
+
+    async fn load_index_directory_members(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        directory_key: &str,
+    ) -> Result<Vec<String>, String> {
+        use redis::AsyncCommands;
+
+        conn.smembers(directory_key)
+            .await
+            .map_err(|e| format!("Failed to fetch distributed index directory: {e}"))
+    }
+
+    async fn prune_index_directory_members(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        directory_key: &str,
+        index_keys: &[String],
+    ) -> Result<(), String> {
+        if index_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut pipe = redis::pipe();
+        for index_key in index_keys {
+            pipe.srem(directory_key, index_key).ignore();
+        }
+
+        pipe.query_async::<()>(&mut *conn)
+            .await
+            .map_err(|e| format!("Failed to prune distributed index directory members: {e}"))
+    }
+
+    async fn load_valid_connection_ids_from_index(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        index_key: &str,
+        expected_user_id: Option<&UserId>,
+        expected_room_id: Option<&RoomId>,
+    ) -> Result<Vec<String>, String> {
+        use redis::AsyncCommands;
+
+        let conn_ids: Vec<String> = conn
+            .smembers(index_key)
+            .await
+            .map_err(|e| format!("Failed to fetch distributed connection index: {e}"))?;
+        if conn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let metadata_keys: Vec<String> = conn_ids
+            .iter()
+            .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
+            .collect();
+        let metadata: Vec<Option<String>> = conn
+            .mget(metadata_keys)
+            .await
+            .map_err(|e| format!("Failed to fetch distributed connection metadata: {e}"))?;
+
+        let mut valid_conn_ids = Vec::with_capacity(conn_ids.len());
+        let mut stale_members = Vec::new();
+
+        for (conn_id, metadata_json) in conn_ids.into_iter().zip(metadata) {
+            match metadata_json {
+                Some(metadata_json) => {
+                    match serde_json::from_str::<ConnectionInfoPersistent>(&metadata_json) {
+                        Ok(info) => {
+                            let matches_user = expected_user_id
+                                .is_none_or(|user_id| info.user_id == user_id.as_str());
+                            let matches_room = expected_room_id.is_none_or(|room_id| {
+                                info.room_id.as_deref() == Some(room_id.as_str())
+                            });
+
+                            if matches_user && matches_room {
+                                valid_conn_ids.push(conn_id);
+                            } else {
+                                stale_members.push(conn_id);
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                index_key = %index_key,
+                                connection_id = %conn_id,
+                                error = %error,
+                                "Failed to deserialize distributed connection metadata; pruning index member"
+                            );
+                            stale_members.push(conn_id);
+                        }
+                    }
+                }
+                None => {
+                    stale_members.push(conn_id);
+                }
+            }
+        }
+
+        if !stale_members.is_empty() {
+            let mut pipe = redis::pipe();
+            for connection_id in &stale_members {
+                pipe.srem(index_key, connection_id).ignore();
+            }
+
+            match pipe.query_async::<()>(&mut *conn).await {
+                Ok(()) => {
+                    debug!(
+                        index_key = %index_key,
+                        removed_members = stale_members.len(),
+                        "Pruned stale distributed connection index members on read"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        index_key = %index_key,
+                        removed_members = stale_members.len(),
+                        error = %error,
+                        "Failed to prune stale distributed connection index members on read"
+                    );
+                }
+            }
+        }
+
+        Ok(valid_conn_ids)
     }
 
     /// Clean up stale Redis user/room index members whose metadata key is gone.
@@ -2815,117 +3178,115 @@ impl ConnectionManager {
     async fn cleanup_stale_redis_indexes(&self, conn: &mut redis::aio::ConnectionManager) {
         use redis::AsyncCommands;
 
-        let patterns = [
-            format!("{}conn_mgr:user:*", self.redis_key_prefix),
-            format!("{}conn_mgr:room:*", self.redis_key_prefix),
+        let directories = [
+            self.user_index_directory_key(),
+            self.room_index_directory_key(),
         ];
         let mut cleaned = 0u64;
         let mut errors = 0u64;
 
-        for pattern in patterns {
-            let mut cursor: u64 = 0;
-            loop {
-                let result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&pattern)
-                    .arg("COUNT")
-                    .arg(100)
-                    .query_async(conn)
-                    .await;
+        for directory_key in directories {
+            let index_keys = match self
+                .load_index_directory_members(conn, &directory_key)
+                .await
+            {
+                Ok(index_keys) => index_keys,
+                Err(error) => {
+                    errors += 1;
+                    warn!(
+                        directory_key = %directory_key,
+                        error = %error,
+                        "Failed to load distributed connection index directory during reconciliation"
+                    );
+                    continue;
+                }
+            };
 
-                match result {
-                    Ok((new_cursor, keys)) => {
-                        cursor = new_cursor;
+            let mut stale_directory_members = Vec::new();
 
-                        for key in keys {
-                            let members: Result<Vec<String>, _> = conn.smembers(&key).await;
-                            let members = match members {
-                                Ok(members) => members,
-                                Err(e) => {
-                                    errors += 1;
-                                    warn!(
-                                        key = %key,
-                                        error = %e,
-                                        "Failed to fetch Redis index members during reconciliation"
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            for conn_id in members {
-                                let conn_key =
-                                    format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix);
-                                let exists: Result<bool, _> = conn.exists(&conn_key).await;
-                                match exists {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        let remove_result: Result<(), _> =
-                                            conn.srem(&key, &conn_id).await;
-                                        match remove_result {
-                                            Ok(()) => {
-                                                cleaned += 1;
-                                                debug!(
-                                                    index_key = %key,
-                                                    connection_id = %conn_id,
-                                                    "Removed stale distributed connection index member"
-                                                );
-                                            }
-                                            Err(e) => {
-                                                errors += 1;
-                                                warn!(
-                                                    index_key = %key,
-                                                    connection_id = %conn_id,
-                                                    error = %e,
-                                                    "Failed to remove stale distributed connection index member"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        errors += 1;
-                                        warn!(
-                                            index_key = %key,
-                                            connection_id = %conn_id,
-                                            error = %e,
-                                            "Failed to verify distributed connection metadata during reconciliation"
-                                        );
-                                    }
-                                }
-                            }
-
-                            let key_is_empty: Result<bool, _> =
-                                conn.scard::<_, usize>(&key).await.map(|count| count == 0);
-                            match key_is_empty {
-                                Ok(true) => {
-                                    let _: Result<(), _> = conn.del(&key).await;
-                                }
-                                Ok(false) => {}
-                                Err(e) => {
-                                    errors += 1;
-                                    warn!(
-                                        key = %key,
-                                        error = %e,
-                                        "Failed to check Redis index cardinality during reconciliation"
-                                    );
-                                }
-                            }
-                        }
-
-                        if cursor == 0 {
-                            break;
-                        }
-                    }
+            for key in index_keys {
+                let members: Result<Vec<String>, _> = conn.smembers(&key).await;
+                let members = match members {
+                    Ok(members) => members,
                     Err(e) => {
                         errors += 1;
                         warn!(
-                            pattern = %pattern,
+                            key = %key,
                             error = %e,
-                            "Failed to SCAN Redis for stale distributed connection indexes"
+                            "Failed to fetch Redis index members during reconciliation"
                         );
-                        break;
+                        continue;
+                    }
+                };
+
+                for conn_id in members {
+                    let conn_key = self.conn_metadata_key(&conn_id);
+                    let exists: Result<bool, _> = conn.exists(&conn_key).await;
+                    match exists {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let remove_result: Result<(), _> = conn.srem(&key, &conn_id).await;
+                            match remove_result {
+                                Ok(()) => {
+                                    cleaned += 1;
+                                    debug!(
+                                        index_key = %key,
+                                        connection_id = %conn_id,
+                                        "Removed stale distributed connection index member"
+                                    );
+                                }
+                                Err(e) => {
+                                    errors += 1;
+                                    warn!(
+                                        index_key = %key,
+                                        connection_id = %conn_id,
+                                        error = %e,
+                                        "Failed to remove stale distributed connection index member"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            warn!(
+                                index_key = %key,
+                                connection_id = %conn_id,
+                                error = %e,
+                                "Failed to verify distributed connection metadata during reconciliation"
+                            );
+                        }
                     }
                 }
+
+                let key_is_empty: Result<bool, _> =
+                    conn.scard::<_, usize>(&key).await.map(|count| count == 0);
+                match key_is_empty {
+                    Ok(true) => {
+                        let _: Result<(), _> = conn.del(&key).await;
+                        stale_directory_members.push(key);
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        errors += 1;
+                        warn!(
+                            key = %key,
+                            error = %e,
+                            "Failed to check Redis index cardinality during reconciliation"
+                        );
+                    }
+                }
+            }
+
+            if let Err(error) = self
+                .prune_index_directory_members(conn, &directory_key, &stale_directory_members)
+                .await
+            {
+                errors += 1;
+                warn!(
+                    directory_key = %directory_key,
+                    error = %error,
+                    "Failed to prune stale distributed connection directory members"
+                );
             }
         }
 
@@ -3002,6 +3363,11 @@ impl ConnectionManager {
                 conn.rtc_joined = joined;
                 // Set or clear the RTC join timestamp
                 conn.rtc_joined_at = if joined { Some(Instant::now()) } else { None };
+                if let Some(rtc_joined_at) = conn.rtc_joined_at {
+                    self.schedule_rtc_timeout(conn_id, rtc_joined_at);
+                } else {
+                    self.clear_rtc_timeout(conn_id);
+                }
                 debug!(
                     connection_id = %conn_id,
                     user_id = %user_id.as_str(),
@@ -3089,7 +3455,15 @@ impl ConnectionManager {
                 user_id.as_str()
             );
 
-            match conn.smembers::<_, Vec<String>>(&user_index_key).await {
+            match self
+                .load_valid_connection_ids_from_index(
+                    &mut conn,
+                    &user_index_key,
+                    Some(user_id),
+                    None,
+                )
+                .await
+            {
                 Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
                     warn!("Failed to fetch user connections from Redis: {e}");
@@ -3137,7 +3511,15 @@ impl ConnectionManager {
                 room_id.as_str()
             );
 
-            match conn.smembers::<_, Vec<String>>(&room_index_key).await {
+            match self
+                .load_valid_connection_ids_from_index(
+                    &mut conn,
+                    &room_index_key,
+                    None,
+                    Some(room_id),
+                )
+                .await
+            {
                 Ok(conn_ids) => return Ok(conn_ids),
                 Err(e) => {
                     warn!("Failed to fetch room connections from Redis: {e}");
@@ -4398,6 +4780,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_record_message_refreshes_idle_deadline() {
+        let limits = ConnectionLimits {
+            idle_timeout: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let manager = ConnectionManager::new(limits);
+        let user_id = UserId::from_string("user1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        manager.record_message("conn1");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        assert!(
+            manager.check_timeouts().is_empty(),
+            "fresh activity should postpone idle timeout"
+        );
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let timeouts = manager.check_timeouts();
+        assert_eq!(timeouts, vec!["conn1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_rtc_timeout_marks_connection_left_before_disconnect() {
+        let limits = ConnectionLimits {
+            idle_timeout: Duration::from_secs(10),
+            max_duration: Duration::from_secs(10),
+            webrtc_session_timeout: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let manager = ConnectionManager::new(limits);
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.mark_rtc_joined(&room_id, &user_id, "conn1", true);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let timeouts = manager.check_timeouts();
+        assert_eq!(timeouts, vec!["conn1".to_string()]);
+        assert!(
+            manager.get_rtc_connections(&room_id).is_empty(),
+            "RTC timeout should clear joined state before disconnect handling"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "Requires Docker Redis"]
     async fn test_redis_recovery_reconciles_connection_counts() {
         // This test verifies that after a Redis outage, the ConnectionManager
@@ -4477,6 +4916,8 @@ mod tests {
         let stale_room_index = format!("{prefix}conn_mgr:room:room_stale");
         let stale_conn_key = format!("{prefix}conn_mgr:conn:stale_conn");
         let unrelated_conn_key = format!("{prefix}conn_mgr:conn:other_node_conn");
+        let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
+        let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
         let _: () = redis_conn
             .sadd(&stale_user_index, "stale_conn")
@@ -4492,6 +4933,14 @@ mod tests {
             .unwrap();
         let _: () = redis_conn
             .expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .sadd(&user_index_directory_key, &stale_user_index)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .sadd(&room_index_directory_key, &stale_room_index)
             .await
             .unwrap();
 
@@ -4544,6 +4993,23 @@ mod tests {
         assert!(
             unrelated_conn_exists,
             "Reconciliation must not delete connection metadata that may belong to another replica"
+        );
+
+        let user_directory_members: Vec<String> = redis_conn
+            .smembers(&user_index_directory_key)
+            .await
+            .unwrap();
+        let room_directory_members: Vec<String> = redis_conn
+            .smembers(&room_index_directory_key)
+            .await
+            .unwrap();
+        assert!(
+            user_directory_members.is_empty(),
+            "stale user index directory entry should be pruned during reconciliation"
+        );
+        assert!(
+            room_directory_members.is_empty(),
+            "stale room index directory entry should be pruned during reconciliation"
         );
     }
 
@@ -4651,6 +5117,241 @@ mod tests {
             total_count, 7,
             "reconciliation must preserve total counters that may belong to other replicas"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_distributed_queries_prune_stale_index_members() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("test6:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+
+        let user_a = UserId::from_string("user-a".to_string());
+        let room_a = RoomId::from_string("room-a".to_string());
+        let stale_missing = "conn-missing";
+        let stale_mismatch = "conn-mismatch";
+        let valid = "conn-valid";
+
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let user_index_key = format!("{prefix}conn_mgr:user:{}", user_a.as_str());
+        let room_index_key = format!("{prefix}conn_mgr:room:{}", room_a.as_str());
+        let mismatch_conn_key = format!("{prefix}conn_mgr:conn:{stale_mismatch}");
+        let valid_conn_key = format!("{prefix}conn_mgr:conn:{valid}");
+
+        let mismatch_metadata = ConnectionInfoPersistent {
+            connection_id: stale_mismatch.to_string(),
+            user_id: "user-b".to_string(),
+            room_id: Some("room-b".to_string()),
+            connected_at_unix: 0,
+            last_activity_unix: 0,
+            message_count: 0,
+            rtc_joined: false,
+            rtc_joined_at_unix: None,
+        };
+        let valid_metadata = ConnectionInfoPersistent {
+            connection_id: valid.to_string(),
+            user_id: user_a.as_str().to_string(),
+            room_id: Some(room_a.as_str().to_string()),
+            connected_at_unix: 0,
+            last_activity_unix: 0,
+            message_count: 0,
+            rtc_joined: false,
+            rtc_joined_at_unix: None,
+        };
+
+        let _: () = redis_conn
+            .set(
+                &mismatch_conn_key,
+                serde_json::to_string(&mismatch_metadata).unwrap(),
+            )
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .set(
+                &valid_conn_key,
+                serde_json::to_string(&valid_metadata).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        for conn_id in [stale_missing, stale_mismatch, valid] {
+            let _: () = redis_conn.sadd(&user_index_key, conn_id).await.unwrap();
+            let _: () = redis_conn.sadd(&room_index_key, conn_id).await.unwrap();
+        }
+        let _: () = redis_conn
+            .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .expire(&mismatch_conn_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .expire(&valid_conn_key, CONNECTION_METADATA_TTL_SECONDS)
+            .await
+            .unwrap();
+
+        let mut user_connections = manager
+            .get_user_connections_distributed(&user_a)
+            .await
+            .expect("distributed user lookup should succeed");
+        let mut room_connections = manager
+            .get_room_connections_distributed(&room_a)
+            .await
+            .expect("distributed room lookup should succeed");
+        user_connections.sort();
+        room_connections.sort();
+
+        assert_eq!(
+            user_connections,
+            vec![valid.to_string()],
+            "distributed user lookup must prune missing and mismatched index members"
+        );
+        assert_eq!(
+            room_connections,
+            vec![valid.to_string()],
+            "distributed room lookup must prune missing and mismatched index members"
+        );
+
+        let mut user_members: Vec<String> = redis_conn.smembers(&user_index_key).await.unwrap();
+        let mut room_members: Vec<String> = redis_conn.smembers(&room_index_key).await.unwrap();
+        user_members.sort();
+        room_members.sort();
+        assert_eq!(
+            user_members,
+            vec![valid.to_string()],
+            "user index should retain only valid members after lazy pruning"
+        );
+        assert_eq!(
+            room_members,
+            vec![valid.to_string()],
+            "room index should retain only valid members after lazy pruning"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_connection_metadata_ttl_uses_short_crash_safety_window() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("test7:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+
+        let user_id = UserId::from_string("user-meta-ttl".to_string());
+        let room_id = RoomId::from_string("room-meta-ttl".to_string());
+
+        manager
+            .register("conn-meta-ttl".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .join_room("conn-meta-ttl", room_id.clone())
+            .await
+            .unwrap();
+
+        let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+        for key in [
+            format!("{prefix}conn_mgr:conn:conn-meta-ttl"),
+            format!("{prefix}conn_mgr:user:{}", user_id.as_str()),
+            format!("{prefix}conn_mgr:room:{}", room_id.as_str()),
+            format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}"),
+            format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}"),
+        ] {
+            let ttl: i64 = redis_conn.ttl(&key).await.unwrap();
+            assert!(
+                (CONNECTION_METADATA_TTL_SECONDS - 5..=CONNECTION_METADATA_TTL_SECONDS)
+                    .contains(&ttl),
+                "metadata/index key {key} should use the short crash-safety TTL, got {ttl}s"
+            );
+        }
+
+        manager.unregister("conn-meta-ttl").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_memberships() {
+        use redis::AsyncCommands;
+
+        let (_container, client, conn, prefix) = docker_redis_connection("test8:").await;
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
+
+        let user_id = UserId::from_string("user-repair".to_string());
+        let room_id = RoomId::from_string("room-repair".to_string());
+        let user_index_key = format!("{prefix}conn_mgr:user:{}", user_id.as_str());
+        let room_index_key = format!("{prefix}conn_mgr:room:{}", room_id.as_str());
+        let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
+        let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
+
+        manager
+            .register("conn-repair".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager
+            .join_room("conn-repair", room_id.clone())
+            .await
+            .unwrap();
+
+        let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+        let _: () = redis_conn.del(&user_index_key).await.unwrap();
+        let _: () = redis_conn.del(&room_index_key).await.unwrap();
+        let _: () = redis_conn
+            .srem(&user_index_directory_key, &user_index_key)
+            .await
+            .unwrap();
+        let _: () = redis_conn
+            .srem(&room_index_directory_key, &room_index_key)
+            .await
+            .unwrap();
+
+        manager.reconcile_with_redis().await;
+
+        let user_connections = manager
+            .get_user_connections_distributed(&user_id)
+            .await
+            .expect("reconciled distributed user lookup should succeed");
+        let room_connections = manager
+            .get_room_connections_distributed(&room_id)
+            .await
+            .expect("reconciled distributed room lookup should succeed");
+        assert_eq!(
+            user_connections,
+            vec!["conn-repair".to_string()],
+            "reconciliation should restore missing user index membership"
+        );
+        assert_eq!(
+            room_connections,
+            vec!["conn-repair".to_string()],
+            "reconciliation should restore missing room index membership"
+        );
+
+        let user_directory_members: Vec<String> = redis_conn
+            .smembers(&user_index_directory_key)
+            .await
+            .unwrap();
+        let room_directory_members: Vec<String> = redis_conn
+            .smembers(&room_index_directory_key)
+            .await
+            .unwrap();
+        assert_eq!(
+            user_directory_members,
+            vec![user_index_key.clone()],
+            "reconciliation should restore the user index directory entry"
+        );
+        assert_eq!(
+            room_directory_members,
+            vec![room_index_key.clone()],
+            "reconciliation should restore the room index directory entry"
+        );
+
+        manager.unregister("conn-repair").await;
     }
 
     #[tokio::test]

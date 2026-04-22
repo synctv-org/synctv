@@ -538,3 +538,142 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
 
     hub_b.unsubscribe("conn_b");
 }
+
+// Test 8: Distributed room lookups prune stale hash members on read
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_distributed_room_lookup_prunes_stale_hash_members() {
+    use redis::AsyncCommands;
+
+    let redis = TestRedis::start().await;
+    let prefix = "test8:";
+
+    let hub = create_hub(&redis.redis_url, prefix).await;
+    let room_id = RoomId::from_string("prune_room".to_string());
+
+    let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
+    let mut conn = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("redis connection");
+
+    let room_key = format!("{prefix}room_hub:room:{}", room_id.as_str());
+    let valid_conn_key = format!("{prefix}room_hub:conn:conn_valid");
+    let wrong_room_conn_key = format!("{prefix}room_hub:conn:conn_wrong_room");
+
+    let _: () = conn
+        .hset(&room_key, "conn_missing", "user_missing")
+        .await
+        .unwrap();
+    let _: () = conn
+        .hset(&room_key, "conn_wrong_room", "user_wrong")
+        .await
+        .unwrap();
+    let _: () = conn
+        .hset(&room_key, "conn_valid", "user_valid")
+        .await
+        .unwrap();
+    let _: () = conn.set(&valid_conn_key, room_id.as_str()).await.unwrap();
+    let _: () = conn.set(&wrong_room_conn_key, "other_room").await.unwrap();
+    let _: () = conn.expire(&room_key, 180).await.unwrap();
+    let _: () = conn.expire(&valid_conn_key, 180).await.unwrap();
+    let _: () = conn.expire(&wrong_room_conn_key, 180).await.unwrap();
+
+    let subscribers = hub.get_room_subscribers_cluster_wide(&room_id).await;
+    assert_eq!(
+        subscribers,
+        vec![(
+            UserId::from_string("user_valid".to_string()),
+            "conn_valid".to_string()
+        )],
+        "distributed room lookup must prune missing and wrong-room hash members"
+    );
+
+    let remaining_members: Vec<(String, String)> = conn.hgetall(&room_key).await.unwrap();
+    assert_eq!(
+        remaining_members,
+        vec![("conn_valid".to_string(), "user_valid".to_string())],
+        "room hash should retain only valid subscribers after lazy pruning"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
+    use redis::AsyncCommands;
+
+    let redis = TestRedis::start().await;
+    let prefix = "test9:";
+
+    let hub = create_hub(&redis.redis_url, prefix).await;
+    let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
+    let mut conn = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("redis connection");
+
+    let live_room_key = format!("{prefix}room_hub:room:live_room");
+    let stale_room_key = format!("{prefix}room_hub:room:stale_room");
+    let room_index_directory_key = format!("{prefix}room_hub:room_index");
+
+    let _: () = conn
+        .hset(&live_room_key, "conn_live", "user_live")
+        .await
+        .unwrap();
+    let _: () = conn.expire(&live_room_key, 180).await.unwrap();
+    let _: () = conn
+        .sadd(&room_index_directory_key, &live_room_key)
+        .await
+        .unwrap();
+    let _: () = conn
+        .sadd(&room_index_directory_key, &stale_room_key)
+        .await
+        .unwrap();
+
+    let recovered = hub
+        .audit_shared_subscriptions()
+        .await
+        .expect("audit_shared_subscriptions failed");
+    assert_eq!(
+        recovered, 1,
+        "audit should count only the live room subscription"
+    );
+
+    let directory_members: Vec<String> = conn.smembers(&room_index_directory_key).await.unwrap();
+    assert_eq!(
+        directory_members,
+        vec![live_room_key],
+        "audit should prune stale room directory entries"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_room_directory_key_uses_crash_safety_ttl() {
+    use redis::AsyncCommands;
+
+    let redis = TestRedis::start().await;
+    let prefix = "test10:";
+
+    let hub = create_hub(&redis.redis_url, prefix).await;
+    let room_id = RoomId::from_string("room_ttl".to_string());
+    let user_id = UserId::from_string("user_ttl".to_string());
+
+    let _rx = hub
+        .subscribe(room_id.clone(), user_id, "conn_ttl".to_string())
+        .await
+        .expect("subscribe should succeed");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
+    let mut conn = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("redis connection");
+
+    let directory_key = format!("{prefix}room_hub:room_index");
+    let ttl: i64 = conn.ttl(&directory_key).await.expect("room directory TTL");
+    assert!(
+        (175..=180).contains(&ttl),
+        "room directory key should use the short crash-safety TTL, got {ttl}s"
+    );
+}

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashSet;
+use rayon::prelude::*;
 
 use super::SliceCacheBackend;
 use crate::slice_cache::etag::StoredEntry;
@@ -179,7 +180,7 @@ impl SliceCacheBackend for MemoryBackend {
             .collect();
 
         // Sort by last access time ascending (oldest first = LRU).
-        entries.sort_by_key(|e| e.1);
+        entries.par_sort_by_key(|entry| entry.1);
 
         let mut freed = 0u64;
         for (key, _, size) in entries {

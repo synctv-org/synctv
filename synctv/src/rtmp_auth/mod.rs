@@ -1026,7 +1026,10 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use synctv_livestream::relay::{local_stream_registry, PublisherInfo, StreamRegistryTrait};
+    use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
+    use synctv_livestream::relay::{
+        local_stream_registry, ActivePublisherEntry, PublisherInfo, StreamRegistryTrait,
+    };
     use tokio::sync::RwLock;
 
     struct FlakyUnregisterRegistry {
@@ -1081,10 +1084,11 @@ mod tests {
             room_id: &str,
             media_id: &str,
             user_id: &str,
-        ) -> anyhow::Result<synctv_livestream::relay::registry_trait::PublisherRefreshOutcome>
-        {
+            node_id: &str,
+            expected_epoch: u64,
+        ) -> anyhow::Result<PublisherRefreshOutcome> {
             self.inner
-                .refresh_publisher_ttl(room_id, media_id, user_id)
+                .refresh_publisher_ttl(room_id, media_id, user_id, node_id, expected_epoch)
                 .await
         }
 
@@ -1124,6 +1128,10 @@ mod tests {
 
         async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
             self.inner.is_stream_active(room_id, media_id).await
+        }
+
+        async fn list_active_publishers(&self) -> anyhow::Result<Vec<ActivePublisherEntry>> {
+            self.inner.list_active_publishers().await
         }
 
         async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {

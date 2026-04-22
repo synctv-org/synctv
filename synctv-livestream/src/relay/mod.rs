@@ -13,7 +13,7 @@ pub use registry::{
     PublisherInfo, RegistryConnectionRuntime, StreamRegistry, HEARTBEAT_INTERVAL_SECS,
     PUBLISHER_TTL_SECS,
 };
-pub use registry_trait::StreamRegistryTrait;
+pub use registry_trait::{ActivePublisherEntry, StreamRegistryTrait};
 
 #[cfg(test)]
 pub use mock_registry::MockStreamRegistry;

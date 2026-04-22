@@ -41,36 +41,10 @@ pub(crate) fn build_room_streams_request(
 }
 
 fn paginate_room_stream_ids(
-    mut media_ids: Vec<String>,
+    media_ids: Vec<String>,
     req: &crate::proto::client::ListRoomStreamsRequest,
 ) -> crate::proto::client::ListRoomStreamsResponse {
-    if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
-        media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(&search));
-    }
-
-    media_ids.sort_unstable();
-    if matches!(
-        crate::proto::client::SortDirection::try_from(req.sort_direction),
-        Ok(crate::proto::client::SortDirection::Desc)
-    ) {
-        media_ids.reverse();
-    }
-
-    let page = usize::try_from(req.page.max(1)).unwrap_or(usize::MAX);
-    let page_size = usize::try_from(req.page_size.max(1)).unwrap_or(usize::MAX);
-    let total = i32::try_from(media_ids.len()).unwrap_or(i32::MAX);
-    let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let streams = media_ids
-        .into_iter()
-        .skip(offset)
-        .take(page_size)
-        .map(|media_id| crate::proto::client::StreamEntry {
-            media_id,
-            active: true,
-        })
-        .collect();
-
-    crate::proto::client::ListRoomStreamsResponse { streams, total }
+    crate::impls::build_room_streams_response(media_ids, req)
 }
 
 fn live_streaming_unavailable_error() -> ApiError {

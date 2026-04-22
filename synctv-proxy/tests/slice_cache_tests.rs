@@ -666,7 +666,7 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
 }
 
 #[tokio::test]
-async fn test_head_content_length_rejects_blocked_ip_like_main_proxy_path() {
+async fn test_head_content_length_loopback_without_listener_fails_when_default_ssrf_is_disabled() {
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config);
 
@@ -676,20 +676,21 @@ async fn test_head_content_length_rejects_blocked_ip_like_main_proxy_path() {
         &HashMap::new(),
     )
     .await
-    .expect_err("HEAD to blocked loopback must fail before network IO");
+    .expect_err("HEAD to loopback without a listener must fail");
 
     assert!(
         err.to_string().contains("HEAD request failed"),
         "unexpected error: {err}"
     );
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
-        "HEAD path must reuse SSRF validation: {err}"
+        err.to_string().contains("Connection failed"),
+        "HEAD path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
 #[tokio::test]
-async fn test_head_content_length_rejects_redirect_to_blocked_ip_like_main_proxy_path() {
+async fn test_head_content_length_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
+) {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -709,15 +710,15 @@ async fn test_head_content_length_rejects_redirect_to_blocked_ip_like_main_proxy
         &HashMap::new(),
     )
     .await
-    .expect_err("HEAD redirect to blocked loopback must fail");
+    .expect_err("HEAD redirect to loopback without a listener must fail");
 
     assert!(
         err.to_string().contains("HEAD request failed"),
         "unexpected error: {err}"
     );
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
-        "HEAD redirect path must reuse SSRF validation: {err}"
+        err.to_string().contains("Connection failed"),
+        "HEAD redirect path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
@@ -2692,6 +2693,89 @@ async fn test_conditional_request_304_returns_revalidated() {
 }
 
 #[tokio::test]
+async fn test_range_miss_does_not_send_conditional_headers_from_head_metadata() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xABu8; 1024]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/range-miss.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("ETag", "\"etag-v1\"")
+                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // Cold slice-cache misses must not attach validators learned from HEAD.
+    // Some origins respond with a full-body 200 when Range and validators are
+    // combined, which breaks slice caching.
+    Mock::given(method("GET"))
+        .and(path("/range-miss.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .and(header("If-None-Match", "\"etag-v1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xCD; total_size as usize]))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/range-miss.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        enabled: true,
+        slice_size: 1024,
+        stale_while_revalidate: false,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/range-miss.bin");
+    let headers = HashMap::new();
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache_enabled(
+        &cache,
+        true,
+        Some("bytes=0-127"),
+        &url,
+        &headers,
+    )
+    .await
+    .expect("cold range miss should succeed without conditional slice headers");
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("X-Cache-Status")
+            .and_then(|v| v.to_str().ok()),
+        Some("MISS")
+    );
+
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("response body should collect")
+        .to_bytes();
+    assert_eq!(body.len(), 128);
+    assert_eq!(&body[..], &slice_data[..128]);
+}
+
+#[tokio::test]
 async fn test_full_body_conditional_request_304_returns_revalidated() {
     let mock_server = MockServer::start().await;
 
@@ -2883,7 +2967,8 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_rejects_redirect_to_blocked_ip_on_slice_fetch() {
+async fn test_proxy_with_cache_redirect_to_loopback_without_listener_fails_on_slice_fetch_when_default_ssrf_is_disabled(
+) {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
 
@@ -2913,16 +2998,17 @@ async fn test_proxy_with_cache_rejects_redirect_to_blocked_ip_on_slice_fetch() {
         &HashMap::new(),
     )
     .await
-    .expect_err("range fetch redirect to blocked loopback must fail");
+    .expect_err("range fetch redirect to loopback without a listener must fail");
 
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
-        "slice fetch path must reuse redirect SSRF validation: {err}"
+        err.to_string().contains("Connection failed"),
+        "slice fetch path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_disabled_rejects_redirect_to_blocked_ip_on_bypass_path() {
+async fn test_proxy_with_cache_disabled_redirect_to_loopback_without_listener_fails_on_bypass_path_when_default_ssrf_is_disabled(
+) {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(
         SliceCacheConfig {
@@ -2948,16 +3034,17 @@ async fn test_proxy_with_cache_disabled_rejects_redirect_to_blocked_ip_on_bypass
         &HashMap::new(),
     )
     .await
-    .expect_err("disabled-cache bypass path must still enforce redirect SSRF validation");
+    .expect_err("disabled-cache bypass path redirect to loopback without a listener must fail");
 
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
-        "bypass path must reuse redirect SSRF validation: {err}"
+        err.to_string().contains("Connection failed"),
+        "bypass path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_large_range_bypass_rejects_redirect_to_blocked_ip() {
+async fn test_proxy_with_cache_large_range_bypass_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
+) {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
 
@@ -2987,11 +3074,11 @@ async fn test_proxy_with_cache_large_range_bypass_rejects_redirect_to_blocked_ip
         &HashMap::new(),
     )
     .await
-    .expect_err("large-range bypass path must still enforce redirect SSRF validation");
+    .expect_err("large-range bypass path redirect to loopback without a listener must fail");
 
     assert!(
-        err.to_string().contains("blocked by SSRF policy"),
-        "large-range bypass path must reuse redirect SSRF validation: {err}"
+        err.to_string().contains("Connection failed"),
+        "large-range bypass path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
@@ -3118,6 +3205,114 @@ async fn test_get_or_fetch_slice_returns_cache_status() {
         .await
         .unwrap();
     assert_eq!(s2, CacheStatus::Hit);
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 1024;
+    let full_body = Bytes::from(vec![0x5Au8; total_size as usize]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/single-slice.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/single-slice.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(full_body.clone())
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 2048,
+            ..SliceCacheConfig::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/single-slice.bin");
+    let headers = HashMap::new();
+
+    let response1 =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
+            .await
+            .expect("single-slice full-resource 200 must be accepted");
+    assert_eq!(response1.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response1.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Miss.as_str()
+    );
+    let body1 = axum::body::to_bytes(response1.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body1.len(), 128);
+    assert_eq!(body1, Bytes::from(vec![0x5Au8; 128]));
+
+    let response2 =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
+            .await
+            .expect("cached single-slice response must hit");
+    assert_eq!(response2.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response2.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Hit.as_str()
+    );
+    let body2 = axum::body::to_bytes(response2.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body2.len(), 128);
+    assert_eq!(body2, Bytes::from(vec![0x5Au8; 128]));
+}
+
+#[tokio::test]
+async fn test_proxy_with_cache_marks_multi_range_as_invalid_request() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/multi-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", "4096")
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/multi-range.bin");
+    let headers = HashMap::new();
+
+    let err =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-1,3-4"), &url, &headers)
+            .await
+            .expect_err("multi-range requests must be rejected as invalid client input");
+
+    assert_eq!(
+        synctv_proxy::proxy_error_kind(&err),
+        Some(synctv_proxy::ProxyErrorKind::InvalidRequest)
+    );
+    assert!(
+        err.to_string()
+            .contains("Multi-range requests are not supported"),
+        "error should preserve the invalid range reason: {err}"
+    );
 }
 
 // Bug fix tests: C1, C2, H1, H2, H3, H4, M2

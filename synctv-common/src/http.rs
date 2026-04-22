@@ -1,22 +1,26 @@
-//! SSRF-safe HTTP client builder.
+//! HTTP client builder with optional SSRF enforcement.
 //!
 //! Provides [`SsrfSafeClientBuilder`] with two presets:
 //! - [`SsrfSafeClientBuilder::provider()`] — for media-provider API calls
 //! - [`SsrfSafeClientBuilder::proxy()`] — for outbound media proxy fetches
 //!
-//! All clients enforce SSRF protection via
-//! [`crate::ssrf::SsrfGuard::shared_default()`]
-//! and disable automatic redirects.
+//! Clients can enforce SSRF protection via an explicit [`crate::ssrf::SsrfGuard`]
+//! and always disable automatic redirects. Runtime defaults depend on the
+//! shared SSRF policy; when `SsrfGuard::shared_default()` is disabled, the
+//! builder will not inject a DNS resolver.
 
 use std::time::Duration;
 
 use crate::ssrf::SsrfGuard;
 
-/// Builder for SSRF-safe [`reqwest::Client`] instances.
+/// Builder for [`reqwest::Client`] instances with optional SSRF enforcement.
 ///
 /// Every client built through this builder automatically gets:
-/// - SSRF-safe DNS resolver (blocks private/reserved IPs at connect time)
 /// - Redirect policy set to `none` (prevents redirect-based SSRF)
+///
+/// A DNS resolver is injected only when the active shared SSRF policy exposes
+/// one. With the current runtime default, SSRF enforcement is disabled unless
+/// callers opt into a strict policy.
 pub struct SsrfSafeClientBuilder {
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
@@ -135,10 +139,13 @@ impl SsrfSafeClientBuilder {
     /// Build the [`reqwest::Client`].
     pub fn build(self) -> Result<reqwest::Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
-            .dns_resolver(SsrfGuard::shared_default().dns_resolver())
             .connect_timeout(self.connect_timeout)
             .pool_max_idle_per_host(self.pool_max_idle_per_host)
             .redirect(reqwest::redirect::Policy::none());
+
+        if let Some(resolver) = SsrfGuard::shared_default().dns_resolver() {
+            builder = builder.dns_resolver(resolver);
+        }
 
         if let Some(request_timeout) = self.request_timeout {
             builder = builder.timeout(request_timeout);

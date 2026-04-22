@@ -1,9 +1,9 @@
 //! Alist client response tests
 //!
-//! SSRF protection is now enforced at the DNS resolver level (synctv-common).
-//! The Alist client no longer sanitizes URLs in API responses; instead, all
-//! HTTP requests go through a SSRF-safe DNS resolver that blocks connections
-//! to private/internal IP addresses.
+//! The Alist client no longer sanitizes URLs in API responses.
+//! Transport-time SSRF enforcement is handled by the shared HTTP client
+//! policy in `synctv-common`; with the current runtime default, that policy
+//! is disabled unless callers opt into a strict guard.
 //!
 //! These tests verify that the Alist client correctly passes through URLs
 //! from the API responses as-is.

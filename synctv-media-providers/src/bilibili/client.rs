@@ -4070,24 +4070,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_validated_danmaku_addr_rejects_denied_hostname() {
-        let err = resolve_validated_danmaku_addr("localhost", 443)
+    async fn test_resolve_validated_danmaku_addr_allows_localhost_when_default_ssrf_is_disabled() {
+        let addr = resolve_validated_danmaku_addr("localhost", 443)
             .await
-            .expect_err("localhost must be rejected by SSRF policy");
+            .expect("default SSRF-disabled runtime should allow localhost");
+        assert_eq!(addr.port(), 443);
         assert!(
-            err.to_string().contains("blocked by SSRF policy"),
-            "unexpected error: {err}"
+            addr.ip().is_loopback(),
+            "unexpected localhost resolution: {addr}"
         );
     }
 
     #[tokio::test]
-    async fn test_resolve_validated_danmaku_addr_rejects_private_ip_literal() {
-        let err = resolve_validated_danmaku_addr("127.0.0.1", 443)
+    async fn test_resolve_validated_danmaku_addr_allows_private_ip_literal_when_default_ssrf_is_disabled(
+    ) {
+        let addr = resolve_validated_danmaku_addr("127.0.0.1", 443)
             .await
-            .expect_err("loopback IP must be rejected by SSRF policy");
-        assert!(
-            err.to_string().contains("blocked by SSRF policy"),
-            "unexpected error: {err}"
+            .expect("default SSRF-disabled runtime should allow loopback IP literals");
+        assert_eq!(
+            addr,
+            "127.0.0.1:443".parse::<std::net::SocketAddr>().unwrap()
         );
     }
 

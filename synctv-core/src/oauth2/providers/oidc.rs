@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_provider_rejects_loopback_issuer() {
+    fn test_create_provider_allows_loopback_issuer_when_default_ssrf_is_disabled() {
         let provider = OidcProvider::create(
             "oidc_client_id".to_string(),
             "oidc_secret".to_string(),
@@ -373,7 +373,7 @@ mod tests {
             "http://127.0.0.1:8443",
         );
 
-        assert!(matches!(provider, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
+        assert!(provider.is_ok());
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_with_endpoints_rejects_loopback_token_url() {
+    fn test_create_with_endpoints_allows_loopback_token_url_when_default_ssrf_is_disabled() {
         let provider = OidcProvider::create_with_endpoints(
             "id".to_string(),
             "secret".to_string(),
@@ -422,7 +422,7 @@ mod tests {
             Some("https://issuer.example.com/userinfo".to_string()),
         );
 
-        assert!(matches!(provider, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
+        assert!(provider.is_ok());
     }
 
     #[test]

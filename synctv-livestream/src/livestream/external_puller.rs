@@ -1037,9 +1037,9 @@ impl Drop for UnpublishGuard {
 
 /// Validate that a URL is a supported external source format.
 ///
-/// SSRF protection is enforced at the network level: HTTP clients use a
-/// SSRF-safe DNS resolver, and RTMP connections check resolved IPs before
-/// connecting.
+/// SSRF protection is enforced, when enabled, at the network level:
+/// HTTP clients may use an injected DNS resolver, and RTMP connections check
+/// resolved IPs before connecting.
 pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
     ExternalSourceType::from_url(url)
         .ok_or_else(|| format!("Unsupported source URL: {url}. Expected rtmp:// or *.flv"))
@@ -1509,12 +1509,14 @@ mod tests {
         server_handle.abort();
     }
 
-    /// Test that `new_async()` rejects SSRF-protected URLs (private IPs, localhost, etc.)
+    /// With the runtime default SSRF policy disabled, `new_async()` no longer
+    /// rejects localhost/private addresses during async construction.
     #[tokio::test]
-    async fn test_external_puller_async_ssrf_protection() {
+    async fn test_external_puller_async_creation_allows_private_addresses_when_default_ssrf_is_disabled(
+    ) {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        // Localhost should be blocked
+        // Localhost is allowed when the default SSRF policy is disabled.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
@@ -1523,11 +1525,11 @@ mod tests {
         )
         .await;
         assert!(
-            puller.is_err(),
-            "localhost should be blocked by SSRF protection"
+            puller.is_ok(),
+            "localhost should be allowed when default SSRF protection is disabled"
         );
 
-        // 127.0.0.1 should be blocked
+        // Literal loopback IPs are also allowed by the default-disabled policy.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
@@ -1536,11 +1538,11 @@ mod tests {
         )
         .await;
         assert!(
-            puller.is_err(),
-            "127.0.0.1 should be blocked by SSRF protection"
+            puller.is_ok(),
+            "127.0.0.1 should be allowed when default SSRF protection is disabled"
         );
 
-        // Private IP should be blocked
+        // Private IPs are likewise allowed unless a strict SSRF policy is injected.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
@@ -1549,8 +1551,8 @@ mod tests {
         )
         .await;
         assert!(
-            puller.is_err(),
-            "192.168.1.1 should be blocked by SSRF protection"
+            puller.is_ok(),
+            "192.168.1.1 should be allowed when default SSRF protection is disabled"
         );
     }
 }

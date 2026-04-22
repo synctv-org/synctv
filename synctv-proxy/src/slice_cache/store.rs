@@ -158,10 +158,13 @@ impl SliceCache {
             .clone();
         let _guard = lock.lock().await;
 
+        let mut should_send_conditional = false;
+
         if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
                 return Ok(());
             }
+            should_send_conditional = true;
         }
 
         let (range_start, _range_end) =
@@ -176,12 +179,14 @@ impl SliceCache {
         request = request.header("Range", &range_header);
 
         let mk = Self::meta_key(url, provider_headers);
-        if let Some(meta_ref) = self.meta.get(&mk) {
-            if let Some(ref etag) = meta_ref.etag {
-                request = request.header("If-None-Match", etag.as_str());
-            }
-            if let Some(ref lm) = meta_ref.last_modified {
-                request = request.header("If-Modified-Since", lm.as_str());
+        if should_send_conditional {
+            if let Some(meta_ref) = self.meta.get(&mk) {
+                if let Some(ref etag) = meta_ref.etag {
+                    request = request.header("If-None-Match", etag.as_str());
+                }
+                if let Some(ref lm) = meta_ref.last_modified {
+                    request = request.header("If-Modified-Since", lm.as_str());
+                }
             }
         }
 
@@ -522,6 +527,8 @@ impl SliceCache {
             lock.lock().await
         };
 
+        let mut should_send_conditional = false;
+
         // Double-check after acquiring lock.
         if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
@@ -530,6 +537,7 @@ impl SliceCache {
                 self.updating_keys.remove(&key);
                 return Ok((entry.data, CacheStatus::Hit));
             }
+            should_send_conditional = true;
             // Still expired -- check stale once more for concurrent stale
             // serving case, then proceed with re-fetch. Keep the entry
             // in the backend for now (conditional request may use it).
@@ -552,14 +560,18 @@ impl SliceCache {
         request = apply_provider_headers(request, url, provider_headers)?;
         request = request.header("Range", &range_header);
 
-        // Conditional request headers: If-None-Match / If-Modified-Since.
+        // Conditional request headers are only valid when revalidating an
+        // existing slice entry. Sending validators on a cold miss can trigger
+        // some origins to ignore the Range header and return a full-body 200.
         let mk = Self::meta_key(url, provider_headers);
-        if let Some(meta_ref) = self.meta.get(&mk) {
-            if let Some(ref etag) = meta_ref.etag {
-                request = request.header("If-None-Match", etag.as_str());
-            }
-            if let Some(ref lm) = meta_ref.last_modified {
-                request = request.header("If-Modified-Since", lm.as_str());
+        if should_send_conditional {
+            if let Some(meta_ref) = self.meta.get(&mk) {
+                if let Some(ref etag) = meta_ref.etag {
+                    request = request.header("If-None-Match", etag.as_str());
+                }
+                if let Some(ref lm) = meta_ref.last_modified {
+                    request = request.header("If-Modified-Since", lm.as_str());
+                }
             }
         }
 
@@ -661,10 +673,18 @@ impl SliceCache {
         range_start: u64,
         request_control: Option<&ExecutionControl>,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
-        // For slice requests, only 206 Partial Content is valid.
-        // A 200 OK means upstream doesn't support Range requests and
-        // returned the full body, which would corrupt the slice cache.
-        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        let requested_range_end_exclusive =
+            std::cmp::min(range_start + self.config.slice_size as u64, total_size);
+        let requested_full_resource =
+            range_start == 0 && requested_range_end_exclusive == total_size;
+        let allow_full_resource_200 =
+            requested_full_resource && resp.status() == reqwest::StatusCode::OK;
+
+        // Slice fetches normally require 206 Partial Content. The one safe
+        // exception is a single-slice resource where the aligned slice spans
+        // the entire object: some origins normalize `Range: bytes=0-(len-1)`
+        // into `200 OK` while still returning the full resource body.
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT && !allow_full_resource_200 {
             return Err(anyhow::anyhow!(
                 "Upstream returned {} for slice {} (expected 206 Partial Content)",
                 resp.status(),
@@ -679,16 +699,14 @@ impl SliceCache {
             .and_then(|v| v.to_str().ok())
         {
             let cr = parse_content_range(cr_value)?;
-            let expected_end =
-                std::cmp::min(range_start + self.config.slice_size as u64, total_size);
-            if cr.start != range_start || cr.end != expected_end {
+            if cr.start != range_start || cr.end != requested_range_end_exclusive {
                 return Err(anyhow::anyhow!(
                     "Content-Range mismatch: got {}-{}, expected {}-{} \
                      (nginx slice header filter validation)",
                     cr.start,
                     cr.end,
                     range_start,
-                    expected_end,
+                    requested_range_end_exclusive,
                 ));
             }
             match cr.complete_length {
@@ -775,6 +793,17 @@ impl SliceCache {
             if data.len() != expected_len {
                 return Err(anyhow::anyhow!(
                     "Slice body length mismatch: got {}, expected {} from Content-Range",
+                    data.len(),
+                    expected_len
+                ));
+            }
+        } else if allow_full_resource_200 {
+            let expected_len = usize::try_from(total_size).map_err(|_| {
+                anyhow::anyhow!("Full-resource slice length overflow for slice {slice_index}")
+            })?;
+            if data.len() != expected_len {
+                return Err(anyhow::anyhow!(
+                    "Full-resource slice body length mismatch: got {}, expected {}",
                     data.len(),
                     expected_len
                 ));

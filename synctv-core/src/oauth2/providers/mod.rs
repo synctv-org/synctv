@@ -77,11 +77,13 @@ pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Err
         .map_err(|err| Error::InvalidInput(format!("{context}: invalid URL: {err}")))?;
     let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
-    if guard.acl().is_scheme_allowed(parsed.scheme()).is_denied() {
-        return Err(Error::InvalidInput(format!(
-            "{context}: scheme '{}' is not allowed",
-            parsed.scheme()
-        )));
+    if let Some(acl) = guard.acl() {
+        if acl.is_scheme_allowed(parsed.scheme()).is_denied() {
+            return Err(Error::InvalidInput(format!(
+                "{context}: scheme '{}' is not allowed",
+                parsed.scheme()
+            )));
+        }
     }
 
     match parsed.host() {
@@ -109,10 +111,12 @@ pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Err
     }
 
     if let Some(port) = parsed.port_or_known_default() {
-        if guard.acl().is_port_allowed(port).is_denied() {
-            return Err(Error::InvalidInput(format!(
-                "{context}: port '{port}' is not allowed"
-            )));
+        if let Some(acl) = guard.acl() {
+            if acl.is_port_allowed(port).is_denied() {
+                return Err(Error::InvalidInput(format!(
+                    "{context}: port '{port}' is not allowed"
+                )));
+            }
         }
     }
 
@@ -187,28 +191,18 @@ mod tests {
     use tokio::time::Duration;
 
     #[test]
-    fn validate_provider_url_rejects_loopback_ips() {
-        let err =
+    fn validate_provider_url_allows_loopback_ips_when_default_ssrf_is_disabled() {
+        let parsed =
             validate_provider_url("http://127.0.0.1:8080/userinfo", "Unsafe userinfo endpoint")
-                .expect_err("loopback IPs must be rejected");
-
-        assert!(matches!(
-            err,
-            Error::InvalidInput(ref msg)
-                if msg.contains("Unsafe userinfo endpoint") && msg.contains("127.0.0.1")
-        ));
+                .expect("default SSRF policy should allow loopback IPs");
+        assert_eq!(parsed.as_str(), "http://127.0.0.1:8080/userinfo");
     }
 
     #[test]
-    fn validate_provider_url_rejects_denied_hosts() {
-        let err = validate_provider_url("http://localhost:8080/token", "Unsafe token endpoint")
-            .expect_err("denied hosts must be rejected");
-
-        assert!(matches!(
-            err,
-            Error::InvalidInput(ref msg)
-                if msg.contains("Unsafe token endpoint") && msg.contains("localhost")
-        ));
+    fn validate_provider_url_allows_localhost_when_default_ssrf_is_disabled() {
+        let parsed = validate_provider_url("http://localhost:8080/token", "Unsafe token endpoint")
+            .expect("default SSRF policy should allow localhost");
+        assert_eq!(parsed.as_str(), "http://localhost:8080/token");
     }
 
     #[test]
@@ -222,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_exchange_client_rejects_denied_hosts() {
+    async fn token_exchange_client_allows_localhost_but_request_still_fails_without_server() {
         let http_client = build_oauth2_http_client_with_timeout(Duration::from_millis(50)).unwrap();
 
         let client = BasicClient::new(ClientId::new("client_id".to_string()))
@@ -237,11 +231,12 @@ mod tests {
             .exchange_code(AuthorizationCode::new("code".to_string()))
             .request_async(&http_client)
             .await
-            .expect_err("denied hosts must fail before token exchange completes");
+            .expect_err("localhost request should still fail because no token server is running");
         let mapped = map_provider_http_error("Failed to exchange code", err);
         assert!(matches!(
             mapped,
-            Error::Internal(ref msg) if msg.contains("Failed to exchange code")
+            Error::Internal(ref msg) | Error::Timeout(ref msg)
+                if msg.contains("Failed to exchange code")
         ));
     }
 }

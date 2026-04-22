@@ -14,8 +14,8 @@ use tonic::Status;
 /// - Scheme is http or https only
 /// - URL contains a host component
 ///
-/// SSRF protection (private IP blocking, DNS rebinding) is handled by
-/// the SSRF-safe DNS resolver at HTTP connection time.
+/// SSRF protection (private IP blocking, DNS rebinding) is handled, when
+/// enabled, at transport time rather than in the gRPC validation layer.
 #[allow(clippy::result_large_err)] // tonic::Status is inherently large; boxing would break gRPC API
 pub fn validate_host(host: &str) -> Result<(), Status> {
     if host.is_empty() {

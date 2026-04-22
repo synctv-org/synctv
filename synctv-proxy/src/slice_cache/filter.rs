@@ -17,7 +17,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     apply_provider_headers, run_with_proxy_cancellation,
     send_head_with_redirect_validation_with_control, send_with_redirect_validation,
-    send_with_redirect_validation_with_control,
+    send_with_redirect_validation_with_control, ProxyError,
 };
 
 use super::config::is_manifest_content_type;
@@ -256,7 +256,8 @@ pub async fn proxy_with_cache_enabled_with_control(
         }
     };
 
-    let (range_start, range_end) = parse_range_header(range_str, total_size)?;
+    let (range_start, range_end) = parse_range_header(range_str, total_size)
+        .map_err(|error| ProxyError::InvalidRequest(error.to_string()))?;
 
     let needed = compute_needed_slices(range_start, range_end, cache.config().slice_size);
 

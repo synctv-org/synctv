@@ -1,12 +1,9 @@
-//! SSRF protection tests for the proxy module.
+//! Proxy tests around runtime behavior and explicit SSRF policies.
 //!
-//! SSRF protection is now enforced at the DNS resolver level via `synctv-common`.
-//! The proxy HTTP client uses `SsrfGuard::shared_default().dns_resolver()`
-//! which blocks connections
-//! to private/internal IP addresses at DNS resolution time.
-//!
-//! These tests verify that `proxy_fetch_and_forward` blocks SSRF attempts
-//! through the DNS-level protection.
+//! The runtime proxy client uses the shared default SSRF policy, which is
+//! intentionally disabled unless callers opt into a strict policy.
+//! These tests therefore avoid assuming default runtime blocking and instead
+//! cover deterministic runtime failures plus explicit strict-policy checks.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -17,29 +14,9 @@ fn proxy_client() -> reqwest::Client {
     synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
 }
 
-/// Verify that `proxy_fetch_and_forward` blocks private IP targets
-/// through the SSRF-safe DNS resolver.
+/// Verify that a loopback target still fails when nothing is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_blocks_private_ip_via_dns() {
-    let headers = axum::http::HeaderMap::new();
-    let client = proxy_client();
-    let cfg = ProxyConfig {
-        client: &client,
-        url: "http://192.168.1.1/secret",
-        provider_headers: &HashMap::new(),
-        client_headers: &headers,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-    let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
-    assert!(
-        result.is_err(),
-        "Should block private IP URL via DNS resolver"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_blocks_loopback_via_dns() {
+async fn test_proxy_loopback_target_without_listener_returns_error() {
     let headers = axum::http::HeaderMap::new();
     let client = proxy_client();
     let cfg = ProxyConfig {
@@ -53,25 +30,35 @@ async fn test_proxy_blocks_loopback_via_dns() {
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
         result.is_err(),
-        "Should block loopback URL via DNS resolver"
+        "loopback target without a listener should fail even when default SSRF is disabled"
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_blocks_cloud_metadata_via_dns() {
-    let headers = axum::http::HeaderMap::new();
-    let client = proxy_client();
-    let cfg = ProxyConfig {
-        client: &client,
-        url: "http://169.254.169.254/latest/meta-data/",
-        provider_headers: &HashMap::new(),
-        client_headers: &headers,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-    let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
+#[test]
+fn test_proxy_shared_default_ssrf_policy_is_disabled() {
     assert!(
-        result.is_err(),
-        "Should block cloud metadata IP via DNS resolver"
+        synctv_common::ssrf::SsrfGuard::shared_default()
+            .dns_resolver()
+            .is_none(),
+        "default proxy runtime should not inject an SSRF DNS resolver"
     );
+}
+
+#[test]
+fn test_proxy_strict_ssrf_policy_still_blocks_private_and_metadata_ips() {
+    for ip in ["127.0.0.1", "192.168.1.1", "169.254.169.254", "::1"] {
+        let ip = ip.parse().unwrap();
+        assert!(
+            synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict SSRF policy should block {ip}"
+        );
+    }
+
+    for ip in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+        let ip = ip.parse().unwrap();
+        assert!(
+            !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict SSRF policy should allow public IP {ip}"
+        );
+    }
 }

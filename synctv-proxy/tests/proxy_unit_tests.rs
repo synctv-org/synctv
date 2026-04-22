@@ -273,8 +273,8 @@ fn test_ssrf_acl_private_ip_blocked() {
     ];
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
-            "IP {ip} should be blocked"
+            synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
+            "strict SSRF policy should block {ip}"
         );
     }
 }
@@ -296,8 +296,8 @@ fn test_ssrf_acl_loopback_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "127.0.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "Loopback should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block loopback"
     );
 }
 
@@ -391,8 +391,8 @@ fn test_ssrf_acl_link_local_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.1.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "Link-local should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block link-local addresses"
     );
 }
 
@@ -401,8 +401,8 @@ fn test_ssrf_acl_cgnat_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "100.64.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "CGNAT should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block CGNAT addresses"
     );
 }
 
@@ -632,8 +632,8 @@ fn test_ssrf_acl_ipv6_loopback_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "::1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "IPv6 loopback should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block IPv6 loopback"
     );
 }
 
@@ -642,8 +642,8 @@ fn test_ssrf_acl_ipv6_unspecified_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "::".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "IPv6 unspecified should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block IPv6 unspecified"
     );
 }
 
@@ -662,8 +662,8 @@ fn test_ssrf_acl_cloud_metadata_blocked() {
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.169.254".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "Cloud metadata IP should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "strict SSRF policy should block cloud metadata IPs"
     );
 }
 
@@ -952,7 +952,8 @@ fn test_make_absolute_scheme_injection() {
 // M3U8 SSRF End-to-End Validation Tests
 
 /// Test that malicious URLs in M3U8 are rewritten through the proxy.
-/// The SSRF-safe DNS resolver will block private IPs at connection time.
+/// Runtime target validation happens later when the proxy fetches the
+/// rewritten URL under the active SSRF policy.
 #[test]
 fn test_m3u8_ssrf_file_url_rewritten() {
     let m3u8 = "#EXTM3U\nfile:///etc/passwd\n";
@@ -991,8 +992,8 @@ fn test_m3u8_ssrf_private_ip_blocked_by_acl() {
 
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
-            "Private/internal IP {ip} should be blocked by SSRF ACL"
+            synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
+            "strict SSRF policy should block private/internal IP {ip}"
         );
     }
 }

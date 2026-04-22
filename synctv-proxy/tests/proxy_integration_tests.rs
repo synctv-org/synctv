@@ -189,12 +189,12 @@ async fn test_cache_control_unknown_gets_no_cache() {
 
 #[test]
 fn test_proxy_m3u8_manifest_size_limit() {
-    // SSRF ACL blocks the private IP before any network I/O
+    // Strict SSRF policy still classifies private IPs as blocked.
     use std::net::IpAddr;
     let ip: IpAddr = "10.0.0.1".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "Private IP should be blocked by SSRF ACL"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "Private IP should be blocked by the strict SSRF ACL"
     );
 }
 
@@ -256,12 +256,12 @@ fn test_public_ip_allowed_by_acl() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_link_local_blocked_via_proxy() {
-    // Verify SSRF ACL blocks link-local/cloud metadata IPs (instant, no network)
+    // Strict SSRF policy still classifies link-local/cloud metadata IPs as blocked.
     use std::net::IpAddr;
     let ip: IpAddr = "169.254.169.254".parse().unwrap();
     assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-        "Link-local/cloud metadata IP should be blocked"
+        synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+        "Link-local/cloud metadata IP should be blocked by the strict SSRF ACL"
     );
 }
 

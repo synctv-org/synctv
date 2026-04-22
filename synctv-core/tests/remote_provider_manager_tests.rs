@@ -2455,9 +2455,9 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
     let _ = health_handle.await;
 }
 
-// ─── Test 21: SSRF validation prevents internal endpoints ───────────────────
+// ─── Test 21: Default-disabled SSRF no longer blocks internal endpoints ─────
 
-async fn scenario_ssrf_validation_blocks_internal_ips() {
+async fn scenario_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let _redis_conn = Some(Arc::new(RwLock::new(
@@ -2468,27 +2468,37 @@ async fn scenario_ssrf_validation_blocks_internal_ips() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    // Try to create instance with internal IP (should fail SSRF validation)
+    // Try to create instance with an internal IP. With default SSRF disabled,
+    // static validation no longer rejects it, but the live health check still
+    // fails because nothing is listening on that endpoint.
     let mut instance = make_test_instance("test-instance-21");
     instance.endpoint = "http://127.0.0.1:50051".to_string();
 
     let result = manager.add(instance).await;
 
-    // Should fail due to SSRF validation
+    // Should still fail because connectivity validation runs before persisting.
     assert!(
         result.is_err(),
-        "Adding instance with internal IP should fail SSRF validation"
+        "Adding instance with an unreachable internal IP should fail connectivity validation"
     );
 
-    if let Err(e) = result {
-        let error_msg = format!("{e:?}");
-        assert!(
-            error_msg.contains("SSRF")
-                || error_msg.contains("ssrf")
-                || error_msg.contains("internal"),
-            "Error should mention SSRF validation: {error_msg}"
-        );
-    }
+    let error_msg = result
+        .expect_err("internal IP endpoint should fail")
+        .to_string();
+    assert!(
+        error_msg.contains("health check failed")
+            || error_msg.contains("Connection refused")
+            || error_msg.contains("service is currently unavailable"),
+        "Error should reflect connectivity validation, got: {error_msg}"
+    );
+    assert!(
+        provider_repo(&infra.pool)
+            .get_by_name("test-instance-21")
+            .await
+            .expect("lookup should succeed")
+            .is_none(),
+        "failed connectivity validation must not persist the instance"
+    );
 }
 
 // ─── Test 22: SSRF validation allows public endpoints ───────────────────────
@@ -3454,9 +3464,9 @@ async fn test_init_pre_warms_cache() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_ssrf_validation_blocks_internal_ips() {
+async fn test_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled() {
     install_rustls_provider_once();
-    scenario_ssrf_validation_blocks_internal_ips().await;
+    scenario_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

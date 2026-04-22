@@ -505,7 +505,7 @@ impl RemoteProviderManager {
             crate::Error::InvalidInput("SSRF validation: missing host".to_string())
         })?;
 
-        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
         // Check if the hostname itself is blocked (e.g., "localhost", metadata endpoints)
         if guard.is_host_blocked(host) {
@@ -920,7 +920,7 @@ impl RemoteProviderManager {
             }
         }
 
-        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
         let address_overrides = Arc::clone(&self.address_overrides);
         let connector = tower::service_fn(move |uri: Uri| {
             let guard = guard.clone();
@@ -1013,7 +1013,7 @@ impl RemoteProviderManager {
             }
         }
 
-        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
         let address_overrides = Arc::clone(&self.address_overrides);
 
         let tls_config = ClientConfig::builder()

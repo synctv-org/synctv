@@ -1,18 +1,26 @@
 //! SSRF (Server-Side Request Forgery) protection using `http-acl`.
 //!
 //! Provides [`SsrfGuard`], a configurable SSRF protection guard that wraps
-//! `HttpAcl` and provides DNS resolver + IP/host checking.
+//! `HttpAcl` and provides DNS resolver + IP/host checking when enabled.
 //!
 //! # Quick Start
 //!
-//! Use the shared default guard for production defaults:
+//! Use the shared default guard for the runtime default:
 //! ```
 //! let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 //! let resolver = guard.dns_resolver();
 //! let blocked = guard.is_ip_blocked(&"127.0.0.1".parse().unwrap());
 //! ```
 //!
-//! Or use [`SsrfGuard`] directly for custom policies:
+//! Or use [`SsrfGuard::strict_policy`] / [`SsrfGuard::builder`] for explicit
+//! SSRF protection:
+//! ```
+//! use synctv_common::ssrf::SsrfGuard;
+//!
+//! let guard = SsrfGuard::strict_policy();
+//! let resolver = guard.dns_resolver();
+//! ```
+//!
 //! ```
 //! use synctv_common::ssrf::SsrfGuard;
 //!
@@ -50,16 +58,29 @@ const DEFAULT_DENIED_HOSTS: &[&str] = &[
 /// for production defaults or [`SsrfGuard::builder()`] for custom policies.
 #[derive(Clone)]
 pub struct SsrfGuard {
-    acl: HttpAcl,
-    middleware: HttpAclMiddleware,
+    acl: Option<HttpAcl>,
+    middleware: Option<HttpAclMiddleware>,
 }
 
 impl SsrfGuard {
-    /// Create with sensible production defaults.
+    /// Create the runtime default policy.
     ///
-    /// Blocks private/reserved/multicast/metadata IPs and known internal hostnames.
+    /// SyncTV defaults to **disabled SSRF protection** unless callers
+    /// explicitly opt into a strict policy.
     #[must_use]
     pub fn default_policy() -> Self {
+        Self {
+            acl: None,
+            middleware: None,
+        }
+    }
+
+    /// Create an explicit strict SSRF policy.
+    ///
+    /// Blocks private/reserved/multicast/metadata IPs and known internal
+    /// hostnames.
+    #[must_use]
+    pub fn strict_policy() -> Self {
         Self::builder().build()
     }
 
@@ -83,8 +104,10 @@ impl SsrfGuard {
 
     /// Get a reqwest DNS resolver that enforces this guard's policy.
     #[must_use]
-    pub fn dns_resolver(&self) -> Arc<dyn reqwest::dns::Resolve> {
-        self.middleware.dns_resolver()
+    pub fn dns_resolver(&self) -> Option<Arc<dyn reqwest::dns::Resolve>> {
+        self.middleware
+            .as_ref()
+            .map(|middleware| middleware.dns_resolver() as Arc<dyn reqwest::dns::Resolve>)
     }
 
     /// Check if an IP is blocked by this guard's policy.
@@ -93,26 +116,30 @@ impl SsrfGuard {
     /// cannot be injected.
     #[must_use]
     pub fn is_ip_blocked(&self, ip: &IpAddr) -> bool {
-        self.acl.is_ip_allowed(ip).is_denied()
+        self.acl
+            .as_ref()
+            .is_some_and(|acl| acl.is_ip_allowed(ip).is_denied())
     }
 
     /// Check if a hostname is blocked by this guard's policy.
     #[must_use]
     pub fn is_host_blocked(&self, host: &str) -> bool {
-        self.acl.is_host_allowed(host).is_denied()
+        self.acl
+            .as_ref()
+            .is_some_and(|acl| acl.is_host_allowed(host).is_denied())
     }
 
     /// Access the underlying ACL for advanced use.
     #[must_use]
-    pub const fn acl(&self) -> &HttpAcl {
-        &self.acl
+    pub const fn acl(&self) -> Option<&HttpAcl> {
+        self.acl.as_ref()
     }
 }
 
 /// Builder for [`SsrfGuard`] with custom policies.
 ///
-/// Starts with the same defaults as [`SsrfGuard::default_policy()`] and allows
-/// adding extra denied/allowed ranges and hosts.
+/// Starts with strict SSRF defaults and allows adding extra denied/allowed
+/// ranges and hosts.
 pub struct SsrfGuardBuilder {
     extra_denied_ip_ranges: Vec<IpNet>,
     extra_denied_hosts: Vec<String>,
@@ -225,7 +252,10 @@ impl SsrfGuardBuilder {
 
         let middleware = HttpAclMiddleware::new(acl.clone());
 
-        SsrfGuard { acl, middleware }
+        SsrfGuard {
+            acl: Some(acl),
+            middleware: Some(middleware),
+        }
     }
 }
 
@@ -238,8 +268,8 @@ mod tests {
 
     #[test]
     fn test_acl_blocks_private_ipv4() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         // Loopback
         assert!(acl
             .is_ip_allowed(&IpAddr::V4(Ipv4Addr::LOCALHOST))
@@ -290,8 +320,8 @@ mod tests {
 
     #[test]
     fn test_acl_allows_public_ipv4() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         assert!(acl
             .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
             .is_allowed());
@@ -305,8 +335,8 @@ mod tests {
 
     #[test]
     fn test_acl_blocks_ipv6() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         assert!(acl
             .is_ip_allowed(&IpAddr::V6(Ipv6Addr::LOCALHOST))
             .is_denied());
@@ -340,8 +370,8 @@ mod tests {
 
     #[test]
     fn test_acl_allows_public_ipv6() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         let google = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
         assert!(acl.is_ip_allowed(&google).is_allowed());
         let cloudflare = IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111));
@@ -350,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_acl_blocks_hostnames() {
-        let guard = SsrfGuard::default_policy();
+        let guard = SsrfGuard::strict_policy();
         assert!(guard.is_host_blocked("localhost"));
         assert!(guard.is_host_blocked("metadata.google.internal"));
         assert!(guard.is_host_blocked("instance-data"));
@@ -359,8 +389,8 @@ mod tests {
 
     #[test]
     fn test_acl_allows_public_hostnames() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         assert!(acl.is_host_allowed("example.com").is_allowed());
         assert!(acl.is_host_allowed("api.bilibili.com").is_allowed());
         assert!(acl.is_host_allowed("github.com").is_allowed());
@@ -368,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_is_ip_blocked() {
-        let guard = SsrfGuard::shared_default();
+        let guard = SsrfGuard::strict_policy();
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
@@ -378,13 +408,22 @@ mod tests {
 
     #[test]
     fn test_ssrf_dns_resolver_creation() {
-        let _resolver = SsrfGuard::shared_default().dns_resolver();
+        assert!(SsrfGuard::strict_policy().dns_resolver().is_some());
+    }
+
+    #[test]
+    fn test_default_policy_disables_ssrf_checks() {
+        let guard = SsrfGuard::default_policy();
+        assert!(guard.acl().is_none());
+        assert!(guard.dns_resolver().is_none());
+        assert!(!guard.is_host_blocked("localhost"));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 
     #[test]
     fn test_ipv4_172_range_boundary() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         // 172.15.x.x is NOT private (outside 172.16.0.0/12)
         assert!(acl
             .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255)))
@@ -404,8 +443,8 @@ mod tests {
 
     #[test]
     fn test_ipv4_cgnat_boundary() {
-        let guard = SsrfGuard::default_policy();
-        let acl = guard.acl();
+        let guard = SsrfGuard::strict_policy();
+        let acl = guard.acl().expect("strict policy should expose ACL");
         assert!(acl
             .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255)))
             .is_allowed());
@@ -424,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_guard_is_ip_blocked() {
-        let guard = SsrfGuard::default_policy();
+        let guard = SsrfGuard::strict_policy();
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
@@ -432,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_guard_is_host_blocked() {
-        let guard = SsrfGuard::default_policy();
+        let guard = SsrfGuard::strict_policy();
         assert!(guard.is_host_blocked("localhost"));
         assert!(guard.is_host_blocked("metadata.google.internal"));
         assert!(!guard.is_host_blocked("example.com"));
@@ -474,7 +513,7 @@ mod tests {
     #[test]
     fn test_builder_disallow_http() {
         let guard = SsrfGuard::builder().allow_http(false).build();
-        let acl = guard.acl();
+        let acl = guard.acl().expect("builder policy should expose ACL");
         // HTTP should be disallowed
         assert!(acl.is_scheme_allowed("http").is_denied());
         // HTTPS should still be allowed
@@ -484,7 +523,7 @@ mod tests {
     #[test]
     fn test_builder_disallow_https() {
         let guard = SsrfGuard::builder().allow_https(false).build();
-        let acl = guard.acl();
+        let acl = guard.acl().expect("builder policy should expose ACL");
         // HTTPS should be disallowed
         assert!(acl.is_scheme_allowed("https").is_denied());
         // HTTP should still be allowed

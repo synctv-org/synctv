@@ -1523,8 +1523,8 @@ mod tests {
         for ip_str in blocked {
             let ip: IpAddr = ip_str.parse().unwrap();
             assert!(
-                synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-                "IP {ip} should be blocked"
+                synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
+                "strict SSRF policy should block {ip}"
             );
         }
     }
@@ -1746,7 +1746,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_with_redirect_validation_rejects_redirect_to_blocked_ip() {
+    async fn test_send_with_redirect_validation_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
+    ) {
         let server = wiremock::MockServer::start().await;
 
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -1766,20 +1767,21 @@ mod tests {
 
         let result = send_with_redirect_validation(&client, request).await;
         let Err(err) = result else {
-            panic!("redirect to blocked loopback must fail");
+            panic!("redirect to loopback without a listener must fail");
         };
         let proxy_err = err
             .downcast_ref::<ProxyError>()
             .expect("error should downcast to ProxyError");
-        assert!(matches!(proxy_err, ProxyError::Ssrf(_)));
+        assert!(matches!(proxy_err, ProxyError::Connection(_)));
         assert!(
-            proxy_err.to_string().contains("blocked by SSRF policy"),
+            proxy_err.to_string().contains("Connection failed"),
             "unexpected error: {proxy_err}"
         );
     }
 
     #[tokio::test]
-    async fn test_send_with_redirect_validation_rejects_initial_blocked_ip() {
+    async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_when_default_ssrf_is_disabled(
+    ) {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -1787,20 +1789,21 @@ mod tests {
         let request = client.get("http://127.0.0.1:12345/private");
 
         let Err(err) = send_with_redirect_validation(&client, request).await else {
-            panic!("initial loopback target must fail before network IO");
+            panic!("initial loopback target without a listener must fail");
         };
         let proxy_err = err
             .downcast_ref::<ProxyError>()
             .expect("error should downcast to ProxyError");
-        assert!(matches!(proxy_err, ProxyError::Ssrf(_)));
+        assert!(matches!(proxy_err, ProxyError::Connection(_)));
         assert!(
-            proxy_err.to_string().contains("blocked by SSRF policy"),
+            proxy_err.to_string().contains("Connection failed"),
             "unexpected error: {proxy_err}"
         );
     }
 
     #[tokio::test]
-    async fn test_proxy_m3u8_and_rewrite_rejects_initial_blocked_ip_before_io() {
+    async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_when_default_ssrf_is_disabled(
+    ) {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -1813,10 +1816,10 @@ mod tests {
             "/proxy",
         )
         .await
-        .expect_err("loopback manifest must fail before network IO");
+        .expect_err("loopback manifest without a listener must fail");
 
         assert!(
-            err.to_string().contains("blocked by SSRF policy"),
+            err.to_string().contains("Connection failed"),
             "unexpected error: {err}"
         );
     }

@@ -151,7 +151,13 @@ mod ssrf_tests {
     use synctv_common::ssrf::SsrfGuard;
 
     fn is_ip_blocked(ip: &IpAddr) -> bool {
-        SsrfGuard::shared_default().is_ip_blocked(ip)
+        SsrfGuard::strict_policy().is_ip_blocked(ip)
+    }
+
+    #[test]
+    fn test_shared_default_policy_is_disabled() {
+        assert!(!SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]

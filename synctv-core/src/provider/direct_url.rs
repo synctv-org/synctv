@@ -106,7 +106,7 @@ impl DirectUrlProvider {
         })?;
         let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
-        if guard.acl().is_scheme_allowed(parsed.scheme()).is_denied() {
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(ProviderError::InvalidConfig(
                 "DirectUrl only supports http:// and https:// schemes".to_string(),
             ));
@@ -137,10 +137,12 @@ impl DirectUrlProvider {
         }
 
         if let Some(port) = parsed.port_or_known_default() {
-            if guard.acl().is_port_allowed(port).is_denied() {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl port '{port}' is not allowed"
-                )));
+            if let Some(acl) = guard.acl() {
+                if acl.is_port_allowed(port).is_denied() {
+                    return Err(ProviderError::InvalidConfig(format!(
+                        "DirectUrl port '{port}' is not allowed"
+                    )));
+                }
             }
         }
 
@@ -809,7 +811,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_source_config_rejects_blocked_hosts_and_ips() {
+    async fn test_validate_source_config_allows_blocked_hosts_and_ips_when_default_ssrf_is_disabled(
+    ) {
         let provider = DirectUrlProvider::new();
         let ctx = ProviderContext::new("synctv");
 
@@ -818,50 +821,39 @@ mod tests {
             "http://127.0.0.1/video.mp4",
             "http://[::1]/video.mp4",
         ] {
-            let err = provider
+            provider
                 .validate_source_config(&ctx, &json!({ "url": url }))
                 .await
-                .expect_err("DirectUrl must reject blocked hosts and IP literals");
-
-            assert!(matches!(
-                err,
-                ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
-            ));
+                .expect("default SSRF policy should allow blocked hosts and IP literals");
         }
     }
 
     #[tokio::test]
-    async fn test_validate_source_config_rejects_disallowed_ports() {
+    async fn test_validate_source_config_allows_non_default_ports_when_default_ssrf_is_disabled() {
         let provider = DirectUrlProvider::new();
-        let err = provider
+        provider
             .validate_source_config(
                 &ProviderContext::new("synctv"),
                 &json!({ "url": "http://example.com:8080/video.mp4" }),
             )
             .await
-            .expect_err("DirectUrl must reject ports outside the SSRF allowlist");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg) if msg.contains("port '8080' is not allowed")
-        ));
+            .expect("default SSRF policy should allow non-default ports");
     }
 
     #[tokio::test]
-    async fn test_generate_playback_rejects_blocked_hosts() {
+    async fn test_generate_playback_allows_blocked_hosts_when_default_ssrf_is_disabled() {
         let provider = DirectUrlProvider::new();
-        let err = provider
+        let result = provider
             .generate_playback(
                 &ProviderContext::new("synctv"),
                 &json!({ "url": "http://localhost/video.mp4" }),
             )
             .await
-            .expect_err("DirectUrl playback must reject blocked hosts");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
-        ));
+            .expect("default SSRF policy should allow blocked hosts");
+        assert_eq!(
+            result.playback_infos["direct"].urls,
+            vec!["http://localhost/video.mp4"]
+        );
     }
 
     #[tokio::test]

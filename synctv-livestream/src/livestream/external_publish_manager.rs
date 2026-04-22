@@ -131,9 +131,10 @@ impl ExternalPublishManager {
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
     ) -> StreamResult<Self> {
-        // Build a shared reqwest::Client with TLS (rustls) support and SSRF protection.
+        // Build a shared reqwest::Client with TLS (rustls) support.
         // Reused across all HTTP-FLV pull streams to amortize TLS setup.
-        // Uses SSRF-safe DNS resolver to prevent SSRF attacks via external publish URLs.
+        // SSRF enforcement follows the active shared policy; with the current
+        // runtime default this client does not inject a DNS resolver.
         let http_client = synctv_common::http::SsrfSafeClientBuilder::proxy()
             .disable_request_timeout()
             .disable_read_timeout()

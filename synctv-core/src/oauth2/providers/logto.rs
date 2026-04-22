@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_provider_rejects_loopback_endpoint() {
+    fn test_create_provider_allows_loopback_endpoint_when_default_ssrf_is_disabled() {
         let result = LogtoProvider::create(
             "id".to_string(),
             "secret".to_string(),
@@ -230,7 +230,7 @@ mod tests {
             "http://127.0.0.1:8443",
         );
 
-        assert!(matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("127.0.0.1")));
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! SSRF ACL tests.
 //!
-//! Verifies that the `synctv_common::ssrf` ACL correctly blocks private/internal IPs
-//! and hostnames, and allows public IPs and hostnames.
+//! Verifies that SyncTV's SSRF policies match the intended runtime behavior:
+//! the shared default policy is disabled, while the strict policy blocks
+//! private/internal IPs and hostnames.
 
 #![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -38,34 +39,51 @@ const ALLOWED_IPV4: &[(u8, u8, u8, u8)] = &[
 // Tests
 
 #[test]
-fn ssrf_acl_builds_successfully() {
-    let _acl = SsrfGuard::shared_default().acl().clone();
+fn shared_default_policy_is_disabled() {
+    let guard = SsrfGuard::shared_default();
+    assert!(guard.acl().is_none());
+    assert!(guard.dns_resolver().is_none());
 }
 
 #[test]
-fn blocked_ipv4_are_blocked() {
+fn shared_default_policy_allows_blocked_ipv4() {
     for &(a, b, c, d) in BLOCKED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
         assert!(
-            SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "is_ip_blocked should block {ip}"
+            !SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "shared_default should not block {ip}"
         );
     }
 }
 
 #[test]
-fn allowed_ipv4_are_allowed() {
+fn strict_policy_blocks_ipv4() {
+    for &(a, b, c, d) in BLOCKED_IPV4 {
+        let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        assert!(
+            SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict_policy should block {ip}"
+        );
+    }
+}
+
+#[test]
+fn allowed_ipv4_are_allowed_by_both_policies() {
     for &(a, b, c, d) in ALLOWED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
         assert!(
             !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "is_ip_blocked should allow {ip}"
+            "shared_default should allow {ip}"
+        );
+        assert!(
+            !SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict_policy should allow {ip}"
         );
     }
 }
 
 #[test]
-fn blocked_ipv6_are_blocked() {
+fn shared_default_policy_allows_blocked_ipv6() {
     let blocked: Vec<Ipv6Addr> = vec![
         Ipv6Addr::LOCALHOST,
         Ipv6Addr::UNSPECIFIED,
@@ -77,14 +95,33 @@ fn blocked_ipv6_are_blocked() {
     for ipv6 in &blocked {
         let ip = IpAddr::V6(*ipv6);
         assert!(
-            SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "is_ip_blocked should block {ip}"
+            !SsrfGuard::shared_default().is_ip_blocked(&ip),
+            "shared_default should not block {ip}"
         );
     }
 }
 
 #[test]
-fn allowed_ipv6_are_allowed() {
+fn strict_policy_blocks_ipv6() {
+    let blocked: Vec<Ipv6Addr> = vec![
+        Ipv6Addr::LOCALHOST,
+        Ipv6Addr::UNSPECIFIED,
+        "fe80::1".parse().unwrap(),
+        "fc00::1".parse().unwrap(),
+        "fd00::1".parse().unwrap(),
+    ];
+
+    for ipv6 in &blocked {
+        let ip = IpAddr::V6(*ipv6);
+        assert!(
+            SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict_policy should block {ip}"
+        );
+    }
+}
+
+#[test]
+fn allowed_ipv6_are_allowed_by_both_policies() {
     let allowed: Vec<Ipv6Addr> = vec![
         "2606:4700:4700::1111".parse().unwrap(), // Cloudflare DNS
         "2400:cb00::1".parse().unwrap(),
@@ -94,7 +131,11 @@ fn allowed_ipv6_are_allowed() {
         let ip = IpAddr::V6(*ipv6);
         assert!(
             !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "is_ip_blocked should allow {ip}"
+            "shared_default should allow {ip}"
+        );
+        assert!(
+            !SsrfGuard::strict_policy().is_ip_blocked(&ip),
+            "strict_policy should allow {ip}"
         );
     }
 }

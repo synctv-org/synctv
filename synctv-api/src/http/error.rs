@@ -352,7 +352,12 @@ impl From<serde_json::Error> for AppError {
 /// Convert anyhow errors to HTTP errors
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
-        tracing::error!("Anyhow error: {}", err);
+        let chain = err
+            .chain()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | caused by: ");
+        tracing::error!("Anyhow error: {chain}");
         Self::internal_server_error("Internal server error")
     }
 }

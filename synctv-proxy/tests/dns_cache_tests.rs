@@ -1,12 +1,10 @@
-//! Tests for DNS-level SSRF protection in synctv-proxy.
+//! Tests for proxy client behavior and explicit SSRF ACL semantics.
 //!
-//! SSRF protection is enforced at the DNS resolver level via `synctv-common`.
-//! The proxy HTTP client uses `SsrfGuard::shared_default().dns_resolver()`
-//! which blocks connections
-//! to private/internal IP addresses at DNS resolution time.
-//!
-//! These tests verify that the DNS resolver correctly blocks private IPs
-//! and allows public IPs.
+//! Runtime proxy clients now use the shared default SSRF policy, which is
+//! intentionally disabled unless callers opt into a strict policy.
+//! These tests therefore distinguish:
+//! - runtime behavior of the default proxy client
+//! - explicit blocking behavior of `SsrfGuard::strict_policy()`
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -18,9 +16,9 @@ fn proxy_client() -> reqwest::Client {
 
 // DNS-level SSRF protection tests
 
-/// Verify that the DNS resolver blocks loopback addresses.
+/// Verify that a loopback target still fails when no local server is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_dns_resolver_blocks_loopback() {
+async fn test_proxy_client_loopback_target_fails_without_listener() {
     let headers = axum::http::HeaderMap::new();
     let client = proxy_client();
     let cfg = ProxyConfig {
@@ -32,58 +30,24 @@ async fn test_dns_resolver_blocks_loopback() {
         upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
-    assert!(result.is_err(), "Should block loopback IP via DNS resolver");
-}
-
-/// Verify that the DNS resolver blocks private IP ranges.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_dns_resolver_blocks_private_ips() {
-    let private_ips = [
-        "http://192.168.1.1/secret",
-        "http://10.0.0.1/internal",
-        "http://172.16.0.1/admin",
-    ];
-
-    for url in &private_ips {
-        let headers = axum::http::HeaderMap::new();
-        let client = proxy_client();
-        let cfg = ProxyConfig {
-            client: &client,
-            url,
-            provider_headers: &HashMap::new(),
-            client_headers: &headers,
-            request_control: None,
-            upstream_header_timeout: None,
-        };
-        let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
-        assert!(
-            result.is_err(),
-            "Should block private IP {url} via DNS resolver"
-        );
-    }
-}
-
-/// Verify that the DNS resolver blocks cloud metadata endpoints.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_dns_resolver_blocks_cloud_metadata() {
-    let headers = axum::http::HeaderMap::new();
-    let client = proxy_client();
-    let cfg = ProxyConfig {
-        client: &client,
-        url: "http://169.254.169.254/latest/meta-data/",
-        provider_headers: &HashMap::new(),
-        client_headers: &headers,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-    let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
         result.is_err(),
-        "Should block cloud metadata IP via DNS resolver"
+        "loopback target without a listener should fail even when default SSRF is disabled"
     );
 }
 
-/// Verify that `synctv_common::ssrf::is_ip_blocked` correctly identifies blocked IPs.
+/// Verify that the shared default policy is disabled for proxy clients.
+#[test]
+fn test_shared_default_ssrf_policy_is_disabled() {
+    assert!(synctv_common::ssrf::SsrfGuard::shared_default()
+        .acl()
+        .is_none());
+    assert!(synctv_common::ssrf::SsrfGuard::shared_default()
+        .dns_resolver()
+        .is_none());
+}
+
+/// Verify that `strict_policy()` correctly identifies blocked IPs.
 #[test]
 fn test_ssrf_acl_blocks_private_ranges() {
     use std::net::IpAddr;
@@ -98,8 +62,8 @@ fn test_ssrf_acl_blocks_private_ranges() {
     ];
     for ip in &blocked {
         assert!(
-            synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
-            "IP {ip} should be blocked"
+            synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
+            "strict SSRF policy should block {ip}"
         );
     }
 
@@ -110,7 +74,7 @@ fn test_ssrf_acl_blocks_private_ranges() {
     ];
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
             "IP {ip} should be allowed"
         );
     }

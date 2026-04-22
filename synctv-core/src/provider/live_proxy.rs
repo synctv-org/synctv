@@ -345,7 +345,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_live_proxy_validate_source_config_rejects_blocked_hosts() {
+    async fn test_live_proxy_validate_source_config_allows_blocked_hosts_when_default_ssrf_is_disabled(
+    ) {
         let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test");
 
@@ -357,14 +358,10 @@ mod tests {
                 "url": "http://127.0.0.1/live/stream.flv"
             }),
         ] {
-            let err = provider
+            provider
                 .validate_source_config(&ctx, &config)
                 .await
-                .expect_err("blocked live source URLs must be rejected at validation time");
-            assert!(matches!(
-                err,
-                ProviderError::InvalidConfig(ref msg) if msg.contains("blocked by SSRF policy")
-            ));
+                .expect("default SSRF policy should allow blocked live source URLs");
         }
     }
 

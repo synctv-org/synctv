@@ -1514,7 +1514,10 @@ impl RoomMemberRepository {
                 COUNT(*) OVER() as total_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
-            LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
+            LEFT JOIN room_members rm2
+                ON r.id = rm2.room_id
+               AND rm2.left_at IS NULL
+               AND rm2.status = 1
             WHERE rm.user_id = $1 AND {where_sql}
             GROUP BY r.id, r.name, r.description, r.created_by, r.status,
                      r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
@@ -1590,7 +1593,10 @@ impl RoomMemberRepository {
                 COUNT(*) OVER() as total_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
-            LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
+            LEFT JOIN room_members rm2
+                ON r.id = rm2.room_id
+               AND rm2.left_at IS NULL
+               AND rm2.status = 1
             WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
             GROUP BY r.id, r.name, r.description, r.created_by, r.status,
                      r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,

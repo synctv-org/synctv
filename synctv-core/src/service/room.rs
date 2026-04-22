@@ -1329,6 +1329,11 @@ impl RoomService {
         self.ensure_room_creator_is_active_for_access(&ctx.room, &user_id)
             .await?;
 
+        if ctx.room.is_banned {
+            tracing::warn!(room_id = %room_id, user_id = %user_id, "Attempted to join banned room");
+            return Err(Error::Authorization("Room is banned".to_string()));
+        }
+
         // Check if room is active
         if ctx.room.status != RoomStatus::Active {
             tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?ctx.room.status, "Attempted to join inactive room");
@@ -1395,6 +1400,10 @@ impl RoomService {
 
                     self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
                         .await?;
+
+                    if fresh_ctx.room.is_banned {
+                        return Err(Error::Authorization("Room is banned".to_string()));
+                    }
 
                     if fresh_ctx.room.status != RoomStatus::Active {
                         return Err(Error::InvalidInput("Room is closed".to_string()));

@@ -415,6 +415,34 @@ impl AdminApiImpl {
         })
     }
 
+    async fn load_admin_room_proto(
+        &self,
+        room: &synctv_core::models::Room,
+        settings: Option<&synctv_core::models::RoomSettings>,
+    ) -> Result<crate::proto::admin::AdminRoom, ApiError> {
+        let creator_username = self
+            .user_service
+            .get_usernames(std::slice::from_ref(&room.created_by))
+            .await
+            .ok()
+            .and_then(|usernames| usernames.into_values().next());
+        let creator_status = load_room_creator_status(&self.user_service, room).await?;
+        let member_count = self
+            .room_service
+            .get_member_count(&room.id)
+            .await
+            .map(Some)
+            .map_err(ApiError::from)?;
+
+        Ok(admin_room_to_proto(
+            room,
+            settings,
+            member_count,
+            creator_username.as_deref(),
+            creator_status,
+        ))
+    }
+
     pub fn execute_admin_endpoint<'a, T, F, Fut>(
         &'a self,
         metadata: &'a RequestMetadata,
@@ -1352,15 +1380,13 @@ impl AdminApiImpl {
             .unwrap_or_default();
         let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
-        // Batch-fetch distributed online user counts so same-user multi-connection
-        // sessions are not overcounted as multiple online members.
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
-        let counts = self
-            .connection_service
-            .room_online_user_count_distributed_batch(&room_id_refs)
+        let member_counts = self
+            .room_service
+            .get_member_count_batch(&room_id_refs)
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
             .get_room_settings_batch(&room_id_strs)
@@ -1369,9 +1395,8 @@ impl AdminApiImpl {
 
         let room_list: Vec<_> = rooms
             .into_iter()
-            .zip(counts)
-            .map(|(r, count)| {
-                let member_count: Option<i32> = count.try_into().ok();
+            .map(|r| {
+                let member_count = member_counts.get(r.id.as_str()).copied();
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
                 let creator_status = creator_status_map
                     .get(&r.created_by)
@@ -1399,27 +1424,8 @@ impl AdminApiImpl {
             .get_room_with_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        let creator_username = self
-            .user_service
-            .get_usernames(std::slice::from_ref(&room.created_by))
-            .await
-            .ok()
-            .and_then(|m| m.into_values().next());
-        let creator_status = load_room_creator_status(&self.user_service, &room).await?;
-
         Ok(crate::proto::admin::GetRoomResponse {
-            room: Some(admin_room_to_proto(
-                &room,
-                Some(&settings),
-                self.connection_service
-                    .room_online_user_count_distributed(&room.id)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                creator_username.as_deref(),
-                creator_status,
-            )),
+            room: Some(self.load_admin_room_proto(&room, Some(&settings)).await?),
         })
     }
 
@@ -1469,19 +1475,15 @@ impl AdminApiImpl {
             admin_user_id,
         );
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&room.id)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::CreateRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
                 Some(&response_settings),
-                member_count,
+                self.room_service
+                    .get_member_count(&room.id)
+                    .await
+                    .map(Some)
+                    .map_err(ApiError::from)?,
             )),
         })
     }
@@ -3353,15 +3355,14 @@ impl AdminApiImpl {
             .unwrap_or_default();
         let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
-        // Batch-fetch distributed online user counts for all rooms
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|room| &room.id).collect();
         let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
-        let counts = self
-            .connection_service
-            .room_online_user_count_distributed_batch(&room_id_refs)
+        let member_counts = self
+            .room_service
+            .get_member_count_batch(&room_id_refs)
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
             .get_room_settings_batch(&room_id_strs)
@@ -3369,8 +3370,7 @@ impl AdminApiImpl {
             .unwrap_or_default();
         let admin_rooms: Vec<crate::proto::admin::AdminRoom> = rooms
             .iter()
-            .zip(counts)
-            .map(|(room, count)| {
+            .map(|room| {
                 let creator_username = username_map.get(&room.created_by).map(String::as_str);
                 let creator_status = creator_status_map
                     .get(&room.created_by)
@@ -3380,7 +3380,7 @@ impl AdminApiImpl {
                 admin_room_to_proto(
                     room,
                     settings,
-                    count.try_into().ok(),
+                    member_counts.get(room.id.as_str()).copied(),
                     creator_username,
                     creator_status,
                 )
@@ -3442,18 +3442,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::BanRoomResponse {
-            room: Some(admin_room_to_proto(
-                &updated,
-                None,
-                self.connection_service
-                    .room_online_user_count_distributed(&rid)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                None,
-                load_room_creator_status(&self.user_service, &updated).await?,
-            )),
+            room: Some(self.load_admin_room_proto(&updated, None).await?),
         })
     }
 
@@ -3496,18 +3485,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UnbanRoomResponse {
-            room: Some(admin_room_to_proto(
-                &updated,
-                None,
-                self.connection_service
-                    .room_online_user_count_distributed(&rid)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                None,
-                load_room_creator_status(&self.user_service, &updated).await?,
-            )),
+            room: Some(self.load_admin_room_proto(&updated, None).await?),
         })
     }
 
@@ -3540,18 +3518,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::ApproveRoomResponse {
-            room: Some(admin_room_to_proto(
-                &room,
-                None,
-                self.connection_service
-                    .room_online_user_count_distributed(&rid)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                None,
-                load_room_creator_status(&self.user_service, &room).await?,
-            )),
+            room: Some(self.load_admin_room_proto(&room, None).await?),
         })
     }
 
@@ -3613,26 +3580,11 @@ impl AdminApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
-        let creator_username = self
-            .user_service
-            .get_usernames(std::slice::from_ref(&room.created_by))
-            .await
-            .ok()
-            .and_then(|usernames| usernames.into_values().next());
-
         Ok(crate::proto::admin::UpdateRoomSettingsResponse {
-            room: Some(admin_room_to_proto(
-                &room,
-                Some(&snapshot.settings),
-                self.connection_service
-                    .room_online_user_count_distributed(&rid)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                creator_username.as_deref(),
-                load_room_creator_status(&self.user_service, &room).await?,
-            )),
+            room: Some(
+                self.load_admin_room_proto(&room, Some(&snapshot.settings))
+                    .await?,
+            ),
         })
     }
 
@@ -3657,12 +3609,6 @@ impl AdminApiImpl {
             .get_room(&rid)
             .await
             .map_err(ApiError::from)?;
-        let creator_username = self
-            .user_service
-            .get_usernames(std::slice::from_ref(&room.created_by))
-            .await
-            .ok()
-            .and_then(|usernames| usernames.into_values().next());
         // Look up admin username for cluster event
         let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
             |_| admin_user_id.as_str().to_string(),
@@ -3681,18 +3627,10 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
         Ok(crate::proto::admin::ResetRoomSettingsResponse {
-            room: Some(admin_room_to_proto(
-                &room,
-                Some(&snapshot.settings),
-                self.connection_service
-                    .room_online_user_count_distributed(&rid)
-                    .await
-                    .map_err(ApiError::Internal)?
-                    .try_into()
-                    .ok(),
-                creator_username.as_deref(),
-                load_room_creator_status(&self.user_service, &room).await?,
-            )),
+            room: Some(
+                self.load_admin_room_proto(&room, Some(&snapshot.settings))
+                    .await?,
+            ),
         })
     }
 

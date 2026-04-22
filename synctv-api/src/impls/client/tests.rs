@@ -745,7 +745,7 @@ fn test_room_to_proto_banned() {
 }
 
 #[test]
-fn test_hot_room_embedded_room_member_count_uses_online_count_semantics() {
+fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
     let room = make_test_room(RoomStatus::Active);
     let online_count = 3;
     let total_members = 17;
@@ -754,12 +754,12 @@ fn test_hot_room_embedded_room_member_count_uses_online_count_semantics() {
 
     assert_eq!(
         proto.room.as_ref().unwrap().member_count,
-        online_count,
-        "embedded Room.member_count should remain the public online-user count"
+        total_members,
+        "embedded Room.member_count should reflect total active members"
     );
     assert_eq!(proto.online_count, online_count);
     assert_eq!(proto.total_members, total_members);
-    assert_ne!(proto.room.as_ref().unwrap().member_count, total_members);
+    assert_ne!(proto.room.as_ref().unwrap().member_count, online_count);
 }
 
 #[test]

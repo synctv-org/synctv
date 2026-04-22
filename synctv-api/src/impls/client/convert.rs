@@ -235,7 +235,7 @@ pub(super) fn hot_room_to_proto(
     total_members: i32,
 ) -> crate::proto::client::RoomWithStats {
     crate::proto::client::RoomWithStats {
-        room: Some(room_to_proto_basic(room, settings, Some(online_count))),
+        room: Some(room_to_proto_basic(room, settings, Some(total_members))),
         online_count,
         total_members,
     }

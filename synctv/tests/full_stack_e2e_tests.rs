@@ -833,6 +833,170 @@ async fn run_synctv_cli_with_env_async(
     .expect("synctv CLI async process should finish within timeout")
 }
 
+struct SpawnedSynctvProcess {
+    child: tokio::process::Child,
+    stdout_log_path: std::path::PathBuf,
+    stderr_log_path: std::path::PathBuf,
+}
+
+fn cli_process_failure_details(
+    stdout_log_path: &std::path::Path,
+    stderr_log_path: &std::path::Path,
+) -> String {
+    let stdout = std::fs::read_to_string(stdout_log_path)
+        .unwrap_or_else(|error| format!("<failed to read stdout log: {error}>"));
+    let stderr = std::fs::read_to_string(stderr_log_path)
+        .unwrap_or_else(|error| format!("<failed to read stderr log: {error}>"));
+    format!("stdout:\n{stdout}\n\nstderr:\n{stderr}")
+}
+
+fn process_exit_error(
+    child: &mut tokio::process::Child,
+    stdout_log_path: &std::path::Path,
+    stderr_log_path: &std::path::Path,
+) -> Result<Option<String>, String> {
+    child
+        .try_wait()
+        .map_err(|error| format!("failed to inspect synctv process: {error}"))
+        .map(|status| {
+            status.map(|status| {
+                format!(
+                    "synctv serve exited before becoming ready with status {status}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                )
+            })
+        })
+}
+
+fn spawn_synctv_process(
+    args: &[&str],
+    envs: &[(&str, &str)],
+    log_dir: &std::path::Path,
+) -> SpawnedSynctvProcess {
+    let binary = synctv_binary_path();
+    let stdout_log_path = log_dir.join("synctv-serve.stdout.log");
+    let stderr_log_path = log_dir.join("synctv-serve.stderr.log");
+    let stdout_file =
+        std::fs::File::create(&stdout_log_path).expect("synctv serve stdout log should be created");
+    let stderr_file =
+        std::fs::File::create(&stderr_log_path).expect("synctv serve stderr log should be created");
+
+    let mut command = tokio::process::Command::new(binary);
+    command.args(args);
+    command.env_remove("SYNCTV_CONFIG_PATH");
+    command.env_remove("SYNCTV_MANAGEMENT_ENDPOINT");
+    command.env_remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+    command.env_remove("XDG_CONFIG_HOME");
+    command.env_remove("XDG_RUNTIME_DIR");
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    command.kill_on_drop(true);
+    command.stdout(std::process::Stdio::from(stdout_file));
+    command.stderr(std::process::Stdio::from(stderr_file));
+
+    let child = command
+        .spawn()
+        .expect("synctv serve process should start from the freshly built binary");
+
+    SpawnedSynctvProcess {
+        child,
+        stdout_log_path,
+        stderr_log_path,
+    }
+}
+
+async fn wait_until_http_live_or_process_exit(
+    http_base_url: &str,
+    child: &mut tokio::process::Child,
+    stdout_log_path: &std::path::Path,
+    stderr_log_path: &std::path::Path,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|error| format!("failed to build HTTP client: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let url = format!("{http_base_url}/health/live");
+
+    loop {
+        if let Some(error) = process_exit_error(child, stdout_log_path, stderr_log_path)? {
+            return Err(error);
+        }
+
+        match client.get(&url).send().await {
+            Ok(response) if response.status() == StatusCode::OK => return Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Ok(response) => {
+                return Err(format!(
+                    "health endpoint never became live, last status: {}\n{}",
+                    response.status(),
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "health endpoint never became live: {error}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
+        }
+    }
+}
+
+async fn wait_until_grpc_ready_or_process_exit(
+    grpc_base_url: &str,
+    child: &mut tokio::process::Child,
+    stdout_log_path: &std::path::Path,
+    stderr_log_path: &std::path::Path,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if let Some(error) = process_exit_error(child, stdout_log_path, stderr_log_path)? {
+            return Err(error);
+        }
+
+        let status = match tonic::transport::Endpoint::from_shared(grpc_base_url.to_string())
+            .map_err(|error| format!("invalid gRPC endpoint {grpc_base_url}: {error}"))?
+            .connect()
+            .await
+        {
+            Ok(channel) => {
+                let mut health = HealthClient::new(channel);
+                health
+                    .check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .map(|response| response.into_inner().status)
+            }
+            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
+        };
+
+        match status {
+            Ok(status) if status == ServingStatus::Serving as i32 => return Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(status) => {
+                return Err(format!(
+                    "gRPC health never became serving, last status: {status}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "gRPC health never became ready: {error}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
+        }
+    }
+}
+
 fn synctv_binary_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_synctv") {
         return path.into();
@@ -2082,6 +2246,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         serde_json::from_slice(&room_ban.stdout).expect("CLI room ban output should be JSON");
     assert_eq!(room_ban_body["room"]["id"], room_id);
     assert_eq!(room_ban_body["room"]["is_banned"], true);
+    assert_eq!(room_ban_body["room"]["creator_username"], "admin");
 
     let room_unban = run_synctv_remote_cli(&server, &["room", "unban", &room_id]).await;
     assert!(
@@ -2094,6 +2259,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         serde_json::from_slice(&room_unban.stdout).expect("CLI room unban output should be JSON");
     assert_eq!(room_unban_body["room"]["id"], room_id);
     assert_eq!(room_unban_body["room"]["is_banned"], false);
+    assert_eq!(room_unban_body["room"]["creator_username"], "admin");
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -3153,6 +3319,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         approved_room["room"]["status"].as_i64(),
         Some(synctv_proto::common::RoomStatus::Active as i64)
     );
+    assert_eq!(approved_room["room"]["creator_username"], owner_username);
 
     let reset_global_room_review = run_synctv_remote_cli_json(
         &server,
@@ -3215,6 +3382,10 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
     )
     .await;
     assert_eq!(initial_members["total"].as_i64(), Some(3));
+    let room_after_joins =
+        run_synctv_remote_cli_json(&server, &["room", "get", &room_id], "get room after joins")
+            .await;
+    assert_eq!(room_after_joins["room"]["member_count"].as_i64(), Some(3));
     let joined_subject_user_id = initial_members["members"]
         .as_array()
         .expect("room member list should return members array")
@@ -5733,6 +5904,165 @@ async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listener
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
+    let (postgres, database_url) = create_test_database_url_with_label(
+        "synctv_e2e_server_binary_cli",
+        "full-stack-server-binary-cli",
+    )
+    .await;
+    let (redis, redis_url) = start_redis_url_with_label("full-stack-server-binary-cli").await;
+    let api_port = reserve_local_port();
+    let management_port = reserve_local_port();
+    let rtmp_port = reserve_local_port();
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv-server-binary.yaml");
+
+    let mut config = test_config(
+        database_url,
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+    );
+    config.management.auth_token = MANAGEMENT_E2E_AUTH_TOKEN.to_string();
+    write_cli_test_config(&config_path, &config);
+
+    let config_path_string = config_path
+        .to_str()
+        .expect("config path should be valid utf-8")
+        .to_string();
+    let mut server_process = spawn_synctv_process(
+        &["serve", "--config", &config_path_string, "--no-dotenv"],
+        &[(
+            "SYNCTV_CREDENTIAL_ENCRYPTION_KEY",
+            TEST_CREDENTIAL_ENCRYPTION_KEY,
+        )],
+        temp_dir.path(),
+    );
+
+    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    let management_base_url = format!("http://127.0.0.1:{management_port}");
+    wait_until_http_live_or_process_exit(
+        &api_base_url,
+        &mut server_process.child,
+        &server_process.stdout_log_path,
+        &server_process.stderr_log_path,
+    )
+    .await
+    .expect("server binary should become live");
+    wait_until_grpc_ready_or_process_exit(
+        &management_base_url,
+        &mut server_process.child,
+        &server_process.stdout_log_path,
+        &server_process.stderr_log_path,
+    )
+    .await
+    .expect("server binary management endpoint should become ready");
+
+    let envs = [
+        ("SYNCTV_MANAGEMENT_ENDPOINT", management_base_url.as_str()),
+        ("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN),
+    ];
+
+    let system_stats =
+        run_synctv_cli_with_env_async(&["system", "stats", "--output", "json"], &envs).await;
+    let system_stats_body = cli_json_output(&system_stats, "system stats against server binary");
+    assert!(
+        system_stats_body["total_users"]
+            .as_i64()
+            .unwrap_or_default()
+            >= 1,
+        "system stats should report the bootstrap root user: {system_stats_body}"
+    );
+
+    let created_user = run_synctv_cli_with_env_async(
+        &[
+            "user",
+            "create",
+            "binary_cli_owner",
+            "--email",
+            "binary-cli-owner@example.com",
+            "--password",
+            "BinaryCliOwnerPass12345!",
+            "--output",
+            "json",
+        ],
+        &envs,
+    )
+    .await;
+    let created_user_body = cli_json_output(&created_user, "user create against server binary");
+    let created_user_id = created_user_body["user"]["id"]
+        .as_str()
+        .expect("user create should return user.id");
+
+    let listed_users =
+        run_synctv_cli_with_env_async(&["user", "list", "--output", "json"], &envs).await;
+    let listed_users_body = cli_json_output(&listed_users, "user list against server binary");
+    assert!(
+        listed_users_body["users"]
+            .as_array()
+            .expect("user list should return users array")
+            .iter()
+            .any(|user| user["id"] == created_user_id),
+        "freshly created user should appear in user list: {listed_users_body}"
+    );
+
+    let created_room = run_synctv_cli_with_env_async(
+        &[
+            "room",
+            "create",
+            "Binary Server Room",
+            "--username",
+            "binary_cli_owner",
+            "--description",
+            "room created through the binary-started server",
+            "--output",
+            "json",
+        ],
+        &envs,
+    )
+    .await;
+    let created_room_body = cli_json_output(&created_room, "room create against server binary");
+    let room_id = created_room_body["room"]["id"]
+        .as_str()
+        .expect("room create should return room.id");
+
+    let fetched_room =
+        run_synctv_cli_with_env_async(&["room", "get", room_id, "--output", "json"], &envs).await;
+    let fetched_room_body = cli_json_output(&fetched_room, "room get against server binary");
+    assert_eq!(fetched_room_body["room"]["id"], room_id);
+    assert_eq!(
+        fetched_room_body["room"]["creator_username"],
+        "binary_cli_owner"
+    );
+
+    let stop_output = run_synctv_cli_with_env_async(&["stop"], &envs).await;
+    assert!(
+        stop_output.status.success(),
+        "stop CLI should succeed against the binary-started server\nstdout:\n{}\nstderr:\n{}",
+        cli_stdout(&stop_output),
+        cli_stderr(&stop_output),
+    );
+
+    let server_status = tokio::time::timeout(Duration::from_secs(30), server_process.child.wait())
+        .await
+        .expect("binary-started server should stop after stop CLI")
+        .expect("binary-started server process should join");
+    assert!(
+        server_status.success(),
+        "binary-started server should exit successfully after stop\n{}",
+        cli_process_failure_details(
+            &server_process.stdout_log_path,
+            &server_process.stderr_log_path
+        )
+    );
+
+    drop(postgres);
+    drop(redis);
+}
+
+#[tokio::test]
 async fn full_stack_cli_version_prints_package_name_and_version() {
     let version_output = run_synctv_cli_with_env_async(&["version"], &[]).await;
     assert!(
@@ -6312,7 +6642,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.name, "gRPC room");
     assert_eq!(room.description, "created through full-stack gRPC e2e");
     assert_eq!(room.created_by, login.user.expect("login user").id);
-    assert_eq!(room.member_count, 0);
+    assert_eq!(room.member_count, 1);
     assert_eq!(room.id.len(), 12);
 
     // per-test isolated server

@@ -190,6 +190,17 @@ fn build_get_chat_history_request(
 }
 
 impl ClientApiImpl {
+    async fn load_room_member_count(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+    ) -> Result<Option<i32>, ApiError> {
+        self.room_service
+            .get_member_count(room_id)
+            .await
+            .map(Some)
+            .map_err(ApiError::from)
+    }
+
     /// Get the currently playing media for a room.
     ///
     /// Requires the caller to be a member of the room.
@@ -231,14 +242,13 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch distributed online user counts (single Redis-backed lookup) to avoid N+1 queries
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
-        let counts = self
-            .connection_service
-            .room_online_user_count_distributed_batch(&room_id_refs)
+        let member_counts = self
+            .room_service
+            .get_member_count_batch(&room_id_refs)
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
             .get_room_settings_batch(&room_id_strs)
@@ -246,8 +256,8 @@ impl ClientApiImpl {
             .unwrap_or_default();
 
         let mut room_list = Vec::with_capacity(rooms.len());
-        for (r, count) in rooms.iter().zip(counts) {
-            let member_count: Option<i32> = count.try_into().ok();
+        for r in &rooms {
+            let member_count = member_counts.get(r.id.as_str()).copied();
             let availability = *availability_map
                 .get(&r.id)
                 .unwrap_or(&ClientResourceAvailability::Available);
@@ -279,15 +289,6 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch distributed online user counts to avoid N+1 queries
-        let room_id_refs: Vec<&synctv_core::models::RoomId> =
-            rooms.iter().map(|(r, _, _, _)| &r.id).collect();
-        let counts = self
-            .connection_service
-            .room_online_user_count_distributed_batch(&room_id_refs)
-            .await
-            .map_err(ApiError::Internal)?;
-
         // Batch-fetch room settings for three-layer permission calculation (A6 fix)
         let room_id_strs: Vec<&str> = rooms.iter().map(|(r, _, _, _)| r.id.as_str()).collect();
         let room_settings_map = self
@@ -297,7 +298,7 @@ impl ClientApiImpl {
             .unwrap_or_default();
 
         let mut room_list = Vec::with_capacity(rooms.len());
-        for ((room, role, _status, _member_count), count) in rooms.iter().zip(counts) {
+        for (room, role, _status, member_count) in &rooms {
             // A6 fix: Use proper three-layer permission calculation instead of
             // role.permissions() which only gives role-level defaults.
             // calculate_role_default_permissions applies:
@@ -312,14 +313,13 @@ impl ClientApiImpl {
                 .permission_service()
                 .calculate_role_default_permissions(role, &settings)
                 .0;
-            let member_count: Option<i32> = count.try_into().ok();
             let relation = if room.created_by == uid {
                 crate::proto::client::MyRoomRelation::Created as i32
             } else {
                 crate::proto::client::MyRoomRelation::Participating as i32
             };
             room_list.push(crate::proto::client::MyRoom {
-                room: Some(room_to_proto_basic(room, None, member_count)),
+                room: Some(room_to_proto_basic(room, None, Some(*member_count))),
                 permissions,
                 role: room_role_to_proto(*role),
                 relation,
@@ -378,19 +378,11 @@ impl ClientApiImpl {
         self.room_lifecycle_fanout
             .publish_room_created(cluster_event, &room.id, &room.name, &uid);
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&room.id)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::CreateRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
                 Some(&response_settings),
-                member_count,
+                self.load_room_member_count(&room.id).await?,
             )),
         })
     }
@@ -422,16 +414,12 @@ impl ClientApiImpl {
             .ok()
             .map(|s| playback_state_to_proto(&s));
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&rid)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::GetRoomResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(
+                &room,
+                None,
+                self.load_room_member_count(&rid).await?,
+            )),
             playback_state,
         })
     }
@@ -543,16 +531,12 @@ impl ClientApiImpl {
             self.room_service.permission_service(),
         );
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&rid)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::JoinRoomResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(
+                &room,
+                None,
+                self.load_room_member_count(&rid).await?,
+            )),
             members: proto_members,
             playback_state,
             membership_status: member_status_to_proto(member.status),
@@ -667,16 +651,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&rid)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::UpdateRoomSettingsResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(
+                &room,
+                None,
+                self.load_room_member_count(&rid).await?,
+            )),
         })
     }
 
@@ -862,16 +842,12 @@ impl ClientApiImpl {
         self.room_cache_fanout
             .publish_invalidation(room_cache_invalidation, &rid);
 
-        let member_count = self
-            .connection_service
-            .room_online_user_count_distributed(&rid)
-            .await
-            .map_err(ApiError::Internal)?
-            .try_into()
-            .ok();
-
         Ok(crate::proto::client::TransferRoomOwnershipResponse {
-            room: Some(room_to_proto_basic(&room, None, member_count)),
+            room: Some(room_to_proto_basic(
+                &room,
+                None,
+                self.load_room_member_count(&rid).await?,
+            )),
         })
     }
 
@@ -1033,7 +1009,7 @@ impl ClientApiImpl {
                     room: Some(room_to_proto_with_availability(
                         &room,
                         settings,
-                        Some(online_count),
+                        Some(total_members),
                         availability,
                     )),
                     online_count,

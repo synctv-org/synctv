@@ -711,6 +711,41 @@ fn test_broadcast_result_is_success() {
     assert!(!result.is_success());
 }
 
+#[test]
+fn test_broadcast_result_warns_missing_redis_delivery_only_in_distributed_mode() {
+    let single_node = BroadcastResult::single_node();
+    assert!(
+        !single_node.should_warn_missing_redis_delivery(),
+        "single-node broadcasts must not be reported as missing Redis delivery"
+    );
+
+    let local_only_distributed = BroadcastResult {
+        local_sent: 2,
+        redis_sent: false,
+        single_node: false,
+    };
+    assert!(
+        local_only_distributed.should_warn_missing_redis_delivery(),
+        "distributed broadcasts that only reach local clients should warn"
+    );
+
+    let redis_delivered = BroadcastResult {
+        local_sent: 0,
+        redis_sent: true,
+        single_node: false,
+    };
+    assert!(
+        !redis_delivered.should_warn_missing_redis_delivery(),
+        "successful Redis delivery must not warn"
+    );
+
+    let total_failure = BroadcastResult::default();
+    assert!(
+        !total_failure.should_warn_missing_redis_delivery(),
+        "complete failures are handled by the separate total-failure warning path"
+    );
+}
+
 // WebSocket Push Tests: Version in Broadcasts
 
 /// Test: Broadcast contains correct version

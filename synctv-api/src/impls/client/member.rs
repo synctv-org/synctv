@@ -380,9 +380,14 @@ impl ClientApiImpl {
             || admin_added_permissions > 0
             || admin_removed_permissions > 0;
 
-        if has_permission_changes
-            || role != synctv_proto::common::RoomMemberRole::Unspecified as i32
-        {
+        let role_is_changing = role != synctv_proto::common::RoomMemberRole::Unspecified as i32;
+
+        // Proto scalar fields cannot distinguish "omitted" from "explicitly set to 0".
+        // For permission-only updates, a zero-valued payload is the documented reset-to-default
+        // operation, so we must still flow through to `set_member_permission(0, 0)`.
+        let should_apply_permission_update = has_permission_changes || !role_is_changing;
+
+        if should_apply_permission_update || role_is_changing {
             let target_member = self
                 .room_service
                 .member_service()
@@ -395,7 +400,6 @@ impl ClientApiImpl {
             // When the request changes the role, we must use the NEW role
             // (not the current role) to decide which permission columns
             // to validate against and write to.
-            let role_is_changing = role != synctv_proto::common::RoomMemberRole::Unspecified as i32;
             let effective_is_admin = if role_is_changing {
                 let new_role = proto_role_to_room_role(role)?;
                 matches!(new_role, synctv_core::models::RoomRole::Admin)
@@ -433,7 +437,7 @@ impl ClientApiImpl {
             }
 
             // Handle permission updates
-            if has_permission_changes {
+            if should_apply_permission_update {
                 // The service layer (set_member_permissions) already enforces
                 // GRANT_PERMISSION as the single source of truth via
                 // check_permission_no_cache.

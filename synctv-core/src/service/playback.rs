@@ -60,6 +60,13 @@ impl BroadcastResult {
         self.single_node || self.local_sent > 0 || self.redis_sent
     }
 
+    /// Whether the broadcast reached at least one local destination but failed
+    /// to publish to Redis in distributed mode.
+    #[must_use]
+    pub const fn should_warn_missing_redis_delivery(&self) -> bool {
+        !self.single_node && self.is_success() && !self.redis_sent
+    }
+
     /// Create a result for single-node mode where no cluster broadcast is needed.
     /// This is considered a success because there are no remote replicas to notify.
     #[must_use]
@@ -565,7 +572,7 @@ impl PlaybackService {
                      other replicas may have stale playback state (up to {}s cache TTL)",
                     Self::DEFAULT_CACHE_TTL_SECS
                 );
-            } else if !result.redis_sent {
+            } else if result.should_warn_missing_redis_delivery() {
                 // Partial failure: local clients got it, but Redis publish failed
                 tracing::warn!(
                     room_id = %state.room_id.as_str(),

@@ -3,14 +3,13 @@
 // Tier 1: synctv-media-providers (Pure provider HTTP clients)
 //   - alist::AlistClient, bilibili::BilibiliClient, emby::EmbyClient
 //   - Independent libraries with no MediaProvider dependency
-//   - Can be used as provider_instances
+//   - Used by local adapters and remote provider servers as transport clients
 // Tier 2: synctv-core/provider (MediaProvider adapters)
 //   - AlistProvider, BilibiliProvider, EmbyProvider
-//   - Call synctv-media-providers clients to implement MediaProvider trait
+//   - Implement MediaProvider and resolve optional top-level provider_instance_name bindings
 // Tier 3: synctv-core/service/providers_manager
-//   - ProvidersManager - manages all MediaProvider instances
-//   - Factory pattern for creating providers
-//   - Integration with RemoteProviderManager
+//   - ProvidersManager - resolves provider type + optional provider instance name
+//   - Factory pattern for local providers and integration with RemoteProviderManager
 
 // Core traits and types
 pub mod config;
@@ -18,6 +17,7 @@ pub mod context;
 pub mod credential_resolver;
 pub mod crypto_utils;
 pub mod error;
+pub mod playback_profile;
 pub mod provider_client;
 pub mod proxy;
 pub mod registry;
@@ -36,6 +36,7 @@ pub use config::*;
 pub use context::*;
 pub use credential_resolver::*;
 pub use error::*;
+pub use playback_profile::*;
 pub use provider_client::ProviderClientManager;
 pub use proxy::*;
 pub use registry::*;
@@ -106,6 +107,33 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
             "Failed to parse {provider_name} source config: {e}"
         ))
     })
+}
+
+fn normalized_provider_instance_name(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+pub(crate) fn reject_source_config_provider_instance_name(
+    source_config: &serde_json::Value,
+    provider_name: &str,
+) -> std::result::Result<(), ProviderError> {
+    if source_config
+        .as_object()
+        .is_some_and(|object| object.contains_key("provider_instance_name"))
+    {
+        return Err(ProviderError::InvalidConfig(format!(
+            "{provider_name} source_config must not contain provider_instance_name; use the media/playlist top-level provider_instance_name field instead"
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> Option<&'a str> {
+    normalized_provider_instance_name(ctx.provider_instance_name())
 }
 
 #[must_use]

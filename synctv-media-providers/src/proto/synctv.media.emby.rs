@@ -6,8 +6,19 @@ pub struct LoginReq {
     pub host: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub username: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub password: ::prost::alloc::string::String,
+    #[prost(oneof = "login_req::Credential", tags = "3, 4")]
+    pub credential: ::core::option::Option<login_req::Credential>,
+}
+/// Nested message and enum types in `LoginReq`.
+pub mod login_req {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Credential {
+        #[prost(string, tag = "3")]
+        Password(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        ApiKey(::prost::alloc::string::String),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -17,7 +28,11 @@ pub struct LoginResp {
     #[prost(string, tag = "2")]
     pub user_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
     pub server_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub policy: ::core::option::Option<UserPolicy>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -275,7 +290,41 @@ pub struct LogoutReq {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Empty {}
 #[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackInfoDeviceProfile {
+    #[prost(message, repeated, tag = "1")]
+    pub direct_play_profiles: ::prost::alloc::vec::Vec<DirectPlayProfileHint>,
+    #[prost(string, tag = "2")]
+    pub transcoding_container: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub transcoding_protocol: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub transcoding_video_codec: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub transcoding_audio_codec: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "6")]
+    pub subtitle_profiles: ::prost::alloc::vec::Vec<SubtitleProfileHint>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DirectPlayProfileHint {
+    #[prost(string, tag = "1")]
+    pub container: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub video_codecs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "3")]
+    pub audio_codecs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubtitleProfileHint {
+    #[prost(string, tag = "1")]
+    pub format: ::prost::alloc::string::String,
+    #[prost(enumeration = "SubtitleDeliveryMethod", tag = "2")]
+    pub method: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaybackInfoReq {
     #[prost(string, tag = "1")]
     pub host: ::prost::alloc::string::String,
@@ -293,6 +342,16 @@ pub struct PlaybackInfoReq {
     pub subtitle_stream_index: i32,
     #[prost(int64, tag = "8")]
     pub max_streaming_bitrate: i64,
+    #[prost(int32, optional, tag = "9")]
+    pub max_audio_channels: ::core::option::Option<i32>,
+    #[prost(bool, optional, tag = "10")]
+    pub enable_direct_play: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag = "11")]
+    pub enable_direct_stream: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag = "12")]
+    pub enable_transcoding: ::core::option::Option<bool>,
+    #[prost(message, optional, tag = "13")]
+    pub device_profile: ::core::option::Option<PlaybackInfoDeviceProfile>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -359,6 +418,45 @@ pub struct ReportPlaybackProgressReq {
     pub position_ticks: i64,
     #[prost(bool, tag = "7")]
     pub is_paused: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubtitleDeliveryMethod {
+    Unspecified = 0,
+    Encode = 1,
+    Embed = 2,
+    External = 3,
+    Hls = 4,
+    VideoSideData = 5,
+}
+impl SubtitleDeliveryMethod {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUBTITLE_DELIVERY_METHOD_UNSPECIFIED",
+            Self::Encode => "SUBTITLE_DELIVERY_METHOD_ENCODE",
+            Self::Embed => "SUBTITLE_DELIVERY_METHOD_EMBED",
+            Self::External => "SUBTITLE_DELIVERY_METHOD_EXTERNAL",
+            Self::Hls => "SUBTITLE_DELIVERY_METHOD_HLS",
+            Self::VideoSideData => "SUBTITLE_DELIVERY_METHOD_VIDEO_SIDE_DATA",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUBTITLE_DELIVERY_METHOD_UNSPECIFIED" => Some(Self::Unspecified),
+            "SUBTITLE_DELIVERY_METHOD_ENCODE" => Some(Self::Encode),
+            "SUBTITLE_DELIVERY_METHOD_EMBED" => Some(Self::Embed),
+            "SUBTITLE_DELIVERY_METHOD_EXTERNAL" => Some(Self::External),
+            "SUBTITLE_DELIVERY_METHOD_HLS" => Some(Self::Hls),
+            "SUBTITLE_DELIVERY_METHOD_VIDEO_SIDE_DATA" => Some(Self::VideoSideData),
+            _ => None,
+        }
+    }
 }
 /// Generated client implementations.
 pub mod emby_client {

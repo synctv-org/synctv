@@ -852,7 +852,7 @@ fn make_test_media() -> synctv_core::models::Media {
         position: 3.0,
         source_provider: "bilibili".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234"}),
-        provider_instance_name: "bili_main".to_string(),
+        provider_instance_name: Some("bili_main".to_string()),
         added_at: now,
         updated_at: now,
         version: 0,

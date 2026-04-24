@@ -53,6 +53,7 @@ service RoomService {
 
     // Member Management (room-scoped operations)
     rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
+    rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
     rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
     rpc ApproveMember(ApproveMemberRequest) returns (ApproveMemberResponse);
     rpc RejectMember(RejectMemberRequest) returns (RejectMemberResponse);
@@ -97,10 +98,6 @@ service RoomService {
     rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
     rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
 
-    // Live Streaming (room-scoped)
-    rpc CreatePublishKey(CreatePublishKeyRequest) returns (CreatePublishKeyResponse);
-    rpc GetStreamInfo(GetStreamInfoRequest) returns (GetStreamInfoResponse);
-    rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
 }
 
 // ==================== Public Service ====================
@@ -352,44 +349,6 @@ message WebSocketConnectRequest {
     }];
 }
 
-message ProviderInstanceQuery {
-    string instance_name = 1 [(buf.validate.field).cel = {
-        id: "provider_instance_query.instance_name"
-        message: "instance_name must be empty or 1-64 characters of letters, numbers, underscores, or hyphens"
-        expression: "this == '' || (size(this) <= 64 && this.matches('^[A-Za-z0-9_-]+$'))"
-    }];
-}
-
-message ListProviderBackendsRequest {
-    string provider_type = 1 [
-        (buf.validate.field).string = {
-            max_len: 64,
-            pattern: "^[a-z][a-z0-9_]*$"
-        }
-    ];
-}
-
-message ProviderProxyPathRequest {
-    string provider_name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[a-z][a-z0-9_]*$"
-    }];
-    string sub_path = 2 [(buf.validate.field).cel = {
-        id: "provider_proxy_path.sub_path"
-        message: "sub_path must be 1-2048 visible characters without control bytes"
-        expression: "size(this) >= 1 && size(this) <= 2048 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*')"
-    }];
-}
-
-message ProviderInstancesResponse {
-    repeated string instances = 1;
-}
-
-message ProviderBackendsResponse {
-    repeated string backends = 1;
-}
-
 // Room Management Messages
 message CreateRoomRequest {
     string name = 1 [
@@ -629,6 +588,39 @@ message GetRoomMembersResponse {
     string version = 3; // Snapshot version for this member list result
 }
 
+// Room live streams
+// Note: room_id extracted from x-room-id metadata
+message ListRoomStreamsRequest {
+    option (buf.validate.message).cel = {
+        id: "list_room_streams.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "list_room_streams.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+
+    int32 page = 1;
+    int32 page_size = 2;
+    string search = 3 [(buf.validate.field).string = {
+        max_len: 100
+    }];
+    RoomStreamListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
+    SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+message StreamEntry {
+    string media_id = 1;
+    bool active = 2;
+}
+
+message ListRoomStreamsResponse {
+    repeated StreamEntry streams = 1;
+    int32 total = 2;
+}
+
 message AddMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {
         len: 12,
@@ -757,7 +749,7 @@ message CreatePlaylistRequest {
             pattern: "^[A-Za-z0-9_-]+$",
             max_len: 64
         }
-    ]; // Optional concrete provider instance name. Empty means use the local default instance for source_provider
+    ]; // Optional provider instance name. Empty means use the default provider instance for source_provider
 }
 
 message CreatePlaylistResponse {
@@ -950,7 +942,7 @@ message AddMediaRequest {
             pattern: "^[A-Za-z0-9_-]+$",
             max_len: 64
         }
-    ]; // Optional concrete provider instance name; empty means use the local default instance for provider
+    ]; // Optional provider instance name; empty means use the default provider instance for provider
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
     string title = 5 [(buf.validate.field).string.max_len = 500]; // Optional media title. Validation: max 500 chars, no HTML tags
 }
@@ -1221,7 +1213,55 @@ message UpdatePlaybackRequest {
     optional int64 version = 7;
 }
 
-message GetPlaybackRequest {}
+enum PlaybackDeliveryPreference {
+    PLAYBACK_DELIVERY_PREFERENCE_UNSPECIFIED = 0;
+    PLAYBACK_DELIVERY_PREFERENCE_AUTO = 1;
+    PLAYBACK_DELIVERY_PREFERENCE_DIRECT_PLAY = 2;
+    PLAYBACK_DELIVERY_PREFERENCE_TRANSCODE = 3;
+}
+
+enum PlaybackSubtitlePreference {
+    PLAYBACK_SUBTITLE_PREFERENCE_UNSPECIFIED = 0;
+    PLAYBACK_SUBTITLE_PREFERENCE_EXTERNAL = 1;
+    PLAYBACK_SUBTITLE_PREFERENCE_EMBEDDED_OR_EXTERNAL = 2;
+    PLAYBACK_SUBTITLE_PREFERENCE_NONE = 3;
+}
+
+enum PlaybackVideoCodec {
+    PLAYBACK_VIDEO_CODEC_UNSPECIFIED = 0;
+    PLAYBACK_VIDEO_CODEC_H264 = 1;
+    PLAYBACK_VIDEO_CODEC_HEVC = 2;
+    PLAYBACK_VIDEO_CODEC_VP9 = 3;
+    PLAYBACK_VIDEO_CODEC_AV1 = 4;
+}
+
+enum PlaybackContainer {
+    PLAYBACK_CONTAINER_UNSPECIFIED = 0;
+    PLAYBACK_CONTAINER_MP4 = 1;
+    PLAYBACK_CONTAINER_MKV = 2;
+    PLAYBACK_CONTAINER_WEBM = 3;
+}
+
+enum PlaybackAudioCapability {
+    PLAYBACK_AUDIO_CAPABILITY_UNSPECIFIED = 0;
+    PLAYBACK_AUDIO_CAPABILITY_STEREO = 1;
+    PLAYBACK_AUDIO_CAPABILITY_SURROUND = 2;
+    PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND = 3;
+}
+
+message PlaybackClientProfile {
+    PlaybackDeliveryPreference delivery_preference = 1 [(buf.validate.field).enum.defined_only = true];
+    optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
+    optional int32 max_audio_channels = 3 [(buf.validate.field).int32.gt = 0];
+    repeated PlaybackVideoCodec supported_video_codecs = 4 [(buf.validate.field).repeated.items.enum.defined_only = true];
+    repeated PlaybackContainer supported_containers = 5 [(buf.validate.field).repeated.items.enum.defined_only = true];
+    PlaybackAudioCapability audio_capability = 6 [(buf.validate.field).enum.defined_only = true];
+    PlaybackSubtitlePreference subtitle_preference = 7 [(buf.validate.field).enum.defined_only = true];
+}
+
+message GetPlaybackRequest {
+    PlaybackClientProfile playback_client_profile = 1;
+}
 
 message GetPlaybackResponse {
     // Playback state (current time, speed, is_playing, etc.)
@@ -1398,6 +1438,7 @@ message WatchPlaybackSnapshot {
     string media_id = 2;
     string playlist_id = 3;
     bytes target = 4;
+    PlaybackClientProfile playback_client_profile = 5;
 }
 
 message WatchRoomSettings {
@@ -1720,74 +1761,6 @@ message RoomWithStats {
     Room room = 1;
     int32 online_count = 2; // Current online users
     int32 total_members = 3;
-}
-
-// ==================== Live Streaming ====================
-
-// CreatePublishKey - Generate RTMP publish key for live streaming
-// Note: room_id should be extracted from metadata/context by interceptor
-// Note: user_id should be extracted from JWT Authorization header
-message CreatePublishKeyRequest {
-    string id = 1 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];  // Media ID to publish (matches Go's IDReq pattern)
-}
-
-message CreatePublishKeyResponse {
-    string publish_key = 1;  // JWT token for RTMP authentication
-    string rtmp_url = 2;     // Full RTMP URL (rtmp://host:port/live)
-    string stream_key = 3;   // Stream key (room_id/media_id)
-    int64 expires_at = 4;    // Token expiration timestamp
-}
-
-// GetStreamInfo - Query whether a specific stream is active
-message GetStreamInfoRequest {
-    string media_id = 1 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-}
-
-message StreamPublisherInfo {
-    string user_id = 1;
-    int64 started_at = 2;  // Unix epoch timestamp
-}
-
-message GetStreamInfoResponse {
-    bool active = 1;
-    StreamPublisherInfo publisher = 2;  // Present only when active
-}
-
-// ListRoomStreams - List all active streams in the room
-message ListRoomStreamsRequest {
-    option (buf.validate.message).cel = {
-        id: "client.list_room_streams.page"
-        message: "page must be 0 (use default) or at least 1"
-        expression: "this.page == 0 || this.page >= 1"
-    };
-    option (buf.validate.message).cel = {
-        id: "client.list_room_streams.page_size"
-        message: "page_size must be 0 (use default) or between 1 and 100"
-        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
-    };
-    int32 page = 1;       // Page number (default 1)
-    int32 page_size = 2;  // Items per page (default 50)
-    string search = 3 [(buf.validate.field).string = {
-        max_len: 100
-    }];
-    RoomStreamListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
-    SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
-}
-
-message StreamEntry {
-    string media_id = 1;
-    bool active = 2;
-}
-
-message ListRoomStreamsResponse {
-    repeated StreamEntry streams = 1;
-    int32 total = 2; // Total number of active streams
 }
 
 // ==================== Public Settings ====================

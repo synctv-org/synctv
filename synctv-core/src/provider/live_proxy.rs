@@ -95,6 +95,8 @@ impl LiveProxyProvider {
     }
 
     fn validate_config_shape(source_config: &Value) -> Result<(), ProviderError> {
+        super::reject_source_config_provider_instance_name(source_config, "LiveProxy")?;
+
         for field in [
             "room_id",
             "media_id",
@@ -380,6 +382,28 @@ mod tests {
         assert!(matches!(
             err,
             ProviderError::InvalidConfig(ref msg) if msg.contains("runtime context")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_rejects_provider_instance_name() {
+        let provider = LiveProxyProvider::new();
+        let ctx = ProviderContext::new("test");
+
+        let err = provider
+            .validate_source_config(
+                &ctx,
+                &json!({
+                    "url": "rtmp://example.com/live/stream",
+                    "provider_instance_name": "remote-live"
+                }),
+            )
+            .await
+            .expect_err("live_proxy source_config must not contain provider_instance_name");
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("top-level provider_instance_name")
         ));
     }
 

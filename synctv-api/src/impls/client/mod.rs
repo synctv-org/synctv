@@ -11,7 +11,6 @@
 //! - `media`: add/remove/edit/swap media, batch operations, playlist items
 //! - `playlist`: create/update/delete/list playlists
 //! - `playback`: play, pause, seek, speed, `set_current_media`, `get_playback_state`
-//! - `stream`: `publish_key`, `stream_info`, live proxy, `validate_live_token`
 //! - `webrtc`: ICE servers, network quality
 
 mod auth;
@@ -21,12 +20,11 @@ mod member;
 mod playback;
 pub(crate) mod playlist;
 mod room;
-mod stream;
+pub(crate) mod stream;
 mod user;
 mod webrtc;
 pub(crate) use playback::build_start_playback_request;
 pub(crate) use room::build_create_websocket_ticket_request;
-pub(crate) use stream::build_room_streams_request;
 
 // Proto conversion helpers used across impls modules within this crate.
 pub(crate) mod convert;

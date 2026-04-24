@@ -1069,7 +1069,7 @@ mod live_streaming_validation {
             );
         assert!(
             result.is_ok(),
-            "provider ListRoomStreamsRequest should deserialize"
+            "room ListRoomStreamsRequest should deserialize"
         );
         let req = result.unwrap();
         assert_eq!(req.page, 2);
@@ -1082,7 +1082,7 @@ mod live_streaming_validation {
     #[test]
     fn test_live_query_deserialize_empty_defaults() {
         let result: synctv_proto::client::ListRoomStreamsRequest =
-            serde_urlencoded::from_str("").expect("empty query should default");
+            serde_urlencoded::from_str("").expect("query should default");
         assert_eq!(result.page, 0);
         assert_eq!(result.page_size, 0);
     }

@@ -6,23 +6,16 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
     http::{header, StatusCode},
     response::Response,
-    routing::get,
-    Json, Router,
 };
 use bytes::Bytes;
-use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 
-use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::StrictQuery, AppError,
-    AppResult, AppState,
-};
-use crate::impls::EndpointRateLimitCategory;
+use crate::http::error::map_api_error;
+use crate::http::{AppError, AppResult, AppState};
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::id::RoomId;
 use synctv_core::provider::proxy::ProxyAction;
@@ -30,42 +23,6 @@ use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 use synctv_livestream::error::StreamError;
 
 const MAX_CONSECUTIVE_DROPS: u32 = 100;
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct RoomStreamsQuery {
-    page: i32,
-    page_size: i32,
-    search: String,
-    sort_by: i32,
-    sort_direction: i32,
-}
-
-impl From<RoomStreamsQuery> for crate::proto::client::ListRoomStreamsRequest {
-    fn from(value: RoomStreamsQuery) -> Self {
-        Self {
-            page: value.page,
-            page_size: value.page_size,
-            search: value.search,
-            sort_by: value.sort_by,
-            sort_direction: value.sort_direction,
-        }
-    }
-}
-
-pub fn rtmp_routes() -> Router<AppState> {
-    create_live_provider_router()
-}
-
-pub fn live_proxy_routes() -> Router<AppState> {
-    create_live_provider_router()
-}
-
-fn create_live_provider_router() -> Router<AppState> {
-    Router::new()
-        .route("/rooms/{room_id}/info/{media_id}", get(handle_stream_info))
-        .route("/rooms/{room_id}/streams", get(handle_room_streams))
-}
 
 fn map_stream_error(context: &str, error: &StreamError) -> AppError {
     let api_error = crate::impls::map_livestream_stream_error(error);
@@ -96,153 +53,6 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
 fn live_streaming_unavailable_http_error() -> AppError {
     AppError::service_unavailable()
 }
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
-        tag = "Provider",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID"),
-        ),
-        responses(
-            (status = 200, description = "Live stream information", body = crate::proto::client::GetStreamInfoResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub(crate) async fn handle_stream_info(
-    request_meta: RequestMetadata,
-    Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    State(state): State<AppState>,
-) -> AppResult<Json<crate::proto::client::GetStreamInfoResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
-    let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let request_meta = request_meta
-        .0
-        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let client_api = state.client_api.clone();
-    let resp = state
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |authenticated| async move {
-                client_api
-                    .get_stream_info(authenticated.user_id.as_str(), &room_id, &media_id)
-                    .await
-            },
-        )
-        .await
-        .map_err(map_api_error)?;
-
-    Ok(Json(resp))
-}
-
-#[allow(dead_code)]
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/providers/live_proxy/rooms/{room_id}/info/{media_id}",
-        tag = "Provider",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID"),
-        ),
-        responses(
-            (status = 200, description = "Live stream information", body = crate::proto::client::GetStreamInfoResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub(crate) const fn live_proxy_stream_info_doc() {}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/providers/rtmp/rooms/{room_id}/streams",
-        tag = "Provider",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            crate::proto::client::ListRoomStreamsRequest
-        ),
-        responses(
-            (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub(crate) async fn handle_room_streams(
-    request_meta: RequestMetadata,
-    Path(path): Path<crate::proto::client::RoomPathRequest>,
-    StrictQuery(query): StrictQuery<RoomStreamsQuery>,
-    State(state): State<AppState>,
-) -> AppResult<Json<crate::proto::client::ListRoomStreamsResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
-    let room_id = path.room_id;
-    let req =
-        crate::impls::client::build_room_streams_request(query.into()).map_err(map_api_error)?;
-    let request_meta = request_meta
-        .0
-        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let client_api = state.client_api.clone();
-    let resp = state
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |authenticated| async move {
-                client_api
-                    .list_room_streams(authenticated.user_id.as_str(), &room_id, req)
-                    .await
-            },
-        )
-        .await
-        .map_err(map_api_error)?;
-
-    Ok(Json(resp))
-}
-
-#[allow(dead_code)]
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/providers/live_proxy/rooms/{room_id}/streams",
-        tag = "Provider",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            crate::proto::client::ListRoomStreamsRequest
-        ),
-        responses(
-            (status = 200, description = "Room live streams", body = crate::proto::client::ListRoomStreamsResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(
-            ("bearer_auth" = [])
-        )
-    )
-)]
-pub(crate) const fn live_proxy_room_streams_doc() {}
 
 pub(crate) async fn execute_live_stream_action(
     state: &AppState,
@@ -585,42 +395,6 @@ enum FlvChunkSendResult {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
-    #[test]
-    fn room_streams_query_deserializes_strict_request() {
-        let query: RoomStreamsQuery = serde_urlencoded::from_str(
-            "page=2&page_size=25&search=beta&sort_by=1&sort_direction=2",
-        )
-        .unwrap();
-        assert_eq!(query.page, 2);
-        assert_eq!(query.page_size, 25);
-        assert_eq!(query.search, "beta");
-        assert_eq!(query.sort_by, 1);
-        assert_eq!(query.sort_direction, 2);
-    }
-
-    #[test]
-    fn room_streams_query_rejects_unknown_query_keys() {
-        let err = serde_urlencoded::from_str::<RoomStreamsQuery>("pageSize=25")
-            .expect_err("unexpected camelCase query key must be rejected");
-        let message = err.to_string();
-        assert!(
-            message.contains("unknown field") || message.contains("pageSize"),
-            "unexpected error: {message}"
-        );
-    }
-
-    #[test]
-    fn room_streams_query_defaults_still_map_to_proto_defaults() {
-        let req = crate::impls::client::build_room_streams_request(
-            serde_urlencoded::from_str::<RoomStreamsQuery>("")
-                .expect("empty query should deserialize")
-                .into(),
-        )
-        .expect("default room streams request should validate");
-
-        assert_eq!(req.page, 1);
-        assert_eq!(req.page_size, 50);
-    }
 
     #[tokio::test]
     async fn send_flv_chunk_waits_without_timeout_when_capacity_frees() {

@@ -11,14 +11,14 @@ use axum::{
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, provider_common::provider_instance_name,
-    validation::ValidatedQuery, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppResult,
+    AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::client::ProviderInstanceQuery;
-use crate::proto::providers::alist::{BindInfo, GetBindsResponse};
+use crate::proto::providers::alist::GetBindsResponse;
+use crate::proto::providers::common::ProviderInstanceQuery;
 
-use crate::impls::providers::get_provider_binds;
+use super::common::provider_instance_name;
 
 /// Alist endpoints that perform authentication or credential mutation.
 pub fn alist_auth_routes() -> Router<AppState> {
@@ -272,7 +272,7 @@ pub(crate) async fn binds(
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     let instance_name = provider_instance_name(&query)?;
-    let repository = state.user_provider_credential_repository.clone();
+    let api = state.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
         .client_api
@@ -281,26 +281,8 @@ pub(crate) async fn binds(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 tracing::info!("Alist binds request for user: {}", authenticated.user_id);
-                let provider_binds = get_provider_binds(
-                    &repository,
-                    authenticated.user_id.as_str(),
-                    synctv_core::provider::AlistProvider::NAME,
-                    "username",
-                    instance_name,
-                )
-                .await?;
-
-                let binds = provider_binds
-                    .into_iter()
-                    .map(|b| BindInfo {
-                        id: b.id,
-                        host: b.host,
-                        username: b.label_value,
-                        created_at: b.created_at,
-                    })
-                    .collect();
-
-                Ok::<GetBindsResponse, crate::impls::ApiError>(GetBindsResponse { binds })
+                api.get_binds(authenticated.user_id.as_str(), instance_name)
+                    .await
             },
         )
         .await

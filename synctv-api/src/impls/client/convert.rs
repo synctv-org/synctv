@@ -133,6 +133,122 @@ pub(crate) const fn resource_availability_enum_to_proto(
     }
 }
 
+#[must_use]
+pub(crate) fn playback_client_profile_from_proto(
+    profile: Option<&crate::proto::client::PlaybackClientProfile>,
+) -> Option<synctv_core::provider::PlaybackClientProfile> {
+    profile.map(|profile| {
+        let default_profile = synctv_core::provider::PlaybackClientProfile::default();
+        synctv_core::provider::PlaybackClientProfile {
+            delivery_preference: match crate::proto::client::PlaybackDeliveryPreference::try_from(
+                profile.delivery_preference,
+            )
+            .unwrap_or(crate::proto::client::PlaybackDeliveryPreference::Unspecified)
+            {
+                crate::proto::client::PlaybackDeliveryPreference::Unspecified
+                | crate::proto::client::PlaybackDeliveryPreference::Auto => {
+                    synctv_core::provider::PlaybackDeliveryPreference::Auto
+                }
+                crate::proto::client::PlaybackDeliveryPreference::DirectPlay => {
+                    synctv_core::provider::PlaybackDeliveryPreference::DirectPlay
+                }
+                crate::proto::client::PlaybackDeliveryPreference::Transcode => {
+                    synctv_core::provider::PlaybackDeliveryPreference::Transcode
+                }
+            },
+            max_streaming_bitrate: profile.max_streaming_bitrate,
+            max_audio_channels: profile.max_audio_channels,
+            supported_video_codecs: if profile.supported_video_codecs.is_empty() {
+                default_profile.supported_video_codecs.clone()
+            } else {
+                profile
+                    .supported_video_codecs
+                    .iter()
+                    .filter_map(|codec| {
+                        match crate::proto::client::PlaybackVideoCodec::try_from(*codec)
+                            .unwrap_or(crate::proto::client::PlaybackVideoCodec::Unspecified)
+                        {
+                            crate::proto::client::PlaybackVideoCodec::Unspecified => None,
+                            crate::proto::client::PlaybackVideoCodec::H264 => {
+                                Some(synctv_core::provider::PlaybackVideoCodec::H264)
+                            }
+                            crate::proto::client::PlaybackVideoCodec::Hevc => {
+                                Some(synctv_core::provider::PlaybackVideoCodec::Hevc)
+                            }
+                            crate::proto::client::PlaybackVideoCodec::Vp9 => {
+                                Some(synctv_core::provider::PlaybackVideoCodec::Vp9)
+                            }
+                            crate::proto::client::PlaybackVideoCodec::Av1 => {
+                                Some(synctv_core::provider::PlaybackVideoCodec::Av1)
+                            }
+                        }
+                    })
+                    .collect()
+            },
+            supported_containers: if profile.supported_containers.is_empty() {
+                default_profile.supported_containers.clone()
+            } else {
+                profile
+                    .supported_containers
+                    .iter()
+                    .filter_map(
+                        |container| match crate::proto::client::PlaybackContainer::try_from(
+                            *container,
+                        )
+                        .unwrap_or(crate::proto::client::PlaybackContainer::Unspecified)
+                        {
+                            crate::proto::client::PlaybackContainer::Unspecified => None,
+                            crate::proto::client::PlaybackContainer::Mp4 => {
+                                Some(synctv_core::provider::PlaybackContainer::Mp4)
+                            }
+                            crate::proto::client::PlaybackContainer::Mkv => {
+                                Some(synctv_core::provider::PlaybackContainer::Mkv)
+                            }
+                            crate::proto::client::PlaybackContainer::Webm => {
+                                Some(synctv_core::provider::PlaybackContainer::Webm)
+                            }
+                        },
+                    )
+                    .collect()
+            },
+            audio_capability: match crate::proto::client::PlaybackAudioCapability::try_from(
+                profile.audio_capability,
+            )
+            .unwrap_or(crate::proto::client::PlaybackAudioCapability::Unspecified)
+            {
+                crate::proto::client::PlaybackAudioCapability::Unspecified => {
+                    default_profile.audio_capability
+                }
+                crate::proto::client::PlaybackAudioCapability::Stereo => {
+                    synctv_core::provider::PlaybackAudioCapability::Stereo
+                }
+                crate::proto::client::PlaybackAudioCapability::Surround => {
+                    synctv_core::provider::PlaybackAudioCapability::Surround
+                }
+                crate::proto::client::PlaybackAudioCapability::LosslessSurround => {
+                    synctv_core::provider::PlaybackAudioCapability::LosslessSurround
+                }
+            },
+            subtitle_preference: match crate::proto::client::PlaybackSubtitlePreference::try_from(
+                profile.subtitle_preference,
+            )
+            .unwrap_or(crate::proto::client::PlaybackSubtitlePreference::Unspecified)
+            {
+                crate::proto::client::PlaybackSubtitlePreference::Unspecified
+                | crate::proto::client::PlaybackSubtitlePreference::External => {
+                    synctv_core::provider::PlaybackSubtitlePreference::External
+                }
+                crate::proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal => {
+                    synctv_core::provider::PlaybackSubtitlePreference::EmbeddedOrExternal
+                }
+                crate::proto::client::PlaybackSubtitlePreference::None => {
+                    synctv_core::provider::PlaybackSubtitlePreference::None
+                }
+            },
+        }
+    })
+}
+
 pub fn proto_role_to_room_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
@@ -280,7 +396,7 @@ pub fn media_to_proto_with_availability(
             .creator_id
             .as_ref()
             .map_or(String::new(), |id| id.as_str().to_string()),
-        provider_instance_name: media.provider_instance_name.clone(),
+        provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
         source_config: serialize_sanitized_source_config(&media.source_config),
         availability: resource_availability_to_proto(is_available),
         version: i64::from(media.version),
@@ -731,9 +847,9 @@ fn danmaku_to_proto(
 mod tests {
     use super::{
         bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-        media_to_proto, normalize_created_room_settings, playlist_to_proto,
-        provider_playback_info_to_model, room_to_proto_basic, sign_local_bilibili_danmaku_urls,
-        REDACTED_SOURCE_CONFIG_VALUE,
+        media_to_proto, normalize_created_room_settings, playback_client_profile_from_proto,
+        playlist_to_proto, provider_playback_info_to_model, room_to_proto_basic,
+        sign_local_bilibili_danmaku_urls, REDACTED_SOURCE_CONFIG_VALUE,
     };
     use std::collections::HashMap;
     use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
@@ -789,6 +905,102 @@ mod tests {
                 .get("X-Subtitle-Token")
                 .map(String::as_str),
             Some("subtitle-header")
+        );
+    }
+
+    #[test]
+    fn playback_client_profile_from_proto_returns_none_when_absent() {
+        assert_eq!(playback_client_profile_from_proto(None), None);
+    }
+
+    #[test]
+    fn playback_client_profile_from_proto_applies_defaults_for_omitted_repeated_capabilities() {
+        let proto = crate::proto::client::PlaybackClientProfile {
+            delivery_preference: crate::proto::client::PlaybackDeliveryPreference::Unspecified
+                as i32,
+            max_streaming_bitrate: Some(12_000_000),
+            max_audio_channels: Some(2),
+            supported_video_codecs: Vec::new(),
+            supported_containers: Vec::new(),
+            audio_capability: crate::proto::client::PlaybackAudioCapability::Unspecified as i32,
+            subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::Unspecified
+                as i32,
+        };
+
+        let converted = playback_client_profile_from_proto(Some(&proto))
+            .expect("present proto profile should convert");
+        let default_profile = synctv_core::provider::PlaybackClientProfile::default();
+
+        assert_eq!(
+            converted.delivery_preference,
+            synctv_core::provider::PlaybackDeliveryPreference::Auto
+        );
+        assert_eq!(converted.max_streaming_bitrate, Some(12_000_000));
+        assert_eq!(converted.max_audio_channels, Some(2));
+        assert_eq!(
+            converted.supported_video_codecs,
+            default_profile.supported_video_codecs
+        );
+        assert_eq!(
+            converted.supported_containers,
+            default_profile.supported_containers
+        );
+        assert_eq!(converted.audio_capability, default_profile.audio_capability);
+        assert_eq!(
+            converted.subtitle_preference,
+            synctv_core::provider::PlaybackSubtitlePreference::External
+        );
+    }
+
+    #[test]
+    fn playback_client_profile_from_proto_maps_explicit_capabilities() {
+        let proto = crate::proto::client::PlaybackClientProfile {
+            delivery_preference: crate::proto::client::PlaybackDeliveryPreference::DirectPlay
+                as i32,
+            max_streaming_bitrate: None,
+            max_audio_channels: Some(6),
+            supported_video_codecs: vec![
+                crate::proto::client::PlaybackVideoCodec::H264 as i32,
+                crate::proto::client::PlaybackVideoCodec::Vp9 as i32,
+            ],
+            supported_containers: vec![
+                crate::proto::client::PlaybackContainer::Mp4 as i32,
+                crate::proto::client::PlaybackContainer::Webm as i32,
+            ],
+            audio_capability: crate::proto::client::PlaybackAudioCapability::Surround as i32,
+            subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::None as i32,
+        };
+
+        let converted = playback_client_profile_from_proto(Some(&proto))
+            .expect("present proto profile should convert");
+
+        assert_eq!(
+            converted.delivery_preference,
+            synctv_core::provider::PlaybackDeliveryPreference::DirectPlay
+        );
+        assert_eq!(converted.max_streaming_bitrate, None);
+        assert_eq!(converted.max_audio_channels, Some(6));
+        assert_eq!(
+            converted.supported_video_codecs,
+            vec![
+                synctv_core::provider::PlaybackVideoCodec::H264,
+                synctv_core::provider::PlaybackVideoCodec::Vp9,
+            ]
+        );
+        assert_eq!(
+            converted.supported_containers,
+            vec![
+                synctv_core::provider::PlaybackContainer::Mp4,
+                synctv_core::provider::PlaybackContainer::Webm,
+            ]
+        );
+        assert_eq!(
+            converted.audio_capability,
+            synctv_core::provider::PlaybackAudioCapability::Surround
+        );
+        assert_eq!(
+            converted.subtitle_preference,
+            synctv_core::provider::PlaybackSubtitlePreference::None
         );
     }
 
@@ -857,7 +1069,7 @@ mod tests {
                     "provider": "direct_url"
                 }
             }),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -963,7 +1175,7 @@ mod tests {
                     "credential_owner_id": "owner-1"
                 }
             }),
-            provider_instance_name: "bilibili".to_string(),
+            provider_instance_name: Some("bilibili".to_string()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1010,7 +1222,7 @@ mod tests {
             position: 3.5,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 42,
@@ -1047,7 +1259,7 @@ mod tests {
                     "title": "Secret Media"
                 }
             }),
-            provider_instance_name: "alist-main".to_string(),
+            provider_instance_name: Some("alist-main".to_string()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 1,

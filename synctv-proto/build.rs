@@ -117,6 +117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.GetRoomMembersRequest.status",
         ".synctv.client.GetRoomMembersRequest.sort_by",
         ".synctv.client.GetRoomMembersRequest.sort_direction",
+        ".synctv.client.ListRoomStreamsRequest.page",
+        ".synctv.client.ListRoomStreamsRequest.page_size",
+        ".synctv.client.ListRoomStreamsRequest.search",
+        ".synctv.client.ListRoomStreamsRequest.sort_by",
+        ".synctv.client.ListRoomStreamsRequest.sort_direction",
         ".synctv.client.ListRoomsRequest.page",
         ".synctv.client.ListRoomsRequest.page_size",
         ".synctv.client.ListRoomsRequest.search",
@@ -139,8 +144,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.UpdateUserRequest.password",
         ".synctv.client.UpdateUserRequest.old_password",
         ".synctv.client.WebSocketConnectRequest.ticket",
-        ".synctv.client.ProviderInstanceQuery.instance_name",
-        ".synctv.client.ListProviderBackendsRequest.provider_type",
         ".synctv.client.DeletePlaylistQuery.force",
         ".synctv.client.MoveMediaRequest.media_ids",
         ".synctv.client.MoveMediaRequest.source_playlist_id",
@@ -155,11 +158,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.UpdatePlaybackRequest.playlist_id",
         ".synctv.client.UpdatePlaybackRequest.version",
         ".synctv.client.DeleteMediaQuery.force",
-        ".synctv.client.ListRoomStreamsRequest.page",
-        ".synctv.client.ListRoomStreamsRequest.page_size",
-        ".synctv.client.ListRoomStreamsRequest.search",
-        ".synctv.client.ListRoomStreamsRequest.sort_by",
-        ".synctv.client.ListRoomStreamsRequest.sort_direction",
         ".synctv.client.ListMyRoomsRequest.page",
         ".synctv.client.ListMyRoomsRequest.page_size",
         ".synctv.client.ListMyRoomsRequest.search",
@@ -210,14 +208,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.admin.GetRoomMembersRequest.status",
         ".synctv.admin.GetRoomMembersRequest.sort_by",
         ".synctv.admin.GetRoomMembersRequest.sort_direction",
-        ".synctv.admin.ListProviderInstancesRequest.page",
-        ".synctv.admin.ListProviderInstancesRequest.page_size",
-        ".synctv.admin.ListProviderInstancesRequest.provider_type",
-        ".synctv.admin.ListProviderInstancesRequest.search",
-        ".synctv.admin.ListProviderInstancesRequest.enabled",
-        ".synctv.admin.ListProviderInstancesRequest.tls",
-        ".synctv.admin.ListProviderInstancesRequest.sort_by",
-        ".synctv.admin.ListProviderInstancesRequest.sort_direction",
         ".synctv.admin.ListAdminsRequest.page",
         ".synctv.admin.ListAdminsRequest.page_size",
         ".synctv.admin.ListAdminsRequest.search",
@@ -249,13 +239,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.admin.UpdateUserUsernameRequest.user_id",
         ".synctv.admin.UpdateUserRoleRequest.user_id",
         ".synctv.admin.BanUserRequest.user_id",
-        ".synctv.admin.UpdateProviderInstanceRequest.name",
-        ".synctv.admin.UpdateProviderInstanceRequest.providers",
-        ".synctv.admin.AddProviderInstanceRequest.comment",
-        ".synctv.admin.AddProviderInstanceRequest.timeout_seconds",
-        ".synctv.admin.AddProviderInstanceRequest.tls",
-        ".synctv.admin.AddProviderInstanceRequest.insecure_tls",
-        ".synctv.admin.AddProviderInstanceRequest.providers",
         ".synctv.admin.UpdateRoomPasswordRequest.room_id",
         ".synctv.admin.UpdateRoomPasswordRequest.new_password",
         ".synctv.admin.UpdateRoomSettingsRequest.room_id",
@@ -298,8 +281,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.CreatePlaylistRequest.source_config",
         ".synctv.admin.AdminRoom.settings",
         ".synctv.admin.SettingsGroup.settings",
-        ".synctv.admin.AddProviderInstanceRequest.config",
-        ".synctv.admin.UpdateProviderInstanceRequest.config",
         ".synctv.admin.GetRoomSettingsResponse.settings",
         ".synctv.admin.UpdateRoomSettingsRequest.settings",
         ".synctv.admin.GetSystemStatsResponse.additional_stats",
@@ -312,8 +293,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.ListPlaylistItemsRequest.target",
         ".synctv.client.UpdatePlaybackRequest.target",
         ".synctv.client.CreatePlaylistRequest.source_config",
-        ".synctv.admin.AddProviderInstanceRequest.config",
-        ".synctv.admin.UpdateProviderInstanceRequest.config",
         ".synctv.admin.UpdateRoomSettingsRequest.settings",
     ] {
         prost_config.field_attribute(field, "#[serde(default)]");
@@ -358,6 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.ListMyRoomsRequest",
         ".synctv.client.ListNotificationsRequest",
         ".synctv.client.GetRoomMembersRequest",
+        ".synctv.client.ListRoomStreamsRequest",
         ".synctv.client.ListRoomsRequest",
         ".synctv.client.ListPlaylistsRequest",
         ".synctv.client.GetChatHistoryRequest",
@@ -365,13 +345,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.GetAuthorizationUrlRequest",
         ".synctv.client.GetAuthorizationUrlForBindRequest",
         ".synctv.client.UnlinkProviderRequest",
-        ".synctv.client.ProviderInstanceQuery",
-        ".synctv.client.ListRoomStreamsRequest",
         ".synctv.admin.ListUsersRequest",
         ".synctv.admin.GetUserRoomsRequest",
         ".synctv.admin.ListRoomsRequest",
         ".synctv.admin.GetRoomMembersRequest",
-        ".synctv.admin.ListProviderInstancesRequest",
         ".synctv.admin.ListAdminsRequest",
         ".synctv.admin.ListActiveStreamsRequest",
     ] {
@@ -391,10 +368,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut provider_prost_config = tonic_prost_build::Config::new();
     provider_prost_config.protoc_executable(protoc);
+    prost_reflect_build::Builder::new()
+        .descriptor_pool("crate::PROVIDERS_DESCRIPTOR_POOL")
+        .file_descriptor_set_path("src/providers/descriptor.bin")
+        .configure(
+            &mut provider_prost_config,
+            &[
+                "proto/providers/bilibili.proto",
+                "proto/providers/bilibili_service.proto",
+                "proto/providers/alist.proto",
+                "proto/providers/alist_service.proto",
+                "proto/providers/emby.proto",
+                "proto/providers/emby_service.proto",
+                "proto/providers/common.proto",
+                "proto/providers/common_service.proto",
+                "proto/providers/rtmp.proto",
+                "proto/providers/rtmp_service.proto",
+            ],
+            &["."],
+        )?;
     let provider_schema_aliases = [
         "proto/providers/bilibili.proto",
         "proto/providers/alist.proto",
         "proto/providers/emby.proto",
+        "proto/providers/common.proto",
+        "proto/providers/rtmp.proto",
     ]
     .into_iter()
     .map(collect_openapi_schema_aliases)
@@ -426,8 +424,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.provider.bilibili.LoginSMSRequest.instance_name",
         ".synctv.provider.bilibili.UserInfoRequest.instance_name",
         ".synctv.provider.bilibili.LogoutRequest.instance_name",
-        ".synctv.provider.alist.LoginRequest.password",
-        ".synctv.provider.alist.LoginRequest.hashed_password",
         ".synctv.provider.alist.LoginRequest.instance_name",
         ".synctv.provider.alist.ListRequest.path",
         ".synctv.provider.alist.ListRequest.password",
@@ -447,9 +443,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.provider.emby.GetMeRequest.instance_name",
         ".synctv.provider.emby.LogoutRequest.instance_name",
         ".synctv.provider.emby.GetBindsRequest.instance_name",
+        ".synctv.provider.common.ProviderInstanceQuery.instance_name",
+        ".synctv.provider.common.AddProviderInstanceRequest.comment",
+        ".synctv.provider.common.AddProviderInstanceRequest.timeout_seconds",
+        ".synctv.provider.common.AddProviderInstanceRequest.tls",
+        ".synctv.provider.common.AddProviderInstanceRequest.insecure_tls",
+        ".synctv.provider.common.AddProviderInstanceRequest.providers",
+        ".synctv.provider.common.UpdateProviderInstanceRequest.name",
+        ".synctv.provider.common.UpdateProviderInstanceRequest.providers",
+        ".synctv.provider.common.ListProviderInstancesRequest.page",
+        ".synctv.provider.common.ListProviderInstancesRequest.page_size",
+        ".synctv.provider.common.ListProviderInstancesRequest.provider_type",
+        ".synctv.provider.common.ListProviderInstancesRequest.search",
+        ".synctv.provider.common.ListProviderInstancesRequest.sort_by",
+        ".synctv.provider.common.ListProviderInstancesRequest.sort_direction",
+        ".synctv.provider.common.ListProviderBackendsRequest.provider_type",
     ] {
         provider_builder = provider_builder.field_attribute(field, "#[serde(default)]");
     }
+    {
+        let path = ".synctv.provider.common.ProviderInstanceQuery";
+        provider_builder = provider_builder.type_attribute(
+            path,
+            "#[cfg_attr(feature = \"openapi\", derive(utoipa::IntoParams))]",
+        );
+    }
+    provider_builder = provider_builder.type_attribute(
+        ".synctv.provider.alist.LoginRequest",
+        "#[serde(try_from = \"crate::http_serde::AlistLoginRequestDef\")]",
+    );
+    provider_builder = provider_builder.type_attribute(
+        ".synctv.provider.emby.LoginRequest",
+        "#[serde(try_from = \"crate::http_serde::EmbyLoginRequestDef\")]",
+    );
     for (path, attr) in &provider_schema_aliases {
         provider_builder = provider_builder.type_attribute(path, attr);
     }
@@ -459,8 +485,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider_prost_config,
             &[
                 "proto/providers/bilibili.proto",
+                "proto/providers/bilibili_service.proto",
                 "proto/providers/alist.proto",
+                "proto/providers/alist_service.proto",
                 "proto/providers/emby.proto",
+                "proto/providers/emby_service.proto",
+                "proto/providers/common.proto",
+                "proto/providers/common_service.proto",
+                "proto/providers/rtmp.proto",
+                "proto/providers/rtmp_service.proto",
             ],
             &["."],
         )?;

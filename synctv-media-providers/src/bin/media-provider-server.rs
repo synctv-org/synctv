@@ -30,6 +30,7 @@ use synctv_media_providers::grpc::{
     emby::emby_server::EmbyServer, emby_server::EmbyService,
 };
 use tonic::codegen::http::{HeaderMap, Response as HttpResponse};
+use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::LayerExt as _;
 use tonic::transport::Server;
@@ -70,6 +71,28 @@ fn should_record_circuit_breaker_failure(headers: &HeaderMap) -> bool {
             | Code::Unavailable
             | Code::DataLoss
     )
+}
+
+fn validate_provider_secret(metadata: &MetadataMap, expected_secret: &str) -> Result<(), Status> {
+    let token = metadata
+        .get("x-provider-secret")
+        .ok_or_else(|| Status::unauthenticated("Missing x-provider-secret header"))?
+        .to_str()
+        .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
+
+    if token.is_empty() {
+        warn!("Provider gRPC auth failed: empty secret provided");
+        return Err(Status::unauthenticated("Missing x-provider-secret header"));
+    }
+
+    let token_hash = Sha256::digest(token.as_bytes());
+    let secret_hash = Sha256::digest(expected_secret.as_bytes());
+    if !bool::from(token_hash.ct_eq(&secret_hash)) {
+        warn!("Provider gRPC auth failed: invalid secret");
+        return Err(Status::unauthenticated("Invalid provider secret"));
+    }
+
+    Ok(())
 }
 
 /// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
@@ -193,29 +216,9 @@ impl ProviderAuthInterceptor {
             )));
         }
 
-        let token = request
-            .metadata()
-            .get("x-provider-secret")
-            .ok_or_else(|| Status::unauthenticated("Missing x-provider-secret header"))?
-            .to_str()
-            .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
-
-        // Validate that the secret is non-empty at the call site too
-        // Note: empty secrets are a client misconfiguration, not a backend failure,
-        // so we do NOT record a circuit-breaker failure here.
-        if token.is_empty() {
-            warn!("Provider gRPC auth failed: empty secret provided");
-            return Err(Status::unauthenticated("Missing x-provider-secret header"));
-        }
-
-        let token_hash = Sha256::digest(token.as_bytes());
-        let secret_hash = Sha256::digest(self.secret.as_bytes());
-        if !bool::from(token_hash.ct_eq(&secret_hash)) {
-            warn!("Provider gRPC auth failed: invalid secret");
-            // Auth failures don't count as circuit-breaker events (they are
-            // expected from mis-configured clients, not from a failing backend)
-            return Err(Status::unauthenticated("Invalid provider secret"));
-        }
+        // Auth failures don't count as circuit-breaker events; they are client
+        // configuration errors rather than backend failures.
+        validate_provider_secret(request.metadata(), &self.secret)?;
 
         Ok(request)
     }
@@ -260,7 +263,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb.clone(), "alist");
     let bilibili_auth =
         ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
-    let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb.clone(), "emby");
+    let emby_auth = ProviderAuthInterceptor::new(auth_secret.clone(), emby_cb.clone(), "emby");
+    let health_auth_secret = Arc::new(auth_secret);
 
     // Create circuit-breaker layers so only true gRPC successes reset the
     // breaker, while backend failures encoded in grpc-status still count.
@@ -293,7 +297,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .max_frame_size(Some(PROVIDER_GRPC_FRAME_SIZE_LIMIT))
         .concurrency_limit_per_connection(100)
-        .add_service(health_service)
+        .add_service(InterceptedService::new(
+            health_service,
+            move |request: Request<()>| {
+                validate_provider_secret(request.metadata(), &health_auth_secret)?;
+                Ok(request)
+            },
+        ))
         .add_service(
             alist_cb_layer.named_layer(InterceptedService::new(
                 AlistServer::new(alist_service)

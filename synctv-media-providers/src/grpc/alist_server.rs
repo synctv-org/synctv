@@ -45,7 +45,19 @@ impl Alist for AlistService {
         let req = request.into_inner();
         validate_provider_grpc_host(&req.host)?;
         validate_required("username", &req.username)?;
-        validate_required("password", &req.password)?;
+        match req.credential.as_ref() {
+            Some(super::alist::login_req::Credential::Password(password)) => {
+                validate_required("password", password)?;
+            }
+            Some(super::alist::login_req::Credential::HashedPassword(hashed_password)) => {
+                validate_required("hashed_password", hashed_password)?;
+            }
+            None => {
+                return Err(Status::invalid_argument(
+                    "exactly one of password or hashed_password must be provided",
+                ));
+            }
+        }
 
         let token = self
             .service

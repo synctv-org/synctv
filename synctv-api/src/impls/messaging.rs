@@ -55,6 +55,7 @@ const PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS: f64 = 30.0;
 static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
 
+use crate::impls::client::convert::playback_client_profile_from_proto;
 use crate::impls::playback_snapshot::PlaybackSnapshotService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
@@ -81,6 +82,7 @@ struct PlaybackWatchState {
 #[derive(Debug, Clone, Default)]
 struct PlaybackSnapshotWatchState {
     enabled: bool,
+    request: Option<crate::proto::client::WatchPlaybackSnapshot>,
     last_snapshot: Option<crate::proto::client::PlaybackSnapshot>,
     last_source: Option<PlaybackSnapshotSource>,
 }
@@ -90,10 +92,14 @@ struct PlaybackSnapshotSource {
     media_id: String,
     playlist_id: String,
     target: Vec<u8>,
+    playback_client_profile: Option<synctv_core::provider::PlaybackClientProfile>,
 }
 
 impl PlaybackSnapshotSource {
-    fn from_state(state: &RoomPlaybackState) -> Self {
+    fn from_state(
+        state: &RoomPlaybackState,
+        playback_client_profile: Option<synctv_core::provider::PlaybackClientProfile>,
+    ) -> Self {
         Self {
             media_id: state
                 .playing_media_id
@@ -106,6 +112,7 @@ impl PlaybackSnapshotSource {
                 .map(|id| id.as_str().to_string())
                 .unwrap_or_default(),
             target: state.target.clone(),
+            playback_client_profile,
         }
     }
 
@@ -113,6 +120,8 @@ impl PlaybackSnapshotSource {
         self.media_id == watch.media_id
             && self.playlist_id == watch.playlist_id
             && self.target == watch.target
+            && self.playback_client_profile
+                == playback_client_profile_from_proto(watch.playback_client_profile.as_ref())
     }
 }
 
@@ -2650,17 +2659,25 @@ impl StreamMessageHandler {
             .get_playback_state(&self.room_id)
             .await
             .map_err(|error| error.to_string())?;
+        let playback_client_profile =
+            playback_client_profile_from_proto(watch.playback_client_profile.as_ref());
         let snapshot = service
-            .get_playback_snapshot(&self.user_id, &self.room_id, &state)
+            .get_playback_snapshot(
+                &self.user_id,
+                &self.room_id,
+                &state,
+                playback_client_profile.as_ref(),
+            )
             .await
             .map_err(|error| error.to_string())?;
-        let current_source = PlaybackSnapshotSource::from_state(&state);
+        let current_source = PlaybackSnapshotSource::from_state(&state, playback_client_profile);
         let should_send = watch.version.is_empty()
             || watch.version != snapshot.version
             || !current_source.matches_watch(watch);
 
         let mut watch_state = self.playback_watch_state.lock().await;
         watch_state.snapshot.enabled = true;
+        watch_state.snapshot.request = Some(watch.clone());
         watch_state.snapshot.last_snapshot = Some(snapshot.clone());
         watch_state.snapshot.last_source = Some(current_source);
         drop(watch_state);
@@ -2931,20 +2948,27 @@ impl StreamMessageHandler {
             return Ok(());
         };
 
-        let (last_snapshot, last_source) = {
+        let (request, last_snapshot, last_source) = {
             let watch_state = self.playback_watch_state.lock().await;
             if !watch_state.snapshot.enabled {
                 return Ok(());
             }
             (
+                watch_state.snapshot.request.clone(),
                 watch_state.snapshot.last_snapshot.clone(),
                 watch_state.snapshot.last_source.clone(),
             )
         };
+        let Some(request) = request else {
+            return Ok(());
+        };
+        let playback_client_profile =
+            playback_client_profile_from_proto(request.playback_client_profile.as_ref());
 
         if let Some(snapshot) = &last_snapshot {
             let current_version = self.current_playback_snapshot_version(state).await?;
-            let current_source = PlaybackSnapshotSource::from_state(state);
+            let current_source =
+                PlaybackSnapshotSource::from_state(state, playback_client_profile.clone());
             let is_expired = snapshot
                 .expires_at
                 .is_some_and(|expires_at| chrono::Utc::now().timestamp() >= expires_at);
@@ -2957,7 +2981,12 @@ impl StreamMessageHandler {
         }
 
         let snapshot = match service
-            .get_playback_snapshot(&self.user_id, &self.room_id, state)
+            .get_playback_snapshot(
+                &self.user_id,
+                &self.room_id,
+                state,
+                playback_client_profile.as_ref(),
+            )
             .await
         {
             Ok(snapshot) => snapshot,
@@ -2978,7 +3007,10 @@ impl StreamMessageHandler {
             return Ok(());
         }
         watch_state.snapshot.last_snapshot = Some(snapshot.clone());
-        watch_state.snapshot.last_source = Some(PlaybackSnapshotSource::from_state(state));
+        watch_state.snapshot.last_source = Some(PlaybackSnapshotSource::from_state(
+            state,
+            playback_client_profile,
+        ));
         drop(watch_state);
 
         self.send_server_message(ServerMessage {
@@ -4962,6 +4994,7 @@ mod tests {
             _user_id: &UserId,
             _room_id: &RoomId,
             _state: &RoomPlaybackState,
+            _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         ) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
             Ok(self.snapshot.clone())
         }
@@ -4991,6 +5024,7 @@ mod tests {
             _user_id: &UserId,
             _room_id: &RoomId,
             _state: &RoomPlaybackState,
+            _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         ) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
             Ok(self.snapshot.lock().clone())
         }
@@ -5024,6 +5058,7 @@ mod tests {
             _user_id: &UserId,
             _room_id: &RoomId,
             _state: &RoomPlaybackState,
+            _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         ) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
             self.responses.lock().pop_front().unwrap_or_else(|| {
                 Err(crate::impls::ApiError::Internal(
@@ -5810,6 +5845,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -5956,6 +5992,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6029,6 +6066,7 @@ mod tests {
                         media_id: "stale_media".to_string(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6101,6 +6139,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6201,7 +6240,7 @@ mod tests {
                 source_config: serde_json::json!({
                     "url": "https://example.com/watch-playback-media-update.mp4"
                 }),
-                provider_instance_name: "direct_url".to_string(),
+                provider_instance_name: Some("direct_url".to_string()),
                 added_at: now(),
                 updated_at: now(),
                 version: 0,
@@ -6254,6 +6293,7 @@ mod tests {
                         media_id: media.id.as_str().to_string(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6412,6 +6452,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: playlist.id.as_str().to_string(),
                         target: br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6556,6 +6597,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6661,6 +6703,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),
@@ -6807,6 +6850,7 @@ mod tests {
                         media_id: String::new(),
                         playlist_id: String::new(),
                         target: Vec::new(),
+                        playback_client_profile: None,
                     },
                 ),
             ),

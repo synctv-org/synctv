@@ -280,7 +280,7 @@ mod tests {
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             0.0,
         );
         let media = media_repo.create(&media).await.unwrap();

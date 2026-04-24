@@ -200,8 +200,6 @@ struct AlistSourceConfig {
     path: String,
     #[serde(default)]
     password: Option<String>,
-    #[serde(default)]
-    provider_instance_name: Option<String>,
     /// Reference to stored credentials (server-side)
     credential_ref: super::credential_resolver::CredentialRef,
 }
@@ -219,6 +217,7 @@ impl TryFrom<&Value> for AlistSourceConfig {
     type Error = ProviderError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        super::reject_source_config_provider_instance_name(value, "Alist")?;
         super::parse_source_config(value, "Alist")
     }
 }
@@ -265,10 +264,13 @@ impl AlistProvider {
                 let login_req = synctv_media_providers::grpc::alist::LoginReq {
                     host: host.clone(),
                     username,
-                    password,
-                    hashed: true,
+                    credential: Some(
+                        synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
+                            password,
+                        ),
+                    ),
                 };
-                let instance_name = config.provider_instance_name.as_deref();
+                let instance_name = super::bound_provider_instance_name(ctx);
                 let token = self
                     .provider_login(login_req, instance_name, ctx.request_context())
                     .await?;
@@ -278,7 +280,7 @@ impl AlistProvider {
                     token,
                     path: config.path,
                     password: config.password,
-                    provider_instance_name: config.provider_instance_name,
+                    provider_instance_name: instance_name.map(std::string::ToString::to_string),
                 })
             }
             _ => Err(ProviderError::InvalidCredentialType),
@@ -496,6 +498,8 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         mut source_config: Value,
     ) -> Result<Value, ProviderError> {
+        super::reject_source_config_provider_instance_name(&source_config, "Alist")?;
+
         // Server-side: ensure credential_owner_id is set to the current user
         if let Some(user_id) = _ctx.user_id {
             if let Some(obj) = source_config.as_object_mut() {
@@ -839,7 +843,6 @@ impl DynamicFolder for AlistProvider {
             json!({
                 "path": full_path,
                 "password": base_config.password,
-                "provider_instance_name": base_config.provider_instance_name,
                 "credential_ref": {
                     "credential_owner_id": base_config.credential_ref.credential_owner_id,
                     "server_id": base_config.credential_ref.server_id,
@@ -930,7 +933,6 @@ impl DynamicFolder for AlistProvider {
             json!({
                 "path": full_path,
                 "password": base_config.password,
-                "provider_instance_name": base_config.provider_instance_name,
                 "credential_ref": {
                     "credential_owner_id": base_config.credential_ref.credential_owner_id,
                     "server_id": base_config.credential_ref.server_id,
@@ -1144,6 +1146,14 @@ impl DynamicFolder for AlistProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository::ProviderInstanceRepository;
+    use std::sync::Arc;
+
+    fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        Arc::new(RemoteProviderManager::new(repo))
+    }
 
     // Note: Provider creation tests removed as they require ProviderClient setup
 
@@ -1204,7 +1214,26 @@ mod tests {
                 "server_id": "test-server"
             }
         });
-        assert!(validate_alist(&config).is_ok());
+        assert!(validate_alist(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_alist_config_rejects_provider_instance_name() {
+        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let config = json!({
+            "path": "/media/movies/test.mp4",
+            "provider_instance_name": "remote-alist-1",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
+        });
+
+        let result = provider
+            .prepare_source_config(&ProviderContext::new("test"), config)
+            .await;
+
+        assert!(matches!(result, Err(ProviderError::InvalidConfig(_))));
     }
 
     #[test]
@@ -1252,7 +1281,6 @@ mod tests {
         assert_eq!(parsed.credential_ref.credential_owner_id, "owner-abc");
         assert_eq!(parsed.credential_ref.server_id, "srv-xyz");
         assert_eq!(parsed.path, "/media/movies");
-        assert!(parsed.provider_instance_name.is_none());
     }
 
     #[test]

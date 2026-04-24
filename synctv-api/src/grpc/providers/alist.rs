@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::http::SharedApiRuntime;
-use crate::impls::providers::{extract_instance_name, get_provider_binds};
+use crate::impls::providers::extract_instance_name;
 use crate::impls::AlistApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
@@ -12,8 +12,8 @@ use synctv_core::Config;
 // Import generated proto types from synctv_proto
 use crate::proto::providers::alist::alist_provider_service_server::AlistProviderService;
 use crate::proto::providers::alist::{
-    BindInfo, GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest,
-    ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
 
 use crate::grpc::map_api_error;
@@ -22,7 +22,6 @@ use crate::grpc::map_api_error;
 /// Thin wrapper that delegates to `AlistApiImpl`.
 #[derive(Clone)]
 pub struct AlistProviderGrpcService {
-    shared_api_runtime: Arc<SharedApiRuntime>,
     api: AlistApiImpl,
     request_executor: Arc<RequestExecutor>,
     config: Arc<Config>,
@@ -31,13 +30,12 @@ pub struct AlistProviderGrpcService {
 impl AlistProviderGrpcService {
     #[must_use]
     pub fn new(
-        shared_api_runtime: Arc<SharedApiRuntime>,
+        shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         config: Arc<Config>,
     ) -> Self {
         let api = shared_api_runtime.alist_api.as_ref().clone();
         Self {
-            shared_api_runtime,
             api,
             request_executor,
             config,
@@ -190,40 +188,21 @@ impl AlistProviderService for AlistProviderGrpcService {
         );
         let req = request.get_ref();
         let instance_name = extract_instance_name(&req.instance_name);
-        let repo = self
-            .shared_api_runtime
-            .user_provider_credential_repository
-            .clone();
+        let api = self.api.clone();
         let provider_binds = self
             .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    get_provider_binds(
-                        &repo,
-                        authenticated.user_id.as_str(),
-                        synctv_core::provider::AlistProvider::NAME,
-                        "username",
-                        instance_name.as_deref(),
-                    )
-                    .await
+                    api.get_binds(authenticated.user_id.as_str(), instance_name.as_deref())
+                        .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        let binds = provider_binds
-            .into_iter()
-            .map(|b| BindInfo {
-                id: b.id,
-                host: b.host,
-                username: b.label_value,
-                created_at: b.created_at,
-            })
-            .collect();
-
-        Ok(Response::new(GetBindsResponse { binds }))
+        Ok(Response::new(provider_binds))
     }
 }
 

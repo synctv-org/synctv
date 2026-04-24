@@ -6,6 +6,7 @@ target/
 .idea/
 .vscode/
 .claude/
+.tmp/
 
 # Secrets and configuration
 *.pem

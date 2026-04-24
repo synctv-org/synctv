@@ -4,7 +4,6 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
-use rayon::prelude::*;
 use std::time::Duration;
 use synctv_livestream::error::StreamError;
 
@@ -16,7 +15,6 @@ pub mod notification;
 pub mod oauth2;
 mod playback_snapshot;
 mod playlist_items_snapshot;
-pub mod provider;
 pub mod providers;
 pub mod request_context;
 mod room_members_snapshot;
@@ -31,14 +29,12 @@ pub use messaging::{
 };
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
-pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
+pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderCommonApiImpl};
 pub use request_context::{
     EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata, TransportProtocol,
 };
 
 const CLUSTER_EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(250);
-const STREAM_ID_PARALLEL_THRESHOLD: usize = 1_024;
-
 fn record_cluster_event_publish_failure(reason: &'static str, message: &str) {
     synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
         .with_label_values(&[reason])
@@ -241,44 +237,6 @@ pub fn proto_validated_playlist_ids(values: Vec<String>) -> Vec<synctv_core::mod
         .into_iter()
         .map(proto_validated_playlist_id)
         .collect()
-}
-
-pub(crate) fn build_room_streams_response(
-    mut media_ids: Vec<String>,
-    req: &crate::proto::client::ListRoomStreamsRequest,
-) -> crate::proto::client::ListRoomStreamsResponse {
-    if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
-        media_ids = media_ids
-            .into_par_iter()
-            .with_min_len(STREAM_ID_PARALLEL_THRESHOLD)
-            .filter(|media_id| media_id.to_ascii_lowercase().contains(search.as_str()))
-            .collect();
-    }
-
-    media_ids.par_sort_unstable();
-
-    if matches!(
-        crate::proto::client::SortDirection::try_from(req.sort_direction),
-        Ok(crate::proto::client::SortDirection::Desc)
-    ) {
-        media_ids.reverse();
-    }
-
-    let page = usize::try_from(req.page.max(1)).unwrap_or(usize::MAX);
-    let page_size = usize::try_from(req.page_size.max(1)).unwrap_or(usize::MAX);
-    let total = i32::try_from(media_ids.len()).unwrap_or(i32::MAX);
-    let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let streams = media_ids
-        .into_iter()
-        .skip(offset)
-        .take(page_size)
-        .map(|media_id| crate::proto::client::StreamEntry {
-            media_id,
-            active: true,
-        })
-        .collect();
-
-    crate::proto::client::ListRoomStreamsResponse { streams, total }
 }
 
 pub fn parse_optional_media_id_param(

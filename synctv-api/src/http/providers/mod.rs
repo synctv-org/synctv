@@ -10,8 +10,10 @@
 
 pub mod alist;
 pub mod bilibili;
+pub mod common;
 pub mod emby;
 pub mod live;
+pub mod rtmp;
 // direct_url module removed: proxy handled by unified_proxy_handler,
 // no provider-specific API endpoints needed.
 
@@ -213,7 +215,7 @@ pub(crate) async fn proxy_options_preflight(
 /// - Slice-cache proxying may perform multiple upstream hops, and each hop is
 ///   independent rather than sharing one end-to-end deadline.
 pub(crate) fn unified_proxy_handler(
-    Path(path): Path<crate::proto::client::ProviderProxyPathRequest>,
+    Path(path): Path<crate::proto::providers::common::ProviderProxyPathRequest>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
@@ -239,7 +241,7 @@ fn build_proxy_action_control(
 }
 
 fn execute_unified_proxy_handler(
-    path: crate::proto::client::ProviderProxyPathRequest,
+    path: crate::proto::providers::common::ProviderProxyPathRequest,
     state: AppState,
     request_meta: crate::impls::RequestMetadata,
     headers: HeaderMap,
@@ -247,7 +249,7 @@ fn execute_unified_proxy_handler(
 ) -> BoxFuture<'static, AppResult<axum::response::Response>> {
     async move {
         crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
-        let crate::proto::client::ProviderProxyPathRequest {
+        let crate::proto::providers::common::ProviderProxyPathRequest {
             provider_name,
             sub_path,
         } = path;
@@ -476,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_provider_proxy_path_request_deserializes_proto_field_names() {
-        let req: crate::proto::client::ProviderProxyPathRequest = serde_json::from_str(
+        let req: crate::proto::providers::common::ProviderProxyPathRequest = serde_json::from_str(
             r#"{"provider_name":"test_provider","sub_path":"v1/media/stream.m3u8"}"#,
         )
         .expect("deserialize path request");
@@ -955,7 +957,7 @@ mod tests {
             .expect("ban user");
 
         let err = unified_proxy_handler(
-            Path(crate::proto::client::ProviderProxyPathRequest {
+            Path(crate::proto::providers::common::ProviderProxyPathRequest {
                 provider_name: "test_provider".to_string(),
                 sub_path: "v1/media".to_string(),
             }),
@@ -1020,7 +1022,7 @@ mod tests {
             .expect("close room");
 
         let err = unified_proxy_handler(
-            Path(crate::proto::client::ProviderProxyPathRequest {
+            Path(crate::proto::providers::common::ProviderProxyPathRequest {
                 provider_name: "test_provider".to_string(),
                 sub_path: "v1/media".to_string(),
             }),

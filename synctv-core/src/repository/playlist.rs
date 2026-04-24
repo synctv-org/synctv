@@ -1123,10 +1123,10 @@ mod tests {
         assert!(fetched[0].is_top_level());
     }
 
-    /// Integration test: empty provider instance name is normalized to database NULL.
+    /// Integration test: blank provider instance name is stored as the default binding.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_create_normalizes_empty_provider_instance_name_to_null() {
+    async fn test_create_normalizes_blank_provider_instance_name_to_default_binding() {
         use crate::repository::room::RoomRepository;
         use crate::repository::user::UserRepository;
         use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
@@ -1170,7 +1170,7 @@ mod tests {
         assert!(fetched.provider_instance_name.is_none());
     }
 
-    /// Integration test: empty provider-instance filter matches default local dynamic playlists.
+    /// Integration test: empty provider-instance filter matches default dynamic playlists.
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_filtered_by_parent_matches_default_provider_instance_name() {

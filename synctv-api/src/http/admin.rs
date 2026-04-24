@@ -5,35 +5,21 @@
 
 use axum::{
     extract::{Path, State},
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
-use futures::future::BoxFuture;
-use futures::FutureExt;
-use std::{future::Future, sync::Arc};
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+use std::sync::Arc;
 
 use super::{
-    middleware::RequestMetadata, validation::ValidatedQuery, AppError, AppResult, AppState,
-    WithProviderInstanceName, WithRoomId, WithUserId,
+    admin_execute::{execute_admin_endpoint, execute_root_endpoint, request_metadata},
+    middleware::RequestMetadata,
+    validation::ValidatedQuery,
+    AppError, AppResult, AppState, WithRoomId, WithUserId,
 };
 use crate::proto::admin;
 
-fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
-}
-
-fn request_context(
-    request_meta: &crate::impls::RequestMetadata,
-) -> crate::impls::admin::RequestContext {
-    crate::impls::admin::RequestContext {
-        ip_address: request_meta.client_ip.map(|ip| ip.to_string()),
-        user_agent: request_meta.user_agent.clone(),
-    }
-}
-
-fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl>, AppError> {
-    state.admin_api.as_ref().ok_or_else(|| {
+fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>, AppError> {
+    state.admin_api.clone().ok_or_else(|| {
         AppError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "Admin service is not available on this server.",
@@ -45,99 +31,6 @@ fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl
 /// status code mapping (no keyword-based heuristics).
 fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
-}
-
-fn execute_admin_endpoint<'a, T, F, Fut>(
-    state: &'a AppState,
-    request_meta: RequestMetadata,
-    operation: F,
-) -> BoxFuture<'a, Result<T, AppError>>
-where
-    T: Send + 'a,
-    F: FnOnce(
-        Arc<crate::impls::AdminApiImpl>,
-        crate::impls::admin::ValidatedAdmin,
-        crate::impls::admin::RequestContext,
-    ) -> Fut,
-    F: Send + 'a,
-    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
-{
-    async move {
-        let request_meta = request_metadata(request_meta);
-        let ctx = request_context(&request_meta);
-        let api = require_admin_api(state)?.clone();
-        let executor = api.clone();
-        executor
-            .execute_admin_endpoint(&request_meta, move |validated| {
-                operation(api, validated, ctx)
-            })
-            .await
-            .map_err(admin_err_to_app_error)
-    }
-    .boxed()
-}
-
-fn execute_admin_endpoint_with_control<'a, T, F, Fut>(
-    state: &'a AppState,
-    request_meta: RequestMetadata,
-    operation: F,
-) -> BoxFuture<'a, Result<T, AppError>>
-where
-    T: Send + 'a,
-    F: FnOnce(
-            Arc<crate::impls::AdminApiImpl>,
-            synctv_core::provider::ExecutionControl,
-            crate::impls::admin::ValidatedAdmin,
-            crate::impls::admin::RequestContext,
-        ) -> Fut
-        + Send
-        + 'a,
-    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
-{
-    async move {
-        let request_meta = request_metadata(request_meta);
-        let ctx = request_context(&request_meta);
-        let api = require_admin_api(state)?.clone();
-        let executor = api.clone();
-        executor
-            .execute_admin_endpoint_with_control(
-                &request_meta,
-                move |request_control, validated| operation(api, request_control, validated, ctx),
-            )
-            .await
-            .map_err(admin_err_to_app_error)
-    }
-    .boxed()
-}
-
-fn execute_root_endpoint<'a, T, F, Fut>(
-    state: &'a AppState,
-    request_meta: RequestMetadata,
-    operation: F,
-) -> BoxFuture<'a, Result<T, AppError>>
-where
-    T: Send + 'a,
-    F: FnOnce(
-        Arc<crate::impls::AdminApiImpl>,
-        crate::impls::admin::ValidatedAdmin,
-        crate::impls::admin::RequestContext,
-    ) -> Fut,
-    F: Send + 'a,
-    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
-{
-    async move {
-        let request_meta = request_metadata(request_meta);
-        let ctx = request_context(&request_meta);
-        let api = require_admin_api(state)?.clone();
-        let executor = api.clone();
-        executor
-            .execute_root_endpoint(&request_meta, move |validated| {
-                operation(api, validated, ctx)
-            })
-            .await
-            .map_err(admin_err_to_app_error)
-    }
-    .boxed()
 }
 
 // Path validation helpers
@@ -190,15 +83,6 @@ pub fn create_admin_router() -> Router<AppState> {
         // Batch room operations
         .route("/rooms/batch/ban", post(batch_ban_rooms))
         .route("/rooms/batch/delete", post(batch_delete_rooms))
-        // Provider instances
-        .route("/providers", get(list_providers).post(add_provider))
-        .route(
-            "/providers/{name}",
-            put(update_provider).delete(delete_provider),
-        )
-        .route("/providers/{name}/reconnect", post(reconnect_provider))
-        .route("/providers/{name}/enable", post(enable_provider))
-        .route("/providers/{name}/disable", post(disable_provider))
         // Stream management
         .route("/streams", get(list_streams))
         .route("/streams/kick", post(kick_stream))
@@ -226,9 +110,12 @@ pub(crate) async fn get_system_stats(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::GetSystemStatsResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_system_stats(admin::GetSystemStatsRequest {}).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_system_stats(admin::GetSystemStatsRequest {}).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -255,6 +142,7 @@ pub(crate) async fn get_settings(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.get_settings(admin::GetSettingsRequest {}, &validated.user_id, &rctx)
                 .await
@@ -287,6 +175,7 @@ pub(crate) async fn get_settings_group(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.get_settings_group(req, &validated.user_id, &rctx).await
         },
@@ -318,6 +207,7 @@ pub(crate) async fn set_settings(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.update_settings(req, &validated.user_id, &rctx).await
         },
@@ -382,9 +272,12 @@ pub(crate) async fn list_users(
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListUsersRequest>,
 ) -> AppResult<Json<admin::ListUsersResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.list_users(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_users(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -409,9 +302,12 @@ pub(crate) async fn get_user(
     State(state): State<AppState>,
     Path(req): Path<admin::GetUserRequest>,
 ) -> AppResult<Json<admin::GetUserResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_user(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_user(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -439,6 +335,7 @@ pub(crate) async fn create_user(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.create_user(req, validated.role, &validated.user_id, &rctx)
                 .await
@@ -471,6 +368,7 @@ pub(crate) async fn delete_user(
         execute_root_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.delete_user(req, &validated.user_id, &rctx).await
             },
@@ -505,6 +403,7 @@ pub(crate) async fn set_user_role(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.update_user_role(req, &validated.user_id, validated.role, &rctx)
                 .await
@@ -543,6 +442,7 @@ pub(crate) async fn set_user_password(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.update_user_password(req, validated.user_id, validated.role, &rctx)
                 .await
@@ -578,6 +478,7 @@ pub(crate) async fn set_user_username(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.update_user_username(req, &validated.user_id, &rctx)
                 .await
@@ -613,6 +514,7 @@ pub(crate) async fn ban_user(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.ban_user(req, &validated.user_id, validated.role, &rctx)
                 .await
@@ -645,6 +547,7 @@ pub(crate) async fn unban_user(
         execute_admin_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.unban_user(req, &validated.user_id, &rctx).await
             },
@@ -675,6 +578,7 @@ pub(crate) async fn approve_user(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.approve_user(req, &validated.user_id, &rctx).await
         },
@@ -707,9 +611,12 @@ pub(crate) async fn get_user_rooms(
     ValidatedQuery(req): ValidatedQuery<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_user_rooms(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_user_rooms(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -750,6 +657,7 @@ pub(crate) async fn batch_ban_users(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.batch_ban_users(req, &validated.user_id, validated.role, &rctx)
                 .await
@@ -788,6 +696,7 @@ pub(crate) async fn batch_delete_users(
     let resp = execute_root_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.batch_delete_users(req, &validated.user_id, validated.role, &rctx)
                 .await
@@ -818,9 +727,12 @@ pub(crate) async fn list_rooms(
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListRoomsRequest>,
 ) -> AppResult<Json<admin::ListRoomsResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.list_rooms(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_rooms(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -844,9 +756,12 @@ pub(crate) async fn get_room(
     State(state): State<AppState>,
     Path(req): Path<admin::GetRoomRequest>,
 ) -> AppResult<Json<admin::GetRoomResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_room(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_room(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -874,6 +789,7 @@ pub(crate) async fn delete_room(
         execute_admin_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.delete_room(req, &validated.user_id, &rctx).await
             },
@@ -908,6 +824,7 @@ pub(crate) async fn set_room_password(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.update_room_password(req, &validated.user_id, &rctx)
                 .await
@@ -941,9 +858,12 @@ pub(crate) async fn get_room_members(
     ValidatedQuery(req): ValidatedQuery<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_room_members(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_room_members(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -975,6 +895,7 @@ pub(crate) async fn ban_room(
         execute_admin_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.ban_room(req, &validated.user_id, &rctx).await
             },
@@ -1006,6 +927,7 @@ pub(crate) async fn unban_room(
         execute_admin_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.unban_room(req, &validated.user_id, &rctx).await
             },
@@ -1036,6 +958,7 @@ pub(crate) async fn approve_room(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.approve_room(req, &validated.user_id, &rctx).await
         },
@@ -1063,9 +986,12 @@ pub(crate) async fn get_room_settings(
     State(state): State<AppState>,
     Path(req): Path<admin::GetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::GetRoomSettingsResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.get_room_settings(req).await
-    })
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_room_settings(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -1093,10 +1019,16 @@ pub(crate) async fn set_room_settings(
     Json(req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, validated, _| async move {
-        api.update_room_settings(req, &validated.user_id).await
-    })
-    .await?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, _| async move {
+                api.update_room_settings(req, &validated.user_id).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -1119,10 +1051,16 @@ pub(crate) async fn reset_room_settings(
     State(state): State<AppState>,
     Path(req): Path<admin::ResetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::ResetRoomSettingsResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, validated, _| async move {
-        api.reset_room_settings(req, &validated.user_id).await
-    })
-    .await?;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, _| async move {
+                api.reset_room_settings(req, &validated.user_id).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 
@@ -1162,6 +1100,7 @@ pub(crate) async fn batch_ban_rooms(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.batch_ban_rooms(req, &validated.user_id, &rctx).await
         },
@@ -1199,238 +1138,11 @@ pub(crate) async fn batch_delete_rooms(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.batch_delete_rooms(req, &validated.user_id, &rctx).await
         },
     )
-    .await?;
-    Ok(Json(resp))
-}
-
-// Provider Instances
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/admin/providers",
-        tag = "Admin",
-        responses(
-            (status = 200, description = "Provider instances", body = admin::ListProviderInstancesResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn list_providers(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListProviderInstancesRequest>,
-) -> AppResult<Json<admin::ListProviderInstancesResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.list_provider_instances(req).await
-    })
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/admin/providers",
-        tag = "Admin",
-        request_body = admin::AddProviderInstanceRequest,
-        responses(
-            (status = 200, description = "Provider instance added", body = admin::AddProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn add_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Json(req): Json<admin::AddProviderInstanceRequest>,
-) -> AppResult<Json<admin::AddProviderInstanceResponse>> {
-    let resp = execute_admin_endpoint_with_control(
-        &state,
-        request_meta,
-        move |api, request_control, validated, rctx| async move {
-            api.add_provider_instance_with_control(
-                req,
-                &validated.user_id,
-                &rctx,
-                Some(&request_control),
-            )
-            .await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        put,
-        path = "/api/admin/providers/{name}",
-        tag = "Admin",
-        params(("name" = String, Path, description = "Provider instance name")),
-        request_body = admin::UpdateProviderInstanceRequest,
-        responses(
-            (status = 200, description = "Provider instance updated", body = admin::UpdateProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn update_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<admin::ProviderInstancePathRequest>,
-    Json(req): Json<admin::UpdateProviderInstanceRequest>,
-) -> AppResult<Json<admin::UpdateProviderInstanceResponse>> {
-    let req = req.with_provider_instance_name(validate_admin_proto_path(path)?.name);
-    let resp = execute_admin_endpoint_with_control(
-        &state,
-        request_meta,
-        move |api, request_control, validated, rctx| async move {
-            api.update_provider_instance_with_control(
-                req,
-                &validated.user_id,
-                &rctx,
-                Some(&request_control),
-            )
-            .await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        delete,
-        path = "/api/admin/providers/{name}",
-        tag = "Admin",
-        params(("name" = String, Path, description = "Provider instance name")),
-        responses(
-            (status = 200, description = "Provider instance deleted", body = admin::DeleteProviderInstanceResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn delete_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::DeleteProviderInstanceRequest>,
-) -> AppResult<Json<admin::DeleteProviderInstanceResponse>> {
-    let resp = execute_admin_endpoint(
-        &state,
-        request_meta,
-        move |api, validated, rctx| async move {
-            api.delete_provider_instance(req, &validated.user_id, &rctx)
-                .await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/admin/providers/{name}/reconnect",
-        tag = "Admin",
-        params(("name" = String, Path, description = "Provider instance name")),
-        responses(
-            (status = 200, description = "Provider instance reconnected", body = admin::ReconnectProviderInstanceResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn reconnect_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::ReconnectProviderInstanceRequest>,
-) -> AppResult<Json<admin::ReconnectProviderInstanceResponse>> {
-    let resp = execute_admin_endpoint_with_control(
-        &state,
-        request_meta,
-        move |api, request_control, validated, rctx| async move {
-            api.reconnect_provider_instance_with_control(
-                req,
-                &validated.user_id,
-                &rctx,
-                Some(&request_control),
-            )
-            .await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/admin/providers/{name}/enable",
-        tag = "Admin",
-        params(("name" = String, Path, description = "Provider instance name")),
-        responses(
-            (status = 200, description = "Provider instance enabled", body = admin::EnableProviderInstanceResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn enable_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::EnableProviderInstanceRequest>,
-) -> AppResult<Json<admin::EnableProviderInstanceResponse>> {
-    let resp = execute_admin_endpoint_with_control(
-        &state,
-        request_meta,
-        move |api, request_control, _, _| async move {
-            api.enable_provider_instance_with_control(req, Some(&request_control))
-                .await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/admin/providers/{name}/disable",
-        tag = "Admin",
-        params(("name" = String, Path, description = "Provider instance name")),
-        responses(
-            (status = 200, description = "Provider instance disabled", body = admin::DisableProviderInstanceResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn disable_provider(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::DisableProviderInstanceRequest>,
-) -> AppResult<Json<admin::DisableProviderInstanceResponse>> {
-    let resp = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.disable_provider_instance(req).await
-    })
     .await?;
     Ok(Json(resp))
 }
@@ -1456,9 +1168,12 @@ pub(crate) async fn list_streams(
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListActiveStreamsRequest>,
 ) -> AppResult<Json<admin::ListActiveStreamsResponse>> {
-    let response = execute_admin_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.list_active_streams(req).await
-    })
+    let response = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_active_streams(req).await },
+    )
     .await?;
     Ok(Json(response))
 }
@@ -1483,7 +1198,7 @@ pub(crate) async fn kick_stream(
     State(state): State<AppState>,
     Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
-    execute_admin_endpoint(&state, request_meta, move |api, validated, rctx| async move {
+    execute_admin_endpoint(&state, request_meta, require_admin_api, move |api, validated, rctx| async move {
         api.kick_stream(req, &validated.user_id, &rctx).await
     })
     .await?;
@@ -1510,9 +1225,12 @@ pub(crate) async fn list_admins(
     State(state): State<AppState>,
     ValidatedQuery(req): ValidatedQuery<admin::ListAdminsRequest>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
-    let resp = execute_root_endpoint(&state, request_meta, move |api, _, _| async move {
-        api.list_admins(req).await
-    })
+    let resp = execute_root_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_admins(req).await },
+    )
     .await?;
     Ok(Json(resp))
 }
@@ -1540,6 +1258,7 @@ pub(crate) async fn add_admin(
         execute_root_endpoint(
             &state,
             request_meta,
+            require_admin_api,
             move |api, validated, rctx| async move {
                 api.add_admin(req, &validated.user_id, &rctx).await
             },
@@ -1570,6 +1289,7 @@ pub(crate) async fn remove_admin(
     let resp = execute_root_endpoint(
         &state,
         request_meta,
+        require_admin_api,
         move |api, validated, rctx| async move {
             api.remove_admin(req, &validated.user_id, &rctx).await
         },
@@ -1636,16 +1356,6 @@ mod tests {
     }
 
     #[test]
-    fn test_update_provider_instance_request_deserializes_without_path_name() {
-        let req: admin::UpdateProviderInstanceRequest =
-            serde_json::from_str(r#"{"endpoint":"https://provider.internal"}"#)
-                .expect("deserialize");
-
-        assert!(req.name.is_empty());
-        assert_eq!(req.endpoint.as_deref(), Some("https://provider.internal"));
-    }
-
-    #[test]
     fn test_admin_user_path_request_deserializes_proto_field_name() {
         let req: admin::UserPathRequest =
             serde_json::from_str(r#"{"user_id":"AbC123xYz890"}"#).expect("deserialize");
@@ -1659,14 +1369,6 @@ mod tests {
             serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).expect("deserialize");
 
         assert_eq!(req.room_id, "AbC123xYz890");
-    }
-
-    #[test]
-    fn test_provider_instance_path_request_deserializes_proto_field_name() {
-        let req: admin::ProviderInstancePathRequest =
-            serde_json::from_str(r#"{"name":"alist_main"}"#).expect("deserialize");
-
-        assert_eq!(req.name, "alist_main");
     }
 
     #[test]
@@ -1742,7 +1444,7 @@ mod tests {
             crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
                 .await
                 .expect("extractor should not fail");
-        let ctx = request_context(&request_meta.0);
+        let ctx = crate::http::admin_execute::request_context(&request_meta.0);
 
         assert_eq!(ctx.ip_address.as_deref(), Some("203.0.113.10"));
         assert_eq!(ctx.user_agent.as_deref(), Some("audit-test"));
@@ -1768,7 +1470,7 @@ mod tests {
             crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
                 .await
                 .expect("extractor should not fail");
-        let ctx = request_context(&request_meta.0);
+        let ctx = crate::http::admin_execute::request_context(&request_meta.0);
 
         assert_eq!(ctx.ip_address.as_deref(), Some("198.51.100.7"));
     }
@@ -1808,20 +1510,6 @@ mod tests {
         assert_eq!(query.status, 0);
         assert!(query.search.is_empty());
         assert_eq!(query.is_banned, None);
-        assert_eq!(query.sort_by, 0);
-        assert_eq!(query.sort_direction, 0);
-    }
-
-    #[test]
-    fn test_list_provider_instances_query_defaults_to_proto_zero_values() {
-        let query: admin::ListProviderInstancesRequest = serde_urlencoded::from_str("").unwrap();
-
-        assert_eq!(query.page, 0);
-        assert_eq!(query.page_size, 0);
-        assert!(query.provider_type.is_empty());
-        assert!(query.search.is_empty());
-        assert_eq!(query.enabled, None);
-        assert_eq!(query.tls, None);
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
     }
@@ -1879,69 +1567,6 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_instance_path_request_validation_empty() {
-        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
-            name: String::new(),
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_provider_instance_path_request_validation_too_long() {
-        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
-            name: "a".repeat(65),
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_provider_instance_path_request_validation_special_characters() {
-        let invalid_names = vec![
-            "test<script>",
-            "test>alert",
-            "test\"quote",
-            "test'apostrophe",
-            "test space",
-            "test/slash",
-            "test\\backslash",
-            "test;drop",
-            "test& amp",
-        ];
-        for invalid_name in invalid_names {
-            let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
-                name: invalid_name.to_string(),
-            });
-            assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");
-        }
-    }
-
-    #[test]
-    fn test_provider_instance_path_request_validation_valid() {
-        let valid_names = vec![
-            "provider1",
-            "my-provider",
-            "my_provider",
-            "Provider123",
-            "abc",
-            "test_provider-123",
-        ];
-        for valid_name in valid_names {
-            let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
-                name: valid_name.to_string(),
-            });
-            assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
-        }
-    }
-
-    #[test]
-    fn test_provider_instance_path_request_max_length_valid() {
-        let result = validate_admin_proto_path(admin::ProviderInstancePathRequest {
-            name: "a".repeat(64),
-        });
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_kick_stream_requires_room_id_and_media_id() {
         // The handler checks: if req.room_id.is_empty() || req.media_id.is_empty()
         let empty_room = admin::KickStreamRequest {
@@ -1964,70 +1589,6 @@ mod tests {
             reason: "test".to_string(),
         };
         assert!(!valid.room_id.is_empty() && !valid.media_id.is_empty());
-    }
-
-    #[test]
-    fn test_add_provider_name_validation_empty_in_body() {
-        let req = admin::AddProviderInstanceRequest {
-            name: String::new(),
-            endpoint: "http://localhost:50051".to_string(),
-            comment: String::new(),
-            timeout_seconds: 10,
-            tls: false,
-            insecure_tls: false,
-            providers: vec![],
-            config: vec![],
-        };
-        let result = crate::impls::validate_proto_request(&req);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_add_provider_name_validation_malicious_in_body() {
-        let malicious_names = vec![
-            "<script>alert(1)</script>",
-            "test; DROP TABLE providers;",
-            "../../../etc/passwd",
-        ];
-        for malicious_name in malicious_names {
-            let result = crate::impls::validate_proto_request(&admin::AddProviderInstanceRequest {
-                name: malicious_name.to_string(),
-                endpoint: "http://localhost:50051".to_string(),
-                comment: String::new(),
-                timeout_seconds: 10,
-                tls: false,
-                insecure_tls: false,
-                providers: vec![],
-                config: vec![],
-            });
-            assert!(
-                result.is_err(),
-                "Expected '{malicious_name}' to be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn test_add_provider_name_validation_valid_in_body() {
-        let valid_names = vec![
-            "alist_main",
-            "bilibili-prod",
-            "emby_server_1",
-            "provider123",
-        ];
-        for valid_name in valid_names {
-            let result = crate::impls::validate_proto_request(&admin::AddProviderInstanceRequest {
-                name: valid_name.to_string(),
-                endpoint: "http://localhost:50051".to_string(),
-                comment: String::new(),
-                timeout_seconds: 10,
-                tls: false,
-                insecure_tls: false,
-                providers: vec![],
-                config: vec![],
-            });
-            assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
-        }
     }
 
     #[test]

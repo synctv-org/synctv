@@ -90,7 +90,7 @@ fn test_add_media_permission_denied() {
         playlist_id: Some(PlaylistId::new()),
         name: "Test Video".to_string(),
         source_provider: "bilibili".to_string(),
-        provider_instance_name: "bilibili_main".to_string(),
+        provider_instance_name: Some("bilibili_main".to_string()),
         source_config: serde_json::json!({"bvid": "BV1234567890"}),
     };
     assert_eq!(request.name, "Test Video");
@@ -150,7 +150,7 @@ fn test_add_media_request_with_null_source_config() {
         playlist_id: Some(PlaylistId::new()),
         name: "Null Config".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "test".to_string(),
+        provider_instance_name: Some("test".to_string()),
         source_config: serde_json::Value::Null,
     };
     assert!(request.source_config.is_null());

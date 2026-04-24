@@ -25,10 +25,10 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 use super::client::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
     map_slice_preserve_order, media_list_to_proto, media_to_proto_with_availability,
-    member_status_to_proto, playback_snapshot_to_proto, playback_state_to_proto,
-    playlist_list_to_proto, playlist_path_node_to_proto, playlist_to_proto,
-    playlist_to_proto_with_availability, provider_playback_info_to_model, room_to_proto_basic,
-    sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    member_status_to_proto, playback_client_profile_from_proto, playback_snapshot_to_proto,
+    playback_state_to_proto, playlist_list_to_proto, playlist_path_node_to_proto,
+    playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
+    room_to_proto_basic, sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
@@ -175,13 +175,19 @@ fn parse_batch_user_ids(user_ids: &[String]) -> Result<Vec<UserId>, ApiError> {
         .collect()
 }
 
-fn publish_key_service_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("Publish key service is not available on this server.".to_string())
-}
-
 struct AdminActor {
     username: String,
     role: UserRole,
+}
+
+struct DynamicPlaylistPlaybackRequest<'a> {
+    user_id: &'a str,
+    room_id: &'a str,
+    room_id_model: &'a RoomId,
+    user_id_model: &'a UserId,
+    playlist_id: &'a PlaylistId,
+    target: &'a [u8],
+    playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
 }
 
 /// Result of validating an admin user's authentication.
@@ -342,13 +348,6 @@ fn paginate_vec<T>(items: Vec<T>, page: i32, page_size: i32) -> Vec<T> {
     let page_size = page_size_i32_to_usize(page_size, 100);
     let offset = (page - 1) * page_size;
     items.into_iter().skip(offset).take(page_size).collect()
-}
-
-fn build_room_stream_list_response(
-    media_ids: Vec<String>,
-    req: &crate::proto::client::ListRoomStreamsRequest,
-) -> crate::proto::client::ListRoomStreamsResponse {
-    crate::impls::build_room_streams_response(media_ids, req)
 }
 
 fn compare_active_streams(
@@ -702,6 +701,7 @@ impl AdminApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
@@ -719,34 +719,27 @@ impl AdminApiImpl {
         }
 
         let providers_manager = self.room_service.media_service().providers_manager();
-        let provider = if let Some(instance_name) =
-            (!media.provider_instance_name.trim().is_empty())
-                .then_some(media.provider_instance_name.trim())
-        {
-            providers_manager.get(instance_name).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-            })?
-        } else {
-            let provider_name = media.source_provider.trim();
-            if provider_name.is_empty() {
-                return Err(ApiError::Internal(format!(
-                    "Static media '{}' is missing source_provider",
-                    media.id
-                )));
-            }
-            providers_manager
-                .get_by_type(provider_name)
-                .await
-                .ok_or_else(|| {
-                    ApiError::NotFound(format!("Provider '{provider_name}' not found"))
-                })?
-        };
+        let provider_name = media.source_provider.trim();
+        if provider_name.is_empty() {
+            return Err(ApiError::Internal(format!(
+                "Static media '{}' is missing source_provider",
+                media.id
+            )));
+        }
+        let provider = providers_manager
+            .resolve_provider(provider_name, media.provider_instance_name.as_deref())
+            .await
+            .map_err(ApiError::from)?;
 
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(user_id)
             .with_room_id(room_id)
             .with_media_id(media.id.as_str())
+            .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
+        if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
         if let Some(repo) = self.room_service.media_service().credential_repo() {
             ctx = ctx.with_credential_repo(repo.as_ref());
         }
@@ -808,13 +801,18 @@ impl AdminApiImpl {
 
     async fn build_dynamic_playlist_playback_result(
         &self,
-        user_id: &str,
-        room_id: &str,
-        room_id_model: &RoomId,
-        user_id_model: &UserId,
-        playlist_id: &PlaylistId,
-        target: &[u8],
+        request: DynamicPlaylistPlaybackRequest<'_>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        let DynamicPlaylistPlaybackRequest {
+            user_id,
+            room_id,
+            room_id_model,
+            user_id_model,
+            playlist_id,
+            target,
+            playback_client_profile,
+        } = request;
+
         let item = self
             .room_service
             .media_service()
@@ -849,25 +847,21 @@ impl AdminApiImpl {
                 Some(trimmed)
             }
         });
-        let provider = if let Some(instance_name) = bound_instance {
-            providers_manager.get(instance_name).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-            })?
-        } else {
-            providers_manager
-                .get_by_type(provider_name)
-                .await
-                .ok_or_else(|| {
-                    ApiError::NotFound(format!("Provider '{provider_name}' not found"))
-                })?
-        };
+        let provider = providers_manager
+            .resolve_provider(provider_name, bound_instance)
+            .await
+            .map_err(ApiError::from)?;
 
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(user_id)
             .with_room_id(room_id)
+            .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
+        if let Some(provider_instance_name) = bound_instance {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
         if let Some(repo) = self.room_service.media_service().credential_repo() {
             ctx = ctx.with_credential_repo(repo.as_ref());
         }
@@ -916,6 +910,7 @@ impl AdminApiImpl {
         user_id: &UserId,
         room_id: &RoomId,
         state: &synctv_core::models::RoomPlaybackState,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
             let media = self
@@ -926,20 +921,26 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
             return self
-                .build_static_media_playback_result(user_id.as_str(), room_id.as_str(), media)
+                .build_static_media_playback_result(
+                    user_id.as_str(),
+                    room_id.as_str(),
+                    media,
+                    playback_client_profile,
+                )
                 .await;
         }
 
         if let Some(ref playlist_id) = state.playing_playlist_id {
             return self
-                .build_dynamic_playlist_playback_result(
-                    user_id.as_str(),
-                    room_id.as_str(),
-                    room_id,
-                    user_id,
+                .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
+                    user_id: user_id.as_str(),
+                    room_id: room_id.as_str(),
+                    room_id_model: room_id,
+                    user_id_model: user_id,
                     playlist_id,
-                    &state.target,
-                )
+                    target: &state.target,
+                    playback_client_profile,
+                })
                 .await;
         }
 
@@ -2591,372 +2592,6 @@ impl AdminApiImpl {
         ))
     }
 
-    pub async fn list_provider_instances(
-        &self,
-        req: crate::proto::admin::ListProviderInstancesRequest,
-    ) -> Result<crate::proto::admin::ListProviderInstancesResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-
-        let query = synctv_core::models::ProviderInstanceListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(req.page)),
-                Some(page_size_i32_to_u32(req.page_size, 100)),
-            ),
-            provider_type: normalize_non_empty_filter(&req.provider_type),
-            search: normalize_non_empty_filter(&req.search),
-            enabled: req.enabled,
-            tls: req.tls,
-            sort_by: match crate::proto::admin::ProviderInstanceListSortBy::try_from(req.sort_by)
-                .unwrap_or(crate::proto::admin::ProviderInstanceListSortBy::CreatedAt)
-            {
-                crate::proto::admin::ProviderInstanceListSortBy::Name => {
-                    synctv_core::models::ProviderInstanceListSortBy::Name
-                }
-                crate::proto::admin::ProviderInstanceListSortBy::Endpoint => {
-                    synctv_core::models::ProviderInstanceListSortBy::Endpoint
-                }
-                crate::proto::admin::ProviderInstanceListSortBy::UpdatedAt => {
-                    synctv_core::models::ProviderInstanceListSortBy::UpdatedAt
-                }
-                crate::proto::admin::ProviderInstanceListSortBy::CreatedAt
-                | crate::proto::admin::ProviderInstanceListSortBy::Unspecified => {
-                    synctv_core::models::ProviderInstanceListSortBy::CreatedAt
-                }
-            },
-            sort_direction: match crate::proto::admin::SortDirection::try_from(req.sort_direction)
-                .unwrap_or(crate::proto::admin::SortDirection::Desc)
-            {
-                crate::proto::admin::SortDirection::Asc => CoreSortDirection::Asc,
-                crate::proto::admin::SortDirection::Desc
-                | crate::proto::admin::SortDirection::Unspecified => CoreSortDirection::Desc,
-            },
-        };
-
-        let instances = self
-            .provider_instance_manager
-            .list_instances(&query)
-            .await
-            .map_err(ApiError::from)?;
-        let proto_instances: Vec<_> = instances
-            .into_iter()
-            .map(provider_instance_to_proto)
-            .collect();
-
-        Ok(crate::proto::admin::ListProviderInstancesResponse {
-            instances: proto_instances,
-        })
-    }
-
-    pub async fn add_provider_instance(
-        &self,
-        req: crate::proto::admin::AddProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
-        self.add_provider_instance_with_control(req, admin_user_id, ctx, None)
-            .await
-    }
-
-    pub async fn add_provider_instance_with_control(
-        &self,
-        req: crate::proto::admin::AddProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        // Parse config if provided
-        let (jwt_secret, custom_ca) = if req.config.is_empty() {
-            (None, None)
-        } else {
-            let config: serde_json::Value = serde_json::from_slice(&req.config)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid config JSON: {e}")))?;
-            (
-                config
-                    .get("jwt_secret")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                config
-                    .get("custom_ca")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-            )
-        };
-
-        let instance = synctv_core::models::ProviderInstance {
-            name: req.name,
-            endpoint: req.endpoint,
-            comment: if req.comment.is_empty() {
-                None
-            } else {
-                Some(req.comment)
-            },
-            jwt_secret,
-            custom_ca,
-            timeout: seconds_to_timeout_string(if req.timeout_seconds > 0 {
-                req.timeout_seconds
-            } else {
-                10
-            }),
-            tls: req.tls,
-            insecure_tls: req.insecure_tls,
-            providers: req.providers,
-            enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        self.provider_instance_manager
-            .add_with_control(instance.clone(), control)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Audit log: provider instance creation (best-effort)
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceCreated,
-            synctv_core::service::AuditTargetType::ProviderInstance,
-            Some(instance.name.clone()),
-            serde_json::json!({
-                "instance_name": instance.name,
-                "endpoint": mask_url_credentials(&instance.endpoint),
-            }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::AddProviderInstanceResponse {
-            instance: Some(provider_instance_to_proto(instance)),
-        })
-    }
-
-    pub async fn update_provider_instance(
-        &self,
-        req: crate::proto::admin::UpdateProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
-        self.update_provider_instance_with_control(req, admin_user_id, ctx, None)
-            .await
-    }
-
-    pub async fn update_provider_instance_with_control(
-        &self,
-        req: crate::proto::admin::UpdateProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        // Get existing instance
-        let mut instance = self
-            .provider_instance_manager
-            .get_instance(&req.name)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-            })?;
-
-        // Update fields if explicitly provided (optional fields)
-        if let Some(endpoint) = req.endpoint {
-            instance.endpoint = endpoint;
-        }
-        if let Some(comment) = req.comment {
-            instance.comment = Some(comment);
-        }
-        if let Some(timeout_seconds) = req.timeout_seconds {
-            instance.timeout = seconds_to_timeout_string(timeout_seconds);
-        }
-        if !req.providers.is_empty() {
-            instance.providers = req.providers;
-        }
-
-        // Update boolean fields (optional means explicit intent)
-        if let Some(tls) = req.tls {
-            instance.tls = tls;
-        }
-        if let Some(insecure_tls) = req.insecure_tls {
-            instance.insecure_tls = insecure_tls;
-        }
-
-        // Parse config if provided for additional settings
-        if !req.config.is_empty() {
-            let config: serde_json::Value = serde_json::from_slice(&req.config)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid config JSON: {e}")))?;
-            if let Some(jwt_secret) = config.get("jwt_secret").and_then(|v| v.as_str()) {
-                instance.jwt_secret = Some(jwt_secret.to_string());
-            }
-            if let Some(custom_ca) = config.get("custom_ca").and_then(|v| v.as_str()) {
-                instance.custom_ca = Some(custom_ca.to_string());
-            }
-            if let Some(tls) = config.get("tls").and_then(serde_json::Value::as_bool) {
-                instance.tls = tls;
-            }
-            if let Some(insecure_tls) = config
-                .get("insecure_tls")
-                .and_then(serde_json::Value::as_bool)
-            {
-                instance.insecure_tls = insecure_tls;
-            }
-        }
-
-        instance.updated_at = chrono::Utc::now();
-
-        self.provider_instance_manager
-            .update_with_control(instance.clone(), control)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Audit log: provider instance update (best-effort)
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceUpdated,
-            synctv_core::service::AuditTargetType::ProviderInstance,
-            Some(instance.name.clone()),
-            serde_json::json!({ "instance_name": instance.name }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::UpdateProviderInstanceResponse {
-            instance: Some(provider_instance_to_proto(instance)),
-        })
-    }
-
-    pub async fn delete_provider_instance(
-        &self,
-        req: crate::proto::admin::DeleteProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::DeleteProviderInstanceResponse, ApiError> {
-        self.provider_instance_manager
-            .delete(&req.name)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Audit log: provider instance deletion (best-effort)
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceDeleted,
-            synctv_core::service::AuditTargetType::ProviderInstance,
-            Some(req.name.clone()),
-            serde_json::json!({ "instance_name": req.name }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::DeleteProviderInstanceResponse { success: true })
-    }
-
-    pub async fn reconnect_provider_instance(
-        &self,
-        req: crate::proto::admin::ReconnectProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
-        self.reconnect_provider_instance_with_control(req, admin_user_id, ctx, None)
-            .await
-    }
-
-    pub async fn reconnect_provider_instance_with_control(
-        &self,
-        req: crate::proto::admin::ReconnectProviderInstanceRequest,
-        admin_user_id: &UserId,
-        ctx: &RequestContext,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
-        // Atomic reconnect: invalidate cached channel and re-create from DB config
-        self.provider_instance_manager
-            .reconnect_with_control(&req.name, control)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Get updated instance
-        let instances = self
-            .provider_instance_manager
-            .get_instance(&req.name)
-            .await
-            .map_err(ApiError::from)?;
-        let instance = instances.ok_or_else(|| {
-            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-        })?;
-
-        // Audit log: provider instance reconnection (best-effort)
-        self.log_admin_action(
-            admin_user_id,
-            synctv_core::service::AuditAction::ProviderInstanceReconnected,
-            synctv_core::service::AuditTargetType::ProviderInstance,
-            Some(instance.name.clone()),
-            serde_json::json!({
-                "instance_name": instance.name,
-                "endpoint": mask_url_credentials(&instance.endpoint),
-            }),
-            ctx,
-        )
-        .await;
-
-        Ok(crate::proto::admin::ReconnectProviderInstanceResponse {
-            instance: Some(provider_instance_to_proto(instance)),
-        })
-    }
-
-    pub async fn enable_provider_instance(
-        &self,
-        req: crate::proto::admin::EnableProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, ApiError> {
-        self.enable_provider_instance_with_control(req, None).await
-    }
-
-    pub async fn enable_provider_instance_with_control(
-        &self,
-        req: crate::proto::admin::EnableProviderInstanceRequest,
-        control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, ApiError> {
-        self.provider_instance_manager
-            .enable_with_control(&req.name, control)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Get updated instance
-        let instances = self
-            .provider_instance_manager
-            .get_instance(&req.name)
-            .await
-            .map_err(ApiError::from)?;
-        let instance = instances.ok_or_else(|| {
-            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-        })?;
-
-        Ok(crate::proto::admin::EnableProviderInstanceResponse {
-            instance: Some(provider_instance_to_proto(instance)),
-        })
-    }
-
-    pub async fn disable_provider_instance(
-        &self,
-        req: crate::proto::admin::DisableProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::DisableProviderInstanceResponse, ApiError> {
-        self.provider_instance_manager
-            .disable(&req.name)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Get updated instance
-        let instances = self
-            .provider_instance_manager
-            .get_instance(&req.name)
-            .await
-            .map_err(ApiError::from)?;
-        let instance = instances.ok_or_else(|| {
-            ApiError::NotFound(format!("Provider instance '{}' not found", req.name))
-        })?;
-
-        Ok(crate::proto::admin::DisableProviderInstanceResponse {
-            instance: Some(provider_instance_to_proto(instance)),
-        })
-    }
-
     pub async fn create_user(
         &self,
         req: crate::proto::admin::CreateUserRequest,
@@ -4006,94 +3641,43 @@ impl AdminApiImpl {
         Ok(())
     }
 
-    pub async fn create_publish_key(
+    pub async fn create_publish_key_for_actor(
         &self,
         room_id: &str,
         media_id: &str,
+        actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let media_id = crate::impls::parse_media_id_param(media_id, "media_id")?;
-
-        let media = self
-            .room_service
-            .media_service()
-            .get_media(&media_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to load media: {e}")))?
-            .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", media_id.as_str())))?;
-
-        if media.room_id != rid {
-            return Err(ApiError::InvalidInput(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
-
-        let publish_key_service = self
-            .publish_key_service
-            .as_ref()
-            .ok_or_else(publish_key_service_unavailable_error)?;
-
-        let publish_key = publish_key_service
-            .generate_publish_key(&rid, &media_id, admin_user_id)
-            .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
-        let token = publish_key.token.clone();
-        let stream_key = format!("{}?token={}", media_id.as_str(), token);
+    ) -> Result<crate::proto::providers::rtmp::CreatePublishKeyResponse, ApiError> {
+        let response = self
+            .create_rtmp_publish_key(
+                crate::proto::providers::rtmp::CreatePublishKeyRequest {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                },
+                actor_user_id,
+            )
+            .await?;
 
         tracing::info!(
-            room_id = %rid.as_str(),
-            media_id = %media_id.as_str(),
+            room_id,
+            media_id,
+            actor_user_id = %actor_user_id.as_str(),
             admin_user_id = %admin_user_id.as_str(),
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
-            "Admin created publish key"
+            "Admin created publish key for actor user"
         );
 
-        Ok(crate::proto::client::CreatePublishKeyResponse {
-            publish_key: token,
-            rtmp_url: build_publish_rtmp_url(&self.config, rid.as_str()),
-            stream_key,
-            expires_at: publish_key.expires_at,
-        })
+        Ok(response)
     }
 
     pub async fn get_stream_info(
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<crate::proto::client::GetStreamInfoResponse, ApiError> {
-        crate::http::validation::validate_nanoid_id(media_id, "media_id")
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
-
-        let _rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let infrastructure = self
-            .live_streaming_infrastructure
-            .as_ref()
-            .ok_or_else(live_streaming_unavailable_error)?;
-
-        match infrastructure
-            .registry
-            .get_publisher(room_id, media_id)
-            .await
-        {
-            Ok(Some(pub_info)) => Ok(crate::proto::client::GetStreamInfoResponse {
-                active: true,
-                publisher: Some(crate::proto::client::StreamPublisherInfo {
-                    user_id: pub_info.user_id,
-                    started_at: pub_info.started_at.timestamp(),
-                }),
-            }),
-            Ok(None) => Ok(crate::proto::client::GetStreamInfoResponse {
-                active: false,
-                publisher: None,
-            }),
-            Err(error) => Err(ApiError::Internal(format!(
-                "Failed to get stream info: {error}"
-            ))),
-        }
+    ) -> Result<crate::proto::providers::rtmp::GetStreamInfoResponse, ApiError> {
+        self.get_rtmp_stream_info(room_id, media_id).await
     }
 
     pub async fn list_room_streams(
@@ -4101,11 +3685,11 @@ impl AdminApiImpl {
         room_id: &str,
         req: crate::proto::client::ListRoomStreamsRequest,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
-        let req = crate::impls::client::build_room_streams_request(req)?;
+        let req = crate::impls::client::stream::build_room_streams_request(req)?;
         let _rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
         if self.live_streaming_infrastructure.is_none() {
-            return Err(live_streaming_unavailable_error());
+            return Err(crate::impls::client::stream::live_streaming_unavailable_error());
         }
 
         let media_ids = self
@@ -4113,7 +3697,9 @@ impl AdminApiImpl {
             .active_room_stream_media_ids(room_id)
             .await;
 
-        Ok(build_room_stream_list_response(media_ids, &req))
+        Ok(crate::impls::client::stream::build_room_streams_response(
+            media_ids, &req,
+        ))
     }
 
     pub async fn start_playback(
@@ -4184,9 +3770,12 @@ impl AdminApiImpl {
         &self,
         room_id: &str,
         admin_user_id: &UserId,
+        playback_client_profile: Option<crate::proto::client::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let playback_client_profile =
+            playback_client_profile_from_proto(playback_client_profile.as_ref());
 
         self.require_admin_actor(admin_user_id).await?;
 
@@ -4200,7 +3789,12 @@ impl AdminApiImpl {
             .await
         {
             Ok(snapshot_user_id) => match self
-                .build_playback_snapshot_from_state(&snapshot_user_id, &rid, &state)
+                .build_playback_snapshot_from_state(
+                    &snapshot_user_id,
+                    &rid,
+                    &state,
+                    playback_client_profile.as_ref(),
+                )
                 .await
             {
                 Ok(snapshot) => Some(snapshot),
@@ -5717,12 +5311,6 @@ fn admin_room_member_to_proto(
     }
 }
 
-fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
-    let rtmp_host = config.public_rtmp_host();
-    let rtmp_port = config.livestream.rtmp_port;
-    format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
-}
-
 fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin::AdminUser {
     let role = match user.role {
         synctv_core::models::UserRole::Root => synctv_proto::common::UserRole::Root as i32,
@@ -5749,63 +5337,6 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
         status,
         created_at: user.created_at.timestamp(),
         updated_at: user.updated_at.timestamp(),
-    }
-}
-
-fn provider_instance_to_proto(
-    instance: synctv_core::models::ProviderInstance,
-) -> crate::proto::admin::ProviderInstance {
-    use crate::proto::admin::ProviderInstanceStatus;
-
-    // The `status` field represents actual connection state, not enabled/disabled.
-    // Since we don't track real connection status here, use Disconnected for disabled
-    // instances and Unspecified for enabled ones (actual connectivity is unknown).
-    let status: i32 = if instance.enabled {
-        ProviderInstanceStatus::Unspecified.into()
-    } else {
-        ProviderInstanceStatus::Disconnected.into()
-    };
-
-    // Parse timeout string (e.g., "10s", "30s") to seconds
-    let timeout_seconds = parse_timeout_to_seconds(&instance.timeout);
-
-    crate::proto::admin::ProviderInstance {
-        name: instance.name,
-        endpoint: instance.endpoint,
-        comment: instance.comment.unwrap_or_default(),
-        timeout_seconds,
-        tls: instance.tls,
-        insecure_tls: instance.insecure_tls,
-        providers: instance.providers,
-        enabled: instance.enabled,
-        status,
-        created_at: instance.created_at.timestamp(),
-        updated_at: instance.updated_at.timestamp(),
-    }
-}
-
-fn parse_timeout_to_seconds(timeout: &str) -> u32 {
-    timeout.trim_end_matches('s').parse::<u32>().unwrap_or(10)
-}
-
-fn seconds_to_timeout_string(seconds: u32) -> String {
-    format!("{seconds}s")
-}
-
-/// Strip credentials (username/password) from a URL before including it in audit logs.
-///
-/// If the input is not a valid URL, returns it unchanged (best-effort masking).
-fn mask_url_credentials(endpoint: &str) -> String {
-    match url::Url::parse(endpoint) {
-        Ok(mut parsed) => {
-            if !parsed.username().is_empty() || parsed.password().is_some() {
-                // Clear credentials - set_username/set_password return Err only for cannot-be-a-base URLs
-                let _ = parsed.set_username("");
-                let _ = parsed.set_password(None);
-            }
-            parsed.to_string()
-        }
-        Err(_) => endpoint.to_string(),
     }
 }
 
@@ -6002,7 +5533,7 @@ mod tests {
 
     #[test]
     fn test_publish_key_service_unavailable_error_is_service_unavailable() {
-        let err = publish_key_service_unavailable_error();
+        let err = crate::impls::providers::rtmp::publish_key_service_unavailable_error();
         assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(
             err.message(),
@@ -6636,40 +6167,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_timeout_to_seconds_valid() {
-        assert_eq!(parse_timeout_to_seconds("10s"), 10);
-        assert_eq!(parse_timeout_to_seconds("30s"), 30);
-        assert_eq!(parse_timeout_to_seconds("0s"), 0);
-        assert_eq!(parse_timeout_to_seconds("300s"), 300);
-    }
-
-    #[test]
-    fn test_parse_timeout_to_seconds_no_suffix() {
-        assert_eq!(parse_timeout_to_seconds("10"), 10);
-    }
-
-    #[test]
-    fn test_parse_timeout_to_seconds_invalid() {
-        assert_eq!(parse_timeout_to_seconds("abc"), 10); // Default fallback
-        assert_eq!(parse_timeout_to_seconds(""), 10); // Empty string
-    }
-
-    #[test]
-    fn test_seconds_to_timeout_string() {
-        assert_eq!(seconds_to_timeout_string(10), "10s");
-        assert_eq!(seconds_to_timeout_string(0), "0s");
-        assert_eq!(seconds_to_timeout_string(300), "300s");
-    }
-
-    #[test]
-    fn test_timeout_roundtrip() {
-        for secs in [0, 1, 10, 30, 60, 300] {
-            let s = seconds_to_timeout_string(secs);
-            assert_eq!(parse_timeout_to_seconds(&s), secs);
-        }
-    }
-
     fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         let now = chrono::Utc::now();
         synctv_core::models::Room {
@@ -7064,132 +6561,6 @@ mod tests {
         assert_eq!(proto.admin_removed_permissions, 0x33);
     }
 
-    #[test]
-    fn test_provider_instance_to_proto_enabled() {
-        let instance = synctv_core::models::ProviderInstance {
-            name: "test_provider".to_string(),
-            endpoint: "https://example.com".to_string(),
-            comment: Some("A test provider".to_string()),
-            jwt_secret: None,
-            custom_ca: None,
-            timeout: "30s".to_string(),
-            tls: true,
-            insecure_tls: false,
-            providers: vec!["bilibili".to_string(), "alist".to_string()],
-            enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        let proto = provider_instance_to_proto(instance);
-
-        assert_eq!(proto.name, "test_provider");
-        assert_eq!(proto.endpoint, "https://example.com");
-        assert_eq!(proto.comment, "A test provider");
-        assert_eq!(proto.timeout_seconds, 30);
-        assert!(proto.tls);
-        assert!(!proto.insecure_tls);
-        assert_eq!(proto.providers, vec!["bilibili", "alist"]);
-        assert!(proto.enabled);
-        assert_eq!(
-            proto.status,
-            i32::from(crate::proto::admin::ProviderInstanceStatus::Unspecified)
-        );
-    }
-
-    #[test]
-    fn test_provider_instance_to_proto_disabled() {
-        let instance = synctv_core::models::ProviderInstance {
-            name: "disabled_provider".to_string(),
-            endpoint: "https://disabled.example.com".to_string(),
-            comment: None,
-            jwt_secret: None,
-            custom_ca: None,
-            timeout: "10s".to_string(),
-            tls: false,
-            insecure_tls: false,
-            providers: vec![],
-            enabled: false,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        let proto = provider_instance_to_proto(instance);
-
-        assert_eq!(
-            proto.status,
-            i32::from(crate::proto::admin::ProviderInstanceStatus::Disconnected)
-        );
-        assert_eq!(proto.comment, ""); // None -> empty
-        assert!(!proto.enabled);
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_list_provider_instances_filters_by_provider_type() {
-        let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, _redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
-        let repository = ProviderInstanceRepository::new(pool);
-
-        for instance in [
-            synctv_core::models::ProviderInstance {
-                name: "alist-edge".to_string(),
-                endpoint: "https://alist.example.com".to_string(),
-                comment: Some("alist provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: true,
-                insecure_tls: false,
-                providers: vec!["alist".to_string()],
-                enabled: false,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            synctv_core::models::ProviderInstance {
-                name: "emby-edge".to_string(),
-                endpoint: "https://emby.example.com".to_string(),
-                comment: Some("emby provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: true,
-                insecure_tls: false,
-                providers: vec!["emby".to_string()],
-                enabled: false,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-        ] {
-            repository
-                .create(&instance)
-                .await
-                .expect("provider instance should be created");
-        }
-
-        let response = admin_api
-            .list_provider_instances(crate::proto::admin::ListProviderInstancesRequest {
-                page: 1,
-                page_size: 50,
-                provider_type: "alist".to_string(),
-                search: String::new(),
-                enabled: None,
-                tls: None,
-                sort_by: crate::proto::admin::ProviderInstanceListSortBy::CreatedAt as i32,
-                sort_direction: crate::proto::admin::SortDirection::Desc as i32,
-            })
-            .await
-            .expect("provider list should succeed");
-
-        let names: Vec<String> = response
-            .instances
-            .into_iter()
-            .map(|instance| instance.name)
-            .collect();
-        assert_eq!(names, vec!["alist-edge".to_string()]);
-    }
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_admins_includes_root_and_admin_only() {
@@ -7279,100 +6650,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_list_provider_instances_respects_search_filters_sort_and_pagination() {
-        let (_postgres, pool) = create_test_pool().await;
-        let (admin_api, _redis_publish_rx) =
-            make_admin_api_for_delete_user_test(pool.clone()).await;
-        let repository = ProviderInstanceRepository::new(pool);
-
-        for instance in [
-            synctv_core::models::ProviderInstance {
-                name: "beta-edge".to_string(),
-                endpoint: "https://beta.example.com".to_string(),
-                comment: Some("edge provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: true,
-                insecure_tls: false,
-                providers: vec!["alist".to_string()],
-                enabled: true,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            synctv_core::models::ProviderInstance {
-                name: "alpha-edge".to_string(),
-                endpoint: "https://alpha.example.com".to_string(),
-                comment: Some("edge provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: true,
-                insecure_tls: false,
-                providers: vec!["alist".to_string()],
-                enabled: true,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            synctv_core::models::ProviderInstance {
-                name: "gamma-edge".to_string(),
-                endpoint: "https://gamma.example.com".to_string(),
-                comment: Some("edge provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: true,
-                insecure_tls: false,
-                providers: vec!["alist".to_string()],
-                enabled: false,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            synctv_core::models::ProviderInstance {
-                name: "delta-off".to_string(),
-                endpoint: "https://delta.example.com".to_string(),
-                comment: Some("other provider".to_string()),
-                jwt_secret: None,
-                custom_ca: None,
-                timeout: "10s".to_string(),
-                tls: false,
-                insecure_tls: false,
-                providers: vec!["alist".to_string()],
-                enabled: true,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-        ] {
-            repository
-                .create(&instance)
-                .await
-                .expect("provider instance should be created");
-        }
-
-        let response = admin_api
-            .list_provider_instances(crate::proto::admin::ListProviderInstancesRequest {
-                page: 2,
-                page_size: 1,
-                provider_type: "alist".to_string(),
-                search: "edge".to_string(),
-                enabled: Some(true),
-                tls: Some(true),
-                sort_by: crate::proto::admin::ProviderInstanceListSortBy::Name as i32,
-                sort_direction: crate::proto::admin::SortDirection::Asc as i32,
-            })
-            .await
-            .expect("provider list should succeed");
-
-        let names: Vec<String> = response
-            .instances
-            .into_iter()
-            .map(|instance| instance.name)
-            .collect();
-        assert_eq!(names, vec!["beta-edge".to_string()]);
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
     async fn test_admin_list_endpoints_reject_invalid_proto_requests() {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, _redis_publish_rx) =
@@ -7421,24 +6698,6 @@ mod tests {
             .await
             .expect_err("invalid list_users request must be rejected");
         assert!(matches!(list_users_error, ApiError::InvalidInput(_)));
-
-        let list_provider_instances_error = admin_api
-            .list_provider_instances(crate::proto::admin::ListProviderInstancesRequest {
-                page: -1,
-                page_size: 101,
-                provider_type: String::new(),
-                search: String::new(),
-                enabled: None,
-                tls: None,
-                sort_by: crate::proto::admin::ProviderInstanceListSortBy::Unspecified as i32,
-                sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
-            })
-            .await
-            .expect_err("invalid list_provider_instances request must be rejected");
-        assert!(matches!(
-            list_provider_instances_error,
-            ApiError::InvalidInput(_)
-        ));
 
         let get_user_rooms_error = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
@@ -7764,77 +7023,6 @@ mod tests {
     #[test]
     fn test_admin_can_reset_user_password() {
         assert!(password_reset_allowed(UserRole::Admin, UserRole::User));
-    }
-
-    #[test]
-    fn test_mask_url_credentials_with_user_and_password() {
-        let url = "https://user:secretpass@server.example.com/api";
-        let masked = mask_url_credentials(url);
-        assert!(
-            !masked.contains("user:"),
-            "Username should be stripped: {masked}"
-        );
-        assert!(
-            !masked.contains("secretpass"),
-            "Password should be stripped: {masked}"
-        );
-        assert!(
-            masked.contains("server.example.com/api"),
-            "Host and path should remain: {masked}"
-        );
-    }
-
-    #[test]
-    fn test_mask_url_credentials_with_user_only() {
-        let url = "https://admin@server.example.com:8096/emby";
-        let masked = mask_url_credentials(url);
-        assert!(
-            !masked.contains("admin@"),
-            "Username should be stripped: {masked}"
-        );
-        assert!(
-            masked.contains("server.example.com:8096/emby"),
-            "Host and path should remain: {masked}"
-        );
-    }
-
-    #[test]
-    fn test_mask_url_credentials_without_credentials() {
-        let url = "https://server.example.com/api";
-        let masked = mask_url_credentials(url);
-        assert_eq!(masked, "https://server.example.com/api");
-    }
-
-    #[test]
-    fn test_mask_url_credentials_invalid_url_passthrough() {
-        let url = "not-a-valid-url";
-        let masked = mask_url_credentials(url);
-        assert_eq!(masked, "not-a-valid-url");
-    }
-
-    #[test]
-    fn test_mask_url_credentials_empty_string() {
-        let masked = mask_url_credentials("");
-        assert_eq!(masked, "");
-    }
-
-    #[test]
-    fn test_mask_url_credentials_preserves_port_and_query() {
-        let url = "https://user:pass@host.com:9090/path?key=val";
-        let masked = mask_url_credentials(url);
-        assert!(
-            !masked.contains("user"),
-            "Username should be stripped: {masked}"
-        );
-        assert!(
-            !masked.contains("pass"),
-            "Password should be stripped: {masked}"
-        );
-        assert!(
-            masked.contains("host.com:9090"),
-            "Host and port should remain: {masked}"
-        );
-        assert!(masked.contains("key=val"), "Query should remain: {masked}");
     }
 
     #[test]
@@ -9915,7 +9103,7 @@ mod tests {
 
     #[test]
     fn build_room_stream_list_response_applies_search_sort_and_pagination() {
-        let response = build_room_stream_list_response(
+        let response = crate::impls::client::stream::build_room_streams_response(
             vec![
                 "beta-02".to_string(),
                 "alpha-01".to_string(),
@@ -9998,14 +9186,25 @@ mod tests {
             create_room_media(&pool, room.id.clone(), owner.id.clone(), "stream-media").await;
 
         let response = admin_api
-            .create_publish_key(
+            .create_publish_key_for_actor(
                 room.id.as_str(),
                 media.id.as_str(),
+                &owner.id,
                 &global_admin.id,
                 &RequestContext::default(),
             )
             .await
             .expect("global admin should create publish key without room membership");
+
+        let claims = admin_api
+            .publish_key_service
+            .as_ref()
+            .expect("publish key service should be configured")
+            .validate_publish_key_for_stream_claims(&response.publish_key, &room.id, &media.id)
+            .await
+            .expect("generated publish key should be valid for the target stream");
+
+        assert_eq!(claims.user_id, owner.id.as_str());
         assert!(!response.publish_key.is_empty());
         assert!(response.rtmp_url.contains(room.id.as_str()));
         assert!(response.stream_key.contains(media.id.as_str()));
@@ -10263,7 +9462,7 @@ mod tests {
             .expect("owner should be able to seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id)
+            .get_playback(room.id.as_str(), &global_admin.id, None)
             .await
             .expect("global admin should get playback without room membership");
 
@@ -10348,7 +9547,7 @@ mod tests {
             "Broken Playback Provider".to_string(),
             serde_json::json!({ "opaque": true }),
             "missing_provider",
-            String::new(),
+            None,
             0.0,
         );
         media_repo.create(&media).await.expect("create media");
@@ -10367,7 +9566,7 @@ mod tests {
             .expect("owner should seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id)
+            .get_playback(room.id.as_str(), &global_admin.id, None)
             .await
             .expect("global admin should get playback state even if snapshot generation fails");
 
@@ -10454,7 +9653,7 @@ mod tests {
                 }
             }),
             "direct_url",
-            String::new(),
+            None,
             0.0,
         );
         let media = media_repo
@@ -10476,7 +9675,7 @@ mod tests {
             .expect("owner should be able to seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id)
+            .get_playback(room.id.as_str(), &global_admin.id, None)
             .await
             .expect("global admin should get signed provider playback");
 
@@ -10558,7 +9757,7 @@ mod tests {
                 }
             }),
             "direct_url",
-            String::new(),
+            None,
             0.0,
         );
         let media = media_repo
@@ -10581,7 +9780,7 @@ mod tests {
 
         let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
         let response = admin_api
-            .get_playback(room.id.as_str(), &management_actor)
+            .get_playback(room.id.as_str(), &management_actor, None)
             .await
             .expect("local management actor should get signed provider playback");
 
@@ -11181,7 +10380,7 @@ mod tests {
                     playlist_id: Some(child_playlist.id.clone()),
                     name: "playlist-delete-cascade-media".to_string(),
                     source_provider: "direct_url".to_string(),
-                    provider_instance_name: String::new(),
+                    provider_instance_name: None,
                     source_config: serde_json::json!({
                         "url": "https://example.com/admin-playlist-delete-cascade.mp4"
                     }),

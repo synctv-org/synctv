@@ -353,7 +353,7 @@ async fn test_media_switch_triggers_broadcast() {
         position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         added_at: now_media,
         updated_at: now_media,
         version: 0,

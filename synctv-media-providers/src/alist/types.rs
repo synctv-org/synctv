@@ -3,7 +3,7 @@
 //! HTTP-specific types for Alist JSON API responses.
 //! These are converted to proto types in the service layer.
 
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 
 /// Generic Alist API response wrapper (for HTTP responses)
 #[derive(Debug, Deserialize)]
@@ -26,9 +26,9 @@ pub struct HttpFsGetResp {
     pub size: u64,
     #[serde(rename = "is_dir")]
     pub is_dir: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_time_as_u64")]
     pub modified: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_time_as_u64")]
     pub created: u64,
     #[serde(default)]
     pub sign: String,
@@ -54,9 +54,9 @@ pub struct HttpFsGetRelated {
     pub size: u64,
     #[serde(rename = "is_dir")]
     pub is_dir: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_time_as_u64")]
     pub modified: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_time_as_u64")]
     pub created: u64,
     #[serde(default)]
     pub sign: String,
@@ -87,7 +87,7 @@ pub struct HttpFsListContent {
     pub size: u64,
     #[serde(rename = "is_dir")]
     pub is_dir: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_time_as_u64")]
     pub modified: u64,
     #[serde(default)]
     pub sign: String,
@@ -106,12 +106,69 @@ pub struct HttpMeResp {
     _password: String, // never expose password hash
     #[serde(rename = "base_path")]
     pub base_path: String,
+    #[serde(deserialize_with = "deserialize_me_role")]
     pub role: u64,
     pub disabled: bool,
     pub permission: u64,
     #[serde(rename = "sso_id")]
     pub sso_id: String,
     pub otp: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HttpTimeValue {
+    Number(u64),
+    String(String),
+}
+
+fn deserialize_time_as_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<HttpTimeValue>::deserialize(deserializer)? else {
+        return Ok(0);
+    };
+
+    match value {
+        HttpTimeValue::Number(timestamp) => Ok(timestamp),
+        HttpTimeValue::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+                return Ok(0);
+            }
+
+            if let Ok(timestamp) = trimmed.parse::<u64>() {
+                return Ok(timestamp);
+            }
+
+            chrono::DateTime::parse_from_rfc3339(trimmed)
+                .map_err(D::Error::custom)
+                .and_then(|timestamp| {
+                    u64::try_from(timestamp.timestamp().max(0)).map_err(D::Error::custom)
+                })
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HttpMeRole {
+    Scalar(u64),
+    List(Vec<u64>),
+}
+
+fn deserialize_me_role<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match HttpMeRole::deserialize(deserializer)? {
+        HttpMeRole::Scalar(role) => Ok(role),
+        HttpMeRole::List(roles) => roles
+            .into_iter()
+            .max()
+            .ok_or_else(|| D::Error::custom("role array must not be empty")),
+    }
 }
 
 /// Search content item from HTTP API

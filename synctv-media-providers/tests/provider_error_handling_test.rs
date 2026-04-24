@@ -406,6 +406,10 @@ mod alist_type_tests {
 
 mod emby_type_tests {
     use synctv_media_providers::emby::types::*;
+    use synctv_media_providers::grpc::emby::{
+        DirectPlayProfileHint, PlaybackInfoDeviceProfile, SubtitleDeliveryMethod,
+        SubtitleProfileHint,
+    };
 
     #[test]
     fn test_emby_auth_response_deserialize() {
@@ -568,6 +572,92 @@ mod emby_type_tests {
         assert!(containers.contains(&"mp4,m4v"));
         assert!(containers.contains(&"mkv"));
         assert!(containers.contains(&"webm"));
+
+        let subtitles = obj["SubtitleProfiles"].as_array().unwrap();
+        assert_eq!(subtitles.len(), 3);
+        assert!(subtitles.iter().all(|profile| {
+            profile.get("Method").and_then(serde_json::Value::as_str) == Some("External")
+        }));
+    }
+
+    #[test]
+    fn test_emby_device_profile_preserves_explicit_empty_subtitle_profiles() {
+        let profile = PlaybackInfoDeviceProfile {
+            direct_play_profiles: Vec::new(),
+            transcoding_container: String::new(),
+            transcoding_protocol: String::new(),
+            transcoding_video_codec: String::new(),
+            transcoding_audio_codec: String::new(),
+            subtitle_profiles: Vec::new(),
+        };
+
+        let value = device_profile_from_playback_client_profile(Some(&profile));
+        let subtitles = value["SubtitleProfiles"].as_array().unwrap();
+
+        assert!(
+            subtitles.is_empty(),
+            "an explicitly empty subtitle profile means subtitles are unsupported"
+        );
+    }
+
+    #[test]
+    fn test_emby_device_profile_maps_custom_playback_profile() {
+        let profile = PlaybackInfoDeviceProfile {
+            direct_play_profiles: vec![
+                DirectPlayProfileHint {
+                    container: "mp4,m4v".to_string(),
+                    video_codecs: vec!["h264".to_string(), "hevc".to_string()],
+                    audio_codecs: vec!["aac".to_string(), "eac3".to_string()],
+                },
+                DirectPlayProfileHint {
+                    container: "ignored-empty-codecs".to_string(),
+                    video_codecs: Vec::new(),
+                    audio_codecs: vec!["aac".to_string()],
+                },
+            ],
+            transcoding_container: "mp4".to_string(),
+            transcoding_protocol: "dash".to_string(),
+            transcoding_video_codec: "hevc".to_string(),
+            transcoding_audio_codec: "eac3".to_string(),
+            subtitle_profiles: vec![
+                SubtitleProfileHint {
+                    format: "vtt".to_string(),
+                    method: SubtitleDeliveryMethod::Hls as i32,
+                },
+                SubtitleProfileHint {
+                    format: "ass".to_string(),
+                    method: SubtitleDeliveryMethod::Embed as i32,
+                },
+                SubtitleProfileHint {
+                    format: "ignored".to_string(),
+                    method: SubtitleDeliveryMethod::Unspecified as i32,
+                },
+            ],
+        };
+
+        let value = device_profile_from_playback_client_profile(Some(&profile));
+
+        let direct_play = value["DirectPlayProfiles"].as_array().unwrap();
+        assert_eq!(direct_play.len(), 1);
+        assert_eq!(direct_play[0]["Container"], "mp4,m4v");
+        assert_eq!(direct_play[0]["VideoCodec"], "h264,hevc");
+        assert_eq!(direct_play[0]["AudioCodec"], "aac,eac3");
+        assert_eq!(direct_play[0]["Type"], "Video");
+
+        let transcoding = value["TranscodingProfiles"].as_array().unwrap();
+        assert_eq!(transcoding.len(), 1);
+        assert_eq!(transcoding[0]["Container"], "mp4");
+        assert_eq!(transcoding[0]["Protocol"], "dash");
+        assert_eq!(transcoding[0]["VideoCodec"], "hevc");
+        assert_eq!(transcoding[0]["AudioCodec"], "eac3");
+        assert_eq!(transcoding[0]["Context"], "Streaming");
+
+        let subtitles = value["SubtitleProfiles"].as_array().unwrap();
+        assert_eq!(subtitles.len(), 2);
+        assert_eq!(subtitles[0]["Format"], "vtt");
+        assert_eq!(subtitles[0]["Method"], "Hls");
+        assert_eq!(subtitles[1]["Format"], "ass");
+        assert_eq!(subtitles[1]["Method"], "Embed");
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub trait PlaybackSnapshotService: Send + Sync {
         user_id: &UserId,
         room_id: &RoomId,
         state: &RoomPlaybackState,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError>;
 }
 

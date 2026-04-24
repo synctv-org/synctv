@@ -116,8 +116,8 @@ pub struct DirectoryItem {
 /// Core interface that all providers must implement.
 /// Only `generate_playback()` is mandatory.
 ///
-/// Note: `MediaProvider` is a capability provider, not a concrete instance.
-/// It may use different `provider_instances` internally via `RemoteProviderManager`.
+/// Note: `MediaProvider` is a provider-type adapter, not necessarily a concrete backend.
+/// It may route through a top-level provider instance binding via `RemoteProviderManager`.
 #[async_trait]
 pub trait MediaProvider: Send + Sync {
     /// Provider type name (e.g., "bilibili", "alist", "emby")

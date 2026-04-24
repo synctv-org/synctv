@@ -21,41 +21,46 @@ service Emby {
 message LoginReq {
   string host = 1;
   string username = 2;
-  string password = 3;
+  oneof credential {
+    string password = 3;
+    string api_key = 4;
+  }
 }
 
 message LoginResp {
   string token = 1;
-  string userId = 2;
-  string serverId = 3;
+  string user_id = 2;
+  string username = 3;
+  string server_id = 4;
+  optional UserPolicy policy = 5;
 }
 
 message MeReq {
   string host = 1;
   string token = 2;
-  string userId = 3;
+  string user_id = 3;
 }
 
 message UserPolicy {
-  bool isAdministrator = 1;
-  bool isHidden = 2;
-  bool isDisabled = 3;
-  bool enableAllFolders = 4;
+  bool is_administrator = 1;
+  bool is_hidden = 2;
+  bool is_disabled = 3;
+  bool enable_all_folders = 4;
 }
 
 message MeResp {
   string id = 1;
   string name = 2;
-  string serverId = 3;
+  string server_id = 3;
   optional UserPolicy policy = 4;
 }
 
 message GetItemsReq {
   string host = 1;
   string token = 2;
-  string parentId = 3;
-  string searchTerm = 4;
-  string userId = 5;
+  string parent_id = 3;
+  string search_term = 4;
+  string user_id = 5;
 }
 
 message MediaStreamInfo {
@@ -63,9 +68,9 @@ message MediaStreamInfo {
   string language = 2;
   string type = 3;
   string title = 4;
-  string displayTitle = 5;
-  string displayLanguage = 6;
-  bool isDefault = 7;
+  string display_title = 5;
+  string display_language = 6;
+  bool is_default = 7;
   uint64 index = 8;
   string protocol = 9;
 }
@@ -76,37 +81,37 @@ message MediaSourceInfo {
   string path = 3;
   string container = 4;
   string protocol = 5;
-  int64 defaultSubtitleStreamIndex = 6;
-  int64 defaultAudioStreamIndex = 7;
-  repeated MediaStreamInfo mediaStreamInfo = 8;
-  string directPlayUrl = 9;
-  string transcodingUrl = 10;
+  int64 default_subtitle_stream_index = 6;
+  int64 default_audio_stream_index = 7;
+  repeated MediaStreamInfo media_stream_info = 8;
+  string direct_play_url = 9;
+  string transcoding_url = 10;
 }
 
 message Item {
   string name = 1;
   string id = 2;
   string type = 3;
-  string parentId = 4;
-  string seriesName = 5;
-  string seriesId = 6;
-  string seasonName = 7;
-  string seasonId = 8;
-  bool isFolder = 9;
-  repeated MediaSourceInfo mediaSourceInfo = 10;
-  string collectionType = 11;
+  string parent_id = 4;
+  string series_name = 5;
+  string series_id = 6;
+  string season_name = 7;
+  string season_id = 8;
+  bool is_folder = 9;
+  repeated MediaSourceInfo media_source_info = 10;
+  string collection_type = 11;
 }
 
 message GetItemsResp {
   repeated Item items = 1;
-  uint64 totalRecordCount = 2;
+  uint64 total_record_count = 2;
 }
 
 message GetItemReq {
   string host = 1;
   string token = 2;
-  string itemId = 3;
-  string userId = 4;
+  string item_id = 3;
+  string user_id = 4;
 }
 
 message SystemInfoReq {
@@ -115,33 +120,33 @@ message SystemInfoReq {
 }
 
 message SystemInfoResp {
-  string systemUpdateLevel = 1;
-  string operatingSystemDisplayName = 2;
-  string packageName = 3;
-  bool hasPendingRestart = 4;
-  bool isShuttingDown = 5;
-  bool supportsLibraryMonitor = 6;
-  int32 webSocketPortNumber = 7;
-  bool canSelfRestart = 8;
-  bool canSelfUpdate = 9;
-  bool canLaunchWebBrowser = 10;
-  string programDataPath = 11;
-  string itemsByNamePath = 12;
-  string cachePath = 13;
-  string logPath = 14;
-  string internalMetadataPath = 15;
-  string transcodingTempPath = 16;
-  int32 httpServerPortNumber = 17;
-  bool supportsHttps = 18;
-  int32 httpsPortNumber = 19;
-  bool hasUpdateAvailable = 20;
-  bool supportsAutoRunAtStartup = 21;
-  bool hardwareAccelerationRequiresPremiere = 22;
-  string localAddress = 23;
-  string wanAddress = 24;
-  string serverName = 25;
+  string system_update_level = 1;
+  string operating_system_display_name = 2;
+  string package_name = 3;
+  bool has_pending_restart = 4;
+  bool is_shutting_down = 5;
+  bool supports_library_monitor = 6;
+  int32 web_socket_port_number = 7;
+  bool can_self_restart = 8;
+  bool can_self_update = 9;
+  bool can_launch_web_browser = 10;
+  string program_data_path = 11;
+  string items_by_name_path = 12;
+  string cache_path = 13;
+  string log_path = 14;
+  string internal_metadata_path = 15;
+  string transcoding_temp_path = 16;
+  int32 http_server_port_number = 17;
+  bool supports_https = 18;
+  int32 https_port_number = 19;
+  bool has_update_available = 20;
+  bool supports_auto_run_at_startup = 21;
+  bool hardware_acceleration_requires_premiere = 22;
+  string local_address = 23;
+  string wan_address = 24;
+  string server_name = 25;
   string version = 26;
-  string operatingSystem = 27;
+  string operating_system = 27;
   string id = 28;
 }
 
@@ -149,10 +154,10 @@ message FsListReq {
   string host = 1;
   string token = 2;
   string path = 3;
-  uint64 startIndex = 4;
+  uint64 start_index = 4;
   uint64 limit = 5;
-  string searchTerm = 6;
-  string userId = 7;
+  string search_term = 6;
+  string user_id = 7;
 }
 
 message Path {
@@ -173,51 +178,85 @@ message LogoutReq {
 
 message Empty {}
 
+enum SubtitleDeliveryMethod {
+  SUBTITLE_DELIVERY_METHOD_UNSPECIFIED = 0;
+  SUBTITLE_DELIVERY_METHOD_ENCODE = 1;
+  SUBTITLE_DELIVERY_METHOD_EMBED = 2;
+  SUBTITLE_DELIVERY_METHOD_EXTERNAL = 3;
+  SUBTITLE_DELIVERY_METHOD_HLS = 4;
+  SUBTITLE_DELIVERY_METHOD_VIDEO_SIDE_DATA = 5;
+}
+
+message PlaybackInfoDeviceProfile {
+  repeated DirectPlayProfileHint direct_play_profiles = 1;
+  string transcoding_container = 2;
+  string transcoding_protocol = 3;
+  string transcoding_video_codec = 4;
+  string transcoding_audio_codec = 5;
+  repeated SubtitleProfileHint subtitle_profiles = 6;
+}
+
+message DirectPlayProfileHint {
+  string container = 1;
+  repeated string video_codecs = 2;
+  repeated string audio_codecs = 3;
+}
+
+message SubtitleProfileHint {
+  string format = 1;
+  SubtitleDeliveryMethod method = 2;
+}
+
 message PlaybackInfoReq {
   string host = 1;
   string token = 2;
-  string userId = 3;
-  string itemId = 4;
-  string mediaSourceId = 5;
-  int32 audioStreamIndex = 6;
-  int32 subtitleStreamIndex = 7;
-  int64 maxStreamingBitrate = 8;
+  string user_id = 3;
+  string item_id = 4;
+  string media_source_id = 5;
+  int32 audio_stream_index = 6;
+  int32 subtitle_stream_index = 7;
+  int64 max_streaming_bitrate = 8;
+  optional int32 max_audio_channels = 9;
+  optional bool enable_direct_play = 10;
+  optional bool enable_direct_stream = 11;
+  optional bool enable_transcoding = 12;
+  PlaybackInfoDeviceProfile device_profile = 13;
 }
 
 message PlaybackInfoResp {
-  string playSessionID = 1;
-  repeated MediaSourceInfo mediaSourceInfo = 2;
+  string play_session_id = 1;
+  repeated MediaSourceInfo media_source_info = 2;
 }
 
 message DeleteActiveEncodingsReq {
   string host = 1;
   string token = 2;
-  string playSessionId = 3;
+  string play_session_id = 3;
 }
 
 message ReportPlaybackStartReq {
   string host = 1;
   string token = 2;
-  string itemId = 3;
-  string playSessionId = 4;
-  string mediaSourceId = 5;
-  int64 positionTicks = 6;
+  string item_id = 3;
+  string play_session_id = 4;
+  string media_source_id = 5;
+  int64 position_ticks = 6;
 }
 
 message ReportPlaybackStopReq {
   string host = 1;
   string token = 2;
-  string itemId = 3;
-  string playSessionId = 4;
-  int64 positionTicks = 5;
+  string item_id = 3;
+  string play_session_id = 4;
+  int64 position_ticks = 5;
 }
 
 message ReportPlaybackProgressReq {
   string host = 1;
   string token = 2;
-  string itemId = 3;
-  string playSessionId = 4;
-  string mediaSourceId = 5;
-  int64 positionTicks = 6;
-  bool isPaused = 7;
+  string item_id = 3;
+  string play_session_id = 4;
+  string media_source_id = 5;
+  int64 position_ticks = 6;
+  bool is_paused = 7;
 }

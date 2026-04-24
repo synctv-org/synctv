@@ -430,6 +430,8 @@ impl MediaProvider for DirectUrlProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<(), ProviderError> {
+        super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
+
         let config = DirectUrlSourceConfig::try_from(source_config)?;
 
         Self::validate_source_url(&config.url)?;
@@ -446,6 +448,8 @@ impl MediaProvider for DirectUrlProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
+        super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
+
         if let Some(result) = parse_embedded_playback_result(source_config)? {
             return Ok(result);
         }
@@ -838,6 +842,50 @@ mod tests {
             )
             .await
             .expect("default SSRF policy should allow non-default ports");
+    }
+
+    #[tokio::test]
+    async fn test_validate_source_config_rejects_provider_instance_name() {
+        let provider = DirectUrlProvider::new();
+        let err = provider
+            .validate_source_config(
+                &ProviderContext::new("synctv"),
+                &json!({
+                    "url": "https://example.com/video.mp4",
+                    "provider_instance_name": "remote-direct"
+                }),
+            )
+            .await
+            .expect_err("DirectUrl source_config must not contain provider_instance_name");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("top-level provider_instance_name")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_generate_playback_rejects_provider_instance_name() {
+        let provider = DirectUrlProvider::new();
+        let err = provider
+            .generate_playback(
+                &ProviderContext::new("synctv"),
+                &json!({
+                    "url": "https://example.com/video.mp4",
+                    "provider_instance_name": "remote-direct"
+                }),
+            )
+            .await
+            .expect_err(
+                "DirectUrl playback must not accept provider_instance_name in source_config",
+            );
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("top-level provider_instance_name")
+        ));
     }
 
     #[tokio::test]

@@ -30,6 +30,7 @@ prost-types.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 
 # Utilities
 anyhow.workspace = true

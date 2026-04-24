@@ -6,7 +6,9 @@ pub use synctv_cluster::grpc::synctv::cluster;
 use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
 use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
 
 pub mod admin_service;
 pub mod client_service;
@@ -74,7 +76,9 @@ impl_grpc_service_ext!(<T> crate::proto::client::o_auth2_service_server::OAuth2S
 impl_grpc_service_ext!(<T> crate::proto::admin_service_server::AdminServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
 
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
@@ -435,8 +439,13 @@ async fn set_registered_grpc_services_serving(
     if state.provider_services_registered {
         use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
         use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
         use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+        use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
 
+        health_reporter
+            .set_serving::<ProviderCommonServiceServer<providers::common::ProviderCommonGrpcService>>()
+            .await;
         health_reporter
             .set_serving::<AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>>()
             .await;
@@ -445,6 +454,9 @@ async fn set_registered_grpc_services_serving(
             .await;
         health_reporter
             .set_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>()
+            .await;
+        health_reporter
+            .set_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>()
             .await;
     }
     if state.cluster_service_registered {
@@ -516,8 +528,13 @@ async fn set_registered_grpc_services_not_serving(
     if state.provider_services_registered {
         use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
         use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
         use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
+        use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
 
+        health_reporter
+            .set_not_serving::<ProviderCommonServiceServer<providers::common::ProviderCommonGrpcService>>()
+            .await;
         health_reporter
             .set_not_serving::<AlistProviderServiceServer<
                 providers::alist::AlistProviderGrpcService,
@@ -530,6 +547,10 @@ async fn set_registered_grpc_services_not_serving(
             .await;
         health_reporter
             .set_not_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>(
+            )
+            .await;
+        health_reporter
+            .set_not_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>(
             )
             .await;
     }
@@ -1120,8 +1141,15 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         // Register provider gRPC services. Auth, blacklist, rate limiting, and
         // timeouts are enforced explicitly inside the shared impl layer.
         routes.add_service(
+            ProviderCommonServiceServer::new(providers::common::ProviderCommonGrpcService::new(
+                &shared_api_runtime,
+                Arc::new(config.clone()),
+            ))
+            .with_message_size_limit(max_message_size),
+        );
+        routes.add_service(
             AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
-                shared_api_runtime.clone(),
+                &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
                 Arc::new(config.clone()),
             ))
@@ -1139,7 +1167,15 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         );
         routes.add_service(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
-                shared_api_runtime.clone(),
+                &shared_api_runtime,
+                shared_api_runtime.request_executor.clone(),
+                Arc::new(config.clone()),
+            ))
+            .with_message_size_limit(max_message_size),
+        );
+        routes.add_service(
+            RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
+                &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
                 Arc::new(config.clone()),
             ))

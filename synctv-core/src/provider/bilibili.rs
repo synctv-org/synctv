@@ -358,47 +358,23 @@ enum BilibiliSourceConfig {
         bvid: Option<String>,
         aid: Option<u64>,
         cid: u64,
-        #[serde(default)]
-        provider_instance_name: Option<String>,
         /// Reference to stored credentials (server-side)
         credential_ref: super::credential_resolver::CredentialRef,
     },
     Pgc {
         epid: u64,
         cid: u64,
-        #[serde(default)]
-        provider_instance_name: Option<String>,
         /// Reference to stored credentials (server-side)
         credential_ref: super::credential_resolver::CredentialRef,
     },
     Live {
         room_id: u64,
-        #[serde(default)]
-        provider_instance_name: Option<String>,
         /// Reference to stored credentials (server-side)
         credential_ref: super::credential_resolver::CredentialRef,
     },
 }
 
 impl BilibiliSourceConfig {
-    /// Get `provider_instance_name` from any variant
-    fn provider_instance_name(&self) -> Option<&str> {
-        match self {
-            Self::Video {
-                provider_instance_name,
-                ..
-            }
-            | Self::Pgc {
-                provider_instance_name,
-                ..
-            }
-            | Self::Live {
-                provider_instance_name,
-                ..
-            } => provider_instance_name.as_deref(),
-        }
-    }
-
     /// Get a reference to the credential_ref from any variant
     const fn credential_ref(&self) -> &super::credential_resolver::CredentialRef {
         match self {
@@ -458,6 +434,7 @@ impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        super::reject_source_config_provider_instance_name(value, "Bilibili")?;
         super::parse_source_config(value, "Bilibili")
     }
 }
@@ -536,7 +513,12 @@ impl MediaProvider for BilibiliProvider {
 
         // Call provider API with resolved cookies
         let result = self
-            .resolve_from_api_with_cookies(&config, &cookies, _ctx.request_context())
+            .resolve_from_api_with_cookies(
+                &config,
+                &cookies,
+                super::bound_provider_instance_name(_ctx),
+                _ctx.request_context(),
+            )
             .await?;
 
         // Generate version and store result
@@ -632,6 +614,8 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: Value,
     ) -> Result<Value, ProviderError> {
+        super::reject_source_config_provider_instance_name(&source_config, "Bilibili")?;
+
         // Inject credential_owner_id from context (server-side, not trusting client)
         let mut config = source_config;
         if let Some(user_id) = _ctx.user_id {
@@ -841,7 +825,6 @@ impl BilibiliProvider {
         match &config {
             BilibiliSourceConfig::Live {
                 room_id: bilibili_room_id,
-                provider_instance_name,
                 credential_ref,
                 ..
             } => {
@@ -865,7 +848,7 @@ impl BilibiliProvider {
                     .get_live_danmu_info(
                         *bilibili_room_id,
                         cookies,
-                        provider_instance_name.as_deref(),
+                        media.provider_instance_name.as_deref(),
                     )
                     .await?;
 
@@ -899,11 +882,12 @@ impl BilibiliProvider {
         &self,
         config: &BilibiliSourceConfig,
         cookies: &HashMap<String, String>,
+        provider_instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<PlaybackResult, ProviderError> {
         let sanitized_cookies = cookies.clone();
         let client = self
-            .get_client_with_context(config.provider_instance_name(), request_context)
+            .get_client_with_context(provider_instance_name, request_context)
             .await?;
 
         match config {
@@ -1183,6 +1167,36 @@ mod tests {
             "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(&config).is_ok());
+    }
+
+    #[test]
+    fn test_bilibili_config_with_provider_instance_name() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "provider_instance_name": "remote-bili-1",
+            "credential_ref": test_cred_ref()
+        });
+        assert!(validate_bilibili(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_bilibili_config_rejects_provider_instance_name() {
+        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "provider_instance_name": "remote-bili-1",
+            "credential_ref": test_cred_ref()
+        });
+
+        let result = provider
+            .prepare_source_config(&ProviderContext::new("test"), config)
+            .await;
+
+        assert!(matches!(result, Err(ProviderError::InvalidConfig(_))));
     }
 
     #[test]

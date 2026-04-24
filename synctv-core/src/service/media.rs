@@ -38,6 +38,13 @@ fn batch_media_position(index: usize, start_position: f64) -> f64 {
     MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position)
 }
 
+fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
 fn provider_requires_credential_repo(provider_name: &str) -> bool {
     matches!(
         provider_name,
@@ -62,8 +69,8 @@ pub struct AddMediaRequest {
     /// Declared provider type name (e.g. "direct_url", "bilibili", "alist").
     pub source_provider: String,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
-    /// Empty means use the default local instance for `source_provider`.
-    pub provider_instance_name: String,
+    /// `None` means use the default local instance for `source_provider`.
+    pub provider_instance_name: Option<String>,
     pub source_config: JsonValue,
 }
 
@@ -112,6 +119,29 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
+    fn build_provider_context<'a>(
+        &'a self,
+        user_id: &'a UserId,
+        room_id: &'a RoomId,
+        provider_instance_name: Option<&'a str>,
+    ) -> ProviderContext<'a> {
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(user_id.as_str())
+            .with_room_id(room_id.as_str());
+        if let Some(provider_instance_name) =
+            normalize_provider_instance_name(provider_instance_name)
+        {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        ctx
+    }
+
     fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
         if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
             return Err(Error::ServiceUnavailable(format!(
@@ -125,7 +155,7 @@ impl MediaService {
     async fn resolve_media_provider(
         &self,
         source_provider: &str,
-        provider_instance_name: &str,
+        provider_instance_name: Option<&str>,
     ) -> Result<Arc<dyn crate::provider::MediaProvider>> {
         let trimmed_provider = source_provider.trim();
         if trimmed_provider.is_empty() {
@@ -134,28 +164,10 @@ impl MediaService {
             ));
         }
 
-        let trimmed_instance = provider_instance_name.trim();
-        let provider = if trimmed_instance.is_empty() {
-            self.providers_manager
-                .get_by_type(trimmed_provider)
-                .await
-                .ok_or_else(|| Error::NotFound(format!("Provider not found: {trimmed_provider}")))?
-        } else {
-            let provider = self
-                .providers_manager
-                .get(trimmed_instance)
-                .await
-                .ok_or_else(|| {
-                    Error::NotFound(format!("Provider instance not found: {trimmed_instance}"))
-                })?;
-            if provider.name() != trimmed_provider {
-                return Err(Error::InvalidInput(format!(
-                    "Provider instance '{trimmed_instance}' is type '{}' but request declared '{trimmed_provider}'",
-                    provider.name()
-                )));
-            }
-            provider
-        };
+        let provider = self
+            .providers_manager
+            .resolve_provider(trimmed_provider, provider_instance_name)
+            .await?;
 
         Ok(provider)
     }
@@ -247,19 +259,10 @@ impl MediaService {
             }
         });
 
-        let provider = if let Some(instance_name) = bound_instance {
-            self.providers_manager
-                .get(instance_name)
-                .await
-                .ok_or_else(|| {
-                    Error::NotFound(format!("Provider instance not found: {instance_name}"))
-                })?
-        } else {
-            self.providers_manager
-                .get_by_type(&provider_name)
-                .await
-                .ok_or_else(|| Error::NotFound(format!("Provider not found: {provider_name}")))?
-        };
+        let provider = self
+            .providers_manager
+            .resolve_provider(&provider_name, bound_instance)
+            .await?;
 
         Ok((provider_name, provider))
     }
@@ -296,23 +299,19 @@ impl MediaService {
             }
         }
 
-        // Get provider from registry by instance name
-        // The registry stores actual Arc<dyn MediaProvider> instances
+        let bound_provider_instance =
+            normalize_provider_instance_name(request.provider_instance_name.as_deref());
+
+        // Resolve the provider adapter from the declared type plus optional
+        // top-level instance binding. Empty and None instance names both use
+        // the default provider instance.
         let provider = self
-            .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
+            .resolve_media_provider(&request.source_provider, bound_provider_instance)
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
 
         // Validate source_config using provider trait method
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
+        let ctx = self.build_provider_context(&user_id, &room_id, bound_provider_instance);
 
         provider
             .validate_source_config(&ctx, &request.source_config)
@@ -344,8 +343,9 @@ impl MediaService {
             .get_next_append_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
             .await?;
 
-        // Create media with provider info (no enum conversion needed)
-        // Business logic will use provider_instance_name to get provider from registry
+        // Store the provider type and optional instance binding separately.
+        // Source config remains provider-owned and must not carry instance
+        // routing metadata.
         let media = Media::from_provider(
             request.playlist_id.clone(),
             room_id.clone(),
@@ -353,7 +353,7 @@ impl MediaService {
             request.name.clone(),
             prepared_source_config,
             provider.name(), // Provider type name (e.g., "bilibili")
-            request.provider_instance_name.clone(), // Bound instance name, empty means default local provider
+            bound_provider_instance.map(str::to_string),
             position,
         );
 
@@ -368,7 +368,8 @@ impl MediaService {
             room_id = %room_id.as_str(),
             media_id = %created_media.id.as_str(),
             name = %created_media.name,
-            provider = %request.provider_instance_name,
+            source_provider = provider.name(),
+            provider_instance_name = bound_provider_instance.unwrap_or(""),
             "Media added to playlist"
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
@@ -419,20 +420,15 @@ impl MediaService {
             }
         }
 
+        let bound_provider_instance =
+            normalize_provider_instance_name(request.provider_instance_name.as_deref());
+
         let provider = self
-            .resolve_media_provider(&request.source_provider, &request.provider_instance_name)
+            .resolve_media_provider(&request.source_provider, bound_provider_instance)
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
 
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(admin_user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
+        let ctx = self.build_provider_context(&admin_user_id, &room_id, bound_provider_instance);
 
         provider
             .validate_source_config(&ctx, &request.source_config)
@@ -464,7 +460,7 @@ impl MediaService {
             request.name.clone(),
             prepared_source_config,
             provider.name(),
-            request.provider_instance_name.clone(),
+            bound_provider_instance.map(str::to_string),
             position,
         );
 
@@ -480,7 +476,8 @@ impl MediaService {
             admin_user_id = %admin_user_id.as_str(),
             media_id = %created_media.id.as_str(),
             name = %created_media.name,
-            provider = %request.provider_instance_name,
+            source_provider = provider.name(),
+            provider_instance_name = bound_provider_instance.unwrap_or(""),
             "Media added to playlist by admin"
         );
         if let Err(e) = self.notification_service.notify_media_added(
@@ -541,25 +538,21 @@ impl MediaService {
             )));
         }
 
-        // Create provider context for validation
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
         for item in items {
-            // Get provider from registry by instance name
+            let bound_provider_instance =
+                normalize_provider_instance_name(item.provider_instance_name.as_deref())
+                    .map(str::to_string);
+
+            // Resolve provider by declared type plus optional top-level instance binding.
             let provider = self
-                .resolve_media_provider(&item.source_provider, &item.provider_instance_name)
+                .resolve_media_provider(&item.source_provider, bound_provider_instance.as_deref())
                 .await?;
             self.ensure_provider_credential_repo(provider.name())?;
+
+            let ctx =
+                self.build_provider_context(&user_id, &room_id, bound_provider_instance.as_deref());
 
             // Validate source_config using provider trait method
             provider
@@ -583,7 +576,12 @@ impl MediaService {
                     ))
                 })?;
 
-            validated_items.push((item, provider, prepared_source_config));
+            validated_items.push((
+                item,
+                provider,
+                prepared_source_config,
+                bound_provider_instance,
+            ));
         }
 
         // Use a transaction to atomically get the next position and batch insert,
@@ -598,7 +596,7 @@ impl MediaService {
 
         // Create media items with provider info
         let mut media_items = Vec::with_capacity(validated_items.len());
-        for (index, (item, provider, prepared_source_config)) in
+        for (index, (item, provider, prepared_source_config, provider_instance_name)) in
             validated_items.into_iter().enumerate()
         {
             let media = Media::from_provider(
@@ -607,8 +605,8 @@ impl MediaService {
                 Some(user_id.clone()),
                 item.name,
                 prepared_source_config,
-                provider.name(),             // Provider type name
-                item.provider_instance_name, // Instance name
+                provider.name(), // Provider type name
+                provider_instance_name,
                 batch_media_position(index, start_position),
             );
             media_items.push(media);
@@ -1434,15 +1432,11 @@ impl MediaService {
             ))
         })?;
 
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(admin_user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
+        let ctx = self.build_provider_context(
+            &admin_user_id,
+            &room_id,
+            playlist.provider_instance_name.as_deref(),
+        );
 
         dynamic_folder
             .list_playlist(&ctx, &playlist, target, page, page_size)
@@ -1481,15 +1475,11 @@ impl MediaService {
             ))
         })?;
 
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(admin_user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
+        let ctx = self.build_provider_context(
+            &admin_user_id,
+            &room_id,
+            playlist.provider_instance_name.as_deref(),
+        );
 
         dynamic_folder
             .browse_path(&ctx, &playlist, target)
@@ -1603,15 +1593,11 @@ impl MediaService {
         })?;
 
         // Create context
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
+        let ctx = self.build_provider_context(
+            &user_id,
+            &room_id,
+            playlist.provider_instance_name.as_deref(),
+        );
 
         // List items
         let items = dynamic_folder
@@ -1654,15 +1640,11 @@ impl MediaService {
             ))
         })?;
 
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
+        let ctx = self.build_provider_context(
+            &user_id,
+            &room_id,
+            playlist.provider_instance_name.as_deref(),
+        );
 
         dynamic_folder
             .browse_path(&ctx, &playlist, target)
@@ -1711,15 +1693,11 @@ impl MediaService {
             ))
         })?;
 
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
+        let ctx = self.build_provider_context(
+            &user_id,
+            &room_id,
+            playlist.provider_instance_name.as_deref(),
+        );
 
         dynamic_folder
             .resolve_item(&ctx, &playlist, target)
@@ -1763,8 +1741,6 @@ impl MediaService {
                 "Provider {provider_name} does not support dynamic folders"
             ))
         })?;
-        let provider_instance_name = playlist.provider_instance_name.clone().unwrap_or_default();
-
         let current_dynamic_media = crate::models::Media {
             id: MediaId::new(),
             playlist_id: Some(playlist.id.clone()),
@@ -1774,13 +1750,18 @@ impl MediaService {
             position: 0.0,
             source_provider: provider_name.clone(),
             source_config: serde_json::Value::Null,
-            provider_instance_name,
+            provider_instance_name: playlist.provider_instance_name.clone(),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
         };
 
         let mut ctx = ProviderContext::new("synctv").with_room_id(room_id.as_str());
+        if let Some(provider_instance_name) =
+            current_dynamic_media.provider_instance_name.as_deref()
+        {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
         if let Some(ref repo) = self.credential_repo {
             ctx = ctx.with_credential_repo(repo);
         }
@@ -1800,18 +1781,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_normalize_provider_instance_name() {
+        assert_eq!(normalize_provider_instance_name(None), None);
+        assert_eq!(normalize_provider_instance_name(Some("")), None);
+        assert_eq!(normalize_provider_instance_name(Some("   ")), None);
+        assert_eq!(
+            normalize_provider_instance_name(Some("  bilibili_main  ")),
+            Some("bilibili_main")
+        );
+    }
+
+    #[test]
     fn test_add_media_request_construction() {
         let request = AddMediaRequest {
             playlist_id: Some(PlaylistId::new()),
             name: "Test Video".to_string(),
             source_provider: "bilibili".to_string(),
-            provider_instance_name: "bilibili_main".to_string(),
+            provider_instance_name: Some("bilibili_main".to_string()),
             source_config: serde_json::json!({"bvid": "BV1234567890"}),
         };
 
         assert_eq!(request.name, "Test Video");
         assert_eq!(request.source_provider, "bilibili");
-        assert_eq!(request.provider_instance_name, "bilibili_main");
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("bilibili_main")
+        );
         assert!(request.source_config.get("bvid").is_some());
     }
 
@@ -1827,7 +1822,7 @@ mod tests {
             playlist_id: Some(PlaylistId::new()),
             name: "Complex Video".to_string(),
             source_provider: "alist".to_string(),
-            provider_instance_name: "alist_home".to_string(),
+            provider_instance_name: Some("alist_home".to_string()),
             source_config: config.clone(),
         };
 
@@ -1887,7 +1882,7 @@ mod tests {
                 playlist_id: Some(PlaylistId::new()),
                 name: format!("Video {i}"),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: "test".to_string(),
+                provider_instance_name: Some("test".to_string()),
                 source_config: serde_json::json!({}),
             })
             .collect();
@@ -1907,7 +1902,7 @@ mod tests {
             playlist_id: Some(PlaylistId::new()),
             name: "Null Config".to_string(),
             source_provider: "direct_url".to_string(),
-            provider_instance_name: "test".to_string(),
+            provider_instance_name: Some("test".to_string()),
             source_config: serde_json::Value::Null,
         };
 
@@ -1932,7 +1927,7 @@ mod tests {
             playlist_id: Some(PlaylistId::new()),
             name: "Nested Config".to_string(),
             source_provider: "alist".to_string(),
-            provider_instance_name: "alist_home".to_string(),
+            provider_instance_name: Some("alist_home".to_string()),
             source_config: config,
         };
 

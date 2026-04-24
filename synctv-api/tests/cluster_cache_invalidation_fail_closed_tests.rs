@@ -1525,7 +1525,7 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
                 playlist_id: Some(child_playlist.id.clone()),
                 name: "Nested Media".to_string(),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
+                provider_instance_name: None,
                 source_config: serde_json::json!({
                     "url": "https://example.com/nested-media.mp4"
                 }),
@@ -1852,7 +1852,7 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
                 playlist_id: None,
                 name: "fanout-reorder-a".to_string(),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
+                provider_instance_name: None,
                 source_config: serde_json::json!({
                     "url": "https://example.com/reorder-a.mp4"
                 }),
@@ -1869,7 +1869,7 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
                 playlist_id: None,
                 name: "fanout-reorder-b".to_string(),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
+                provider_instance_name: None,
                 source_config: serde_json::json!({
                     "url": "https://example.com/reorder-b.mp4"
                 }),
@@ -1978,7 +1978,7 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
                 playlist_id: None,
                 name: "fanout-reorder-batch-a".to_string(),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
+                provider_instance_name: None,
                 source_config: serde_json::json!({
                     "url": "https://example.com/reorder-batch-a.mp4"
                 }),
@@ -1995,7 +1995,7 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
                 playlist_id: None,
                 name: "fanout-reorder-batch-b".to_string(),
                 source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
+                provider_instance_name: None,
                 source_config: serde_json::json!({
                     "url": "https://example.com/reorder-batch-b.mp4"
                 }),

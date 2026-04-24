@@ -179,7 +179,7 @@ async fn test_add_media_without_permission_denied() {
         playlist_id: Some(playlist.id.clone()),
         name: "Forbidden Video".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/vid.mp4"}),
     };
 
@@ -222,7 +222,7 @@ async fn test_add_media_with_permission_succeeds() {
         playlist_id: Some(playlist.id.clone()),
         name: "Good Video".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/good.mp4"}),
     };
 
@@ -296,7 +296,7 @@ async fn test_add_media_ignores_forged_credential_owner_id_for_bilibili() {
         playlist_id: Some(playlist.id.clone()),
         name: "Bilibili Video".to_string(),
         source_provider: "bilibili".to_string(),
-        provider_instance_name: "bilibili".to_string(),
+        provider_instance_name: Some("bilibili".to_string()),
         source_config: serde_json::json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
@@ -348,7 +348,7 @@ async fn test_add_media_with_credential_backed_provider_without_repo_fails_close
         playlist_id: Some(playlist.id.clone()),
         name: "Bilibili Missing Repo".to_string(),
         source_provider: "bilibili".to_string(),
-        provider_instance_name: "bilibili".to_string(),
+        provider_instance_name: Some("bilibili".to_string()),
         source_config: serde_json::json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
@@ -542,7 +542,7 @@ async fn test_add_media_cross_room_playlist_rejected() {
         playlist_id: Some(playlist_b.id.clone()),
         name: "Cross Room Video".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/cross.mp4"}),
     };
 
@@ -585,7 +585,7 @@ async fn test_add_media_batch_over_100_rejected() {
             playlist_id: Some(playlist.id.clone()),
             name: format!("Batch Video {i}"),
             source_provider: "direct_url".to_string(),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             source_config: serde_json::json!({"url": format!("https://example.com/batch{}.mp4", i)}),
         })
         .collect();
@@ -683,7 +683,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
             playlist_id: Some(playlist.id.clone()),
             name: format!("Video {i}"),
             source_provider: "direct_url".to_string(),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             source_config: serde_json::json!({"url": format!("https://example.com/v{}.mp4", i)}),
         })
         .collect();
@@ -741,7 +741,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         playlist_id: Some(playlist.id.clone()),
         name: "Original Name".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/edit.mp4"}),
     };
     let media = media_service
@@ -832,7 +832,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         position: 1024.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -894,7 +894,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -911,7 +911,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             position: 2048.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -978,7 +978,7 @@ async fn test_move_media_batch_preserves_request_order() {
         position,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -1085,7 +1085,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1102,7 +1102,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1191,7 +1191,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1208,7 +1208,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             position: 2048.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             creator_id: Some(owner.id.clone()),
             added_at: Utc::now(),
             updated_at: Utc::now(),

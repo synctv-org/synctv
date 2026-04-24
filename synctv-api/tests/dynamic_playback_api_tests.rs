@@ -406,7 +406,9 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .get_playback(
             owner.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::GetPlaybackRequest {},
+            synctv_api::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
         .unwrap();
@@ -634,7 +636,9 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .get_playback(
             owner.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::GetPlaybackRequest {},
+            synctv_api::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
         .unwrap();
@@ -704,7 +708,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
             }
         }),
         "direct_url",
-        String::new(),
+        None,
         0.0,
     );
     media_repo.create(&media).await.unwrap();
@@ -745,7 +749,9 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .get_playback(
             owner.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::GetPlaybackRequest {},
+            synctv_api::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
         .unwrap();
@@ -818,7 +824,9 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
         .get_playback(
             owner.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::GetPlaybackRequest {},
+            synctv_api::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
         .unwrap();
@@ -875,7 +883,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         "Broken Playback Provider".to_string(),
         serde_json::json!({ "opaque": true }),
         "missing_provider",
-        String::new(),
+        None,
         0.0,
     );
     media_repo.create(&media).await.unwrap();
@@ -909,7 +917,9 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         .get_playback(
             owner.id.as_str(),
             room.id.as_str(),
-            synctv_api::proto::client::GetPlaybackRequest {},
+            synctv_api::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
         .unwrap();

@@ -5,6 +5,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_config.extern_path(".synctv.admin", "::synctv_proto::admin");
     prost_config.extern_path(".synctv.client", "::synctv_proto::client");
     prost_config.extern_path(".synctv.common", "::synctv_proto::common");
+    prost_config.extern_path(".synctv.provider.alist", "::synctv_proto::providers::alist");
+    prost_config.extern_path(
+        ".synctv.provider.bilibili",
+        "::synctv_proto::providers::bilibili",
+    );
+    prost_config.extern_path(
+        ".synctv.provider.common",
+        "::synctv_proto::providers::common",
+    );
+    prost_config.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
+    prost_config.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
 
     tonic_prost_build::configure()
         .build_server(true)
@@ -15,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_with_config(
             prost_config,
             &["proto/management.proto"],
-            &[".", "../synctv-proto"],
+            &[".", "..", "../synctv-proto"],
         )?;
 
     Ok(())

@@ -4056,16 +4056,16 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     let publish_key = run_synctv_remote_cli_json(
         &server,
         &[
-            "room",
-            "stream",
-            "publish-key",
+            "provider",
+            "rtmp",
+            "create-publish-key",
             "--room-id",
             &room_id,
             "--username",
             &owner_username,
             &media_id,
         ],
-        "create room publish key",
+        "create rtmp publish key",
     )
     .await;
     let rtmp_url = publish_key["rtmp_url"]
@@ -4121,8 +4121,15 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
 
     let room_stream_info = run_synctv_remote_cli_json(
         &server,
-        &["room", "stream", "get", "--room-id", &room_id, &media_id],
-        "get room stream info",
+        &[
+            "provider",
+            "rtmp",
+            "get-stream-info",
+            "--room-id",
+            &room_id,
+            &media_id,
+        ],
+        "get rtmp stream info",
     )
     .await;
     assert_eq!(room_stream_info["active"], true);
@@ -4201,8 +4208,15 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
 
     let room_stream_info_after_kick = run_synctv_remote_cli_json(
         &server,
-        &["room", "stream", "get", "--room-id", &room_id, &media_id],
-        "get room stream info after kick",
+        &[
+            "provider",
+            "rtmp",
+            "get-stream-info",
+            "--room-id",
+            &room_id,
+            &media_id,
+        ],
+        "get rtmp stream info after kick",
     )
     .await;
     assert_eq!(room_stream_info_after_kick["active"], false);
@@ -4686,10 +4700,10 @@ async fn full_stack_cli_system_stats_works_when_bootstrap_root_username_differs(
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle() {
+async fn full_stack_cli_provider_create_rejects_unsupported_provider_type() {
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
-    let provider_name = format!("local-provider-{suffix}");
+    let provider_name = format!("unsupported-provider-{suffix}");
 
     let provider_add = run_synctv_remote_cli(
         &server,
@@ -4700,171 +4714,19 @@ async fn full_stack_cli_provider_commands_manage_local_only_provider_lifecycle()
             "http://127.0.0.1:59999",
             "--provider",
             "custom_local",
-            "--comment",
-            "local-only provider lifecycle e2e",
         ],
     )
     .await;
     assert!(
-        provider_add.status.success(),
-        "provider add via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
+        !provider_add.status.success(),
+        "provider add with unsupported provider type should fail\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&provider_add.stdout),
         String::from_utf8_lossy(&provider_add.stderr),
     );
-    let provider_add_body: Value = serde_json::from_slice(&provider_add.stdout)
-        .expect("CLI provider add output should be JSON");
-    assert_eq!(provider_add_body["instance"]["name"], provider_name);
-    assert_eq!(provider_add_body["instance"]["enabled"], true);
-    assert_eq!(
-        provider_add_body["instance"]["providers"],
-        json!(["custom_local"])
-    );
-
-    let provider_list_filtered = run_synctv_remote_cli(
-        &server,
-        &["provider", "list", "--provider-type", "custom_local"],
-    )
-    .await;
     assert!(
-        provider_list_filtered.status.success(),
-        "provider list via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_list_filtered.stdout),
-        String::from_utf8_lossy(&provider_list_filtered.stderr),
-    );
-    let provider_list_filtered_body: Value = serde_json::from_slice(&provider_list_filtered.stdout)
-        .expect("CLI provider list output should be JSON");
-    assert!(
-        provider_list_filtered_body["instances"]
-            .as_array()
-            .expect("instances should be an array")
-            .iter()
-            .any(|instance| instance["name"] == provider_name),
-        "filtered provider list should include the created instance: {provider_list_filtered_body}"
-    );
-
-    let provider_update = run_synctv_remote_cli(
-        &server,
-        &[
-            "provider",
-            "update",
-            &provider_name,
-            "--comment",
-            "updated provider lifecycle e2e",
-            "--provider",
-            "custom_local",
-            "--provider",
-            "custom_archive",
-            "--timeout-seconds",
-            "25",
-        ],
-    )
-    .await;
-    assert!(
-        provider_update.status.success(),
-        "provider update via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_update.stdout),
-        String::from_utf8_lossy(&provider_update.stderr),
-    );
-    let provider_update_body: Value = serde_json::from_slice(&provider_update.stdout)
-        .expect("CLI provider update output should be JSON");
-    assert_eq!(
-        provider_update_body["instance"]["comment"],
-        "updated provider lifecycle e2e"
-    );
-    assert_eq!(
-        provider_update_body["instance"]["providers"],
-        json!(["custom_local", "custom_archive"])
-    );
-    assert_eq!(provider_update_body["instance"]["timeout_seconds"], 25);
-
-    let provider_disable =
-        run_synctv_remote_cli(&server, &["provider", "disable", &provider_name]).await;
-    assert!(
-        provider_disable.status.success(),
-        "provider disable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_disable.stdout),
-        String::from_utf8_lossy(&provider_disable.stderr),
-    );
-    let provider_disable_body: Value = serde_json::from_slice(&provider_disable.stdout)
-        .expect("CLI provider disable output should be JSON");
-    assert_eq!(provider_disable_body["instance"]["enabled"], false);
-
-    let provider_enable =
-        run_synctv_remote_cli(&server, &["provider", "enable", &provider_name]).await;
-    assert!(
-        provider_enable.status.success(),
-        "provider enable via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_enable.stdout),
-        String::from_utf8_lossy(&provider_enable.stderr),
-    );
-    let provider_enable_body: Value = serde_json::from_slice(&provider_enable.stdout)
-        .expect("CLI provider enable output should be JSON");
-    assert_eq!(provider_enable_body["instance"]["enabled"], true);
-
-    let mut management_client =
-        management_proto::management_service_client::ManagementServiceClient::connect(
-            server.management_base_url.clone(),
-        )
-        .await
-        .expect("connect management gRPC client");
-    let provider_list_after_enable = management_client
-        .list_provider_instances(management_request(
-            management_proto::ListProviderInstancesRequest {
-                page: 1,
-                page_size: 50,
-                provider_type: "custom_archive".to_string(),
-                search: String::new(),
-                enabled: None,
-                tls: None,
-                sort_by: management_proto::ProviderInstanceListSortBy::CreatedAt as i32,
-                sort_direction: management_proto::SortDirection::Desc as i32,
-            },
-        ))
-        .await
-        .expect("management list_provider_instances should succeed after CLI lifecycle updates")
-        .into_inner();
-    let persisted_provider = provider_list_after_enable
-        .instances
-        .into_iter()
-        .find(|instance| instance.name == provider_name)
-        .expect("provider should be persisted after CLI lifecycle updates");
-    assert_eq!(persisted_provider.comment, "updated provider lifecycle e2e");
-    assert!(persisted_provider.enabled);
-    assert_eq!(persisted_provider.timeout_seconds, 25);
-
-    let provider_delete =
-        run_synctv_remote_cli(&server, &["provider", "delete", &provider_name]).await;
-    assert!(
-        provider_delete.status.success(),
-        "provider delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_delete.stdout),
-        String::from_utf8_lossy(&provider_delete.stderr),
-    );
-    let provider_delete_body: Value = serde_json::from_slice(&provider_delete.stdout)
-        .expect("CLI provider delete output should be JSON");
-    assert_eq!(provider_delete_body["success"], true);
-
-    let provider_list_after_delete = run_synctv_remote_cli(
-        &server,
-        &["provider", "list", "--provider-type", "custom_archive"],
-    )
-    .await;
-    assert!(
-        provider_list_after_delete.status.success(),
-        "provider list after delete via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&provider_list_after_delete.stdout),
-        String::from_utf8_lossy(&provider_list_after_delete.stderr),
-    );
-    let provider_list_after_delete_body: Value =
-        serde_json::from_slice(&provider_list_after_delete.stdout)
-            .expect("CLI provider list after delete output should be JSON");
-    assert!(
-        provider_list_after_delete_body["instances"]
-            .as_array()
-            .expect("instances should be an array")
-            .iter()
-            .all(|instance| instance["name"] != provider_name),
-        "provider should be absent after delete: {provider_list_after_delete_body}"
+        String::from_utf8_lossy(&provider_add.stderr).contains("unsupported remote provider"),
+        "stderr should explain unsupported provider type: {}",
+        String::from_utf8_lossy(&provider_add.stderr)
     );
 
     server.shutdown().await;
@@ -4876,10 +4738,6 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
     let provider_name = format!("remote-provider-{suffix}");
-    let provider_config_json = serde_json::to_string(&json!({
-        "jwt_secret": server.provider_probe_secret,
-    }))
-    .expect("provider config JSON should encode");
 
     let provider_add = run_synctv_remote_cli(
         &server,
@@ -4892,8 +4750,8 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
             "alist",
             "--comment",
             "remote provider lifecycle e2e",
-            "--config-json",
-            &provider_config_json,
+            "--jwt-secret",
+            &server.provider_probe_secret,
         ],
     )
     .await;
@@ -4969,14 +4827,15 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         .expect("connect management gRPC client");
     let provider_list_after_enable = management_client
         .list_provider_instances(management_request(
-            management_proto::ListProviderInstancesRequest {
+            synctv_proto::providers::common::ListProviderInstancesRequest {
                 page: 1,
                 page_size: 50,
                 provider_type: "alist".to_string(),
                 search: String::new(),
                 enabled: None,
                 tls: None,
-                sort_by: management_proto::ProviderInstanceListSortBy::CreatedAt as i32,
+                sort_by: synctv_proto::providers::common::ProviderInstanceListSortBy::CreatedAt
+                    as i32,
                 sort_direction: management_proto::SortDirection::Desc as i32,
             },
         ))
@@ -7034,6 +6893,7 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
                     media_id: String::new(),
                     playlist_id: String::new(),
                     target: Vec::new(),
+                    playback_client_profile: None,
                 },
             )),
         })
@@ -8386,6 +8246,7 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
                     media_id: String::new(),
                     playlist_id: String::new(),
                     target: Vec::new(),
+                    playback_client_profile: None,
                 },
             )),
         },

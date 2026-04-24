@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use super::error::{check_response, json_with_limit, EmbyError};
 use super::types::{
-    default_device_profile, AuthResponse, FsListResponse, Item, ItemsResponse, PathInfo,
-    PlaybackInfoResponse, SystemInfo, UserInfo,
+    device_profile_from_playback_client_profile, AuthResponse, FsListResponse, Item, ItemsResponse,
+    PathInfo, PlaybackInfoResponse, SystemInfo, UserInfo,
 };
 use crate::error::with_retry;
 
@@ -78,6 +78,20 @@ pub struct EmbyClient {
     client: Client,
     api_prefix: Option<String>,
     device_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackInfoRequest<'a> {
+    pub item_id: &'a str,
+    pub media_source_id: Option<&'a str>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+    pub max_streaming_bitrate: Option<i64>,
+    pub max_audio_channels: Option<i32>,
+    pub enable_direct_play: Option<bool>,
+    pub enable_direct_stream: Option<bool>,
+    pub enable_transcoding: Option<bool>,
+    pub device_profile: Option<&'a crate::grpc::emby::PlaybackInfoDeviceProfile>,
 }
 
 impl EmbyClient {
@@ -288,12 +302,12 @@ impl EmbyClient {
 
     /// Get current user information
     pub async fn me(&self) -> Result<UserInfo, EmbyError> {
-        let user_id = self
-            .user_id
-            .as_ref()
-            .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
-
-        let url = self.endpoint_url(&format!("Users/{}", url_encode(user_id)))?;
+        let url = match self.user_id.as_deref() {
+            Some(user_id) if !user_id.trim().is_empty() => {
+                self.endpoint_url(&format!("Users/{}", url_encode(user_id)))?
+            }
+            _ => self.endpoint_url("Users/Me")?,
+        };
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
@@ -307,6 +321,27 @@ impl EmbyClient {
                 let response = check_response(response).await?;
                 let user: UserInfo = json_with_limit(response).await?;
                 Ok(user)
+            }
+        })
+        .await
+    }
+
+    /// List users visible to the authenticated token.
+    pub async fn list_users(&self) -> Result<Vec<UserInfo>, EmbyError> {
+        let url = self.endpoint_url("Users")?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
+
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client.get(&url).headers(headers).send().await?;
+
+                let response = check_response(response).await?;
+                let users: Vec<UserInfo> = json_with_limit(response).await?;
+                Ok(users)
             }
         })
         .await
@@ -502,37 +537,48 @@ impl EmbyClient {
     /// Get playback information
     pub async fn get_playback_info(
         &self,
-        item_id: &str,
-        media_source_id: Option<&str>,
-        audio_stream_index: Option<i32>,
-        subtitle_stream_index: Option<i32>,
-        max_streaming_bitrate: Option<i64>,
+        request: PlaybackInfoRequest<'_>,
     ) -> Result<PlaybackInfoResponse, EmbyError> {
-        validate_item_id(item_id)?;
+        validate_item_id(request.item_id)?;
 
         let user_id = self
             .user_id
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let url = self.endpoint_url(&format!("Items/{}/PlaybackInfo", url_encode(item_id)))?;
+        let url = self.endpoint_url(&format!(
+            "Items/{}/PlaybackInfo",
+            url_encode(request.item_id)
+        ))?;
 
         let mut body = json!({
             "UserId": user_id,
-            "DeviceProfile": default_device_profile(),
+            "DeviceProfile": device_profile_from_playback_client_profile(request.device_profile),
         });
 
-        if let Some(source_id) = media_source_id {
+        if let Some(source_id) = request.media_source_id {
             body["MediaSourceId"] = json!(source_id);
         }
-        if let Some(audio_idx) = audio_stream_index {
+        if let Some(audio_idx) = request.audio_stream_index {
             body["AudioStreamIndex"] = json!(audio_idx);
         }
-        if let Some(sub_idx) = subtitle_stream_index {
+        if let Some(sub_idx) = request.subtitle_stream_index {
             body["SubtitleStreamIndex"] = json!(sub_idx);
         }
-        if let Some(bitrate) = max_streaming_bitrate {
+        if let Some(bitrate) = request.max_streaming_bitrate {
             body["MaxStreamingBitrate"] = json!(bitrate);
+        }
+        if let Some(max_audio_channels) = request.max_audio_channels {
+            body["MaxAudioChannels"] = json!(max_audio_channels);
+        }
+        if let Some(enable_direct_play) = request.enable_direct_play {
+            body["EnableDirectPlay"] = json!(enable_direct_play);
+        }
+        if let Some(enable_direct_stream) = request.enable_direct_stream {
+            body["EnableDirectStream"] = json!(enable_direct_stream);
+        }
+        if let Some(enable_transcoding) = request.enable_transcoding {
+            body["EnableTranscoding"] = json!(enable_transcoding);
         }
 
         let headers = self.build_headers()?;

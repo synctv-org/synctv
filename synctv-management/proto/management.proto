@@ -5,6 +5,11 @@ package synctv.management;
 import "proto/admin.proto";
 import "proto/client.proto";
 import "proto/common.proto";
+import "proto/providers/alist.proto";
+import "proto/providers/bilibili.proto";
+import "proto/providers/common.proto";
+import "proto/providers/emby.proto";
+import "proto/providers/rtmp.proto";
 
 service ManagementService {
     // =========================
@@ -50,9 +55,28 @@ service ManagementService {
     rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
     rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
-    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.client.CreatePublishKeyResponse);
-    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.client.GetStreamInfoResponse);
+    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
+    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
+    rpc AlistLogin(AlistLoginRequest) returns (synctv.provider.alist.LoginResponse);
+    rpc AlistList(AlistListRequest) returns (synctv.provider.alist.ListResponse);
+    rpc AlistGetMe(AlistGetMeRequest) returns (synctv.provider.alist.GetMeResponse);
+    rpc AlistLogout(AlistLogoutRequest) returns (synctv.provider.alist.LogoutResponse);
+    rpc AlistGetBinds(AlistGetBindsRequest) returns (synctv.provider.alist.GetBindsResponse);
+    rpc EmbyLogin(EmbyLoginRequest) returns (synctv.provider.emby.LoginResponse);
+    rpc EmbyList(EmbyListRequest) returns (synctv.provider.emby.ListResponse);
+    rpc EmbyGetMe(EmbyGetMeRequest) returns (synctv.provider.emby.GetMeResponse);
+    rpc EmbyLogout(EmbyLogoutRequest) returns (synctv.provider.emby.LogoutResponse);
+    rpc EmbyGetBinds(EmbyGetBindsRequest) returns (synctv.provider.emby.GetBindsResponse);
+    rpc BilibiliParse(BilibiliParseRequest) returns (synctv.provider.bilibili.ParseResponse);
+    rpc BilibiliLoginQr(BilibiliLoginQrRequest) returns (synctv.provider.bilibili.QRCodeResponse);
+    rpc BilibiliCheckQr(BilibiliCheckQrRequest) returns (synctv.provider.bilibili.QRStatusResponse);
+    rpc BilibiliGetCaptcha(BilibiliGetCaptchaRequest) returns (synctv.provider.bilibili.CaptchaResponse);
+    rpc BilibiliSendSms(BilibiliSendSmsRequest) returns (synctv.provider.bilibili.SendSMSResponse);
+    rpc BilibiliLoginSms(BilibiliLoginSmsRequest) returns (synctv.provider.bilibili.LoginSMSResponse);
+    rpc BilibiliGetUserInfo(BilibiliGetUserInfoRequest) returns (synctv.provider.bilibili.UserInfoResponse);
+    rpc BilibiliLogout(BilibiliLogoutRequest) returns (synctv.provider.bilibili.LogoutResponse);
+    rpc BilibiliGetBinds(BilibiliGetBindsRequest) returns (synctv.provider.bilibili.GetBindsResponse);
 
     rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
@@ -68,13 +92,15 @@ service ManagementService {
     rpc MoveMedia(MoveMediaRequest) returns (synctv.client.MoveMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
 
-    rpc ListProviderInstances(ListProviderInstancesRequest) returns (synctv.admin.ListProviderInstancesResponse);
-    rpc AddProviderInstance(AddProviderInstanceRequest) returns (synctv.admin.AddProviderInstanceResponse);
-    rpc UpdateProviderInstance(UpdateProviderInstanceRequest) returns (synctv.admin.UpdateProviderInstanceResponse);
-    rpc DeleteProviderInstance(DeleteProviderInstanceRequest) returns (synctv.admin.DeleteProviderInstanceResponse);
-    rpc ReconnectProviderInstance(ReconnectProviderInstanceRequest) returns (synctv.admin.ReconnectProviderInstanceResponse);
-    rpc EnableProviderInstance(EnableProviderInstanceRequest) returns (synctv.admin.EnableProviderInstanceResponse);
-    rpc DisableProviderInstance(DisableProviderInstanceRequest) returns (synctv.admin.DisableProviderInstanceResponse);
+    rpc ListAvailableProviderInstances(synctv.provider.common.ListAvailableProviderInstancesRequest) returns (synctv.provider.common.ProviderInstancesResponse);
+    rpc ListProviderBackends(synctv.provider.common.ListProviderBackendsRequest) returns (synctv.provider.common.ProviderBackendsResponse);
+    rpc ListProviderInstances(synctv.provider.common.ListProviderInstancesRequest) returns (synctv.provider.common.ListProviderInstancesResponse);
+    rpc AddProviderInstance(synctv.provider.common.AddProviderInstanceRequest) returns (synctv.provider.common.AddProviderInstanceResponse);
+    rpc UpdateProviderInstance(synctv.provider.common.UpdateProviderInstanceRequest) returns (synctv.provider.common.UpdateProviderInstanceResponse);
+    rpc DeleteProviderInstance(synctv.provider.common.DeleteProviderInstanceRequest) returns (synctv.provider.common.DeleteProviderInstanceResponse);
+    rpc ReconnectProviderInstance(synctv.provider.common.ReconnectProviderInstanceRequest) returns (synctv.provider.common.ReconnectProviderInstanceResponse);
+    rpc EnableProviderInstance(synctv.provider.common.EnableProviderInstanceRequest) returns (synctv.provider.common.EnableProviderInstanceResponse);
+    rpc DisableProviderInstance(synctv.provider.common.DisableProviderInstanceRequest) returns (synctv.provider.common.DisableProviderInstanceResponse);
 
     rpc GetSettings(GetSettingsRequest) returns (synctv.admin.GetSettingsResponse);
     rpc GetSettingsGroup(GetSettingsGroupRequest) returns (synctv.admin.GetSettingsGroupResponse);
@@ -188,14 +214,6 @@ enum RelatedRoomListSortBy {
     RELATED_ROOM_LIST_SORT_BY_UPDATED_AT = 3;
     RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT = 4;
     RELATED_ROOM_LIST_SORT_BY_NAME = 5;
-}
-
-enum ProviderInstanceListSortBy {
-    PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED = 0;
-    PROVIDER_INSTANCE_LIST_SORT_BY_NAME = 1;
-    PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT = 2;
-    PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT = 3;
-    PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT = 4;
 }
 
 enum ActiveStreamListSortBy {
@@ -431,6 +449,7 @@ message StopPlaybackRequest {
 
 message GetPlaybackRequest {
     string room_id = 1;
+    synctv.client.PlaybackClientProfile playback_client_profile = 2;
 }
 
 message CreatePublishKeyRequest {
@@ -557,54 +576,99 @@ message DeleteMediaRequest {
     bool force = 3;
 }
 
-message ListProviderInstancesRequest {
-    int32 page = 1;
-    int32 page_size = 2;
-    string provider_type = 3;
-    string search = 4;
-    optional bool enabled = 5;
-    optional bool tls = 6;
-    ProviderInstanceListSortBy sort_by = 7;
-    SortDirection sort_direction = 8;
+message AlistLoginRequest {
+    string actor_user_id = 1;
+    synctv.provider.alist.LoginRequest request = 2;
 }
 
-message AddProviderInstanceRequest {
-    string name = 1;
-    string endpoint = 2;
-    string comment = 3;
-    uint32 timeout_seconds = 4;
-    bool tls = 5;
-    bool insecure_tls = 6;
-    repeated string providers = 7;
-    bytes config_json = 8;
+message AlistListRequest {
+    string actor_user_id = 1;
+    synctv.provider.alist.ListRequest request = 2;
 }
 
-message UpdateProviderInstanceRequest {
-    string name = 1;
-    optional string endpoint = 2;
-    optional string comment = 3;
-    bool clear_comment = 4;
-    optional uint32 timeout_seconds = 5;
-    optional bool tls = 6;
-    optional bool insecure_tls = 7;
-    repeated string providers = 8;
-    bytes config_json = 9;
+message AlistGetMeRequest {
+    string actor_user_id = 1;
+    synctv.provider.alist.GetMeRequest request = 2;
 }
 
-message DeleteProviderInstanceRequest {
-    string name = 1;
+message AlistLogoutRequest {
+    string actor_user_id = 1;
+    synctv.provider.alist.LogoutRequest request = 2;
 }
 
-message ReconnectProviderInstanceRequest {
-    string name = 1;
+message AlistGetBindsRequest {
+    string actor_user_id = 1;
+    synctv.provider.alist.GetBindsRequest request = 2;
 }
 
-message EnableProviderInstanceRequest {
-    string name = 1;
+message EmbyLoginRequest {
+    string actor_user_id = 1;
+    synctv.provider.emby.LoginRequest request = 2;
 }
 
-message DisableProviderInstanceRequest {
-    string name = 1;
+message EmbyListRequest {
+    string actor_user_id = 1;
+    synctv.provider.emby.ListRequest request = 2;
+}
+
+message EmbyGetMeRequest {
+    string actor_user_id = 1;
+    synctv.provider.emby.GetMeRequest request = 2;
+}
+
+message EmbyLogoutRequest {
+    string actor_user_id = 1;
+    synctv.provider.emby.LogoutRequest request = 2;
+}
+
+message EmbyGetBindsRequest {
+    string actor_user_id = 1;
+    synctv.provider.emby.GetBindsRequest request = 2;
+}
+
+message BilibiliParseRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.ParseRequest request = 2;
+}
+
+message BilibiliLoginQrRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.LoginQRRequest request = 2;
+}
+
+message BilibiliCheckQrRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.CheckQRRequest request = 2;
+}
+
+message BilibiliGetCaptchaRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.GetCaptchaRequest request = 2;
+}
+
+message BilibiliSendSmsRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.SendSMSRequest request = 2;
+}
+
+message BilibiliLoginSmsRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.LoginSMSRequest request = 2;
+}
+
+message BilibiliGetUserInfoRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.UserInfoRequest request = 2;
+}
+
+message BilibiliLogoutRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.LogoutRequest request = 2;
+}
+
+message BilibiliGetBindsRequest {
+    string actor_user_id = 1;
+    synctv.provider.bilibili.GetBindsRequest request = 2;
 }
 
 message GetSettingsRequest {}

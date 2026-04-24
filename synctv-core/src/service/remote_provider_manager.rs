@@ -21,16 +21,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
-use synctv_media_providers::grpc::{
-    alist::{alist_client::AlistClient, MeReq as AlistMeReq},
-    bilibili::{bilibili_client::BilibiliClient, UserInfoReq},
-    emby::{emby_client::EmbyClient, MeReq as EmbyMeReq},
-};
 use tokio::task::JoinHandle;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tonic::transport::{Certificate, ClientTlsConfig};
 use tonic::transport::{Channel, Endpoint, Uri};
-use tonic::{Request, Status};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
@@ -95,6 +89,8 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
+    const SUPPORTED_REMOTE_PROVIDERS: &'static [&'static str] = &["alist", "emby", "bilibili"];
+
     fn probe_execution_control(
         control: Option<&ExecutionControl>,
         timeout: Duration,
@@ -576,6 +572,16 @@ impl RemoteProviderManager {
     /// Validate endpoint and timeout without creating or connecting a channel.
     fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
         config.parse_timeout().map_err(crate::Error::Internal)?;
+        for provider in &config.providers {
+            if !Self::is_supported_remote_provider(provider) {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Remote provider instance '{}' declares unsupported provider '{}'; supported providers are: {}",
+                    config.name,
+                    provider,
+                    Self::SUPPORTED_REMOTE_PROVIDERS.join(", ")
+                )));
+            }
+        }
         if Self::requires_remote_connection(config) {
             Self::validate_endpoint_ssrf(&config.endpoint)?;
             let endpoint = url::Url::parse(&config.endpoint).map_err(|e| {
@@ -620,7 +626,12 @@ impl RemoteProviderManager {
         config
             .providers
             .iter()
-            .any(|provider| matches!(provider.as_str(), "bilibili" | "alist" | "emby"))
+            .any(|provider| Self::is_supported_remote_provider(provider))
+    }
+
+    fn is_supported_remote_provider(provider: &str) -> bool {
+        let trimmed = provider.trim();
+        Self::SUPPORTED_REMOTE_PROVIDERS.contains(&trimmed)
     }
 
     fn required_auth_secret(config: &ProviderInstance) -> crate::Result<&str> {
@@ -672,9 +683,24 @@ impl RemoteProviderManager {
         control: Option<&ExecutionControl>,
     ) -> crate::Result<()> {
         let mut client = HealthClient::new(connection.channel());
-        let request = tonic::Request::new(HealthCheckRequest {
+        let mut request = tonic::Request::new(HealthCheckRequest {
             service: String::new(),
         });
+        let secret = connection.auth_secret().ok_or_else(|| {
+            crate::Error::InvalidInput(format!(
+                "Remote provider instance '{}' requires a non-empty jwt_secret for health checks",
+                config.name
+            ))
+        })?;
+        let metadata_value = secret.parse().map_err(|e| {
+            crate::Error::InvalidInput(format!(
+                "Remote provider instance '{}' jwt_secret must be valid ASCII gRPC metadata: {e}",
+                config.name
+            ))
+        })?;
+        request
+            .metadata_mut()
+            .insert("x-provider-secret", metadata_value);
         let timeout = Duration::from_secs(5);
         let control = Self::probe_execution_control(control, timeout);
 
@@ -707,65 +733,6 @@ impl RemoteProviderManager {
         }
 
         Ok(())
-    }
-
-    async fn validate_remote_connection(
-        &self,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-    ) -> crate::Result<()> {
-        self.validate_remote_connection_with_control(config, connection, None)
-            .await
-    }
-
-    async fn validate_remote_connection_with_control(
-        &self,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        self.validate_management_connection_with_control(config, connection, control)
-            .await?;
-        self.validate_authenticated_provider_health_with_control(config, connection, control)
-            .await
-    }
-
-    async fn validate_authenticated_provider_health_with_control(
-        &self,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        let timeout = Duration::from_secs(5);
-        let probe = async {
-            if config
-                .providers
-                .iter()
-                .any(|provider| provider == "bilibili")
-            {
-                Self::probe_bilibili_auth(connection).await?;
-            }
-            if config.providers.iter().any(|provider| provider == "alist") {
-                Self::probe_alist_auth(connection).await?;
-            }
-            if config.providers.iter().any(|provider| provider == "emby") {
-                Self::probe_emby_auth(connection).await?;
-            }
-
-            Ok(())
-        };
-
-        let control = Self::probe_execution_control(control, timeout);
-        control.run(probe).await.map_err(|err| match err {
-            synctv_common::ExecutionControlError::DeadlineExceeded => {
-                crate::Error::InvalidInput(format!(
-                    "Authenticated provider probe timed out for instance '{}' after {}s",
-                    config.name,
-                    timeout.as_secs()
-                ))
-            }
-            other => crate::Error::from(other),
-        })?
     }
 
     fn resolve_ssrf_validated_address(
@@ -1552,19 +1519,29 @@ impl RemoteProviderManager {
     ///
     /// Loads the full list from DB to check all instances, not just cached ones.
     pub async fn health_check(&self) -> HashMap<String, bool> {
-        let mut results = HashMap::new();
-
-        // Get all enabled instances from DB for complete health check
         let configs = match self.repository.get_all_enabled().await {
             Ok(configs) => configs,
             Err(e) => {
                 tracing::error!("Failed to load instances for health check: {e}");
-                return results;
+                return HashMap::new();
             }
         };
 
+        self.health_check_instances(&configs).await
+    }
+
+    /// Health check a selected set of provider instances.
+    ///
+    /// This avoids probing every enabled instance when a caller only needs
+    /// status for a filtered or paginated subset.
+    pub async fn health_check_instances(
+        &self,
+        configs: &[ProviderInstance],
+    ) -> HashMap<String, bool> {
+        let mut results = HashMap::new();
+
         for config in configs {
-            if !Self::requires_remote_connection(&config) {
+            if !Self::requires_remote_connection(config) {
                 continue;
             }
 
@@ -1573,20 +1550,19 @@ impl RemoteProviderManager {
                     "Health check reporting provider instance '{}' unhealthy: missing or invalid jwt_secret for remote-capable configuration",
                     config.name
                 );
-                results.insert(config.name, false);
+                results.insert(config.name.clone(), false);
                 continue;
             }
 
-            // Try to get channel from cache or create it
             let Some(connection) = self.get(&config.name).await else {
-                results.insert(config.name, false);
+                results.insert(config.name.clone(), false);
                 continue;
             };
 
             let is_healthy = self
-                .check_instance_health(&config.name, &config, &connection)
+                .check_instance_health(&config.name, config, &connection)
                 .await;
-            results.insert(config.name, is_healthy);
+            results.insert(config.name.clone(), is_healthy);
         }
 
         results
@@ -1601,7 +1577,10 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         connection: &RemoteProviderConnection,
     ) -> bool {
-        match self.validate_remote_connection(config, connection).await {
+        match self
+            .validate_management_connection_with_control(config, connection, None)
+            .await
+        {
             Ok(()) => {
                 tracing::debug!("Provider instance '{}' is healthy", name);
                 true
@@ -1610,104 +1589,6 @@ impl RemoteProviderManager {
                 tracing::error!("Health check failed for instance '{}': {}", name, error);
                 false
             }
-        }
-    }
-
-    async fn probe_bilibili_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
-        let mut client = BilibiliClient::new(connection.channel());
-        let request = match Self::build_authenticated_request(
-            connection,
-            UserInfoReq {
-                cookies: HashMap::from([("SESSDATA".to_string(), "health-check".to_string())]),
-            },
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Bilibili probe request build failed: {error}"
-                )));
-            }
-        };
-
-        Self::probe_reports_authenticated_health(
-            "bilibili",
-            "<bilibili>",
-            client.user_info(request).await,
-        )
-    }
-
-    async fn probe_alist_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
-        let mut client = AlistClient::new(connection.channel());
-        let request = match Self::build_authenticated_request(
-            connection,
-            AlistMeReq {
-                host: "http://health-check.invalid".to_string(),
-                token: "health-check-token".to_string(),
-            },
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Alist probe request build failed: {error}"
-                )));
-            }
-        };
-
-        Self::probe_reports_authenticated_health("alist", "<alist>", client.me(request).await)
-    }
-
-    async fn probe_emby_auth(connection: &RemoteProviderConnection) -> crate::Result<()> {
-        let mut client = EmbyClient::new(connection.channel());
-        let request = match Self::build_authenticated_request(
-            connection,
-            EmbyMeReq {
-                host: "http://health-check.invalid".to_string(),
-                token: "health-check-token".to_string(),
-                user_id: "health-check-user".to_string(),
-            },
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Authenticated Emby probe request build failed: {error}"
-                )));
-            }
-        };
-
-        Self::probe_reports_authenticated_health("emby", "<emby>", client.me(request).await)
-    }
-
-    fn build_authenticated_request<T>(
-        connection: &RemoteProviderConnection,
-        payload: T,
-    ) -> crate::Result<Request<T>> {
-        let mut request = Request::new(payload);
-        let secret = connection.auth_secret().ok_or_else(|| {
-            crate::Error::InvalidInput(
-                "remote provider auth secret is required for authenticated probes".to_string(),
-            )
-        })?;
-        let metadata_value = secret.parse().map_err(|e| {
-            crate::Error::InvalidInput(format!(
-                "remote provider auth secret must be valid ASCII gRPC metadata: {e}"
-            ))
-        })?;
-        request
-            .metadata_mut()
-            .insert("x-provider-secret", metadata_value);
-        Ok(request)
-    }
-
-    fn probe_reports_authenticated_health<T>(
-        provider: &str,
-        instance_name: &str,
-        result: Result<tonic::Response<T>, Status>,
-    ) -> crate::Result<()> {
-        match result {
-            Ok(_) => Ok(()),
-            Err(status) => Err(crate::Error::InvalidInput(format!(
-                "Authenticated {provider} probe failed for '{instance_name}': {status}"
-            ))),
         }
     }
 }
@@ -1769,6 +1650,20 @@ mod tests {
 
         RemoteProviderManager::validate_config(&config)
             .expect("http:// endpoint should remain valid");
+    }
+
+    #[test]
+    fn validate_config_rejects_unsupported_provider_type() {
+        let mut config = remote_instance("http://provider.example.com:50051");
+        config.providers = vec!["custom_local".to_string()];
+
+        let err = RemoteProviderManager::validate_config(&config)
+            .expect_err("unsupported remote provider types must be rejected");
+
+        assert!(
+            err.to_string().contains("unsupported provider"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

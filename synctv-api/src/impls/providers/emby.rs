@@ -4,15 +4,15 @@
 //! Used by both HTTP and gRPC handlers.
 
 use crate::proto::providers::emby::{
-    GetMeRequest, GetMeResponse, ListRequest, ListResponse, LoginRequest, LoginResponse,
-    LogoutRequest, LogoutResponse, MediaItem,
+    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::resolve_bound_instance_name;
+use super::{get_provider_binds, resolve_bound_instance_name};
 
 /// Emby API implementation
 ///
@@ -98,15 +98,46 @@ impl EmbyApiImpl {
         request_context: Option<&ExecutionControl>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
-        let api_key = req.api_key.clone();
+        if req.username.trim().is_empty() {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Emby username must not be empty".to_string(),
+            ));
+        }
 
-        let user_info = self
+        let login_resp = self
             .provider
-            .login_with_context(req.host, req.api_key, instance_name, request_context)
+            .login_with_context(
+                synctv_media_providers::grpc::emby::LoginReq {
+                    host: req.host,
+                    username: req.username,
+                    credential: Some(
+                        match req.credential.ok_or_else(|| {
+                            synctv_core::provider::ProviderError::InvalidConfig(
+                                "Emby login requires exactly one credential".to_string(),
+                            )
+                        })? {
+                            crate::proto::providers::emby::login_request::Credential::Password(
+                                password,
+                            ) => {
+                                synctv_media_providers::grpc::emby::login_req::Credential::Password(
+                                    password,
+                                )
+                            }
+                            crate::proto::providers::emby::login_request::Credential::ApiKey(
+                                api_key,
+                            ) => synctv_media_providers::grpc::emby::login_req::Credential::ApiKey(
+                                api_key,
+                            ),
+                        },
+                    ),
+                },
+                instance_name,
+                request_context,
+            )
             .await?;
 
         // Extract admin status from user policy
-        let is_admin = user_info
+        let is_admin = login_resp
             .policy
             .as_ref()
             .is_some_and(|p| p.is_administrator);
@@ -114,7 +145,8 @@ impl EmbyApiImpl {
         // Generate server_id and persist credential
         let server_id =
             UserProviderCredential::generate_server_id_for_instance(&host, instance_name);
-        let credential_data = ProviderCredential::emby(host, api_key, user_info.id.clone());
+        let credential_data =
+            ProviderCredential::emby(host, login_resp.token, login_resp.user_id.clone());
 
         // Upsert: delete existing then create
         if let Some(existing) = self
@@ -132,7 +164,7 @@ impl EmbyApiImpl {
         }
 
         let credential = UserProviderCredential {
-            id: synctv_common::snanoid!(),
+            id: UserProviderCredential::new_id(),
             user_id: caller_user_id.to_string(),
             provider: synctv_core::provider::EmbyProvider::NAME.to_string(),
             server_id: server_id.clone(),
@@ -157,8 +189,8 @@ impl EmbyApiImpl {
             })?;
 
         Ok(LoginResponse {
-            user_id: user_info.id,
-            username: user_info.name,
+            user_id: login_resp.user_id,
+            username: login_resp.username,
             is_admin,
             server_id,
         })
@@ -247,7 +279,7 @@ impl EmbyApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        let (host, token, _, credential_instance_name) = self
+        let (host, token, user_id, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id)
             .await?;
         let effective_instance_name = resolve_bound_instance_name(
@@ -258,7 +290,7 @@ impl EmbyApiImpl {
         let me_req = synctv_media_providers::grpc::emby::MeReq {
             host,
             token,
-            user_id: String::new(),
+            user_id,
         };
 
         let resp = self
@@ -312,6 +344,31 @@ impl EmbyApiImpl {
             message: "Logout successful".to_string(),
         })
     }
+
+    pub async fn get_binds(
+        &self,
+        caller_user_id: &str,
+        instance_name: Option<&str>,
+    ) -> Result<GetBindsResponse, crate::impls::ApiError> {
+        let binds = get_provider_binds(
+            &self.credential_repo,
+            caller_user_id,
+            synctv_core::provider::EmbyProvider::NAME,
+            "emby_user_id",
+            instance_name,
+        )
+        .await?
+        .into_iter()
+        .map(|bind| BindInfo {
+            id: bind.id,
+            host: bind.host,
+            user_id: bind.label_value,
+            created_at: bind.created_at,
+        })
+        .collect();
+
+        Ok(GetBindsResponse { binds })
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +386,36 @@ mod tests {
         Arc::new(EmbyProvider::new(Arc::new(RemoteProviderManager::new(
             repo,
         ))))
+    }
+
+    #[tokio::test]
+    async fn login_rejects_missing_credential_before_provider_call() {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
+        let api = EmbyApiImpl::new(
+            provider(),
+            Arc::new(UserProviderCredentialRepository::new(pool)),
+        );
+
+        let err = api
+            .login(
+                "user-1",
+                crate::proto::providers::emby::LoginRequest {
+                    host: "https://emby.example.com".to_string(),
+                    username: "alice".to_string(),
+                    credential: None,
+                    instance_name: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect_err("missing credential must fail before provider login");
+
+        match err {
+            ProviderError::InvalidConfig(message) => {
+                assert!(message.contains("exactly one credential"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package synctv.provider.bilibili;
+
+import "proto/providers/bilibili.proto";
+
+// Bilibili Provider Service
+//
+// Client-facing API for Bilibili video parsing, login, and user management
+service BilibiliProviderService {
+  // Parse Bilibili URL (video, anime, live) - uses stored credential via server_id
+  rpc Parse(ParseRequest) returns (ParseResponse);
+
+  // Generate QR code for login
+  rpc LoginQR(LoginQRRequest) returns (QRCodeResponse);
+
+  // Check QR code login status (persists credential on success)
+  rpc CheckQR(CheckQRRequest) returns (QRStatusResponse);
+
+  // Get captcha for SMS login
+  rpc GetCaptcha(GetCaptchaRequest) returns (CaptchaResponse);
+
+  // Send SMS verification code
+  rpc SendSMS(SendSMSRequest) returns (SendSMSResponse);
+
+  // Login with SMS code (persists credential on success)
+  rpc LoginSMS(LoginSMSRequest) returns (LoginSMSResponse);
+
+  // Get user info (uses stored credential via server_id)
+  rpc GetUserInfo(UserInfoRequest) returns (UserInfoResponse);
+
+  // Logout (delete stored credential)
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Get saved credentials (binds)
+  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+}

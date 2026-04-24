@@ -152,8 +152,8 @@ pub struct Media {
     pub source_config: JsonValue,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// Used to look up the provider from the registry at playback time.
-    /// Empty means use the default local instance for `source_provider`.
-    pub provider_instance_name: String,
+    /// `None` means use the default local instance for `source_provider`.
+    pub provider_instance_name: Option<String>,
     pub added_at: DateTime<Utc>,
     /// Timestamp of last update (auto-maintained by database trigger)
     pub updated_at: DateTime<Utc>,
@@ -170,11 +170,18 @@ pub struct FromProviderParams {
     pub name: String,
     pub source_config: JsonValue,
     pub provider_name: String,
-    pub provider_instance_name: String,
+    pub provider_instance_name: Option<String>,
     pub position: f64,
 }
 
 impl Media {
+    fn normalize_provider_instance_name(provider_instance_name: Option<String>) -> Option<String> {
+        provider_instance_name.and_then(|provider_instance_name| {
+            let trimmed = provider_instance_name.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        })
+    }
+
     /// Create media from provider instance (registry pattern)
     ///
     /// This is the preferred way to create media when using the provider registry.
@@ -182,8 +189,9 @@ impl Media {
     ///
     /// # Arguments
     /// * `provider_name` - Provider type name from `provider.name()` (e.g., "bilibili")
-    /// * `provider_instance_name` - Instance name for lookup (e.g., "`bilibili_main`").
-    ///   Empty means use the default local instance for `provider_name`.
+    /// * `provider_instance_name` - Optional instance name for lookup
+    ///   (e.g., "`bilibili_main`"). `None` means use the default local instance
+    ///   for `provider_name`.
     ///
     /// # Example
     /// ```text
@@ -199,7 +207,7 @@ impl Media {
         name: String,
         source_config: JsonValue,
         provider_name: &str,
-        provider_instance_name: String,
+        provider_instance_name: Option<String>,
         position: f64,
     ) -> Self {
         let now = Utc::now();
@@ -212,7 +220,7 @@ impl Media {
             position,
             source_provider: provider_name.to_string(),
             source_config,
-            provider_instance_name,
+            provider_instance_name: Self::normalize_provider_instance_name(provider_instance_name),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -232,7 +240,9 @@ impl Media {
             position: params.position,
             source_provider: params.provider_name,
             source_config: params.source_config,
-            provider_instance_name: params.provider_instance_name,
+            provider_instance_name: Self::normalize_provider_instance_name(
+                params.provider_instance_name,
+            ),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -270,7 +280,7 @@ impl Media {
             position,
             source_provider: "direct_url".to_string(),
             source_config,
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: None,
             added_at: now,
             updated_at: now,
             version: 0,

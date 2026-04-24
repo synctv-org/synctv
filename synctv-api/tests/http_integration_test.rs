@@ -668,13 +668,13 @@ mod provider_security_headers {
     ///     .layer(security_headers_middleware)  // Applied globally
     fn provider_style_router() -> Router {
         Router::new()
-            // Simulate /api/provider/* routes (common routes)
+            // Simulate /api/providers/* common routes
             .route(
-                "/api/provider/instances",
+                "/api/providers/instances",
                 get(|| async { "provider instances" }),
             )
             .route(
-                "/api/provider/backends/{provider_type}",
+                "/api/providers/backends/{provider_type}",
                 get(|| async { "provider backends" }),
             )
             // Simulate /api/providers/bilibili/* routes
@@ -689,14 +689,11 @@ mod provider_security_headers {
             // Simulate /api/providers/alist/* routes
             .route("/api/providers/alist/list", get(|| async { "alist list" }))
             // Simulate /api/providers/emby/* routes
+            .route("/api/providers/emby/list", post(|| async { "emby list" }))
+            // Simulate /api/providers/rtmp/* routes
             .route(
-                "/api/providers/emby/search",
-                get(|| async { "emby search" }),
-            )
-            // Simulate /api/providers/direct_url/* routes
-            .route(
-                "/api/providers/direct_url/resolve",
-                post(|| async { "direct_url resolve" }),
+                "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
+                get(|| async { "rtmp stream info" }),
             )
             // Apply security headers middleware (simulating global layer)
             .layer(axum_middleware::from_fn(security_headers_middleware))
@@ -705,7 +702,7 @@ mod provider_security_headers {
     #[tokio::test]
     async fn test_provider_common_routes_have_security_headers() {
         let app = provider_style_router();
-        let req = Request::get("/api/provider/instances")
+        let req = Request::get("/api/providers/instances")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -758,7 +755,7 @@ mod provider_security_headers {
     #[tokio::test]
     async fn test_emby_provider_routes_have_security_headers() {
         let app = provider_style_router();
-        let req = Request::get("/api/providers/emby/search")
+        let req = Request::post("/api/providers/emby/list")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -773,9 +770,9 @@ mod provider_security_headers {
     }
 
     #[tokio::test]
-    async fn test_direct_url_provider_routes_have_security_headers() {
+    async fn test_rtmp_provider_routes_have_security_headers() {
         let app = provider_style_router();
-        let req = Request::post("/api/providers/direct_url/resolve")
+        let req = Request::get("/api/providers/rtmp/rooms/room-1/info/media-1")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -792,7 +789,7 @@ mod provider_security_headers {
     #[tokio::test]
     async fn test_provider_routes_cache_control_no_store() {
         let app = provider_style_router();
-        let req = Request::get("/api/provider/instances")
+        let req = Request::get("/api/providers/instances")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -816,7 +813,7 @@ mod provider_security_headers {
     #[tokio::test]
     async fn test_provider_routes_referrer_policy() {
         let app = provider_style_router();
-        let req = Request::get("/api/provider/backends/bilibili")
+        let req = Request::get("/api/providers/backends/bilibili")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

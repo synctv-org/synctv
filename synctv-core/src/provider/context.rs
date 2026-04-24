@@ -9,6 +9,8 @@ use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::ProxySigningKey;
 use crate::service::CredentialEncryption;
 
+use super::PlaybackClientProfile;
+
 /// Provider execution context
 ///
 /// Provides access to database, shared provider storage, user information, and other resources
@@ -23,6 +25,9 @@ pub struct ProviderContext<'a> {
 
     /// Media ID currently being resolved (optional)
     pub media_id: Option<&'a str>,
+
+    /// Bound provider instance name selected by the media/playlist owner (optional)
+    pub provider_instance_name: Option<&'a str>,
 
     /// Base URL for generating proxy URLs
     pub base_url: Option<&'a str>,
@@ -47,6 +52,9 @@ pub struct ProviderContext<'a> {
 
     /// Cooperative request context propagated from the caller, if any.
     pub request_context: Option<ExecutionControl>,
+
+    /// Client playback capability hints for request-scoped media negotiation.
+    pub playback_client_profile: Option<PlaybackClientProfile>,
 }
 
 impl<'a> ProviderContext<'a> {
@@ -57,6 +65,7 @@ impl<'a> ProviderContext<'a> {
             user_id: None,
             room_id: None,
             media_id: None,
+            provider_instance_name: None,
             base_url: None,
             key_prefix,
             db: None,
@@ -65,6 +74,7 @@ impl<'a> ProviderContext<'a> {
             credential_repo: None,
             signing_key: None,
             request_context: None,
+            playback_client_profile: None,
         }
     }
 
@@ -86,6 +96,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_media_id(mut self, media_id: &'a str) -> Self {
         self.media_id = Some(media_id);
+        self
+    }
+
+    /// Set canonical bound provider instance name.
+    #[must_use]
+    pub const fn with_provider_instance_name(mut self, provider_instance_name: &'a str) -> Self {
+        self.provider_instance_name = Some(provider_instance_name);
         self
     }
 
@@ -142,8 +159,27 @@ impl<'a> ProviderContext<'a> {
     }
 
     #[must_use]
+    pub fn with_playback_client_profile(
+        mut self,
+        playback_client_profile: Option<PlaybackClientProfile>,
+    ) -> Self {
+        self.playback_client_profile = playback_client_profile;
+        self
+    }
+
+    #[must_use]
     pub const fn request_context(&self) -> Option<&ExecutionControl> {
         self.request_context.as_ref()
+    }
+
+    #[must_use]
+    pub const fn playback_client_profile(&self) -> Option<&PlaybackClientProfile> {
+        self.playback_client_profile.as_ref()
+    }
+
+    #[must_use]
+    pub const fn provider_instance_name(&self) -> Option<&str> {
+        self.provider_instance_name
     }
 
     pub fn check_active(&self) -> Result<(), crate::Error> {

@@ -27,6 +27,8 @@ use synctv_media_providers::grpc::{
     emby::emby_server::EmbyServer, emby_server::EmbyService as EmbyGrpcService,
 };
 use tokio::sync::{broadcast, Barrier, RwLock};
+use tonic::metadata::MetadataMap;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic_health::ServingStatus;
 
@@ -297,6 +299,46 @@ fn make_test_address_overrides(host: &str, port: u16) -> HashMap<String, SocketA
     )])
 }
 
+fn validate_test_provider_secret(
+    metadata: &MetadataMap,
+    expected_secret: &str,
+) -> Result<(), tonic::Status> {
+    let value = metadata
+        .get("x-provider-secret")
+        .ok_or_else(|| tonic::Status::unauthenticated("Missing x-provider-secret header"))?;
+    let provided = value
+        .to_str()
+        .map_err(|_| tonic::Status::unauthenticated("Invalid x-provider-secret header"))?;
+    if provided != expected_secret {
+        return Err(tonic::Status::unauthenticated("Invalid provider secret"));
+    }
+    Ok(())
+}
+
+fn validate_test_provider_request_secret<T>(
+    request: &tonic::Request<T>,
+    expected_secret: &str,
+) -> Result<(), tonic::Status> {
+    validate_test_provider_secret(request.metadata(), expected_secret)
+}
+
+fn authenticated_health_service<I>(
+    health_service: I,
+    auth_secret: String,
+) -> InterceptedService<
+    I,
+    impl FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone,
+>
+where
+    I: Clone,
+{
+    let auth_secret = Arc::<str>::from(auth_secret);
+    InterceptedService::new(health_service, move |request: tonic::Request<()>| {
+        validate_test_provider_secret(request.metadata(), auth_secret.as_ref())?;
+        Ok(request)
+    })
+}
+
 async fn spawn_authenticated_provider_server(
     auth_secret: &str,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -316,9 +358,10 @@ async fn spawn_authenticated_provider_server(
         .await;
 
     let auth_secret = auth_secret.to_string();
+    let authenticated_health = authenticated_health_service(health_service, auth_secret.clone());
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(health_service)
+            .add_service(authenticated_health)
             .add_service(AlistServer::new(GrpcAuthProbeAlistService::new(
                 auth_secret,
             )))
@@ -363,17 +406,7 @@ impl GrpcAuthProbeAlistService {
     }
 
     fn validate_secret<T>(&self, request: &tonic::Request<T>) -> Result<(), tonic::Status> {
-        let value = request
-            .metadata()
-            .get("x-provider-secret")
-            .ok_or_else(|| tonic::Status::unauthenticated("Missing x-provider-secret header"))?;
-        let provided = value
-            .to_str()
-            .map_err(|_| tonic::Status::unauthenticated("Invalid x-provider-secret header"))?;
-        if provided != self.expected_secret.as_ref() {
-            return Err(tonic::Status::unauthenticated("Invalid provider secret"));
-        }
-        Ok(())
+        validate_test_provider_request_secret(request, self.expected_secret.as_ref())
     }
 }
 
@@ -474,17 +507,7 @@ impl GrpcAuthProbeEmbyService {
     }
 
     fn validate_secret<T>(&self, request: &tonic::Request<T>) -> Result<(), tonic::Status> {
-        let value = request
-            .metadata()
-            .get("x-provider-secret")
-            .ok_or_else(|| tonic::Status::unauthenticated("Missing x-provider-secret header"))?;
-        let provided = value
-            .to_str()
-            .map_err(|_| tonic::Status::unauthenticated("Invalid x-provider-secret header"))?;
-        if provided != self.expected_secret.as_ref() {
-            return Err(tonic::Status::unauthenticated("Invalid provider secret"));
-        }
-        Ok(())
+        validate_test_provider_request_secret(request, self.expected_secret.as_ref())
     }
 }
 
@@ -633,9 +656,10 @@ async fn spawn_authenticated_provider_server_with_handler_failure(
         .await;
 
     let auth_secret = auth_secret.to_string();
+    let authenticated_health = authenticated_health_service(health_service, auth_secret.clone());
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(health_service)
+            .add_service(authenticated_health)
             .add_service(AlistServer::new(
                 GrpcAuthProbeAlistService::failing_after_auth(auth_secret),
             ))
@@ -666,9 +690,10 @@ async fn spawn_authenticated_provider_server_rejecting_placeholder_upstream_auth
         .await;
 
     let auth_secret = auth_secret.to_string();
+    let authenticated_health = authenticated_health_service(health_service, auth_secret.clone());
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(health_service)
+            .add_service(authenticated_health)
             .add_service(AlistServer::new(
                 GrpcAuthProbeAlistService::requiring_real_upstream_token(auth_secret),
             ))
@@ -697,9 +722,10 @@ async fn spawn_authenticated_emby_provider_server_with_handler_failure(
     reporter.set_serving::<EmbyServer<EmbyGrpcService>>().await;
 
     let auth_secret = auth_secret.to_string();
+    let authenticated_health = authenticated_health_service(health_service, auth_secret.clone());
     let handle = tokio::spawn(async move {
         Server::builder()
-            .add_service(health_service)
+            .add_service(authenticated_health)
             .add_service(EmbyServer::new(
                 GrpcAuthProbeEmbyService::failing_after_auth(auth_secret),
             ))
@@ -1236,7 +1262,7 @@ async fn scenario_health_check_reports_enabled_instance_with_wrong_secret_as_unh
     let _ = health_handle.await;
 }
 
-async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealthy() {
+async fn scenario_health_check_ignores_authenticated_provider_handler_failure() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -1271,8 +1297,8 @@ async fn scenario_health_check_reports_authenticated_provider_failure_as_unhealt
         "instances with authenticated provider failures should still appear in health results"
     );
     assert!(
-        !health_results[&broken.name],
-        "authenticated provider handler failures must be reported unhealthy"
+        health_results[&broken.name],
+        "management health checks must not depend on authenticated Alist business handlers"
     );
 
     health_handle.abort();
@@ -1312,7 +1338,7 @@ async fn scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_man
     let _ = health_handle.await;
 }
 
-async fn scenario_health_check_reports_emby_authenticated_provider_failure_as_unhealthy() {
+async fn scenario_health_check_ignores_emby_authenticated_provider_handler_failure() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -1349,8 +1375,8 @@ async fn scenario_health_check_reports_emby_authenticated_provider_failure_as_un
         "emby instances with authenticated provider failures should appear in health results"
     );
     assert!(
-        !health_results[&broken.name],
-        "authenticated emby provider handler failures must be reported unhealthy"
+        health_results[&broken.name],
+        "management health checks must not depend on authenticated Emby business handlers"
     );
 
     health_handle.abort();
@@ -2850,7 +2876,7 @@ async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disab
     );
 }
 
-async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
+async fn scenario_add_instance_rejects_local_only_providers() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let _redis_conn = Some(Arc::new(RwLock::new(
@@ -2877,23 +2903,23 @@ async fn scenario_add_local_only_instance_allows_empty_jwt_secret() {
         updated_at: now,
     };
 
-    manager
+    let err = manager
         .add(instance.clone())
         .await
-        .expect("local-only provider instance should be accepted without jwt_secret");
-
+        .expect_err("local-only provider names must not be accepted as remote provider instances");
     assert!(
-        manager.get(&instance.name).await.is_none(),
-        "local-only provider instance should not create a remote connection"
+        err.to_string().contains("unsupported provider"),
+        "unexpected error: {err}"
     );
 
     let fetched = provider_repo(&infra.pool)
         .get_by_name(&instance.name)
         .await
-        .expect("lookup should succeed")
-        .expect("instance should exist");
-    assert_eq!(fetched.providers, instance.providers);
-    assert_eq!(fetched.jwt_secret, None);
+        .expect("lookup should succeed");
+    assert!(
+        fetched.is_none(),
+        "rejected unsupported provider instances must not be persisted"
+    );
 }
 
 async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation() {
@@ -3293,16 +3319,16 @@ async fn test_health_check_reports_enabled_instance_with_wrong_secret_as_unhealt
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_health_check_reports_authenticated_provider_failure_as_unhealthy() {
+async fn test_health_check_ignores_authenticated_provider_handler_failure() {
     install_rustls_provider_once();
-    scenario_health_check_reports_authenticated_provider_failure_as_unhealthy().await;
+    scenario_health_check_ignores_authenticated_provider_handler_failure().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_health_check_reports_emby_authenticated_provider_failure_as_unhealthy() {
+async fn test_health_check_ignores_emby_authenticated_provider_handler_failure() {
     install_rustls_provider_once();
-    scenario_health_check_reports_emby_authenticated_provider_failure_as_unhealthy().await;
+    scenario_health_check_ignores_emby_authenticated_provider_handler_failure().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3527,9 +3553,9 @@ async fn test_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_local_only_instance_allows_empty_jwt_secret() {
+async fn test_add_instance_rejects_local_only_providers() {
     install_rustls_provider_once();
-    scenario_add_local_only_instance_allows_empty_jwt_secret().await;
+    scenario_add_instance_rejects_local_only_providers().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

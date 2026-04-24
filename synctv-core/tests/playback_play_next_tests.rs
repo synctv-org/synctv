@@ -156,7 +156,7 @@ async fn insert_media(
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -178,7 +178,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -192,26 +192,33 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
 #[derive(Debug)]
 struct FakeDynamicProvider {
     instance_id: String,
+    provider_type: &'static str,
     require_credential_encryption: bool,
 }
 
 impl FakeDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
+        Self::with_provider_type("fake_dynamic", instance_id, false)
+    }
+
+    fn with_provider_type(
+        provider_type: &'static str,
+        instance_id: impl Into<String>,
+        require_credential_encryption: bool,
+    ) -> Self {
         Self {
             instance_id: instance_id.into(),
-            require_credential_encryption: false,
+            provider_type,
+            require_credential_encryption,
         }
     }
 
     fn requiring_credential_encryption(instance_id: impl Into<String>) -> Self {
-        Self {
-            instance_id: instance_id.into(),
-            require_credential_encryption: true,
-        }
+        Self::with_provider_type("fake_dynamic_sensitive", instance_id, true)
     }
 
     fn is_bound_instance(&self) -> bool {
-        self.instance_id != "fake_dynamic_default"
+        self.instance_id != format!("{}_default", self.provider_type)
     }
 
     fn first_episode_path(&self) -> &'static str {
@@ -266,7 +273,7 @@ impl FakeDynamicProvider {
 #[async_trait]
 impl MediaProvider for FakeDynamicProvider {
     fn name(&self) -> &'static str {
-        "fake_dynamic"
+        self.provider_type
     }
 
     async fn generate_playback(
@@ -297,7 +304,7 @@ impl DynamicFolder for FakeDynamicProvider {
         _page_size: usize,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         if self.require_credential_encryption && ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired("fake_dynamic"));
+            return Err(ProviderError::EncryptionRequired(self.provider_type));
         }
         let items = match target
             .map(decode_dynamic_target)
@@ -909,7 +916,7 @@ async fn test_no_current_media_plays_first() {
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/first_vid.mp4"}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -926,7 +933,7 @@ async fn test_no_current_media_plays_first() {
             position: 1.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/second_vid.mp4"}),
-            provider_instance_name: "direct_url".to_string(),
+            provider_instance_name: Some("direct_url".to_string()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1040,7 +1047,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/episode-1.mp4"}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -1054,7 +1061,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         position: 1.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/episode-2.mp4"}),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

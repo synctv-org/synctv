@@ -232,31 +232,10 @@ impl PlaylistService {
             (!trimmed.is_empty()).then_some(trimmed.to_string())
         });
 
-        let provider = if let Some(ref provider_instance_name) = trimmed_instance {
-            let provider = self
-                .providers_manager
-                .get(provider_instance_name)
-                .await
-                .ok_or_else(|| {
-                    Error::NotFound(format!(
-                        "Provider instance not found: {provider_instance_name}"
-                    ))
-                })?;
-
-            if provider.name() != trimmed_provider {
-                return Err(Error::InvalidInput(format!(
-                    "Provider instance '{provider_instance_name}' is type '{}' but dynamic playlist requested '{trimmed_provider}'",
-                    provider.name()
-                )));
-            }
-
-            provider
-        } else {
-            self.providers_manager
-                .get_by_type(&trimmed_provider)
-                .await
-                .ok_or_else(|| Error::NotFound(format!("Provider not found: {trimmed_provider}")))?
-        };
+        let provider = self
+            .providers_manager
+            .resolve_provider(&trimmed_provider, trimmed_instance.as_deref())
+            .await?;
 
         if provider.as_dynamic_folder().is_none() {
             return Err(Error::InvalidInput(format!(
@@ -268,6 +247,9 @@ impl PlaylistService {
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
+        if let Some(provider_instance_name) = trimmed_instance.as_deref() {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
         if let Some(ref repo) = self.credential_repo {
             ctx = ctx.with_credential_repo(repo);
         }
@@ -1154,7 +1136,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_dynamic_playlist_source_rejects_unknown_provider_instance() {
+    async fn test_validate_dynamic_playlist_source_requires_provider_registry_for_unknown_provider_instance(
+    ) {
         let service = test_playlist_service_with_builtin_providers().await;
         let err = service
             .validate_dynamic_playlist_source(
@@ -1168,8 +1151,12 @@ mod tests {
             .unwrap_err();
 
         match err {
-            Error::NotFound(message) => assert!(message.contains("Provider instance not found")),
-            other => panic!("expected NotFound, got {other:?}"),
+            Error::ServiceUnavailable(message) => {
+                assert!(
+                    message.contains("Provider configuration service is temporarily unavailable")
+                );
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
         }
     }
 

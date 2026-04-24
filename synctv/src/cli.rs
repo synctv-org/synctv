@@ -523,12 +523,6 @@ pub struct RoomStreamCommand {
 pub enum RoomStreamSubcommand {
     /// List active RTMP publish sessions in a room
     List(RoomStreamListArgs),
-    #[command(visible_alias = "info")]
-    /// Get one active room stream by media ID; playback pull URLs are exposed by `room playback get`
-    Get(RoomStreamInfoArgs),
-    #[command(visible_alias = "key")]
-    /// Create a single-use RTMP publish key for a media item as a specific real user
-    PublishKey(RoomStreamPublishKeyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -600,6 +594,10 @@ pub struct ProviderCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ProviderSubcommand {
+    /// List enabled remote provider instance names available to app clients
+    Available(ProviderAvailableArgs),
+    /// List backends for one provider type, including the default backend when present
+    Backends(ProviderBackendsArgs),
     /// List provider instances
     List(ProviderListArgs),
     /// Create a provider instance
@@ -614,6 +612,14 @@ pub enum ProviderSubcommand {
     Enable(ProviderEnableArgs),
     /// Disable a provider instance
     Disable(ProviderDisableArgs),
+    /// Alist provider service operations
+    Alist(ProviderAlistCommand),
+    /// Emby provider service operations
+    Emby(ProviderEmbyCommand),
+    /// Bilibili provider service operations
+    Bilibili(ProviderBilibiliCommand),
+    /// RTMP provider service operations
+    Rtmp(ProviderRtmpCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -662,6 +668,162 @@ pub struct RoomScopedRemoteArgs {
 
     #[arg(long, allow_hyphen_values = true)]
     pub room_id: String,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaybackDeliveryPreference {
+    Auto,
+    DirectPlay,
+    Transcode,
+}
+
+impl CliPlaybackDeliveryPreference {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::Auto => synctv_proto::client::PlaybackDeliveryPreference::Auto as i32,
+            Self::DirectPlay => synctv_proto::client::PlaybackDeliveryPreference::DirectPlay as i32,
+            Self::Transcode => synctv_proto::client::PlaybackDeliveryPreference::Transcode as i32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaybackVideoCodec {
+    H264,
+    Hevc,
+    Vp9,
+    Av1,
+}
+
+impl CliPlaybackVideoCodec {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::H264 => synctv_proto::client::PlaybackVideoCodec::H264 as i32,
+            Self::Hevc => synctv_proto::client::PlaybackVideoCodec::Hevc as i32,
+            Self::Vp9 => synctv_proto::client::PlaybackVideoCodec::Vp9 as i32,
+            Self::Av1 => synctv_proto::client::PlaybackVideoCodec::Av1 as i32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaybackContainer {
+    Mp4,
+    Mkv,
+    Webm,
+}
+
+impl CliPlaybackContainer {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::Mp4 => synctv_proto::client::PlaybackContainer::Mp4 as i32,
+            Self::Mkv => synctv_proto::client::PlaybackContainer::Mkv as i32,
+            Self::Webm => synctv_proto::client::PlaybackContainer::Webm as i32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaybackAudioCapability {
+    Stereo,
+    Surround,
+    LosslessSurround,
+}
+
+impl CliPlaybackAudioCapability {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::Stereo => synctv_proto::client::PlaybackAudioCapability::Stereo as i32,
+            Self::Surround => synctv_proto::client::PlaybackAudioCapability::Surround as i32,
+            Self::LosslessSurround => {
+                synctv_proto::client::PlaybackAudioCapability::LosslessSurround as i32
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaybackSubtitlePreference {
+    External,
+    EmbeddedOrExternal,
+    None,
+}
+
+impl CliPlaybackSubtitlePreference {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::External => synctv_proto::client::PlaybackSubtitlePreference::External as i32,
+            Self::EmbeddedOrExternal => {
+                synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32
+            }
+            Self::None => synctv_proto::client::PlaybackSubtitlePreference::None as i32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args, Default)]
+pub struct PlaybackClientProfileArgs {
+    #[arg(long = "delivery", value_enum)]
+    pub delivery_preference: Option<CliPlaybackDeliveryPreference>,
+
+    #[arg(long)]
+    pub max_streaming_bitrate: Option<i64>,
+
+    #[arg(long)]
+    pub max_audio_channels: Option<i32>,
+
+    #[arg(long = "video-codec", value_enum, value_delimiter = ',')]
+    pub supported_video_codecs: Vec<CliPlaybackVideoCodec>,
+
+    #[arg(long = "container", value_enum, value_delimiter = ',')]
+    pub supported_containers: Vec<CliPlaybackContainer>,
+
+    #[arg(long, value_enum)]
+    pub audio_capability: Option<CliPlaybackAudioCapability>,
+
+    #[arg(long = "subtitle", value_enum)]
+    pub subtitle_preference: Option<CliPlaybackSubtitlePreference>,
+}
+
+impl PlaybackClientProfileArgs {
+    fn to_proto(&self) -> Option<synctv_proto::client::PlaybackClientProfile> {
+        if self.delivery_preference.is_none()
+            && self.max_streaming_bitrate.is_none()
+            && self.max_audio_channels.is_none()
+            && self.supported_video_codecs.is_empty()
+            && self.supported_containers.is_empty()
+            && self.audio_capability.is_none()
+            && self.subtitle_preference.is_none()
+        {
+            return None;
+        }
+
+        Some(synctv_proto::client::PlaybackClientProfile {
+            delivery_preference: self
+                .delivery_preference
+                .map_or(0, CliPlaybackDeliveryPreference::to_proto),
+            max_streaming_bitrate: self.max_streaming_bitrate,
+            max_audio_channels: self.max_audio_channels,
+            supported_video_codecs: self
+                .supported_video_codecs
+                .iter()
+                .copied()
+                .map(CliPlaybackVideoCodec::to_proto)
+                .collect(),
+            supported_containers: self
+                .supported_containers
+                .iter()
+                .copied()
+                .map(CliPlaybackContainer::to_proto)
+                .collect(),
+            audio_capability: self
+                .audio_capability
+                .map_or(0, CliPlaybackAudioCapability::to_proto),
+            subtitle_preference: self
+                .subtitle_preference
+                .map_or(0, CliPlaybackSubtitlePreference::to_proto),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -850,10 +1012,16 @@ pub enum CliProviderSortField {
 impl CliProviderSortField {
     const fn to_proto(self) -> i32 {
         match self {
-            Self::Name => management_proto::ProviderInstanceListSortBy::Name as i32,
-            Self::Endpoint => management_proto::ProviderInstanceListSortBy::Endpoint as i32,
-            Self::CreatedAt => management_proto::ProviderInstanceListSortBy::CreatedAt as i32,
-            Self::UpdatedAt => management_proto::ProviderInstanceListSortBy::UpdatedAt as i32,
+            Self::Name => synctv_proto::providers::common::ProviderInstanceListSortBy::Name as i32,
+            Self::Endpoint => {
+                synctv_proto::providers::common::ProviderInstanceListSortBy::Endpoint as i32
+            }
+            Self::CreatedAt => {
+                synctv_proto::providers::common::ProviderInstanceListSortBy::CreatedAt as i32
+            }
+            Self::UpdatedAt => {
+                synctv_proto::providers::common::ProviderInstanceListSortBy::UpdatedAt as i32
+            }
         }
     }
 }
@@ -1637,6 +1805,9 @@ impl RoomBatchDeleteArgs {
 pub struct RoomPlaybackGetArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub playback_client_profile: PlaybackClientProfileArgs,
 }
 
 #[derive(Debug, Args)]
@@ -1688,54 +1859,6 @@ pub struct RoomStreamListArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct RoomStreamInfoArgs {
-    #[command(flatten)]
-    pub room: RoomScopedRemoteArgs,
-
-    #[arg(allow_hyphen_values = true)]
-    pub media_id: String,
-}
-
-#[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("stream_publish_media_ref")
-        .args(["media_id", "media_id_flag"])
-        .required(true)
-        .multiple(false)
-))]
-pub struct RoomStreamPublishKeyArgs {
-    #[command(flatten)]
-    pub room: RoomScopedRemoteArgs,
-
-    #[command(flatten)]
-    pub actor: ActorUserArgs,
-
-    #[arg(
-        value_name = "MEDIA_ID",
-        allow_hyphen_values = true,
-        group = "stream_publish_media_ref"
-    )]
-    pub media_id: Option<String>,
-
-    #[arg(
-        long = "media-id",
-        value_name = "MEDIA_ID",
-        allow_hyphen_values = true,
-        group = "stream_publish_media_ref"
-    )]
-    pub media_id_flag: Option<String>,
-}
-
-impl RoomStreamPublishKeyArgs {
-    fn resolved_media_id(&self) -> &str {
-        self.media_id
-            .as_deref()
-            .or(self.media_id_flag.as_deref())
-            .expect("clap should require one media identifier for room stream publish-key")
-    }
-}
-
-#[derive(Debug, Args)]
 pub struct PlaylistCommand {
     #[command(subcommand)]
     pub command: PlaylistSubcommand,
@@ -1755,6 +1878,8 @@ pub enum PlaylistSubcommand {
     Move(PlaylistMoveArgs),
     /// Delete a playlist
     Delete(PlaylistDeleteArgs),
+    /// Create provider-backed dynamic playlists with typed provider arguments
+    Provider(PlaylistProviderCommand),
 }
 
 #[derive(Debug, Args)]
@@ -1881,6 +2006,8 @@ pub enum MediaSubcommand {
     Delete(MediaDeleteArgs),
     /// Reorder media in place or move media into another static playlist
     Move(MediaMoveArgs),
+    /// Add provider-backed media with typed provider arguments
+    Provider(MediaProviderCommand),
 }
 
 #[derive(Debug, Args)]
@@ -2103,6 +2230,20 @@ pub struct SystemStreamKickArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ProviderAvailableArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBackendsArgs {
+    pub provider_type: String,
+
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+}
+
+#[derive(Debug, Args)]
 pub struct ProviderListArgs {
     #[arg(long, default_value_t = 1)]
     pub page: i32,
@@ -2153,8 +2294,13 @@ pub struct ProviderAddArgs {
     #[arg(long = "provider", value_name = "PROVIDER_TYPE", required = true, num_args = 1..)]
     pub providers: Vec<String>,
 
+    /// Shared secret used to authenticate against a remote provider server
     #[arg(long)]
-    pub config_json: Option<String>,
+    pub jwt_secret: Option<String>,
+
+    /// Custom PEM CA bundle used when connecting to a TLS-enabled provider endpoint
+    #[arg(long)]
+    pub custom_ca: Option<String>,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -2185,8 +2331,21 @@ pub struct ProviderUpdateArgs {
     #[arg(long = "provider", value_name = "PROVIDER_TYPE")]
     pub providers: Vec<String>,
 
-    #[arg(long)]
-    pub config_json: Option<String>,
+    /// Replace the shared secret used to authenticate against a remote provider server
+    #[arg(long, conflicts_with = "clear_jwt_secret")]
+    pub jwt_secret: Option<String>,
+
+    /// Clear the stored remote provider shared secret
+    #[arg(long, default_value_t = false, conflicts_with = "jwt_secret")]
+    pub clear_jwt_secret: bool,
+
+    /// Replace the custom PEM CA bundle for TLS provider endpoints
+    #[arg(long, conflicts_with = "clear_custom_ca")]
+    pub custom_ca: Option<String>,
+
+    /// Clear the stored custom PEM CA bundle
+    #[arg(long, default_value_t = false, conflicts_with = "custom_ca")]
+    pub clear_custom_ca: bool,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -2222,6 +2381,711 @@ pub struct ProviderDisableArgs {
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAlistCommand {
+    #[command(subcommand)]
+    pub command: ProviderAlistSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderAlistSubcommand {
+    /// Log a user into Alist and persist the credential bind
+    Login(ProviderAlistLoginArgs),
+    /// List directory contents using a saved Alist bind
+    List(ProviderAlistListArgs),
+    /// Show the current Alist account info for a saved bind
+    Me(ProviderAlistGetMeArgs),
+    /// Remove a saved Alist bind
+    Logout(ProviderAlistLogoutArgs),
+    /// List saved Alist binds for a user
+    Binds(ProviderAlistBindsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEmbyCommand {
+    #[command(subcommand)]
+    pub command: ProviderEmbySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderEmbySubcommand {
+    /// Log a user into Emby/Jellyfin and persist the credential bind
+    Login(ProviderEmbyLoginArgs),
+    /// List Emby library items using a saved bind
+    List(ProviderEmbyListArgs),
+    /// Show the current Emby account info for a saved bind
+    Me(ProviderEmbyGetMeArgs),
+    /// Remove a saved Emby bind
+    Logout(ProviderEmbyLogoutArgs),
+    /// List saved Emby binds for a user
+    Binds(ProviderEmbyBindsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliCommand {
+    #[command(subcommand)]
+    pub command: ProviderBilibiliSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderBilibiliSubcommand {
+    /// Parse a Bilibili URL using a saved bind
+    Parse(ProviderBilibiliParseArgs),
+    /// Generate a QR code for Bilibili login
+    LoginQr(ProviderBilibiliLoginQrArgs),
+    /// Poll the QR code login status and persist the bind on success
+    CheckQr(ProviderBilibiliCheckQrArgs),
+    /// Request a Bilibili SMS captcha challenge
+    GetCaptcha(ProviderBilibiliGetCaptchaArgs),
+    /// Send a Bilibili SMS verification code
+    SendSms(ProviderBilibiliSendSmsArgs),
+    /// Log in with Bilibili SMS and persist the bind
+    LoginSms(ProviderBilibiliLoginSmsArgs),
+    /// Show the current Bilibili account info for a saved bind
+    Me(ProviderBilibiliGetUserInfoArgs),
+    /// Remove a saved Bilibili bind
+    Logout(ProviderBilibiliLogoutArgs),
+    /// List saved Bilibili binds for a user
+    Binds(ProviderBilibiliBindsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderRtmpCommand {
+    #[command(subcommand)]
+    pub command: ProviderRtmpSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderRtmpSubcommand {
+    #[command(visible_alias = "key")]
+    /// Create a single-use RTMP publish key for a media item as a specific real user
+    CreatePublishKey(ProviderRtmpPublishKeyArgs),
+    #[command(visible_alias = "info")]
+    /// Get the active RTMP stream state for one room media item
+    GetStreamInfo(ProviderRtmpGetStreamInfoArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProviderServiceInstanceArgs {
+    /// Explicit provider instance name. Omit to use the default backend for that provider type.
+    #[arg(long = "instance-name", visible_alias = "provider-instance-name")]
+    pub instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProviderServiceRemoteActorArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProviderBoundCredentialArgs {
+    /// Stored provider credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("alist_login_credential")
+        .args(["password", "hashed_password"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct ProviderAlistLoginArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    /// Alist server base URL
+    #[arg(long)]
+    pub host: String,
+
+    /// Alist account username used for the remote login
+    #[arg(long = "account-username", value_name = "ACCOUNT_USERNAME")]
+    pub account_username: String,
+
+    /// Plaintext Alist password. Prefer --hashed-password when available.
+    #[arg(long, group = "alist_login_credential")]
+    pub password: Option<String>,
+
+    /// Pre-hashed Alist password stored by compatible Alist clients
+    #[arg(long, group = "alist_login_credential")]
+    pub hashed_password: Option<String>,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAlistListArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+
+    /// Directory path to list. Use `/` for the root.
+    #[arg(long)]
+    pub path: String,
+
+    /// Optional Alist directory password
+    #[arg(long)]
+    pub password: Option<String>,
+
+    #[arg(long, default_value_t = 1)]
+    pub page: u64,
+
+    #[arg(long, default_value_t = 50)]
+    pub per_page: u64,
+
+    #[arg(long, default_value_t = false)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAlistGetMeArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAlistLogoutArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAlistBindsArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("emby_login_credential")
+        .args(["password", "api_key"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct ProviderEmbyLoginArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    /// Emby/Jellyfin server base URL
+    #[arg(long)]
+    pub host: String,
+
+    /// Target Emby/Jellyfin account username to bind
+    #[arg(long)]
+    pub account_username: String,
+
+    /// Emby/Jellyfin account password. Conflicts with --api-key.
+    #[arg(long, group = "emby_login_credential")]
+    pub password: Option<String>,
+
+    /// Emby/Jellyfin API key. Conflicts with --password.
+    #[arg(long, group = "emby_login_credential")]
+    pub api_key: Option<String>,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEmbyListArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+
+    /// Library path or parent item identifier to list. Use an empty string for the root if needed.
+    #[arg(long)]
+    pub path: String,
+
+    #[arg(long, default_value_t = 0)]
+    pub start_index: u64,
+
+    #[arg(long, default_value_t = 50)]
+    pub limit: u64,
+
+    /// Optional fuzzy search term applied by the provider backend
+    #[arg(long)]
+    pub search_term: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEmbyGetMeArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEmbyLogoutArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEmbyBindsArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliParseArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+
+    /// Bilibili page URL to parse
+    pub url: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliLoginQrArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliCheckQrArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+
+    /// QR login polling key returned by `login-qr`
+    #[arg(long)]
+    pub key: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliGetCaptchaArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliSendSmsArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+
+    /// Mobile phone number in the format expected by the backend provider
+    #[arg(long)]
+    pub phone: String,
+
+    /// Captcha token returned by `get-captcha`
+    #[arg(long)]
+    pub token: String,
+
+    /// Captcha challenge value returned by `get-captcha`
+    #[arg(long)]
+    pub challenge: String,
+
+    /// Captcha validate value produced by the frontend captcha solve
+    #[arg(long)]
+    pub validate: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliLoginSmsArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+
+    /// Mobile phone number used for the SMS login flow
+    #[arg(long)]
+    pub phone: String,
+
+    /// SMS verification code
+    #[arg(long)]
+    pub code: String,
+
+    /// Captcha key returned by `send-sms`
+    #[arg(long)]
+    pub captcha_key: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliGetUserInfoArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliLogoutArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub bind: ProviderBoundCredentialArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderBilibiliBindsArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[command(flatten)]
+    pub instance: ProviderServiceInstanceArgs,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("provider_rtmp_media_ref")
+        .args(["media_id", "media_id_flag"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct ProviderRtmpPublishKeyArgs {
+    #[command(flatten)]
+    pub access: ProviderServiceRemoteActorArgs,
+
+    #[arg(long = "room-id")]
+    pub room_id: String,
+
+    #[arg(
+        value_name = "MEDIA_ID",
+        allow_hyphen_values = true,
+        group = "provider_rtmp_media_ref"
+    )]
+    pub media_id: Option<String>,
+
+    #[arg(
+        long = "media-id",
+        value_name = "MEDIA_ID",
+        allow_hyphen_values = true,
+        group = "provider_rtmp_media_ref"
+    )]
+    pub media_id_flag: Option<String>,
+}
+
+impl ProviderRtmpPublishKeyArgs {
+    fn resolved_media_id(&self) -> &str {
+        self.media_id
+            .as_deref()
+            .or(self.media_id_flag.as_deref())
+            .expect("clap should require one media identifier for provider rtmp create-publish-key")
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderRtmpGetStreamInfoArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[arg(long = "room-id")]
+    pub room_id: String,
+
+    #[arg(allow_hyphen_values = true)]
+    pub media_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PlaylistProviderCommand {
+    #[command(subcommand)]
+    pub command: PlaylistProviderSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlaylistProviderSubcommand {
+    /// Create an Alist-backed dynamic playlist
+    Alist(PlaylistProviderAlistArgs),
+    /// Create an Emby-backed dynamic playlist
+    Emby(PlaylistProviderEmbyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderCommand {
+    #[command(subcommand)]
+    pub command: MediaProviderSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MediaProviderSubcommand {
+    /// Add an Alist-backed media item
+    Alist(MediaProviderAlistArgs),
+    /// Add an Emby-backed media item
+    Emby(MediaProviderEmbyArgs),
+    /// Add a Bilibili-backed media item
+    Bilibili(MediaProviderBilibiliCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderBilibiliCommand {
+    #[command(subcommand)]
+    pub command: MediaProviderBilibiliSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MediaProviderBilibiliSubcommand {
+    /// Add a regular Bilibili video or multi-part page
+    Video(MediaProviderBilibiliVideoArgs),
+    /// Add a Bilibili PGC episode
+    Pgc(MediaProviderBilibiliPgcArgs),
+    /// Add a Bilibili live room
+    Live(MediaProviderBilibiliLiveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PlaylistProviderAlistArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    pub name: String,
+
+    /// Alist folder path used as the dynamic playlist root
+    #[arg(long)]
+    pub path: String,
+
+    #[arg(long)]
+    pub parent_id: Option<String>,
+
+    /// Saved Alist credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Optional Alist directory password
+    #[arg(long)]
+    pub password: Option<String>,
+
+    /// Explicit provider instance name to store alongside the playlist
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PlaylistProviderEmbyArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    pub name: String,
+
+    /// Root Emby item identifier used as the dynamic playlist source
+    #[arg(long)]
+    pub item_id: String,
+
+    #[arg(long)]
+    pub parent_id: Option<String>,
+
+    /// Saved Emby credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Explicit provider instance name to store alongside the playlist
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderAlistArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    /// Alist file path
+    #[arg(long)]
+    pub path: String,
+
+    #[arg(long)]
+    pub playlist_id: Option<String>,
+
+    /// Saved Alist credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Optional Alist directory password
+    #[arg(long)]
+    pub password: Option<String>,
+
+    /// Explicit provider instance name to store alongside the media item
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+
+    #[arg(long)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderEmbyArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    /// Emby media item identifier
+    #[arg(long)]
+    pub item_id: String,
+
+    #[arg(long)]
+    pub playlist_id: Option<String>,
+
+    /// Saved Emby credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Explicit provider instance name to store alongside the media item
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+
+    #[arg(long)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(group(
+    ArgGroup::new("bilibili_video_ref")
+        .args(["bvid", "aid"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct BilibiliVideoRefArgs {
+    #[arg(long, group = "bilibili_video_ref")]
+    pub bvid: Option<String>,
+
+    #[arg(long, group = "bilibili_video_ref")]
+    pub aid: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderBilibiliVideoArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    #[command(flatten)]
+    pub video: BilibiliVideoRefArgs,
+
+    /// Bilibili content page `cid`
+    #[arg(long)]
+    pub cid: u64,
+
+    #[arg(long)]
+    pub playlist_id: Option<String>,
+
+    /// Saved Bilibili credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Explicit provider instance name to store alongside the media item
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+
+    #[arg(long)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderBilibiliPgcArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    /// Bilibili PGC episode identifier
+    #[arg(long)]
+    pub epid: u64,
+
+    /// Bilibili content page `cid`
+    #[arg(long)]
+    pub cid: u64,
+
+    #[arg(long)]
+    pub playlist_id: Option<String>,
+
+    /// Saved Bilibili credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Explicit provider instance name to store alongside the media item
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+
+    #[arg(long)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MediaProviderBilibiliLiveArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    /// Bilibili live room identifier
+    #[arg(long)]
+    pub room_live_id: u64,
+
+    #[arg(long)]
+    pub playlist_id: Option<String>,
+
+    /// Saved Bilibili credential server identifier
+    #[arg(long)]
+    pub server_id: String,
+
+    /// Explicit provider instance name to store alongside the media item
+    #[arg(long)]
+    pub provider_instance_name: Option<String>,
+
+    #[arg(long)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2361,10 +3225,6 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         },
         RoomSubcommand::Stream(command) => match &mut command.command {
             RoomStreamSubcommand::List(args) => merge_room_scoped_remote_args(&mut args.room, root),
-            RoomStreamSubcommand::Get(args) => merge_room_scoped_remote_args(&mut args.room, root),
-            RoomStreamSubcommand::PublishKey(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root);
-            }
         },
         RoomSubcommand::Batch(command) => match &mut command.command {
             RoomBatchSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
@@ -2381,6 +3241,14 @@ fn merge_playlist_command_globals(command: &mut PlaylistCommand, root: &GlobalCo
         PlaylistSubcommand::Update(args) => merge_room_scoped_remote_args(&mut args.room, root),
         PlaylistSubcommand::Move(args) => merge_room_scoped_remote_args(&mut args.room, root),
         PlaylistSubcommand::Delete(args) => merge_room_scoped_remote_args(&mut args.room, root),
+        PlaylistSubcommand::Provider(command) => match &mut command.command {
+            PlaylistProviderSubcommand::Alist(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+            PlaylistProviderSubcommand::Emby(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+        },
     }
 }
 
@@ -2392,11 +3260,32 @@ fn merge_media_command_globals(command: &mut MediaCommand, root: &GlobalConfigAr
         MediaSubcommand::Update(args) => merge_room_scoped_remote_args(&mut args.room, root),
         MediaSubcommand::Delete(args) => merge_room_scoped_remote_args(&mut args.room, root),
         MediaSubcommand::Move(args) => merge_room_scoped_remote_args(&mut args.room, root),
+        MediaSubcommand::Provider(command) => match &mut command.command {
+            MediaProviderSubcommand::Alist(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+            MediaProviderSubcommand::Emby(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+            MediaProviderSubcommand::Bilibili(command) => match &mut command.command {
+                MediaProviderBilibiliSubcommand::Video(args) => {
+                    merge_room_scoped_remote_args(&mut args.room, root);
+                }
+                MediaProviderBilibiliSubcommand::Pgc(args) => {
+                    merge_room_scoped_remote_args(&mut args.room, root);
+                }
+                MediaProviderBilibiliSubcommand::Live(args) => {
+                    merge_room_scoped_remote_args(&mut args.room, root);
+                }
+            },
+        },
     }
 }
 
 fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalConfigArgs) {
     match &mut command.command {
+        ProviderSubcommand::Available(args) => merge_remote_access_args(&mut args.remote, root),
+        ProviderSubcommand::Backends(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Update(args) => merge_remote_access_args(&mut args.remote, root),
@@ -2404,6 +3293,77 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
         ProviderSubcommand::Reconnect(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Enable(args) => merge_remote_access_args(&mut args.remote, root),
         ProviderSubcommand::Disable(args) => merge_remote_access_args(&mut args.remote, root),
+        ProviderSubcommand::Alist(command) => match &mut command.command {
+            ProviderAlistSubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderAlistSubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderAlistSubcommand::Me(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderAlistSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderAlistSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Emby(command) => match &mut command.command {
+            ProviderEmbySubcommand::Login(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderEmbySubcommand::List(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderEmbySubcommand::Me(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderEmbySubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderEmbySubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Bilibili(command) => match &mut command.command {
+            ProviderBilibiliSubcommand::Parse(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::LoginQr(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::CheckQr(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::GetCaptcha(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::SendSms(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::LoginSms(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::Me(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::Logout(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderBilibiliSubcommand::Binds(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+        },
+        ProviderSubcommand::Rtmp(command) => match &mut command.command {
+            ProviderRtmpSubcommand::CreatePublishKey(args) => {
+                merge_remote_access_args(&mut args.access.remote, root);
+            }
+            ProviderRtmpSubcommand::GetStreamInfo(args) => {
+                merge_remote_access_args(&mut args.remote, root);
+            }
+        },
     }
 }
 
@@ -3234,6 +4194,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     get_playback,
                     management_proto::GetPlaybackRequest {
                         room_id: args.room.room_id,
+                        playback_client_profile: args.playback_client_profile.to_proto(),
                     }
                 )?;
                 let output = build_get_playback_cli_output(response, &args.room.remote.global);
@@ -3297,36 +4258,6 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                             CliRoomStreamSortField::to_proto,
                         ),
                         sort_direction: args.sort_dir.to_proto(),
-                    }
-                )?;
-                args.room.remote.print_output(&response)
-            }
-            RoomStreamSubcommand::Get(args) => {
-                let session = connect_remote_access(&args.room.remote).await?;
-                let response = management_unary_call!(
-                    session,
-                    "get room stream info",
-                    get_stream_info,
-                    management_proto::GetStreamInfoRequest {
-                        room_id: args.room.room_id,
-                        media_id: args.media_id,
-                    }
-                )?;
-                args.room.remote.print_output(&response)
-            }
-            RoomStreamSubcommand::PublishKey(args) => {
-                let session = connect_remote_access(&args.room.remote).await?;
-                let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
-                let room_id = args.room.room_id.clone();
-                let media_id = args.resolved_media_id().to_string();
-                let response = management_unary_call!(
-                    session,
-                    "create room publish key",
-                    create_publish_key,
-                    management_proto::CreatePublishKeyRequest {
-                        actor_user_id,
-                        room_id,
-                        media_id,
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -3440,8 +4371,12 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),
-                    source_provider: args.source_provider.unwrap_or_default(),
-                    provider_instance_name: args.provider_instance_name.unwrap_or_default(),
+                    source_provider:
+                        normalized_optional_cli_value(args.source_provider.as_deref(),)
+                            .unwrap_or_default(),
+                    provider_instance_name: provider_instance_name_string(
+                        args.provider_instance_name.as_deref(),
+                    ),
                     dynamic_only: args.dynamic_only,
                     sort_by: args.sort_by.map_or(
                         management_proto::PlaylistListSortBy::Position as i32,
@@ -3478,12 +4413,16 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     name: args.name,
                     parent_id: args.parent_id.unwrap_or_default(),
-                    source_provider: args.source_provider.unwrap_or_default(),
+                    source_provider:
+                        normalized_optional_cli_value(args.source_provider.as_deref(),)
+                            .unwrap_or_default(),
                     source_config_json: optional_json_bytes(
                         "source_config_json",
                         args.source_config_json.as_deref(),
                     )?,
-                    provider_instance_name: args.provider_instance_name.unwrap_or_default(),
+                    provider_instance_name: provider_instance_name_string(
+                        args.provider_instance_name.as_deref(),
+                    ),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -3545,6 +4484,7 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
             )?;
             args.room.remote.print_output(&response)
         }
+        PlaylistSubcommand::Provider(command) => execute_playlist_provider(command).await,
     }
 }
 
@@ -3564,8 +4504,12 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),
-                    source_provider: args.source_provider.unwrap_or_default(),
-                    provider_instance_name: args.provider_instance_name.unwrap_or_default(),
+                    source_provider:
+                        normalized_optional_cli_value(args.source_provider.as_deref(),)
+                            .unwrap_or_default(),
+                    provider_instance_name: provider_instance_name_string(
+                        args.provider_instance_name.as_deref(),
+                    ),
                     sort_by: args.sort_by.map_or(
                         management_proto::MediaListSortBy::Position as i32,
                         CliMediaSortField::to_proto,
@@ -3579,6 +4523,10 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
             validate_generic_media_add(&args)?;
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let provider = required_non_empty_cli_value(
+                "provider",
+                args.provider.as_deref().unwrap_or_default(),
+            )?;
             let response = management_unary_call!(
                 session,
                 "add media",
@@ -3587,8 +4535,10 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     actor_user_id,
                     room_id: args.room.room_id,
                     playlist_id: args.playlist_id.unwrap_or_default(),
-                    provider: args.provider.unwrap_or_default(),
-                    provider_instance_name: args.provider_instance_name.unwrap_or_default(),
+                    provider,
+                    provider_instance_name: provider_instance_name_string(
+                        args.provider_instance_name.as_deref()
+                    ),
                     source_config_json: optional_json_bytes(
                         "source_config_json",
                         Some(args.source_config_json.as_str()),
@@ -3673,27 +4623,51 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
             )?;
             args.room.remote.print_output(&response)
         }
+        MediaSubcommand::Provider(command) => execute_media_provider(command).await,
     }
 }
 
 async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
     let ProviderCommand { command } = provider_command;
     match command {
+        ProviderSubcommand::Available(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "list available provider instances",
+                list_available_provider_instances,
+                synctv_proto::providers::common::ListAvailableProviderInstancesRequest {}
+            )?;
+            args.remote.print_output(&response)
+        }
+        ProviderSubcommand::Backends(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let provider_type = required_non_empty_cli_value("provider_type", &args.provider_type)?;
+            let response = management_unary_call!(
+                session,
+                "list provider backends",
+                list_provider_backends,
+                synctv_proto::providers::common::ListProviderBackendsRequest { provider_type }
+            )?;
+            args.remote.print_output(&response)
+        }
         ProviderSubcommand::List(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(
                 session,
                 "list provider instances",
                 list_provider_instances,
-                management_proto::ListProviderInstancesRequest {
+                synctv_proto::providers::common::ListProviderInstancesRequest {
                     page: args.page,
                     page_size: args.page_size,
-                    provider_type: args.provider_type.unwrap_or_default(),
+                    provider_type: normalized_optional_cli_value(args.provider_type.as_deref())
+                        .unwrap_or_default(),
                     search: args.search.unwrap_or_default(),
                     enabled: args.enabled,
                     tls: args.tls,
                     sort_by: args.sort_by.map_or(
-                        management_proto::ProviderInstanceListSortBy::CreatedAt as i32,
+                        synctv_proto::providers::common::ProviderInstanceListSortBy::CreatedAt
+                            as i32,
                         CliProviderSortField::to_proto,
                     ),
                     sort_direction: args.sort_dir.to_proto(),
@@ -3708,15 +4682,16 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "add provider instance",
                 add_provider_instance,
-                management_proto::AddProviderInstanceRequest {
+                synctv_proto::providers::common::AddProviderInstanceRequest {
                     name: args.name,
                     endpoint: args.provider_endpoint,
                     comment: args.comment.unwrap_or_default(),
                     timeout_seconds: args.timeout_seconds,
                     tls: args.tls,
                     insecure_tls: args.insecure_tls,
-                    providers: args.providers,
-                    config_json: optional_json_bytes("config_json", args.config_json.as_deref())?,
+                    providers: normalized_provider_types(&args.providers),
+                    jwt_secret: normalized_optional_cli_value(args.jwt_secret.as_deref()),
+                    custom_ca: normalized_optional_cli_value(args.custom_ca.as_deref()),
                 }
             )?;
             args.remote.print_output(&response)
@@ -3731,16 +4706,19 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "update provider instance",
                 update_provider_instance,
-                management_proto::UpdateProviderInstanceRequest {
+                synctv_proto::providers::common::UpdateProviderInstanceRequest {
                     name: args.name,
                     endpoint: args.provider_endpoint,
                     comment,
-                    clear_comment: args.clear_comment,
+                    clear_comment: args.clear_comment.then_some(true),
                     timeout_seconds: args.timeout_seconds,
                     tls: args.tls,
                     insecure_tls: args.insecure_tls,
-                    providers: args.providers,
-                    config_json: optional_json_bytes("config_json", args.config_json.as_deref())?,
+                    providers: normalized_provider_types(&args.providers),
+                    jwt_secret: normalized_optional_cli_value(args.jwt_secret.as_deref()),
+                    custom_ca: normalized_optional_cli_value(args.custom_ca.as_deref()),
+                    clear_jwt_secret: args.clear_jwt_secret.then_some(true),
+                    clear_custom_ca: args.clear_custom_ca.then_some(true),
                 }
             )?;
             args.remote.print_output(&response)
@@ -3751,7 +4729,7 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "delete provider instance",
                 delete_provider_instance,
-                management_proto::DeleteProviderInstanceRequest { name: args.name }
+                synctv_proto::providers::common::DeleteProviderInstanceRequest { name: args.name }
             )?;
             args.remote.print_output(&response)
         }
@@ -3761,7 +4739,9 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "reconnect provider instance",
                 reconnect_provider_instance,
-                management_proto::ReconnectProviderInstanceRequest { name: args.name }
+                synctv_proto::providers::common::ReconnectProviderInstanceRequest {
+                    name: args.name,
+                }
             )?;
             args.remote.print_output(&response)
         }
@@ -3771,7 +4751,7 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "enable provider instance",
                 enable_provider_instance,
-                management_proto::EnableProviderInstanceRequest { name: args.name }
+                synctv_proto::providers::common::EnableProviderInstanceRequest { name: args.name }
             )?;
             args.remote.print_output(&response)
         }
@@ -3781,7 +4761,601 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 session,
                 "disable provider instance",
                 disable_provider_instance,
-                management_proto::DisableProviderInstanceRequest { name: args.name }
+                synctv_proto::providers::common::DisableProviderInstanceRequest { name: args.name }
+            )?;
+            args.remote.print_output(&response)
+        }
+        ProviderSubcommand::Alist(command) => execute_provider_alist(command).await,
+        ProviderSubcommand::Emby(command) => execute_provider_emby(command).await,
+        ProviderSubcommand::Bilibili(command) => execute_provider_bilibili(command).await,
+        ProviderSubcommand::Rtmp(command) => execute_provider_rtmp(command).await,
+    }
+}
+
+async fn execute_playlist_provider(command: PlaylistProviderCommand) -> Result<()> {
+    match command.command {
+        PlaylistProviderSubcommand::Alist(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json = build_alist_source_config_json(
+                &actor_user_id,
+                &args.server_id,
+                &args.path,
+                args.password.as_deref(),
+            )?;
+            let response = management_unary_call!(
+                session,
+                "create alist dynamic playlist",
+                create_playlist,
+                build_provider_playlist_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.name,
+                    args.parent_id,
+                    "alist",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        PlaylistProviderSubcommand::Emby(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json =
+                build_emby_source_config_json(&actor_user_id, &args.server_id, &args.item_id)?;
+            let response = management_unary_call!(
+                session,
+                "create emby dynamic playlist",
+                create_playlist,
+                build_provider_playlist_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.name,
+                    args.parent_id,
+                    "emby",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+    }
+}
+
+async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
+    match command.command {
+        MediaProviderSubcommand::Alist(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json = build_alist_source_config_json(
+                &actor_user_id,
+                &args.server_id,
+                &args.path,
+                args.password.as_deref(),
+            )?;
+            let response = management_unary_call!(
+                session,
+                "add alist media",
+                add_media,
+                build_provider_media_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.playlist_id,
+                    "alist",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                    args.title,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        MediaProviderSubcommand::Emby(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json =
+                build_emby_source_config_json(&actor_user_id, &args.server_id, &args.item_id)?;
+            let response = management_unary_call!(
+                session,
+                "add emby media",
+                add_media,
+                build_provider_media_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.playlist_id,
+                    "emby",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                    args.title,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        MediaProviderSubcommand::Bilibili(command) => {
+            execute_media_provider_bilibili(command).await
+        }
+    }
+}
+
+async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) -> Result<()> {
+    match command.command {
+        MediaProviderBilibiliSubcommand::Video(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json = build_bilibili_video_source_config_json(
+                &actor_user_id,
+                &args.server_id,
+                args.video.bvid.as_deref(),
+                args.video.aid,
+                args.cid,
+            )?;
+            let response = management_unary_call!(
+                session,
+                "add bilibili video media",
+                add_media,
+                build_provider_media_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.playlist_id,
+                    "bilibili",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                    args.title,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        MediaProviderBilibiliSubcommand::Pgc(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json = build_bilibili_pgc_source_config_json(
+                &actor_user_id,
+                &args.server_id,
+                args.epid,
+                args.cid,
+            )?;
+            let response = management_unary_call!(
+                session,
+                "add bilibili pgc media",
+                add_media,
+                build_provider_media_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.playlist_id,
+                    "bilibili",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                    args.title,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+        MediaProviderBilibiliSubcommand::Live(args) => {
+            let session = connect_remote_access(&args.room.remote).await?;
+            let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
+            let source_config_json = build_bilibili_live_source_config_json(
+                &actor_user_id,
+                &args.server_id,
+                args.room_live_id,
+            )?;
+            let response = management_unary_call!(
+                session,
+                "add bilibili live media",
+                add_media,
+                build_provider_media_request(
+                    actor_user_id,
+                    args.room.room_id,
+                    args.playlist_id,
+                    "bilibili",
+                    args.provider_instance_name.as_deref(),
+                    source_config_json,
+                    args.title,
+                )
+            )?;
+            args.room.remote.print_output(&response)
+        }
+    }
+}
+
+async fn execute_provider_alist(command: ProviderAlistCommand) -> Result<()> {
+    match command.command {
+        ProviderAlistSubcommand::Login(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "alist login",
+                alist_login,
+                management_proto::AlistLoginRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::alist::LoginRequest {
+                        host: required_non_empty_cli_value("host", &args.host)?,
+                        username: required_non_empty_cli_value(
+                            "account_username",
+                            &args.account_username,
+                        )?,
+                        credential: Some(if let Some(password) = args.password {
+                            synctv_proto::providers::alist::login_request::Credential::Password(
+                                password,
+                            )
+                        } else {
+                            synctv_proto::providers::alist::login_request::Credential::HashedPassword(
+                                    args.hashed_password.expect(
+                                        "clap should guarantee hashed password when password is absent",
+                                    ),
+                                )
+                        },),
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderAlistSubcommand::List(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "alist list",
+                alist_list,
+                management_proto::AlistListRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::alist::ListRequest {
+                        server_id,
+                        path: args.path.trim().to_string(),
+                        password: args.password.unwrap_or_default(),
+                        page: args.page,
+                        per_page: args.per_page,
+                        refresh: args.refresh,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderAlistSubcommand::Me(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "alist me",
+                alist_get_me,
+                management_proto::AlistGetMeRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::alist::GetMeRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderAlistSubcommand::Logout(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "alist logout",
+                alist_logout,
+                management_proto::AlistLogoutRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::alist::LogoutRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderAlistSubcommand::Binds(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "alist get binds",
+                alist_get_binds,
+                management_proto::AlistGetBindsRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::alist::GetBindsRequest {
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+    }
+}
+
+async fn execute_provider_emby(command: ProviderEmbyCommand) -> Result<()> {
+    match command.command {
+        ProviderEmbySubcommand::Login(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "emby login",
+                emby_login,
+                management_proto::EmbyLoginRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::emby::LoginRequest {
+                        host: required_non_empty_cli_value("host", &args.host)?,
+                        username: required_non_empty_cli_value(
+                            "account_username",
+                            &args.account_username,
+                        )?,
+                        credential: Some(if let Some(password) = args.password {
+                            synctv_proto::providers::emby::login_request::Credential::Password(
+                                password,
+                            )
+                        } else {
+                            synctv_proto::providers::emby::login_request::Credential::ApiKey(
+                                args.api_key.expect(
+                                    "clap should guarantee api key when password is absent",
+                                ),
+                            )
+                        },),
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderEmbySubcommand::List(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "emby list",
+                emby_list,
+                management_proto::EmbyListRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::emby::ListRequest {
+                        server_id,
+                        path: args.path.trim().to_string(),
+                        start_index: args.start_index,
+                        limit: args.limit,
+                        search_term: args.search_term.unwrap_or_default(),
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderEmbySubcommand::Me(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "emby me",
+                emby_get_me,
+                management_proto::EmbyGetMeRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::emby::GetMeRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderEmbySubcommand::Logout(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "emby logout",
+                emby_logout,
+                management_proto::EmbyLogoutRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::emby::LogoutRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderEmbySubcommand::Binds(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "emby get binds",
+                emby_get_binds,
+                management_proto::EmbyGetBindsRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::emby::GetBindsRequest {
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+    }
+}
+
+async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<()> {
+    match command.command {
+        ProviderBilibiliSubcommand::Parse(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "bilibili parse",
+                bilibili_parse,
+                management_proto::BilibiliParseRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::ParseRequest {
+                        url: required_non_empty_cli_value("url", &args.url)?,
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::LoginQr(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili login qr",
+                bilibili_login_qr,
+                management_proto::BilibiliLoginQrRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::LoginQrRequest {
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::CheckQr(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili check qr",
+                bilibili_check_qr,
+                management_proto::BilibiliCheckQrRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::CheckQrRequest {
+                        key: required_non_empty_cli_value("key", &args.key)?,
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::GetCaptcha(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili get captcha",
+                bilibili_get_captcha,
+                management_proto::BilibiliGetCaptchaRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::GetCaptchaRequest {
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::SendSms(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili send sms",
+                bilibili_send_sms,
+                management_proto::BilibiliSendSmsRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::SendSmsRequest {
+                        phone: required_non_empty_cli_value("phone", &args.phone)?,
+                        token: required_non_empty_cli_value("token", &args.token)?,
+                        challenge: required_non_empty_cli_value("challenge", &args.challenge)?,
+                        validate: required_non_empty_cli_value("validate", &args.validate)?,
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::LoginSms(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili login sms",
+                bilibili_login_sms,
+                management_proto::BilibiliLoginSmsRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::LoginSmsRequest {
+                        phone: required_non_empty_cli_value("phone", &args.phone)?,
+                        code: required_non_empty_cli_value("code", &args.code)?,
+                        captcha_key: required_non_empty_cli_value(
+                            "captcha_key",
+                            &args.captcha_key
+                        )?,
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::Me(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "bilibili me",
+                bilibili_get_user_info,
+                management_proto::BilibiliGetUserInfoRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::UserInfoRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::Logout(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let server_id = required_provider_server_id(&args.bind)?;
+            let response = management_unary_call!(
+                session,
+                "bilibili logout",
+                bilibili_logout,
+                management_proto::BilibiliLogoutRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::LogoutRequest {
+                        server_id,
+                        instance_name: provider_service_instance_name(&args.bind.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderBilibiliSubcommand::Binds(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let response = management_unary_call!(
+                session,
+                "bilibili get binds",
+                bilibili_get_binds,
+                management_proto::BilibiliGetBindsRequest {
+                    actor_user_id,
+                    request: Some(synctv_proto::providers::bilibili::GetBindsRequest {
+                        instance_name: provider_service_instance_name(&args.instance),
+                    }),
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+    }
+}
+
+async fn execute_provider_rtmp(command: ProviderRtmpCommand) -> Result<()> {
+    match command.command {
+        ProviderRtmpSubcommand::CreatePublishKey(args) => {
+            let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
+            let room_id = args.room_id.clone();
+            let media_id = args.resolved_media_id().to_string();
+            let response = management_unary_call!(
+                session,
+                "create rtmp publish key",
+                create_publish_key,
+                management_proto::CreatePublishKeyRequest {
+                    actor_user_id,
+                    room_id,
+                    media_id,
+                }
+            )?;
+            args.access.remote.print_output(&response)
+        }
+        ProviderRtmpSubcommand::GetStreamInfo(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "get rtmp stream info",
+                get_stream_info,
+                management_proto::GetStreamInfoRequest {
+                    room_id: args.room_id,
+                    media_id: args.media_id,
+                }
             )?;
             args.remote.print_output(&response)
         }
@@ -4021,6 +5595,14 @@ async fn connect_remote_access(args: &RemoteAccessArgs) -> Result<RemoteAdminSes
     Ok(session)
 }
 
+async fn connect_provider_actor_access(
+    access: &ProviderServiceRemoteActorArgs,
+) -> Result<(RemoteAdminSession, String)> {
+    let session = connect_remote_access(&access.remote).await?;
+    let actor_user_id = resolve_user_ref(&session, &access.actor.to_user_ref()).await?;
+    Ok((session, actor_user_id))
+}
+
 async fn resolve_user_ref(session: &RemoteAdminSession, user: &UserRefArgs) -> Result<String> {
     if let Some(user_id) = user.user_id.as_deref() {
         return Ok(user_id.to_string());
@@ -4208,6 +5790,195 @@ async fn resolve_user_refs_batch(
     Ok(resolved)
 }
 
+fn normalized_optional_cli_value(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn required_non_empty_cli_value(field_name: &str, raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("{field_name} must not be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn provider_service_instance_name(args: &ProviderServiceInstanceArgs) -> String {
+    provider_instance_name_string(args.instance_name.as_deref())
+}
+
+fn required_provider_server_id(bind: &ProviderBoundCredentialArgs) -> Result<String> {
+    required_non_empty_cli_value("server_id", &bind.server_id)
+}
+
+fn provider_instance_name_string(raw: Option<&str>) -> String {
+    normalized_optional_cli_value(raw).unwrap_or_default()
+}
+
+fn build_provider_playlist_request(
+    actor_user_id: String,
+    room_id: String,
+    name: String,
+    parent_id: Option<String>,
+    source_provider: &str,
+    provider_instance_name: Option<&str>,
+    source_config_json: Vec<u8>,
+) -> management_proto::CreatePlaylistRequest {
+    management_proto::CreatePlaylistRequest {
+        actor_user_id,
+        room_id,
+        name,
+        parent_id: parent_id.unwrap_or_default(),
+        source_provider: source_provider.to_string(),
+        source_config_json,
+        provider_instance_name: provider_instance_name_string(provider_instance_name),
+    }
+}
+
+fn build_provider_media_request(
+    actor_user_id: String,
+    room_id: String,
+    playlist_id: Option<String>,
+    provider: &str,
+    provider_instance_name: Option<&str>,
+    source_config_json: Vec<u8>,
+    title: Option<String>,
+) -> management_proto::AddMediaRequest {
+    management_proto::AddMediaRequest {
+        actor_user_id,
+        room_id,
+        playlist_id: playlist_id.unwrap_or_default(),
+        provider: provider.to_string(),
+        provider_instance_name: provider_instance_name_string(provider_instance_name),
+        source_config_json,
+        title: title.unwrap_or_default(),
+    }
+}
+
+fn credential_ref_json(actor_user_id: &str, server_id: &str) -> Result<Value> {
+    Ok(serde_json::json!({
+        "credential_owner_id": required_non_empty_cli_value("actor_user_id", actor_user_id)?,
+        "server_id": required_non_empty_cli_value("server_id", server_id)?,
+    }))
+}
+
+fn encode_json_value(field_name: &str, value: &Value) -> Result<Vec<u8>> {
+    serde_json::to_vec(value)
+        .with_context(|| format!("failed to encode {field_name} as JSON bytes"))
+}
+
+fn build_alist_source_config_json(
+    actor_user_id: &str,
+    server_id: &str,
+    path: &str,
+    password: Option<&str>,
+) -> Result<Vec<u8>> {
+    let mut source_config = Map::new();
+    source_config.insert(
+        "path".to_string(),
+        Value::String(required_non_empty_cli_value("path", path)?),
+    );
+    if let Some(password) = normalized_optional_cli_value(password) {
+        source_config.insert("password".to_string(), Value::String(password));
+    }
+    source_config.insert(
+        "credential_ref".to_string(),
+        credential_ref_json(actor_user_id, server_id)?,
+    );
+    encode_json_value("source_config_json", &Value::Object(source_config))
+}
+
+fn build_emby_source_config_json(
+    actor_user_id: &str,
+    server_id: &str,
+    item_id: &str,
+) -> Result<Vec<u8>> {
+    let mut source_config = Map::new();
+    source_config.insert(
+        "item_id".to_string(),
+        Value::String(required_non_empty_cli_value("item_id", item_id)?),
+    );
+    source_config.insert(
+        "credential_ref".to_string(),
+        credential_ref_json(actor_user_id, server_id)?,
+    );
+    encode_json_value("source_config_json", &Value::Object(source_config))
+}
+
+fn build_bilibili_video_source_config_json(
+    actor_user_id: &str,
+    server_id: &str,
+    bvid: Option<&str>,
+    aid: Option<u64>,
+    cid: u64,
+) -> Result<Vec<u8>> {
+    if cid == 0 {
+        bail!("cid must be non-zero");
+    }
+
+    let mut source_config = Map::new();
+    source_config.insert("type".to_string(), Value::String("video".to_string()));
+    if let Some(bvid) = bvid {
+        source_config.insert(
+            "bvid".to_string(),
+            Value::String(required_non_empty_cli_value("bvid", bvid)?),
+        );
+    }
+    if let Some(aid) = aid {
+        source_config.insert("aid".to_string(), Value::from(aid));
+    }
+    source_config.insert("cid".to_string(), Value::from(cid));
+    source_config.insert(
+        "credential_ref".to_string(),
+        credential_ref_json(actor_user_id, server_id)?,
+    );
+    encode_json_value("source_config_json", &Value::Object(source_config))
+}
+
+fn build_bilibili_pgc_source_config_json(
+    actor_user_id: &str,
+    server_id: &str,
+    epid: u64,
+    cid: u64,
+) -> Result<Vec<u8>> {
+    if epid == 0 {
+        bail!("epid must be non-zero");
+    }
+    if cid == 0 {
+        bail!("cid must be non-zero");
+    }
+
+    let mut source_config = Map::new();
+    source_config.insert("type".to_string(), Value::String("pgc".to_string()));
+    source_config.insert("epid".to_string(), Value::from(epid));
+    source_config.insert("cid".to_string(), Value::from(cid));
+    source_config.insert(
+        "credential_ref".to_string(),
+        credential_ref_json(actor_user_id, server_id)?,
+    );
+    encode_json_value("source_config_json", &Value::Object(source_config))
+}
+
+fn build_bilibili_live_source_config_json(
+    actor_user_id: &str,
+    server_id: &str,
+    room_id: u64,
+) -> Result<Vec<u8>> {
+    if room_id == 0 {
+        bail!("room_id must be non-zero");
+    }
+
+    let mut source_config = Map::new();
+    source_config.insert("type".to_string(), Value::String("live".to_string()));
+    source_config.insert("room_id".to_string(), Value::from(room_id));
+    source_config.insert(
+        "credential_ref".to_string(),
+        credential_ref_json(actor_user_id, server_id)?,
+    );
+    encode_json_value("source_config_json", &Value::Object(source_config))
+}
+
 fn optional_json_bytes(field_name: &str, raw: Option<&str>) -> Result<Vec<u8>> {
     match raw.map(str::trim) {
         None | Some("") => Ok(Vec::new()),
@@ -4283,7 +6054,12 @@ fn validate_generic_media_add(args: &MediaAddArgs) -> Result<()> {
         .map(str::trim)
         .unwrap_or_default();
 
-    if provider.is_empty() && !provider_instance_name.is_empty() {
+    if provider.is_empty() {
+        if provider_instance_name.is_empty() {
+            bail!(
+                "--provider is required for media add; use media add-url for direct HTTP(S) URLs"
+            );
+        }
         bail!("--provider-instance-name requires --provider");
     }
 
@@ -4330,16 +6106,20 @@ fn validate_provider_add(args: &ProviderAddArgs) -> Result<()> {
         bail!("--insecure-tls requires --tls");
     }
 
-    optional_json_bytes("config_json", args.config_json.as_deref())?;
+    if args.custom_ca.is_some() && !args.tls {
+        bail!("--custom-ca requires --tls");
+    }
+    validate_remote_provider_types(&args.providers)?;
+    if !args.providers.is_empty()
+        && normalized_optional_cli_value(args.jwt_secret.as_deref()).is_none()
+    {
+        bail!("remote provider instances for alist, emby, or bilibili require --jwt-secret");
+    }
     Ok(())
 }
 
 fn provider_update_comment(args: &ProviderUpdateArgs) -> Option<String> {
-    if args.clear_comment {
-        Some(String::new())
-    } else {
-        args.comment.clone()
-    }
+    normalized_optional_cli_value(args.comment.as_deref())
 }
 
 fn ensure_provider_update_requested(args: &ProviderUpdateArgs) -> Result<()> {
@@ -4350,15 +6130,25 @@ fn ensure_provider_update_requested(args: &ProviderUpdateArgs) -> Result<()> {
         && args.tls.is_none()
         && args.insecure_tls.is_none()
         && args.providers.is_empty()
-        && args.config_json.is_none()
+        && args.jwt_secret.is_none()
+        && !args.clear_jwt_secret
+        && args.custom_ca.is_none()
+        && !args.clear_custom_ca
     {
         bail!(
-            "provider update requires at least one of --provider-endpoint, --comment, --clear-comment, --timeout-seconds, --tls, --insecure-tls, --provider, or --config-json"
+            "provider update requires at least one of --provider-endpoint, --comment, --clear-comment, --timeout-seconds, --tls, --insecure-tls, --provider, --jwt-secret, --clear-jwt-secret, --custom-ca, or --clear-custom-ca"
         );
     }
     if args.comment.is_some() && args.clear_comment {
         bail!("provider update cannot use --comment and --clear-comment together");
     }
+    if args.jwt_secret.is_some() && args.clear_jwt_secret {
+        bail!("provider update cannot use --jwt-secret and --clear-jwt-secret together");
+    }
+    if args.custom_ca.is_some() && args.clear_custom_ca {
+        bail!("provider update cannot use --custom-ca and --clear-custom-ca together");
+    }
+    validate_remote_provider_types(&args.providers)?;
     Ok(())
 }
 
@@ -4366,9 +6156,33 @@ fn validate_provider_update_transport_flags(args: &ProviderUpdateArgs) -> Result
     if matches!(args.tls, Some(false)) && matches!(args.insecure_tls, Some(true)) {
         bail!("--insecure-tls true cannot be combined with --tls false");
     }
-
-    optional_json_bytes("config_json", args.config_json.as_deref())?;
+    if args.custom_ca.is_some() && matches!(args.tls, Some(false)) {
+        bail!("--custom-ca cannot be combined with --tls false");
+    }
+    if args.clear_custom_ca && matches!(args.tls, Some(false)) {
+        return Ok(());
+    }
     Ok(())
+}
+
+fn validate_remote_provider_types(providers: &[String]) -> Result<()> {
+    if let Some(provider) = providers
+        .iter()
+        .map(|provider| provider.trim())
+        .find(|provider| !matches!(*provider, "alist" | "emby" | "bilibili"))
+    {
+        bail!(
+            "unsupported remote provider '{provider}'; supported providers are: alist, emby, bilibili"
+        );
+    }
+    Ok(())
+}
+
+fn normalized_provider_types(providers: &[String]) -> Vec<String> {
+    providers
+        .iter()
+        .filter_map(|provider| normalized_optional_cli_value(Some(provider)))
+        .collect()
 }
 
 fn validate_direct_media_url(url: &str) -> Result<()> {
@@ -4816,6 +6630,16 @@ struct HumanProviderInstancesResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct HumanProviderNamesResponse {
+    instances: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanProviderBackendsResponse {
+    backends: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct HumanProviderInstanceResponse<T> {
     instance: Option<T>,
 }
@@ -5075,7 +6899,7 @@ impl ToHuman for synctv_proto::common::RoomMember {
     }
 }
 
-impl ToHuman for synctv_proto::admin::ProviderInstance {
+impl ToHuman for synctv_proto::providers::common::ProviderInstance {
     type Human = HumanProviderInstance;
 
     fn to_human(&self) -> Self::Human {
@@ -5096,7 +6920,7 @@ impl ToHuman for synctv_proto::admin::ProviderInstance {
     }
 }
 
-impl ToHuman for synctv_proto::client::StreamPublisherInfo {
+impl ToHuman for synctv_proto::providers::rtmp::StreamPublisherInfo {
     type Human = HumanStreamPublisherInfo;
 
     fn to_human(&self) -> Self::Human {
@@ -5390,7 +7214,7 @@ impl ToHuman for synctv_proto::admin::GetRoomMembersResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::ListProviderInstancesResponse {
+impl ToHuman for synctv_proto::providers::common::ListProviderInstancesResponse {
     type Human = HumanProviderInstancesResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5400,7 +7224,27 @@ impl ToHuman for synctv_proto::admin::ListProviderInstancesResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::AddProviderInstanceResponse {
+impl ToHuman for synctv_proto::providers::common::ProviderInstancesResponse {
+    type Human = HumanProviderNamesResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanProviderNamesResponse {
+            instances: self.instances.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::providers::common::ProviderBackendsResponse {
+    type Human = HumanProviderBackendsResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanProviderBackendsResponse {
+            backends: self.backends.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::providers::common::AddProviderInstanceResponse {
     type Human = HumanProviderInstanceResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5410,7 +7254,7 @@ impl ToHuman for synctv_proto::admin::AddProviderInstanceResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::UpdateProviderInstanceResponse {
+impl ToHuman for synctv_proto::providers::common::UpdateProviderInstanceResponse {
     type Human = HumanProviderInstanceResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5420,7 +7264,7 @@ impl ToHuman for synctv_proto::admin::UpdateProviderInstanceResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::ReconnectProviderInstanceResponse {
+impl ToHuman for synctv_proto::providers::common::ReconnectProviderInstanceResponse {
     type Human = HumanProviderInstanceResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5430,7 +7274,7 @@ impl ToHuman for synctv_proto::admin::ReconnectProviderInstanceResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::EnableProviderInstanceResponse {
+impl ToHuman for synctv_proto::providers::common::EnableProviderInstanceResponse {
     type Human = HumanProviderInstanceResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5440,7 +7284,7 @@ impl ToHuman for synctv_proto::admin::EnableProviderInstanceResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::DisableProviderInstanceResponse {
+impl ToHuman for synctv_proto::providers::common::DisableProviderInstanceResponse {
     type Human = HumanProviderInstanceResponse<HumanProviderInstance>;
 
     fn to_human(&self) -> Self::Human {
@@ -5696,7 +7540,7 @@ impl ToHuman for GetPlaybackCliOutput {
     }
 }
 
-impl ToHuman for synctv_proto::client::CreatePublishKeyResponse {
+impl ToHuman for synctv_proto::providers::rtmp::CreatePublishKeyResponse {
     type Human = HumanCreatePublishKeyResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -5709,7 +7553,7 @@ impl ToHuman for synctv_proto::client::CreatePublishKeyResponse {
     }
 }
 
-impl ToHuman for synctv_proto::client::GetStreamInfoResponse {
+impl ToHuman for synctv_proto::providers::rtmp::GetStreamInfoResponse {
     type Human = HumanGetStreamInfoResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -5745,7 +7589,7 @@ impl_identity_to_human!(
     synctv_proto::admin::BatchDeleteUsersResponse,
     synctv_proto::admin::BatchBanRoomsResponse,
     synctv_proto::admin::BatchDeleteRoomsResponse,
-    synctv_proto::admin::DeleteProviderInstanceResponse,
+    synctv_proto::providers::common::DeleteProviderInstanceResponse,
     synctv_proto::admin::UpdateSettingsResponse,
     synctv_proto::admin::SendTestEmailResponse,
     synctv_proto::client::LeaveRoomResponse,
@@ -5759,7 +7603,26 @@ impl_identity_to_human!(
     synctv_proto::client::DeletePlaylistResponse,
     synctv_proto::client::DeleteMediaResponse,
     synctv_proto::client::DeleteEntriesResponse,
-    synctv_proto::client::ClearPlaylistResponse
+    synctv_proto::client::ClearPlaylistResponse,
+    synctv_proto::providers::alist::LoginResponse,
+    synctv_proto::providers::alist::ListResponse,
+    synctv_proto::providers::alist::GetMeResponse,
+    synctv_proto::providers::alist::LogoutResponse,
+    synctv_proto::providers::alist::GetBindsResponse,
+    synctv_proto::providers::emby::LoginResponse,
+    synctv_proto::providers::emby::ListResponse,
+    synctv_proto::providers::emby::GetMeResponse,
+    synctv_proto::providers::emby::LogoutResponse,
+    synctv_proto::providers::emby::GetBindsResponse,
+    synctv_proto::providers::bilibili::ParseResponse,
+    synctv_proto::providers::bilibili::QrCodeResponse,
+    synctv_proto::providers::bilibili::QrStatusResponse,
+    synctv_proto::providers::bilibili::CaptchaResponse,
+    synctv_proto::providers::bilibili::SendSmsResponse,
+    synctv_proto::providers::bilibili::LoginSmsResponse,
+    synctv_proto::providers::bilibili::UserInfoResponse,
+    synctv_proto::providers::bilibili::LogoutResponse,
+    synctv_proto::providers::bilibili::GetBindsResponse
 );
 
 impl_identity_to_human!(
@@ -5906,7 +7769,7 @@ fn humanize_permission_bits(bits: u64) -> Vec<String> {
 }
 
 fn humanize_provider_instance_status(raw: i64) -> Option<String> {
-    use synctv_proto::admin::ProviderInstanceStatus;
+    use synctv_proto::providers::common::ProviderInstanceStatus;
 
     Some(
         match ProviderInstanceStatus::try_from(i64_to_i32(raw)?).ok()? {
@@ -6447,7 +8310,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_room_stream_help_clarifies_publish_vs_playback() {
+    fn cli_room_stream_help_exposes_room_scoped_stream_listing_only() {
         let mut command = Cli::command();
         let room = command
             .find_subcommand_mut("room")
@@ -6456,44 +8319,23 @@ mod tests {
             .find_subcommand_mut("stream")
             .expect("room stream subcommand should exist");
 
-        let get = stream
-            .find_subcommand_mut("get")
-            .expect("room stream get subcommand should exist");
-        let mut get_help = Vec::new();
-        get.write_long_help(&mut get_help)
-            .expect("room stream get help should render");
-        let get_help = String::from_utf8(get_help).expect("room stream get help should be utf-8");
-        assert!(
-            get_help.contains("room playback get"),
-            "room stream get help should point users to playback URLs: {get_help}"
-        );
-
         let mut stream_help = Vec::new();
         stream
             .write_long_help(&mut stream_help)
             .expect("room stream help should render");
         let stream_help = String::from_utf8(stream_help).expect("room stream help should be utf-8");
         assert!(
-            stream_help.contains("info"),
-            "room stream help should show the info alias: {stream_help}"
-        );
-
-        let publish_key = stream
-            .find_subcommand_mut("publish-key")
-            .expect("room stream publish-key subcommand should exist");
-        let mut key_help = Vec::new();
-        publish_key
-            .write_long_help(&mut key_help)
-            .expect("room stream publish-key help should render");
-        let key_help =
-            String::from_utf8(key_help).expect("room stream publish-key help should be utf-8");
-        assert!(
-            key_help.contains("single-use"),
-            "room stream publish-key help should mention single-use keys: {key_help}"
+            stream_help.contains("list"),
+            "room stream help should show the room-scoped list command: {stream_help}"
         );
         assert!(
-            stream_help.contains("key"),
-            "room stream help should show the key alias: {stream_help}"
+            !stream_help.contains("publish-key") && !stream_help.contains("get"),
+            "room stream should not duplicate provider rtmp key/info commands: {stream_help}"
+        );
+        assert!(
+            stream.find_subcommand_mut("publish-key").is_none()
+                && stream.find_subcommand_mut("get").is_none(),
+            "room stream should only expose room-owned stream operations"
         );
     }
 
@@ -7993,6 +9835,47 @@ mod tests {
     }
 
     #[test]
+    fn validate_generic_media_add_requires_provider() {
+        let args = MediaAddArgs {
+            room: RoomScopedRemoteArgs {
+                remote: RemoteAccessArgs {
+                    global: GlobalConfigArgs::default(),
+                    output: RemoteOutputFormat::Human,
+                },
+                room_id: "room-123".to_string(),
+            },
+            actor: ActorUserArgs {
+                username: Some("alice".to_string()),
+                user_id: None,
+            },
+            playlist_id: None,
+            provider: None,
+            provider_instance_name: None,
+            source_config_json: "{\"path\":\"/movies/demo.mp4\"}".to_string(),
+            title: None,
+        };
+
+        let error = validate_generic_media_add(&args)
+            .expect_err("generic media add must require a provider");
+        assert!(
+            error.to_string().contains("--provider is required"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn normalized_provider_types_trims_cli_values() {
+        assert_eq!(
+            normalized_provider_types(&[
+                " alist ".to_string(),
+                "emby".to_string(),
+                " bilibili".to_string(),
+            ]),
+            vec!["alist", "emby", "bilibili"]
+        );
+    }
+
+    #[test]
     fn cli_parses_provider_create_with_remote_auth() {
         let cli = Cli::parse_from([
             "synctv",
@@ -8009,8 +9892,8 @@ mod tests {
             "--timeout-seconds",
             "15",
             "--tls",
-            "--config-json",
-            "{\"jwt_secret\":\"provider-secret-12345678901234567890\"}",
+            "--jwt-secret",
+            "provider-secret-12345678901234567890",
         ]);
         match cli.command {
             Commands::Provider(ProviderCommand {
@@ -8024,8 +9907,8 @@ mod tests {
                 assert_eq!(args.timeout_seconds, 15);
                 assert!(args.tls);
                 assert_eq!(
-                    args.config_json.as_deref(),
-                    Some("{\"jwt_secret\":\"provider-secret-12345678901234567890\"}")
+                    args.jwt_secret.as_deref(),
+                    Some("provider-secret-12345678901234567890")
                 );
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -8042,7 +9925,8 @@ mod tests {
             tls: false,
             insecure_tls: true,
             providers: vec!["alist".to_string()],
-            config_json: None,
+            jwt_secret: Some("provider-secret-12345678901234567890".to_string()),
+            custom_ca: None,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
                 output: RemoteOutputFormat::Human,
@@ -8053,6 +9937,32 @@ mod tests {
             .expect_err("provider add should reject insecure TLS without TLS enabled");
         assert!(
             error.to_string().contains("--insecure-tls requires --tls"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn validate_provider_add_rejects_unsupported_remote_provider() {
+        let args = ProviderAddArgs {
+            name: "custom-edge".to_string(),
+            provider_endpoint: "https://provider.example.com:50051".to_string(),
+            comment: None,
+            timeout_seconds: 10,
+            tls: true,
+            insecure_tls: false,
+            providers: vec!["custom_local".to_string()],
+            jwt_secret: Some("provider-secret-12345678901234567890".to_string()),
+            custom_ca: None,
+            remote: RemoteAccessArgs {
+                global: GlobalConfigArgs::default(),
+                output: RemoteOutputFormat::Human,
+            },
+        };
+
+        let error = validate_provider_add(&args)
+            .expect_err("provider add should reject unsupported provider types");
+        assert!(
+            error.to_string().contains("unsupported remote provider"),
             "unexpected error: {error:#}"
         );
     }
@@ -8110,6 +10020,30 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_provider_available_command() {
+        let cli = Cli::parse_from(["synctv", "provider", "available"]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command: ProviderSubcommand::Available(_),
+                ..
+            }) => {}
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_backends_command() {
+        let cli = Cli::parse_from(["synctv", "provider", "backends", "emby"]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command: ProviderSubcommand::Backends(args),
+                ..
+            }) => assert_eq!(args.provider_type, "emby"),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_parses_provider_update_boolean_flags_as_bare_true_flags() {
         let cli = Cli::parse_from([
             "synctv",
@@ -8142,7 +10076,10 @@ mod tests {
             tls: Some(false),
             insecure_tls: Some(true),
             providers: Vec::new(),
-            config_json: None,
+            jwt_secret: None,
+            clear_jwt_secret: false,
+            custom_ca: None,
+            clear_custom_ca: false,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
                 output: RemoteOutputFormat::Human,
@@ -8271,6 +10208,1070 @@ mod tests {
         assert!(
             help.contains("--provider <PROVIDER_TYPE>"),
             "provider update help should use provider type metavar: {help}"
+        );
+    }
+
+    #[test]
+    fn cli_parses_provider_alist_login() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "alist",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://alist.example.com",
+            "--account-username",
+            "alist-user",
+            "--password",
+            "secret",
+            "--instance-name",
+            "alist-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Alist(ProviderAlistCommand {
+                        command: ProviderAlistSubcommand::Login(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.host, "https://alist.example.com");
+                assert_eq!(args.account_username, "alist-user");
+                assert_eq!(args.password.as_deref(), Some("secret"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("alist-edge"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_alist_list() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "alist",
+            "list",
+            "--username",
+            "alice",
+            "--server-id",
+            "alist-srv",
+            "--path",
+            "/movies",
+            "--password",
+            "dir-pass",
+            "--page",
+            "2",
+            "--per-page",
+            "25",
+            "--refresh",
+            "--instance-name",
+            "alist-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Alist(ProviderAlistCommand {
+                        command: ProviderAlistSubcommand::List(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.bind.server_id, "alist-srv");
+                assert_eq!(args.path, "/movies");
+                assert_eq!(args.password.as_deref(), Some("dir-pass"));
+                assert_eq!(args.page, 2);
+                assert_eq!(args.per_page, 25);
+                assert!(args.refresh);
+                assert_eq!(
+                    args.bind.instance.instance_name.as_deref(),
+                    Some("alist-edge")
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_alist_binds() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "alist",
+            "binds",
+            "--user-id",
+            "user-1",
+            "--instance-name",
+            "alist-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Alist(ProviderAlistCommand {
+                        command: ProviderAlistSubcommand::Binds(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("alist-edge"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_emby_login_with_api_key() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://emby.example.com",
+            "--account-username",
+            "emby-user",
+            "--api-key",
+            "emby-api-key",
+            "--instance-name",
+            "emby-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Emby(ProviderEmbyCommand {
+                        command: ProviderEmbySubcommand::Login(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.host, "https://emby.example.com");
+                assert_eq!(args.account_username, "emby-user");
+                assert_eq!(args.password, None);
+                assert_eq!(args.api_key.as_deref(), Some("emby-api-key"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("emby-edge"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_emby_login_with_password() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://emby.example.com",
+            "--account-username",
+            "emby-user",
+            "--password",
+            "secret",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Emby(ProviderEmbyCommand {
+                        command: ProviderEmbySubcommand::Login(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.password.as_deref(), Some("secret"));
+                assert_eq!(args.api_key, None);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_emby_list() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "list",
+            "--user-id",
+            "user-1",
+            "--server-id",
+            "emby-srv",
+            "--path",
+            "library-root",
+            "--start-index",
+            "10",
+            "--limit",
+            "20",
+            "--search-term",
+            "pilot",
+            "--instance-name",
+            "emby-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Emby(ProviderEmbyCommand {
+                        command: ProviderEmbySubcommand::List(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.bind.server_id, "emby-srv");
+                assert_eq!(args.path, "library-root");
+                assert_eq!(args.start_index, 10);
+                assert_eq!(args.limit, 20);
+                assert_eq!(args.search_term.as_deref(), Some("pilot"));
+                assert_eq!(
+                    args.bind.instance.instance_name.as_deref(),
+                    Some("emby-edge")
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_emby_binds() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "binds",
+            "--username",
+            "alice",
+            "--instance-name",
+            "emby-edge",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Emby(ProviderEmbyCommand {
+                        command: ProviderEmbySubcommand::Binds(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("emby-edge"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_provider_alist_login_without_credential() {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "provider",
+            "alist",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://alist.example.com",
+            "--account-username",
+            "alist-user",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "provider alist login must require password or hashed password"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_provider_emby_login_without_credential() {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://emby.example.com",
+            "--account-username",
+            "emby-user",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "provider emby login must require password or api key"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_provider_emby_login_with_both_password_and_api_key() {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "provider",
+            "emby",
+            "login",
+            "--username",
+            "alice",
+            "--host",
+            "https://emby.example.com",
+            "--account-username",
+            "emby-user",
+            "--password",
+            "secret",
+            "--api-key",
+            "emby-api-key",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "provider emby login must reject simultaneous password and api key"
+        );
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_parse() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "parse",
+            "--username",
+            "alice",
+            "--server-id",
+            "bili-srv",
+            "https://www.bilibili.com/video/BV1xx411c7mD",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::Parse(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.bind.server_id, "bili-srv");
+                assert_eq!(args.url, "https://www.bilibili.com/video/BV1xx411c7mD");
+                assert_eq!(
+                    args.bind.instance.instance_name.as_deref(),
+                    Some("bili-main")
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_login_qr() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "login-qr",
+            "--user-id",
+            "user-1",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::LoginQr(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_check_qr() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "check-qr",
+            "--user-id",
+            "user-1",
+            "--key",
+            "qr-key-1",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::CheckQr(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.key, "qr-key-1");
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_get_captcha() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "get-captcha",
+            "--username",
+            "alice",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::GetCaptcha(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_send_sms() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "send-sms",
+            "--username",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--token",
+            "captcha-token",
+            "--challenge",
+            "captcha-challenge",
+            "--validate",
+            "captcha-validate",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::SendSms(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.phone, "13800138000");
+                assert_eq!(args.token, "captcha-token");
+                assert_eq!(args.challenge, "captcha-challenge");
+                assert_eq!(args.validate, "captcha-validate");
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_login_sms() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "login-sms",
+            "--user-id",
+            "user-1",
+            "--phone",
+            "13800138000",
+            "--code",
+            "123456",
+            "--captcha-key",
+            "captcha-key",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::LoginSms(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.phone, "13800138000");
+                assert_eq!(args.code, "123456");
+                assert_eq!(args.captcha_key, "captcha-key");
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_bilibili_me_logout_and_binds() {
+        let cli_me = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "me",
+            "--username",
+            "alice",
+            "--server-id",
+            "bili-srv",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli_me.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::Me(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.bind.server_id, "bili-srv");
+                assert_eq!(
+                    args.bind.instance.instance_name.as_deref(),
+                    Some("bili-main")
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let cli_logout = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "logout",
+            "--user-id",
+            "user-1",
+            "--server-id",
+            "bili-srv",
+        ]);
+        match cli_logout.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::Logout(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.bind.server_id, "bili-srv");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let cli_binds = Cli::parse_from([
+            "synctv",
+            "provider",
+            "bilibili",
+            "binds",
+            "--user-id",
+            "user-1",
+            "--instance-name",
+            "bili-main",
+        ]);
+        match cli_binds.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Bilibili(ProviderBilibiliCommand {
+                        command: ProviderBilibiliSubcommand::Binds(args),
+                    }),
+            }) => {
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_rtmp_create_publish_key_and_get_stream_info() {
+        let cli_publish_key = Cli::parse_from([
+            "synctv",
+            "provider",
+            "rtmp",
+            "create-publish-key",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "media-1",
+        ]);
+        match cli_publish_key.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Rtmp(ProviderRtmpCommand {
+                        command: ProviderRtmpSubcommand::CreatePublishKey(args),
+                    }),
+            }) => {
+                assert_eq!(args.room_id, "room-1");
+                assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.resolved_media_id(), "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let cli_info = Cli::parse_from([
+            "synctv",
+            "provider",
+            "rtmp",
+            "get-stream-info",
+            "--room-id",
+            "room-1",
+            "media-1",
+        ]);
+        match cli_info.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Rtmp(ProviderRtmpCommand {
+                        command: ProviderRtmpSubcommand::GetStreamInfo(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room_id, "room-1");
+                assert_eq!(args.media_id, "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_provider_rtmp_aliases() {
+        let cli_key = Cli::parse_from([
+            "synctv",
+            "provider",
+            "rtmp",
+            "key",
+            "--room-id",
+            "room-1",
+            "--user-id",
+            "user-1",
+            "--media-id",
+            "media-1",
+        ]);
+        match cli_key.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Rtmp(ProviderRtmpCommand {
+                        command: ProviderRtmpSubcommand::CreatePublishKey(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room_id, "room-1");
+                assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.resolved_media_id(), "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let cli_info = Cli::parse_from([
+            "synctv",
+            "provider",
+            "rtmp",
+            "info",
+            "--room-id",
+            "room-1",
+            "media-1",
+        ]);
+        match cli_info.command {
+            Commands::Provider(ProviderCommand {
+                command:
+                    ProviderSubcommand::Rtmp(ProviderRtmpCommand {
+                        command: ProviderRtmpSubcommand::GetStreamInfo(args),
+                    }),
+                ..
+            }) => {
+                assert_eq!(args.room_id, "room-1");
+                assert_eq!(args.media_id, "media-1");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_playlist_provider_alist() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "playlist",
+            "provider",
+            "alist",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "Movies",
+            "--path",
+            "/movies",
+            "--server-id",
+            "srv-1",
+            "--provider-instance-name",
+            "alist-edge",
+        ]);
+        match cli.command {
+            Commands::Playlist(PlaylistCommand {
+                command:
+                    PlaylistSubcommand::Provider(PlaylistProviderCommand {
+                        command: PlaylistProviderSubcommand::Alist(args),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.name, "Movies");
+                assert_eq!(args.path, "/movies");
+                assert_eq!(args.server_id, "srv-1");
+                assert_eq!(args.provider_instance_name.as_deref(), Some("alist-edge"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_playlist_provider_emby() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "playlist",
+            "provider",
+            "emby",
+            "--room-id",
+            "room-1",
+            "--user-id",
+            "user-1",
+            "Series",
+            "--item-id",
+            "library-root",
+            "--server-id",
+            "emby-srv",
+            "--provider-instance-name",
+            "emby-main",
+        ]);
+        match cli.command {
+            Commands::Playlist(PlaylistCommand {
+                command:
+                    PlaylistSubcommand::Provider(PlaylistProviderCommand {
+                        command: PlaylistProviderSubcommand::Emby(args),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.name, "Series");
+                assert_eq!(args.item_id, "library-root");
+                assert_eq!(args.server_id, "emby-srv");
+                assert_eq!(args.provider_instance_name.as_deref(), Some("emby-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_provider_alist() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "provider",
+            "alist",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "--path",
+            "/movies/demo.mp4",
+            "--server-id",
+            "alist-srv",
+            "--playlist-id",
+            "playlist-1",
+            "--provider-instance-name",
+            "alist-edge",
+            "--title",
+            "Demo",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command:
+                    MediaSubcommand::Provider(MediaProviderCommand {
+                        command: MediaProviderSubcommand::Alist(args),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.path, "/movies/demo.mp4");
+                assert_eq!(args.server_id, "alist-srv");
+                assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
+                assert_eq!(args.provider_instance_name.as_deref(), Some("alist-edge"));
+                assert_eq!(args.title.as_deref(), Some("Demo"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_provider_emby() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "provider",
+            "emby",
+            "--room-id",
+            "room-1",
+            "--user-id",
+            "user-1",
+            "--item-id",
+            "item-123",
+            "--server-id",
+            "srv-2",
+            "--playlist-id",
+            "playlist-1",
+            "--title",
+            "Pilot",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command:
+                    MediaSubcommand::Provider(MediaProviderCommand {
+                        command: MediaProviderSubcommand::Emby(args),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.item_id, "item-123");
+                assert_eq!(args.server_id, "srv-2");
+                assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
+                assert_eq!(args.title.as_deref(), Some("Pilot"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_provider_bilibili_pgc() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "provider",
+            "bilibili",
+            "pgc",
+            "--room-id",
+            "room-1",
+            "--user-id",
+            "user-1",
+            "--epid",
+            "1001",
+            "--cid",
+            "2002",
+            "--server-id",
+            "bili-srv",
+            "--playlist-id",
+            "playlist-1",
+            "--title",
+            "Episode 1",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command:
+                    MediaSubcommand::Provider(MediaProviderCommand {
+                        command:
+                            MediaProviderSubcommand::Bilibili(MediaProviderBilibiliCommand {
+                                command: MediaProviderBilibiliSubcommand::Pgc(args),
+                            }),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.user_id.as_deref(), Some("user-1"));
+                assert_eq!(args.epid, 1001);
+                assert_eq!(args.cid, 2002);
+                assert_eq!(args.server_id, "bili-srv");
+                assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
+                assert_eq!(args.title.as_deref(), Some("Episode 1"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_provider_bilibili_live() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "provider",
+            "bilibili",
+            "live",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "--room-live-id",
+            "778899",
+            "--server-id",
+            "bili-srv",
+            "--provider-instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command:
+                    MediaSubcommand::Provider(MediaProviderCommand {
+                        command:
+                            MediaProviderSubcommand::Bilibili(MediaProviderBilibiliCommand {
+                                command: MediaProviderBilibiliSubcommand::Live(args),
+                            }),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.room_live_id, 778_899);
+                assert_eq!(args.server_id, "bili-srv");
+                assert_eq!(args.provider_instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_media_provider_bilibili_video() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "provider",
+            "bilibili",
+            "video",
+            "--room-id",
+            "room-1",
+            "--username",
+            "alice",
+            "--bvid",
+            "BV1xx411c7mD",
+            "--cid",
+            "2333",
+            "--server-id",
+            "bili-srv",
+            "--provider-instance-name",
+            "bili-main",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command:
+                    MediaSubcommand::Provider(MediaProviderCommand {
+                        command:
+                            MediaProviderSubcommand::Bilibili(MediaProviderBilibiliCommand {
+                                command: MediaProviderBilibiliSubcommand::Video(args),
+                            }),
+                    }),
+            }) => {
+                assert_eq!(args.room.room_id, "room-1");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.video.bvid.as_deref(), Some("BV1xx411c7mD"));
+                assert_eq!(args.video.aid, None);
+                assert_eq!(args.cid, 2333);
+                assert_eq!(args.server_id, "bili-srv");
+                assert_eq!(args.provider_instance_name.as_deref(), Some("bili-main"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_alist_source_config_json_matches_runtime_contract() {
+        let encoded =
+            build_alist_source_config_json("user-1", "srv-1", "/movies/demo.mp4", Some("dir-pass"))
+                .expect("alist source config should encode");
+        let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
+
+        assert_eq!(
+            value,
+            json!({
+                "path": "/movies/demo.mp4",
+                "password": "dir-pass",
+                "credential_ref": {
+                    "credential_owner_id": "user-1",
+                    "server_id": "srv-1",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn build_emby_source_config_json_matches_runtime_contract() {
+        let encoded = build_emby_source_config_json("user-1", "srv-2", "item-123")
+            .expect("emby source config should encode");
+        let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
+
+        assert_eq!(
+            value,
+            json!({
+                "item_id": "item-123",
+                "credential_ref": {
+                    "credential_owner_id": "user-1",
+                    "server_id": "srv-2",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn build_bilibili_video_source_config_json_matches_runtime_contract() {
+        let encoded = build_bilibili_video_source_config_json(
+            "user-1",
+            "srv-3",
+            Some("BV1xx411c7mD"),
+            None,
+            2333,
+        )
+        .expect("bilibili video source config should encode");
+        let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "video",
+                "bvid": "BV1xx411c7mD",
+                "cid": 2333,
+                "credential_ref": {
+                    "credential_owner_id": "user-1",
+                    "server_id": "srv-3",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn build_bilibili_pgc_source_config_json_matches_runtime_contract() {
+        let encoded = build_bilibili_pgc_source_config_json("user-1", "srv-3", 1001, 2002)
+            .expect("bilibili pgc source config should encode");
+        let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "pgc",
+                "epid": 1001,
+                "cid": 2002,
+                "credential_ref": {
+                    "credential_owner_id": "user-1",
+                    "server_id": "srv-3",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn build_bilibili_live_source_config_json_matches_runtime_contract() {
+        let encoded = build_bilibili_live_source_config_json("user-1", "srv-3", 778_899)
+            .expect("bilibili live source config should encode");
+        let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
+
+        assert_eq!(
+            value,
+            json!({
+                "type": "live",
+                "room_id": 778_899,
+                "credential_ref": {
+                    "credential_owner_id": "user-1",
+                    "server_id": "srv-3",
+                }
+            })
         );
     }
 
@@ -8574,143 +11575,121 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_room_stream_publish_key_subcommand() {
+    fn cli_parses_room_playback_get_with_profile_flags() {
         let cli = Cli::parse_from([
             "synctv",
             "room",
-            "stream",
-            "publish-key",
-            "--room-id",
-            "room-1",
-            "--username",
-            "alice",
-            "media-1",
-        ]);
-        match cli.command {
-            Commands::Room(RoomCommand {
-                command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::PublishKey(args),
-                    }),
-            }) => {
-                assert_eq!(args.room.room_id, "room-1");
-                assert_eq!(args.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.actor.user_id, None);
-                assert_eq!(args.resolved_media_id(), "media-1");
-            }
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_room_stream_key_alias() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "stream",
-            "key",
-            "--room-id",
-            "room-1",
-            "--username",
-            "alice",
-            "media-1",
-        ]);
-        match cli.command {
-            Commands::Room(RoomCommand {
-                command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::PublishKey(args),
-                    }),
-                ..
-            }) => {
-                assert_eq!(args.room.room_id, "room-1");
-                assert_eq!(args.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.resolved_media_id(), "media-1");
-            }
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_room_stream_publish_key_with_media_id_flag() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "stream",
-            "publish-key",
-            "--room-id",
-            "room-1",
-            "--username",
-            "alice",
-            "--media-id",
-            "media-1",
-        ]);
-        match cli.command {
-            Commands::Room(RoomCommand {
-                command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::PublishKey(args),
-                    }),
-                ..
-            }) => {
-                assert_eq!(args.room.room_id, "room-1");
-                assert_eq!(args.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.resolved_media_id(), "media-1");
-            }
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_room_stream_get() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "stream",
+            "playback",
             "get",
             "--room-id",
             "room-1",
-            "media-1",
+            "--delivery",
+            "transcode",
+            "--max-streaming-bitrate",
+            "8000000",
+            "--max-audio-channels",
+            "2",
+            "--video-codec",
+            "h264,av1",
+            "--video-codec",
+            "hevc",
+            "--container",
+            "mp4,webm",
+            "--audio-capability",
+            "surround",
+            "--subtitle",
+            "embedded-or-external",
         ]);
         match cli.command {
             Commands::Room(RoomCommand {
                 command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::Get(args),
+                    RoomSubcommand::Playback(RoomPlaybackCommand {
+                        command: RoomPlaybackSubcommand::Get(args),
                     }),
                 ..
             }) => {
                 assert_eq!(args.room.room_id, "room-1");
-                assert_eq!(args.media_id, "media-1");
+                assert_eq!(
+                    args.playback_client_profile.delivery_preference,
+                    Some(CliPlaybackDeliveryPreference::Transcode)
+                );
+                assert_eq!(
+                    args.playback_client_profile.max_streaming_bitrate,
+                    Some(8_000_000)
+                );
+                assert_eq!(args.playback_client_profile.max_audio_channels, Some(2));
+                assert_eq!(
+                    args.playback_client_profile.supported_video_codecs,
+                    vec![
+                        CliPlaybackVideoCodec::H264,
+                        CliPlaybackVideoCodec::Av1,
+                        CliPlaybackVideoCodec::Hevc,
+                    ]
+                );
+                assert_eq!(
+                    args.playback_client_profile.supported_containers,
+                    vec![CliPlaybackContainer::Mp4, CliPlaybackContainer::Webm]
+                );
+                assert_eq!(
+                    args.playback_client_profile.audio_capability,
+                    Some(CliPlaybackAudioCapability::Surround)
+                );
+                assert_eq!(
+                    args.playback_client_profile.subtitle_preference,
+                    Some(CliPlaybackSubtitlePreference::EmbeddedOrExternal)
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
 
     #[test]
-    fn cli_parses_room_stream_info_alias() {
-        let cli = Cli::parse_from([
-            "synctv",
-            "room",
-            "stream",
-            "info",
-            "--room-id",
-            "room-1",
-            "media-1",
-        ]);
-        match cli.command {
-            Commands::Room(RoomCommand {
-                command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::Get(args),
-                    }),
-                ..
-            }) => {
-                assert_eq!(args.room.room_id, "room-1");
-                assert_eq!(args.media_id, "media-1");
-            }
-            other => panic!("unexpected command parsed: {other:?}"),
-        }
+    fn playback_client_profile_args_to_proto_omits_empty_profile() {
+        let args = PlaybackClientProfileArgs::default();
+        assert_eq!(args.to_proto(), None);
+    }
+
+    #[test]
+    fn playback_client_profile_args_to_proto_builds_profile() {
+        let args = PlaybackClientProfileArgs {
+            delivery_preference: Some(CliPlaybackDeliveryPreference::Auto),
+            max_streaming_bitrate: Some(10_000_000),
+            max_audio_channels: Some(6),
+            supported_video_codecs: vec![CliPlaybackVideoCodec::H264, CliPlaybackVideoCodec::Vp9],
+            supported_containers: vec![CliPlaybackContainer::Mp4, CliPlaybackContainer::Mkv],
+            audio_capability: Some(CliPlaybackAudioCapability::LosslessSurround),
+            subtitle_preference: Some(CliPlaybackSubtitlePreference::External),
+        };
+
+        let profile = args.to_proto().expect("profile should be created");
+        assert_eq!(
+            profile.delivery_preference,
+            synctv_proto::client::PlaybackDeliveryPreference::Auto as i32
+        );
+        assert_eq!(profile.max_streaming_bitrate, Some(10_000_000));
+        assert_eq!(profile.max_audio_channels, Some(6));
+        assert_eq!(
+            profile.supported_video_codecs,
+            vec![
+                synctv_proto::client::PlaybackVideoCodec::H264 as i32,
+                synctv_proto::client::PlaybackVideoCodec::Vp9 as i32,
+            ]
+        );
+        assert_eq!(
+            profile.supported_containers,
+            vec![
+                synctv_proto::client::PlaybackContainer::Mp4 as i32,
+                synctv_proto::client::PlaybackContainer::Mkv as i32,
+            ]
+        );
+        assert_eq!(
+            profile.audio_capability,
+            synctv_proto::client::PlaybackAudioCapability::LosslessSurround as i32
+        );
+        assert_eq!(
+            profile.subtitle_preference,
+            synctv_proto::client::PlaybackSubtitlePreference::External as i32
+        );
     }
 
     #[test]
@@ -8805,26 +11784,26 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_room_stream_get_with_hyphen_prefixed_media_id() {
+    fn cli_parses_provider_rtmp_get_stream_info_with_hyphen_prefixed_media_id() {
         let cli = Cli::try_parse_from([
             "synctv",
-            "room",
-            "stream",
-            "get",
+            "provider",
+            "rtmp",
+            "get-stream-info",
             "--room-id",
             "room-123",
             "-99tNxdXRosK",
         ])
         .expect("hyphen-prefixed media ids should be accepted as positional values");
         match cli.command {
-            Commands::Room(RoomCommand {
+            Commands::Provider(ProviderCommand {
                 command:
-                    RoomSubcommand::Stream(RoomStreamCommand {
-                        command: RoomStreamSubcommand::Get(args),
+                    ProviderSubcommand::Rtmp(ProviderRtmpCommand {
+                        command: ProviderRtmpSubcommand::GetStreamInfo(args),
                     }),
                 ..
             }) => {
-                assert_eq!(args.room.room_id, "room-123");
+                assert_eq!(args.room_id, "room-123");
                 assert_eq!(args.media_id, "-99tNxdXRosK");
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -9151,21 +12130,24 @@ mod tests {
             }],
         })
         .expect("human output should render");
-        let instances = render_human_output(&synctv_proto::admin::ListProviderInstancesResponse {
-            instances: vec![synctv_proto::admin::ProviderInstance {
-                name: "provider-1".into(),
-                endpoint: "http://127.0.0.1:50052".into(),
-                comment: String::new(),
-                timeout_seconds: 30,
-                tls: false,
-                insecure_tls: false,
-                providers: vec!["direct_url".into()],
-                enabled: true,
-                status: synctv_proto::admin::ProviderInstanceStatus::Disconnected as i32,
-                created_at: 1_775_144_583_i64,
-                updated_at: 1_775_291_071_i64,
-            }],
-        })
+        let instances = render_human_output(
+            &synctv_proto::providers::common::ListProviderInstancesResponse {
+                instances: vec![synctv_proto::providers::common::ProviderInstance {
+                    name: "provider-1".into(),
+                    endpoint: "http://127.0.0.1:50052".into(),
+                    comment: String::new(),
+                    timeout_seconds: 30,
+                    tls: false,
+                    insecure_tls: false,
+                    providers: vec!["direct_url".into()],
+                    enabled: true,
+                    status: synctv_proto::providers::common::ProviderInstanceStatus::Disconnected
+                        as i32,
+                    created_at: 1_775_144_583_i64,
+                    updated_at: 1_775_291_071_i64,
+                }],
+            },
+        )
         .expect("human output should render");
 
         assert_eq!(rendered["room"]["status"], "closed");
@@ -9444,7 +12426,10 @@ mod tests {
             tls: None,
             insecure_tls: None,
             providers: Vec::new(),
-            config_json: None,
+            jwt_secret: None,
+            clear_jwt_secret: false,
+            custom_ca: None,
+            clear_custom_ca: false,
             remote: RemoteAccessArgs {
                 global: GlobalConfigArgs::default(),
                 output: RemoteOutputFormat::Human,

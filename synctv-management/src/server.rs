@@ -9,21 +9,27 @@ use tracing::info;
 #[cfg(unix)]
 use tracing::warn;
 
-use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
+use synctv_api::impls::{
+    AdminApiImpl, AlistApiImpl, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl,
+};
 use synctv_core::{
     config::absolute_display_path, config::ManagementTransport, service::UserService, Config,
 };
 
 use crate::lifecycle::ManagementLifecycleController;
 use crate::proto::management_service_server::ManagementServiceServer;
-use crate::service::ManagementServiceImpl;
+use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
 use crate::FILE_DESCRIPTOR_SET;
 
 pub struct ManagementServerConfig {
     pub config: Arc<Config>,
     pub user_service: Arc<UserService>,
     pub admin_api: Arc<AdminApiImpl>,
+    pub provider_common_api: Arc<ProviderCommonApiImpl>,
     pub client_api: Arc<ClientApiImpl>,
+    pub alist_api: Arc<AlistApiImpl>,
+    pub bilibili_api: Arc<BilibiliApiImpl>,
+    pub emby_api: Arc<EmbyApiImpl>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
@@ -110,15 +116,21 @@ where
     I: futures::Stream<Item = Result<IO, std::io::Error>> + Send + 'static,
     IO: tonic::transport::server::Connected + AsyncReadWrite + Unpin + Send + 'static,
 {
-    let management_service = ManagementServiceServer::new(ManagementServiceImpl::new(
-        config.user_service,
-        config.admin_api,
-        config.client_api,
-        config.lifecycle_controller,
-        &config.config.management.auth_token,
-    ))
-    .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
-    .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);
+    let management_service =
+        ManagementServiceServer::new(ManagementServiceImpl::new(ManagementServiceDependencies {
+            config: Arc::clone(&config.config),
+            user_service: config.user_service,
+            admin_api: config.admin_api,
+            provider_common_api: config.provider_common_api,
+            client_api: config.client_api,
+            alist_api: config.alist_api,
+            bilibili_api: config.bilibili_api,
+            emby_api: config.emby_api,
+            lifecycle_controller: config.lifecycle_controller,
+            management_auth_token: config.config.management.auth_token.clone(),
+        }))
+        .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
+        .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);
 
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter

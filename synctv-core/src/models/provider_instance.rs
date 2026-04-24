@@ -183,6 +183,13 @@ pub struct UserProviderCredential {
 impl UserProviderCredential {
     const BILIBILI_SCOPE: &'static str = "bilibili";
 
+    /// Generate a shared 12-character credential ID compatible with
+    /// `user_media_provider_credentials.id`.
+    #[must_use]
+    pub fn new_id() -> String {
+        crate::models::id::generate_id()
+    }
+
     fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
         provider_instance_name.and_then(|name| {
             let trimmed = name.trim();
@@ -364,6 +371,16 @@ mod tests {
     fn test_user_credential_generate_server_id() {
         let server_id = UserProviderCredential::generate_server_id("https://alist.example.com");
         assert_eq!(server_id.len(), 64); // SHA-256 hex string is 64 chars
+    }
+
+    #[test]
+    fn test_user_credential_new_id_uses_shared_12_char_format() {
+        let id = UserProviderCredential::new_id();
+        assert_eq!(id.len(), crate::models::ID_LENGTH);
+        assert!(synctv_common::id::is_valid_with_len(
+            &id,
+            crate::models::ID_LENGTH
+        ));
     }
 
     #[test]

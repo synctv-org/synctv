@@ -295,29 +295,39 @@ mod tests {
     #[cfg(unix)]
     use synctv_management::proto::{
         management_service_server::{ManagementService, ManagementServiceServer},
-        AddAdminRequest, AddDirectUrlMediaRequest, AddMediaRequest, AddProviderInstanceRequest,
+        AddAdminRequest, AddDirectUrlMediaRequest, AddMediaRequest, AlistGetBindsRequest,
+        AlistGetMeRequest, AlistListRequest, AlistLoginRequest, AlistLogoutRequest,
         ApproveRoomRequest, ApproveUserRequest, BanMemberRequest, BanRoomRequest, BanUserRequest,
         BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
-        BatchDeleteUsersRequest, CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest,
-        CreateUserRequest, DeleteMediaRequest, DeletePlaylistRequest,
-        DeleteProviderInstanceRequest, DeleteRoomRequest, DeleteUserRequest,
-        DisableProviderInstanceRequest, EditMediaRequest, EnableProviderInstanceRequest,
-        GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-        GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest, GetStreamInfoRequest,
-        GetSystemStatsRequest, GetUserByUsernameRequest, GetUserRequest, GetUserRoomsRequest,
-        KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-        ListMediaRequest, ListPlaylistsRequest, ListProviderInstancesRequest,
-        ListRoomStreamsRequest, ListRoomsRequest, ListUsersRequest, MoveMediaRequest,
-        MovePlaylistRequest, ReconnectProviderInstanceRequest, RemoveAdminRequest,
-        ResetRoomSettingsRequest, SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest,
-        StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
-        UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaylistRequest,
-        UpdateProviderInstanceRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
-        UpdateUserUsernameRequest,
+        BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
+        BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
+        BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest,
+        BilibiliSendSmsRequest, CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest,
+        CreateUserRequest, DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest,
+        DeleteUserRequest, EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest,
+        EmbyListRequest, EmbyLoginRequest, EmbyLogoutRequest, GetPlaybackRequest,
+        GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest,
+        GetSettingsGroupRequest, GetSettingsRequest, GetStreamInfoRequest, GetSystemStatsRequest,
+        GetUserByUsernameRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
+        KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListMediaRequest,
+        ListPlaylistsRequest, ListRoomStreamsRequest, ListRoomsRequest, ListUsersRequest,
+        MoveMediaRequest, MovePlaylistRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
+        SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+        StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
+        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaylistRequest,
+        UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
+        UpdateUserPasswordRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
-    use synctv_proto::{admin as admin_proto, client as client_proto};
+    use synctv_management::provider::common as provider_common_proto;
+    #[cfg(unix)]
+    use synctv_proto::{
+        admin as admin_proto, client as client_proto,
+        providers::{
+            alist as alist_proto, bilibili as bilibili_proto, common as provider_common_types,
+            emby as emby_proto, rtmp as rtmp_proto,
+        },
+    };
     #[cfg(unix)]
     use tonic::transport::Server;
     #[cfg(unix)]
@@ -651,13 +661,13 @@ mod tests {
         async fn create_publish_key(
             &self,
             _: Request<CreatePublishKeyRequest>,
-        ) -> std::result::Result<Response<client_proto::CreatePublishKeyResponse>, Status> {
+        ) -> std::result::Result<Response<rtmp_proto::CreatePublishKeyResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn get_stream_info(
             &self,
             _: Request<GetStreamInfoRequest>,
-        ) -> std::result::Result<Response<client_proto::GetStreamInfoResponse>, Status> {
+        ) -> std::result::Result<Response<rtmp_proto::GetStreamInfoResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn list_room_streams(
@@ -739,53 +749,193 @@ mod tests {
         ) -> std::result::Result<Response<client_proto::DeleteMediaResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
+        async fn alist_login(
+            &self,
+            _: Request<AlistLoginRequest>,
+        ) -> std::result::Result<Response<alist_proto::LoginResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn alist_list(
+            &self,
+            _: Request<AlistListRequest>,
+        ) -> std::result::Result<Response<alist_proto::ListResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn alist_get_me(
+            &self,
+            _: Request<AlistGetMeRequest>,
+        ) -> std::result::Result<Response<alist_proto::GetMeResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn alist_logout(
+            &self,
+            _: Request<AlistLogoutRequest>,
+        ) -> std::result::Result<Response<alist_proto::LogoutResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn alist_get_binds(
+            &self,
+            _: Request<AlistGetBindsRequest>,
+        ) -> std::result::Result<Response<alist_proto::GetBindsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn emby_login(
+            &self,
+            _: Request<EmbyLoginRequest>,
+        ) -> std::result::Result<Response<emby_proto::LoginResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn emby_list(
+            &self,
+            _: Request<EmbyListRequest>,
+        ) -> std::result::Result<Response<emby_proto::ListResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn emby_get_me(
+            &self,
+            _: Request<EmbyGetMeRequest>,
+        ) -> std::result::Result<Response<emby_proto::GetMeResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn emby_logout(
+            &self,
+            _: Request<EmbyLogoutRequest>,
+        ) -> std::result::Result<Response<emby_proto::LogoutResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn emby_get_binds(
+            &self,
+            _: Request<EmbyGetBindsRequest>,
+        ) -> std::result::Result<Response<emby_proto::GetBindsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_parse(
+            &self,
+            _: Request<BilibiliParseRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::ParseResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_login_qr(
+            &self,
+            _: Request<BilibiliLoginQrRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::QrCodeResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_check_qr(
+            &self,
+            _: Request<BilibiliCheckQrRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::QrStatusResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_get_captcha(
+            &self,
+            _: Request<BilibiliGetCaptchaRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::CaptchaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_send_sms(
+            &self,
+            _: Request<BilibiliSendSmsRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::SendSmsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_login_sms(
+            &self,
+            _: Request<BilibiliLoginSmsRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::LoginSmsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_get_user_info(
+            &self,
+            _: Request<BilibiliGetUserInfoRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::UserInfoResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_logout(
+            &self,
+            _: Request<BilibiliLogoutRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::LogoutResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn bilibili_get_binds(
+            &self,
+            _: Request<BilibiliGetBindsRequest>,
+        ) -> std::result::Result<Response<bilibili_proto::GetBindsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn list_available_provider_instances(
+            &self,
+            _: Request<provider_common_proto::ListAvailableProviderInstancesRequest>,
+        ) -> std::result::Result<Response<provider_common_types::ProviderInstancesResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn list_provider_backends(
+            &self,
+            _: Request<provider_common_proto::ListProviderBackendsRequest>,
+        ) -> std::result::Result<Response<provider_common_types::ProviderBackendsResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
         async fn list_provider_instances(
             &self,
-            _: Request<ListProviderInstancesRequest>,
-        ) -> std::result::Result<Response<admin_proto::ListProviderInstancesResponse>, Status>
-        {
+            _: Request<provider_common_proto::ListProviderInstancesRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::ListProviderInstancesResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn add_provider_instance(
             &self,
-            _: Request<AddProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::AddProviderInstanceResponse>, Status>
+            _: Request<provider_common_proto::AddProviderInstanceRequest>,
+        ) -> std::result::Result<Response<provider_common_types::AddProviderInstanceResponse>, Status>
         {
             Err(Status::unimplemented("test stub"))
         }
         async fn update_provider_instance(
             &self,
-            _: Request<UpdateProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateProviderInstanceResponse>, Status>
-        {
+            _: Request<provider_common_proto::UpdateProviderInstanceRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::UpdateProviderInstanceResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn delete_provider_instance(
             &self,
-            _: Request<DeleteProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::DeleteProviderInstanceResponse>, Status>
-        {
+            _: Request<provider_common_proto::DeleteProviderInstanceRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::DeleteProviderInstanceResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn reconnect_provider_instance(
             &self,
-            _: Request<ReconnectProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::ReconnectProviderInstanceResponse>, Status>
-        {
+            _: Request<provider_common_proto::ReconnectProviderInstanceRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::ReconnectProviderInstanceResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn enable_provider_instance(
             &self,
-            _: Request<EnableProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::EnableProviderInstanceResponse>, Status>
-        {
+            _: Request<provider_common_proto::EnableProviderInstanceRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::EnableProviderInstanceResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn disable_provider_instance(
             &self,
-            _: Request<DisableProviderInstanceRequest>,
-        ) -> std::result::Result<Response<admin_proto::DisableProviderInstanceResponse>, Status>
-        {
+            _: Request<provider_common_proto::DisableProviderInstanceRequest>,
+        ) -> std::result::Result<
+            Response<provider_common_types::DisableProviderInstanceResponse>,
+            Status,
+        > {
             Err(Status::unimplemented("test stub"))
         }
         async fn get_settings(

@@ -47,7 +47,19 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_provider_grpc_host(&req.host)?;
         validate_required("username", &req.username)?;
-        validate_required("password", &req.password)?;
+        match req.credential.as_ref() {
+            Some(super::emby::login_req::Credential::Password(password)) => {
+                validate_required("password", password)?;
+            }
+            Some(super::emby::login_req::Credential::ApiKey(api_key)) => {
+                validate_required("api_key", api_key)?;
+            }
+            None => {
+                return Err(Status::invalid_argument(
+                    "exactly one of password or api_key must be provided",
+                ));
+            }
+        }
         let resp = self
             .service
             .login(req)
@@ -60,7 +72,6 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
-        validate_required("user_id", &req.user_id)?;
         let resp = self
             .service
             .me(req)

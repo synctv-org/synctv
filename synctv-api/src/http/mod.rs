@@ -1,6 +1,7 @@
 // HTTP/JSON REST API
 
 pub mod admin;
+pub(crate) mod admin_execute;
 pub mod auth;
 pub mod email_verification;
 pub mod error;
@@ -10,7 +11,6 @@ pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
 pub mod public;
-pub mod publish_key;
 pub mod room;
 pub mod room_extra;
 pub mod ticket;
@@ -21,7 +21,6 @@ pub mod websocket;
 
 // Provider HTTP routes
 // Provider-specific HTTP endpoints are registered from provider instances
-pub mod provider_common;
 pub mod providers;
 
 use crate::cluster_fanout::ClusterFanoutService;
@@ -64,10 +63,6 @@ pub(crate) trait WithPlaylistId: Sized {
 
 pub(crate) trait WithProviderInstanceName: Sized {
     fn with_provider_instance_name(self, name: String) -> Self;
-}
-
-pub(crate) trait WithId: Sized {
-    fn with_id(self, id: String) -> Self;
 }
 
 macro_rules! impl_with_string_field {
@@ -130,14 +125,7 @@ impl_with_string_field!(
     WithProviderInstanceName,
     with_provider_instance_name,
     name,
-    [crate::proto::admin::UpdateProviderInstanceRequest]
-);
-
-impl_with_string_field!(
-    WithId,
-    with_id,
-    id,
-    [crate::proto::client::CreatePublishKeyRequest]
+    [crate::proto::providers::common::UpdateProviderInstanceRequest]
 );
 
 impl_with_string_field!(
@@ -236,6 +224,7 @@ pub struct SharedApiRuntime {
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
+    pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
     // H-2: Provider ApiImpls stored once in shared runtime (not created per-request)
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
@@ -279,6 +268,7 @@ pub struct AppState {
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
+    pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
     // H-2: Provider ApiImpls stored once in AppState (not created per-request)
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
@@ -373,6 +363,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         email_api: shared_api_runtime.email_api.clone(),
         notification_api: shared_api_runtime.notification_api.clone(),
         oauth2_api: shared_api_runtime.oauth2_api.clone(),
+        provider_common_api: shared_api_runtime.provider_common_api.clone(),
         bilibili_api: shared_api_runtime.bilibili_api.clone(),
         alist_api: shared_api_runtime.alist_api.clone(),
         emby_api: shared_api_runtime.emby_api.clone(),
@@ -514,6 +505,16 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         ))
     });
 
+    let provider_common_api = Arc::new(
+        crate::impls::ProviderCommonApiImpl::new(
+            config.provider_instance_manager.clone(),
+            config.user_service.clone(),
+            config.audit_service.clone(),
+        )
+        .with_providers_manager(config.providers_manager.clone())
+        .with_request_executor(request_executor.clone()),
+    );
+
     // H-3: Create shared RateLimitConfig from the config file (not hardcoded defaults)
     let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
@@ -560,6 +561,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         email_api,
         notification_api,
         oauth2_api,
+        provider_common_api,
         bilibili_api,
         alist_api,
         emby_api,
@@ -732,6 +734,7 @@ fn register_read_routes(_state: &AppState) -> Router<AppState> {
             get(room::get_room_settings),
         )
         .route("/api/rooms/{room_id}/members", get(room::get_room_members))
+        .route("/api/rooms/{room_id}/streams", get(room::list_room_streams))
         .route(
             "/api/rooms/{room_id}/chat/history",
             get(room::get_chat_history),
@@ -783,7 +786,6 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         .merge(register_extracted_auth_routes())
         .merge(register_auth_routes(state))
         .merge(register_extracted_user_routes())
-        .merge(publish_key::create_publish_key_router())
         .merge(
             Router::new()
                 .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
@@ -836,9 +838,10 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .merge(register_provider_management_routes(state))
-                .merge(
-                    Router::new().nest("/api/provider", provider_common::register_common_routes()),
-                ),
+                .merge(Router::new().nest(
+                    "/api/providers",
+                    providers::common::register_common_routes(),
+                )),
         )
         .merge(register_provider_proxy_routes(state))
         .merge(register_websocket_routes(state));
@@ -862,16 +865,8 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
             ),
     );
 
-    if state.live_streaming_infrastructure.is_some() {
-        router = router.merge(
-            Router::new()
-                .nest("/api/providers/rtmp", providers::live::rtmp_routes())
-                .nest(
-                    "/api/providers/live_proxy",
-                    providers::live::live_proxy_routes(),
-                ),
-        );
-    }
+    router =
+        router.merge(Router::new().nest("/api/providers/rtmp", providers::rtmp::rtmp_routes()));
 
     router
 }
@@ -1055,7 +1050,7 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
 mod tests {
     use super::{
         apply_global_layers, build_app_state, build_cors_layer, register_all_routes_for_test,
-        start_proxy_cache_lifecycle, RouterConfig, WithId, WithMediaId, WithPlaylistId,
+        start_proxy_cache_lifecycle, RouterConfig, WithMediaId, WithPlaylistId,
         WithProviderInstanceName, WithRoomId, WithUserId,
     };
     use axum::body::Body;
@@ -1134,7 +1129,7 @@ mod tests {
         }
         .with_playlist_id("ZyX098wVu765".to_string());
 
-        let update_provider = crate::proto::admin::UpdateProviderInstanceRequest {
+        let update_provider = crate::proto::providers::common::UpdateProviderInstanceRequest {
             name: String::new(),
             endpoint: Some("https://provider.internal".to_string()),
             comment: None,
@@ -1142,7 +1137,11 @@ mod tests {
             tls: None,
             insecure_tls: None,
             providers: Vec::new(),
-            config: Vec::new(),
+            jwt_secret: None,
+            custom_ca: None,
+            clear_comment: None,
+            clear_jwt_secret: None,
+            clear_custom_ca: None,
         }
         .with_provider_instance_name("alist_main".to_string());
 
@@ -1154,14 +1153,6 @@ mod tests {
             update_provider.endpoint.as_deref(),
             Some("https://provider.internal")
         );
-    }
-
-    #[test]
-    fn test_with_id_injects_single_id_requests() {
-        let req =
-            crate::proto::client::CreatePublishKeyRequest::default().with_id("ZyX098wVu765".into());
-
-        assert_eq!(req.id, "ZyX098wVu765");
     }
 
     pub(crate) fn test_app_state() -> super::AppState {
@@ -2126,11 +2117,12 @@ mod tests {
         assert!(json["paths"]["/api/email/verify/send"].is_object());
         assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
         assert!(json["paths"]["/api/providers/alist/login"].is_object());
-        assert!(json["paths"]["/api/providers/rtmp/rooms/{room_id}/streams"].is_object());
-        assert!(json["paths"]["/api/providers/live_proxy/rooms/{room_id}/streams"].is_object());
+        assert!(json["paths"]["/api/providers/instances"].is_object());
+        assert!(json["paths"]["/api/rooms/{room_id}/streams"].is_object());
         assert!(
-            json["paths"]["/api/providers/live_proxy/rooms/{room_id}/info/{media_id}"].is_object()
+            json["paths"]["/api/providers/rtmp/rooms/{room_id}/publish-key/{media_id}"].is_object()
         );
+        assert!(json["paths"]["/api/providers/rtmp/rooms/{room_id}/info/{media_id}"].is_object());
         assert_eq!(
             json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
                 ["application/json"]["schema"]["$ref"],
@@ -2283,8 +2275,8 @@ mod tests {
     async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() {
         let state = test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig {
-                read_max_requests: 1,
-                read_window_seconds: 60,
+                admin_max_requests: 1,
+                admin_window_seconds: 60,
                 auth_max_requests: 100,
                 auth_window_seconds: 60,
                 ..synctv_core::HttpRateLimitConfig::default()
@@ -2298,7 +2290,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/provider/instances")
+                    .uri("/api/providers/instances")
                     .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .body(Body::empty())
                     .expect("request"),
@@ -2308,14 +2300,14 @@ mod tests {
         assert_eq!(
             first.status(),
             StatusCode::UNAUTHORIZED,
-            "first provider common request should still reach authentication while the read bucket has capacity"
+            "first provider common request should still reach authentication while the admin bucket has capacity"
         );
 
         let second = app
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/provider/instances")
+                    .uri("/api/providers/instances")
                     .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .body(Body::empty())
                     .expect("request"),
@@ -2325,7 +2317,7 @@ mod tests {
         assert_eq!(
             second.status(),
             StatusCode::TOO_MANY_REQUESTS,
-            "provider common routes should consume the read rate-limit bucket before invalid-token authentication fails"
+            "provider common routes should consume the admin rate-limit bucket before invalid-token authentication fails"
         );
     }
 
@@ -2368,7 +2360,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/provider/instances")
+                    .uri("/api/providers/instances")
                     .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
                     .body(Body::empty())
                     .expect("request"),
@@ -2510,7 +2502,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/rooms/AbC123xYz890/movies/ZyX098wVu765/live/publish-key")
+                    .uri("/api/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2519,16 +2511,42 @@ mod tests {
         assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
 
         let removed_route_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/rooms/AbC123xYz890/movies/ZyX098wVu765/live/publish-key")
+                    .uri("/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
                     .body(Body::empty())
                     .expect("request"),
             )
             .await
             .expect("response");
         assert_eq!(removed_route_response.status(), StatusCode::NOT_FOUND);
+
+        let info_api_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(info_api_response.status(), StatusCode::UNAUTHORIZED);
+
+        let info_removed_route_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(info_removed_route_response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2626,7 +2644,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_live_provider_routes_are_not_registered_when_infrastructure_missing() {
+    async fn test_live_provider_routes_remain_registered_when_infrastructure_missing() {
         let state = test_app_state();
         let app = register_all_routes_for_test(&state).with_state(state);
 
@@ -2634,14 +2652,14 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/providers/rtmp/rooms/room1234_abx/streams")
+                    .uri("/api/rooms/AbC123xYz890/streams")
                     .body(Body::empty())
                     .expect("request"),
             )
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

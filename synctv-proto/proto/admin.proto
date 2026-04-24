@@ -20,17 +20,6 @@ service AdminService {
     rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse);
 
     // =========================
-    // Media Provider Instance Management
-    // =========================
-    rpc ListProviderInstances(ListProviderInstancesRequest) returns (ListProviderInstancesResponse);
-    rpc AddProviderInstance(AddProviderInstanceRequest) returns (AddProviderInstanceResponse);
-    rpc UpdateProviderInstance(UpdateProviderInstanceRequest) returns (UpdateProviderInstanceResponse);
-    rpc DeleteProviderInstance(DeleteProviderInstanceRequest) returns (DeleteProviderInstanceResponse);
-    rpc ReconnectProviderInstance(ReconnectProviderInstanceRequest) returns (ReconnectProviderInstanceResponse);
-    rpc EnableProviderInstance(EnableProviderInstanceRequest) returns (EnableProviderInstanceResponse);
-    rpc DisableProviderInstance(DisableProviderInstanceRequest) returns (DisableProviderInstanceResponse);
-
-    // =========================
     // User Management
     // =========================
     rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
@@ -124,28 +113,6 @@ message AdminRoom {
     int64 version = 13; // Resource version from database
 }
 
-// Connection status for a media provider instance
-enum ProviderInstanceStatus {
-    PROVIDER_INSTANCE_STATUS_UNSPECIFIED = 0;
-    PROVIDER_INSTANCE_STATUS_CONNECTED = 1;
-    PROVIDER_INSTANCE_STATUS_DISCONNECTED = 2;
-    PROVIDER_INSTANCE_STATUS_ERROR = 3;
-}
-
-message ProviderInstance {
-    string name = 1; // Instance name (primary key)
-    string endpoint = 2; // gRPC service endpoint
-    string comment = 3; // Human-readable description
-    uint32 timeout_seconds = 4; // Request timeout in seconds
-    bool tls = 5; // Enable TLS
-    bool insecure_tls = 6; // Skip TLS certificate verification (UNSAFE, dev/test only)
-    repeated string providers = 7; // Supported media provider types (e.g., ["bilibili", "alist", "emby"])
-    bool enabled = 8; // Whether this instance is enabled
-    ProviderInstanceStatus status = 9; // Connection status
-    int64 created_at = 10;
-    int64 updated_at = 11;
-}
-
 message SettingsGroup {
     string name = 1;
     bytes settings = 2; // JSON settings
@@ -189,129 +156,6 @@ message SendTestEmailRequest {
 message SendTestEmailResponse {
     bool success = 1;
     string message = 2;
-}
-
-// =========================
-// Media Provider Instance Management
-// =========================
-
-message ListProviderInstancesRequest {
-    option (buf.validate.message).cel = {
-        id: "admin.list_provider_instances.page"
-        message: "page must be 0 (use default) or at least 1"
-        expression: "this.page == 0 || this.page >= 1"
-    };
-    option (buf.validate.message).cel = {
-        id: "admin.list_provider_instances.page_size"
-        message: "page_size must be 0 (use default) or between 1 and 100"
-        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
-    };
-    int32 page = 1;
-    int32 page_size = 2;
-    string provider_type = 3 [
-        (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-        (buf.validate.field).string = {
-            pattern: "^[a-z][a-z0-9_]*$",
-            max_len: 64
-        }
-    ]; // Optional filter by media provider type
-    string search = 4 [(buf.validate.field).string = {
-        max_len: 100
-    }];
-    optional bool enabled = 5;
-    optional bool tls = 6;
-    ProviderInstanceListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
-    SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
-}
-
-message ListProviderInstancesResponse {
-    repeated ProviderInstance instances = 1;
-}
-
-message AddProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name (unique identifier)
-    string endpoint = 2; // gRPC service endpoint
-    string comment = 3; // Optional description
-    uint32 timeout_seconds = 4; // Request timeout in seconds
-    bool tls = 5; // Enable TLS
-    bool insecure_tls = 6; // Skip TLS certificate verification
-    repeated string providers = 7; // Supported media provider types
-    bytes config = 8; // Additional JSON config (jwt_secret, custom_ca, etc.)
-}
-
-message AddProviderInstanceResponse {
-    ProviderInstance instance = 1;
-}
-
-message UpdateProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name (cannot be changed)
-    optional string endpoint = 2; // New endpoint
-    optional string comment = 3; // New description
-    optional uint32 timeout_seconds = 4; // New timeout in seconds
-    optional bool tls = 5; // New TLS setting
-    optional bool insecure_tls = 6; // New insecure_tls setting
-    repeated string providers = 7; // New media provider list (empty = no change)
-    bytes config = 8; // Additional config
-}
-
-message UpdateProviderInstanceResponse {
-    ProviderInstance instance = 1;
-}
-
-message DeleteProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name
-}
-
-message DeleteProviderInstanceResponse {
-    bool success = 1;
-}
-
-message ReconnectProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name
-}
-
-message ReconnectProviderInstanceResponse {
-    ProviderInstance instance = 1;
-}
-
-message EnableProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name
-}
-
-message EnableProviderInstanceResponse {
-    ProviderInstance instance = 1;
-}
-
-message DisableProviderInstanceRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }]; // Instance name
-}
-
-message DisableProviderInstanceResponse {
-    ProviderInstance instance = 1;
 }
 
 // =========================
@@ -532,14 +376,6 @@ enum RoomMemberListSortBy {
     ROOM_MEMBER_LIST_SORT_BY_STATUS = 4;
 }
 
-enum ProviderInstanceListSortBy {
-    PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED = 0;
-    PROVIDER_INSTANCE_LIST_SORT_BY_NAME = 1;
-    PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT = 2;
-    PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT = 3;
-    PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT = 4;
-}
-
 enum ActiveStreamListSortBy {
     ACTIVE_STREAM_LIST_SORT_BY_UNSPECIFIED = 0;
     ACTIVE_STREAM_LIST_SORT_BY_STARTED_AT = 1;
@@ -608,14 +444,6 @@ message RoomPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
         len: 12,
         pattern: "^[A-Za-z0-9]+$"
-    }];
-}
-
-message ProviderInstancePathRequest {
-    string name = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
     }];
 }
 

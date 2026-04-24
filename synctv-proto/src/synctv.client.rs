@@ -433,71 +433,6 @@ pub struct WebSocketConnectRequest {
     #[serde(default)]
     pub ticket: ::prost::alloc::string::String,
 }
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ProviderInstanceQuery")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderInstanceQuery))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ProviderInstanceQuery {
-    #[prost(string, tag = "1")]
-    #[serde(default)]
-    pub instance_name: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ListProviderBackendsRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListProviderBackendsRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListProviderBackendsRequest {
-    #[prost(string, tag = "1")]
-    #[serde(default)]
-    pub provider_type: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ProviderProxyPathRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderProxyPathRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ProviderProxyPathRequest {
-    #[prost(string, tag = "1")]
-    pub provider_name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub sub_path: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ProviderInstancesResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderInstancesResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ProviderInstancesResponse {
-    #[prost(string, repeated, tag = "1")]
-    pub instances: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ProviderBackendsResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ProviderBackendsResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ProviderBackendsResponse {
-    #[prost(string, repeated, tag = "1")]
-    pub backends: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
 /// Room Management Messages
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.CreateRoomRequest")]
@@ -865,6 +800,62 @@ pub struct GetRoomMembersResponse {
     #[prost(string, tag = "3")]
     pub version: ::prost::alloc::string::String,
 }
+/// Room live streams
+/// Note: room_id extracted from x-room-id metadata
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ListRoomStreamsRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListRoomStreamsRequest {
+    #[prost(int32, tag = "1")]
+    #[serde(default)]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    #[serde(default)]
+    pub page_size: i32,
+    #[prost(string, tag = "3")]
+    #[serde(default)]
+    pub search: ::prost::alloc::string::String,
+    #[prost(enumeration = "RoomStreamListSortBy", tag = "4")]
+    #[serde(default)]
+    pub sort_by: i32,
+    #[prost(enumeration = "SortDirection", tag = "5")]
+    #[serde(default)]
+    pub sort_direction: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StreamEntry")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamEntry))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StreamEntry {
+    #[prost(string, tag = "1")]
+    pub media_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub active: bool,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ListRoomStreamsResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListRoomStreamsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub streams: ::prost::alloc::vec::Vec<StreamEntry>,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+}
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.AddMemberRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -1102,7 +1093,7 @@ pub struct CreatePlaylistRequest {
     #[serde(with = "crate::http_serde::json_bytes")]
     #[serde(default)]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
-    /// Optional concrete provider instance name. Empty means use the local default instance for source_provider
+    /// Optional provider instance name. Empty means use the default provider instance for source_provider
     #[prost(string, tag = "5")]
     #[serde(default)]
     pub provider_instance_name: ::prost::alloc::string::String,
@@ -1393,7 +1384,7 @@ pub struct AddMediaRequest {
     #[prost(string, tag = "2")]
     #[serde(default)]
     pub provider: ::prost::alloc::string::String,
-    /// Optional concrete provider instance name; empty means use the local default instance for provider
+    /// Optional provider instance name; empty means use the default provider instance for provider
     #[prost(string, tag = "3")]
     #[serde(default)]
     pub provider_instance_name: ::prost::alloc::string::String,
@@ -1820,14 +1811,41 @@ pub struct UpdatePlaybackRequest {
     pub version: ::core::option::Option<i64>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.PlaybackClientProfile")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackClientProfile))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlaybackClientProfile {
+    #[prost(enumeration = "PlaybackDeliveryPreference", tag = "1")]
+    pub delivery_preference: i32,
+    #[prost(int64, optional, tag = "2")]
+    pub max_streaming_bitrate: ::core::option::Option<i64>,
+    #[prost(int32, optional, tag = "3")]
+    pub max_audio_channels: ::core::option::Option<i32>,
+    #[prost(enumeration = "PlaybackVideoCodec", repeated, packed = "false", tag = "4")]
+    pub supported_video_codecs: ::prost::alloc::vec::Vec<i32>,
+    #[prost(enumeration = "PlaybackContainer", repeated, packed = "false", tag = "5")]
+    pub supported_containers: ::prost::alloc::vec::Vec<i32>,
+    #[prost(enumeration = "PlaybackAudioCapability", tag = "6")]
+    pub audio_capability: i32,
+    #[prost(enumeration = "PlaybackSubtitlePreference", tag = "7")]
+    pub subtitle_preference: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetPlaybackRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPlaybackRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetPlaybackRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetPlaybackRequest {
+    #[prost(message, optional, tag = "1")]
+    pub playback_client_profile: ::core::option::Option<PlaybackClientProfile>,
+}
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetPlaybackResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -2153,6 +2171,8 @@ pub struct WatchPlaybackSnapshot {
     pub playlist_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub target: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub playback_client_profile: ::core::option::Option<PlaybackClientProfile>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.WatchRoomSettings")]
@@ -2885,145 +2905,6 @@ pub struct RoomWithStats {
     pub online_count: i32,
     #[prost(int32, tag = "3")]
     pub total_members: i32,
-}
-/// CreatePublishKey - Generate RTMP publish key for live streaming
-/// Note: room_id should be extracted from metadata/context by interceptor
-/// Note: user_id should be extracted from JWT Authorization header
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.CreatePublishKeyRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CreatePublishKeyRequest {
-    /// Media ID to publish (matches Go's IDReq pattern)
-    #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.CreatePublishKeyResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_CreatePublishKeyResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CreatePublishKeyResponse {
-    /// JWT token for RTMP authentication
-    #[prost(string, tag = "1")]
-    pub publish_key: ::prost::alloc::string::String,
-    /// Full RTMP URL (rtmp://host:port/live)
-    #[prost(string, tag = "2")]
-    pub rtmp_url: ::prost::alloc::string::String,
-    /// Stream key (room_id/media_id)
-    #[prost(string, tag = "3")]
-    pub stream_key: ::prost::alloc::string::String,
-    /// Token expiration timestamp
-    #[prost(int64, tag = "4")]
-    pub expires_at: i64,
-}
-/// GetStreamInfo - Query whether a specific stream is active
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.GetStreamInfoRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetStreamInfoRequest {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.StreamPublisherInfo")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamPublisherInfo))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StreamPublisherInfo {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
-    /// Unix epoch timestamp
-    #[prost(int64, tag = "2")]
-    pub started_at: i64,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.GetStreamInfoResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetStreamInfoResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetStreamInfoResponse {
-    #[prost(bool, tag = "1")]
-    pub active: bool,
-    /// Present only when active
-    #[prost(message, optional, tag = "2")]
-    pub publisher: ::core::option::Option<StreamPublisherInfo>,
-}
-/// ListRoomStreams - List all active streams in the room
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ListRoomStreamsRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListRoomStreamsRequest {
-    /// Page number (default 1)
-    #[prost(int32, tag = "1")]
-    #[serde(default)]
-    pub page: i32,
-    /// Items per page (default 50)
-    #[prost(int32, tag = "2")]
-    #[serde(default)]
-    pub page_size: i32,
-    #[prost(string, tag = "3")]
-    #[serde(default)]
-    pub search: ::prost::alloc::string::String,
-    #[prost(enumeration = "RoomStreamListSortBy", tag = "4")]
-    #[serde(default)]
-    pub sort_by: i32,
-    #[prost(enumeration = "SortDirection", tag = "5")]
-    #[serde(default)]
-    pub sort_direction: i32,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.StreamEntry")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_StreamEntry))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StreamEntry {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(bool, tag = "2")]
-    pub active: bool,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.ListRoomStreamsResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListRoomStreamsResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListRoomStreamsResponse {
-    #[prost(message, repeated, tag = "1")]
-    pub streams: ::prost::alloc::vec::Vec<StreamEntry>,
-    /// Total number of active streams
-    #[prost(int32, tag = "2")]
-    pub total: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetPublicSettingsRequest")]
@@ -4400,6 +4281,193 @@ impl PlaybackPatchState {
             "PLAYBACK_PATCH_STATE_UNSPECIFIED" => Some(Self::Unspecified),
             "PLAYBACK_PATCH_STATE_PLAYING" => Some(Self::Playing),
             "PLAYBACK_PATCH_STATE_PAUSED" => Some(Self::Paused),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackDeliveryPreference))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaybackDeliveryPreference {
+    Unspecified = 0,
+    Auto = 1,
+    DirectPlay = 2,
+    Transcode = 3,
+}
+impl PlaybackDeliveryPreference {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYBACK_DELIVERY_PREFERENCE_UNSPECIFIED",
+            Self::Auto => "PLAYBACK_DELIVERY_PREFERENCE_AUTO",
+            Self::DirectPlay => "PLAYBACK_DELIVERY_PREFERENCE_DIRECT_PLAY",
+            Self::Transcode => "PLAYBACK_DELIVERY_PREFERENCE_TRANSCODE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYBACK_DELIVERY_PREFERENCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_DELIVERY_PREFERENCE_AUTO" => Some(Self::Auto),
+            "PLAYBACK_DELIVERY_PREFERENCE_DIRECT_PLAY" => Some(Self::DirectPlay),
+            "PLAYBACK_DELIVERY_PREFERENCE_TRANSCODE" => Some(Self::Transcode),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackSubtitlePreference))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaybackSubtitlePreference {
+    Unspecified = 0,
+    External = 1,
+    EmbeddedOrExternal = 2,
+    None = 3,
+}
+impl PlaybackSubtitlePreference {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYBACK_SUBTITLE_PREFERENCE_UNSPECIFIED",
+            Self::External => "PLAYBACK_SUBTITLE_PREFERENCE_EXTERNAL",
+            Self::EmbeddedOrExternal => {
+                "PLAYBACK_SUBTITLE_PREFERENCE_EMBEDDED_OR_EXTERNAL"
+            }
+            Self::None => "PLAYBACK_SUBTITLE_PREFERENCE_NONE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYBACK_SUBTITLE_PREFERENCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_SUBTITLE_PREFERENCE_EXTERNAL" => Some(Self::External),
+            "PLAYBACK_SUBTITLE_PREFERENCE_EMBEDDED_OR_EXTERNAL" => {
+                Some(Self::EmbeddedOrExternal)
+            }
+            "PLAYBACK_SUBTITLE_PREFERENCE_NONE" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackVideoCodec))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaybackVideoCodec {
+    Unspecified = 0,
+    H264 = 1,
+    Hevc = 2,
+    Vp9 = 3,
+    Av1 = 4,
+}
+impl PlaybackVideoCodec {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYBACK_VIDEO_CODEC_UNSPECIFIED",
+            Self::H264 => "PLAYBACK_VIDEO_CODEC_H264",
+            Self::Hevc => "PLAYBACK_VIDEO_CODEC_HEVC",
+            Self::Vp9 => "PLAYBACK_VIDEO_CODEC_VP9",
+            Self::Av1 => "PLAYBACK_VIDEO_CODEC_AV1",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYBACK_VIDEO_CODEC_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_VIDEO_CODEC_H264" => Some(Self::H264),
+            "PLAYBACK_VIDEO_CODEC_HEVC" => Some(Self::Hevc),
+            "PLAYBACK_VIDEO_CODEC_VP9" => Some(Self::Vp9),
+            "PLAYBACK_VIDEO_CODEC_AV1" => Some(Self::Av1),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackContainer))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaybackContainer {
+    Unspecified = 0,
+    Mp4 = 1,
+    Mkv = 2,
+    Webm = 3,
+}
+impl PlaybackContainer {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYBACK_CONTAINER_UNSPECIFIED",
+            Self::Mp4 => "PLAYBACK_CONTAINER_MP4",
+            Self::Mkv => "PLAYBACK_CONTAINER_MKV",
+            Self::Webm => "PLAYBACK_CONTAINER_WEBM",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYBACK_CONTAINER_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_CONTAINER_MP4" => Some(Self::Mp4),
+            "PLAYBACK_CONTAINER_MKV" => Some(Self::Mkv),
+            "PLAYBACK_CONTAINER_WEBM" => Some(Self::Webm),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackAudioCapability))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PlaybackAudioCapability {
+    Unspecified = 0,
+    Stereo = 1,
+    Surround = 2,
+    LosslessSurround = 3,
+}
+impl PlaybackAudioCapability {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PLAYBACK_AUDIO_CAPABILITY_UNSPECIFIED",
+            Self::Stereo => "PLAYBACK_AUDIO_CAPABILITY_STEREO",
+            Self::Surround => "PLAYBACK_AUDIO_CAPABILITY_SURROUND",
+            Self::LosslessSurround => "PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PLAYBACK_AUDIO_CAPABILITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_AUDIO_CAPABILITY_STEREO" => Some(Self::Stereo),
+            "PLAYBACK_AUDIO_CAPABILITY_SURROUND" => Some(Self::Surround),
+            "PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND" => Some(Self::LosslessSurround),
             _ => None,
         }
     }
@@ -6193,6 +6261,30 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "GetRoomMembers"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn list_room_streams(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRoomStreamsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomStreamsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/ListRoomStreams",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.RoomService", "ListRoomStreams"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn add_member(
             &mut self,
             request: impl tonic::IntoRequest<super::AddMemberRequest>,
@@ -6882,81 +6974,6 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "GetPlayback"));
             self.inner.unary(req, path, codec).await
         }
-        /// Live Streaming (room-scoped)
-        pub async fn create_publish_key(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CreatePublishKeyRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePublishKeyResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/CreatePublishKey",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.RoomService", "CreatePublishKey"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_stream_info(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetStreamInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetStreamInfoResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/GetStreamInfo",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "GetStreamInfo"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn list_room_streams(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ListRoomStreamsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListRoomStreamsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/ListRoomStreams",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "ListRoomStreams"));
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -7029,6 +7046,13 @@ pub mod room_service_server {
             request: tonic::Request<super::GetRoomMembersRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetRoomMembersResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_streams(
+            &self,
+            request: tonic::Request<super::ListRoomStreamsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomStreamsResponse>,
             tonic::Status,
         >;
         async fn add_member(
@@ -7239,28 +7263,6 @@ pub mod room_service_server {
             request: tonic::Request<super::GetPlaybackRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetPlaybackResponse>,
-            tonic::Status,
-        >;
-        /// Live Streaming (room-scoped)
-        async fn create_publish_key(
-            &self,
-            request: tonic::Request<super::CreatePublishKeyRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreatePublishKeyResponse>,
-            tonic::Status,
-        >;
-        async fn get_stream_info(
-            &self,
-            request: tonic::Request<super::GetStreamInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetStreamInfoResponse>,
-            tonic::Status,
-        >;
-        async fn list_room_streams(
-            &self,
-            request: tonic::Request<super::ListRoomStreamsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListRoomStreamsResponse>,
             tonic::Status,
         >;
     }
@@ -7691,6 +7693,51 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetRoomMembersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.RoomService/ListRoomStreams" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListRoomStreamsSvc<T: RoomService>(pub Arc<T>);
+                    impl<
+                        T: RoomService,
+                    > tonic::server::UnaryService<super::ListRoomStreamsRequest>
+                    for ListRoomStreamsSvc<T> {
+                        type Response = super::ListRoomStreamsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListRoomStreamsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RoomService>::list_room_streams(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListRoomStreamsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -8962,142 +9009,6 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetPlaybackSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/CreatePublishKey" => {
-                    #[allow(non_camel_case_types)]
-                    struct CreatePublishKeySvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::CreatePublishKeyRequest>
-                    for CreatePublishKeySvc<T> {
-                        type Response = super::CreatePublishKeyResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::CreatePublishKeyRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::create_publish_key(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = CreatePublishKeySvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/GetStreamInfo" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetStreamInfoSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::GetStreamInfoRequest>
-                    for GetStreamInfoSvc<T> {
-                        type Response = super::GetStreamInfoResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetStreamInfoRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::get_stream_info(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetStreamInfoSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/ListRoomStreams" => {
-                    #[allow(non_camel_case_types)]
-                    struct ListRoomStreamsSvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::ListRoomStreamsRequest>
-                    for ListRoomStreamsSvc<T> {
-                        type Response = super::ListRoomStreamsResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ListRoomStreamsRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::list_room_streams(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ListRoomStreamsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -4,15 +4,21 @@
 //! Proxy routes (including danmu) are handled by the unified proxy handler
 //! in `providers/mod.rs` via `BilibiliProvider::resolve_proxy`.
 
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
+use super::common::provider_instance_name;
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, provider_common::provider_instance_name,
-    validation::ValidatedQuery, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppResult,
+    AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::client::ProviderInstanceQuery;
+use crate::proto::providers::bilibili::GetBindsResponse;
+use crate::proto::providers::common::ProviderInstanceQuery;
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
 pub fn bilibili_auth_routes() -> Router<AppState> {
@@ -30,6 +36,7 @@ pub fn bilibili_read_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
         .route("/me", post(user_info))
+        .route("/binds", get(binds))
 }
 
 fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
@@ -395,6 +402,48 @@ pub(crate) async fn user_info(
             e
         })?;
     Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/bilibili/binds",
+        tag = "Provider",
+        params(ProviderInstanceQuery),
+        responses(
+            (status = 200, description = "Saved Bilibili credentials", body = GetBindsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn binds(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+) -> AppResult<Json<GetBindsResponse>> {
+    let instance_name = provider_instance_name(&query)?;
+    let api = state.bilibili_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let response = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |authenticated| async move {
+                tracing::info!("Bilibili binds request for user: {}", authenticated.user_id);
+                api.get_binds(authenticated.user_id.as_str(), instance_name)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+
+    Ok(Json(response))
 }
 
 /// Logout (delete stored credential)

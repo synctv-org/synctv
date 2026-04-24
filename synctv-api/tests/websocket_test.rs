@@ -1020,6 +1020,14 @@ mod websocket_e2e {
             shared_security_pipeline.clone(),
             router_config.rate_limiter.clone(),
         ));
+        let provider_common_api = Arc::new(
+            synctv_api::impls::ProviderCommonApiImpl::new(
+                router_config.provider_instance_manager.clone(),
+                router_config.user_service.clone(),
+                router_config.audit_service.clone(),
+            )
+            .with_request_executor(shared_request_executor.clone()),
+        );
         let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
             redis_runtime: None,
             rate_limit_config: rate_limit_config.clone(),
@@ -1037,6 +1045,7 @@ mod websocket_e2e {
             email_api: None,
             notification_api: None,
             oauth2_api: None,
+            provider_common_api: provider_common_api.clone(),
             bilibili_api: bilibili_api.clone(),
             alist_api: alist_api.clone(),
             emby_api: emby_api.clone(),
@@ -1083,6 +1092,7 @@ mod websocket_e2e {
             email_api: None,
             notification_api: None,
             oauth2_api: None,
+            provider_common_api,
             bilibili_api,
             alist_api,
             emby_api,
@@ -4815,6 +4825,14 @@ mod websocket_connection_limit_timing {
             shared_security_pipeline.clone(),
             router_config.rate_limiter.clone(),
         ));
+        let provider_common_api = Arc::new(
+            synctv_api::impls::ProviderCommonApiImpl::new(
+                router_config.provider_instance_manager.clone(),
+                router_config.user_service.clone(),
+                router_config.audit_service.clone(),
+            )
+            .with_request_executor(shared_request_executor.clone()),
+        );
 
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
@@ -4837,6 +4855,7 @@ mod websocket_connection_limit_timing {
                 email_api: None,
                 notification_api: None,
                 oauth2_api: None,
+                provider_common_api: provider_common_api.clone(),
                 bilibili_api: bilibili_api.clone(),
                 alist_api: alist_api.clone(),
                 emby_api: emby_api.clone(),
@@ -4862,6 +4881,7 @@ mod websocket_connection_limit_timing {
             email_api: None,
             notification_api: None,
             oauth2_api: None,
+            provider_common_api,
             bilibili_api,
             alist_api,
             emby_api,

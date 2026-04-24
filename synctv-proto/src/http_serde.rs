@@ -123,3 +123,101 @@ impl TryFrom<MovePlaylistRequestDef> for crate::client::MovePlaylistRequest {
         })
     }
 }
+
+#[derive(serde::Deserialize)]
+pub struct AlistLoginRequestDef {
+    host: String,
+    username: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    hashed_password: Option<String>,
+    #[serde(default)]
+    instance_name: String,
+}
+
+impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::LoginRequest {
+    type Error = String;
+
+    fn try_from(value: AlistLoginRequestDef) -> Result<Self, Self::Error> {
+        let credential = Some(
+            crate::providers::alist::login_request::Credential::try_from(AlistLoginRequestDef {
+                host: value.host.clone(),
+                username: value.username.clone(),
+                password: value.password,
+                hashed_password: value.hashed_password,
+                instance_name: value.instance_name.clone(),
+            })?,
+        );
+
+        Ok(Self {
+            host: value.host,
+            username: value.username,
+            credential,
+            instance_name: value.instance_name,
+        })
+    }
+}
+
+impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::login_request::Credential {
+    type Error = String;
+
+    fn try_from(value: AlistLoginRequestDef) -> Result<Self, Self::Error> {
+        match (value.password, value.hashed_password) {
+            (Some(password), None) => Ok(Self::Password(password)),
+            (None, Some(hashed_password)) => Ok(Self::HashedPassword(hashed_password)),
+            (None, None) => {
+                Err("exactly one of password or hashed_password must be provided".into())
+            }
+            (Some(_), Some(_)) => Err("password and hashed_password are mutually exclusive".into()),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct EmbyLoginRequestDef {
+    host: String,
+    username: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    instance_name: String,
+}
+
+impl TryFrom<EmbyLoginRequestDef> for crate::providers::emby::LoginRequest {
+    type Error = String;
+
+    fn try_from(value: EmbyLoginRequestDef) -> Result<Self, Self::Error> {
+        let credential = Some(crate::providers::emby::login_request::Credential::try_from(
+            EmbyLoginRequestDef {
+                host: value.host.clone(),
+                username: value.username.clone(),
+                password: value.password,
+                api_key: value.api_key,
+                instance_name: value.instance_name.clone(),
+            },
+        )?);
+
+        Ok(Self {
+            host: value.host,
+            username: value.username,
+            credential,
+            instance_name: value.instance_name,
+        })
+    }
+}
+
+impl TryFrom<EmbyLoginRequestDef> for crate::providers::emby::login_request::Credential {
+    type Error = String;
+
+    fn try_from(value: EmbyLoginRequestDef) -> Result<Self, Self::Error> {
+        match (value.password, value.api_key) {
+            (Some(password), None) => Ok(Self::Password(password)),
+            (None, Some(api_key)) => Ok(Self::ApiKey(api_key)),
+            (None, None) => Err("exactly one of password or api_key must be provided".into()),
+            (Some(_), Some(_)) => Err("password and api_key are mutually exclusive".into()),
+        }
+    }
+}

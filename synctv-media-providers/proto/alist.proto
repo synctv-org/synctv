@@ -14,8 +14,10 @@ service Alist {
 message LoginReq {
   string host = 1;
   string username = 2;
-  string password = 3;
-  bool hashed = 4;
+  oneof credential {
+    string password = 3;
+    string hashed_password = 4;
+  }
 }
 
 message LoginResp { string token = 1; }
@@ -33,7 +35,7 @@ message FsGetResp {
   message FsGetRelated {
     string name = 1;
     uint64 size = 2;
-    bool isDir = 3;
+    bool is_dir = 3;
     uint64 modified = 4;
     uint64 created = 5;
     string sign = 6;
@@ -43,14 +45,14 @@ message FsGetResp {
   }
   string name = 1;
   uint64 size = 2;
-  bool isDir = 3;
+  bool is_dir = 3;
   uint64 modified = 4;
   uint64 created = 5;
   string sign = 6;
   string thumb = 7;
   uint64 type = 8;
   string hashinfo = 9;
-  string rawUrl = 10;
+  string raw_url = 10;
   string readme = 11;
   string provider = 12;
   repeated FsGetRelated related = 13;
@@ -62,7 +64,7 @@ message FsListReq {
   string path = 3;
   string password = 4;
   uint64 page = 5;
-  uint64 perPage = 6;
+  uint64 per_page = 6;
   bool refresh = 7;
 }
 
@@ -70,7 +72,7 @@ message FsListResp {
   message FsListContent {
     string name = 1;
     uint64 size = 2;
-    bool isDir = 3;
+    bool is_dir = 3;
     uint64 modified = 4;
     string sign = 6;
     string thumb = 7;
@@ -99,18 +101,18 @@ message FsOtherResp {
       string status = 2;
       string url = 3;
     }
-    repeated LiveTranscodingSubtitleTaskList liveTranscodingSubtitleTaskList =
+    repeated LiveTranscodingSubtitleTaskList live_transcoding_subtitle_task_list =
         2;
     message LiveTranscodingTaskList {
       string stage = 1;
       string status = 2;
-      uint64 templateHeight = 3;
-      string templateId = 4;
-      string templateName = 5;
-      uint64 templateWidth = 6;
+      uint64 template_height = 3;
+      string template_id = 4;
+      string template_name = 5;
+      uint64 template_width = 6;
       string url = 7;
     }
-    repeated LiveTranscodingTaskList liveTranscodingTaskList = 3;
+    repeated LiveTranscodingTaskList live_transcoding_task_list = 3;
     message Meta {
       double duration = 1;
       uint64 height = 2;
@@ -118,9 +120,9 @@ message FsOtherResp {
     }
     Meta meta = 4;
   }
-  string driveId = 1;
-  string fileId = 2;
-  VideoPreviewPlayInfo videoPreviewPlayInfo = 3;
+  string drive_id = 1;
+  string file_id = 2;
+  VideoPreviewPlayInfo video_preview_play_info = 3;
 }
 
 message MeReq {
@@ -131,11 +133,11 @@ message MeReq {
 message MeResp {
   uint64 id = 1;
   string username = 2;
-  string basePath = 4;
+  string base_path = 4;
   uint64 role = 5;
   bool disabled = 6;
   uint64 permission = 7;
-  string ssoId = 8;
+  string sso_id = 8;
   bool otp = 9;
 }
 
@@ -146,7 +148,7 @@ message FsSearchReq {
   string keywords = 4;
   uint64 scope = 5;
   uint64 page = 6;
-  uint64 perPage = 7;
+  uint64 per_page = 7;
   string password = 8;
 }
 
@@ -154,7 +156,7 @@ message FsSearchResp {
   message FsSearchContent {
     string parent = 1;
     string name = 2;
-    bool isDir = 3;
+    bool is_dir = 3;
     uint64 size = 4;
     uint64 type = 5;
   }

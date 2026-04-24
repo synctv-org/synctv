@@ -6,10 +6,19 @@ pub struct LoginReq {
     pub host: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub username: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub password: ::prost::alloc::string::String,
-    #[prost(bool, tag = "4")]
-    pub hashed: bool,
+    #[prost(oneof = "login_req::Credential", tags = "3, 4")]
+    pub credential: ::core::option::Option<login_req::Credential>,
+}
+/// Nested message and enum types in `LoginReq`.
+pub mod login_req {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Credential {
+        #[prost(string, tag = "3")]
+        Password(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        HashedPassword(::prost::alloc::string::String),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -22,7 +22,7 @@ pub struct User {
 }
 
 /// User information (detailed)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct UserInfo {
     #[serde(rename = "Id")]
     pub id: String,
@@ -272,56 +272,137 @@ pub struct MediaStream {
 /// Device profile for codec negotiation
 #[must_use]
 pub fn default_device_profile() -> Value {
+    device_profile_from_playback_client_profile(None)
+}
+
+#[must_use]
+pub fn device_profile_from_playback_client_profile(
+    profile: Option<&crate::grpc::emby::PlaybackInfoDeviceProfile>,
+) -> Value {
+    let default_subtitle_profiles = || {
+        ["srt", "vtt", "ass"]
+            .into_iter()
+            .map(|format| crate::grpc::emby::SubtitleProfileHint {
+                format: format.to_string(),
+                method: crate::grpc::emby::SubtitleDeliveryMethod::External as i32,
+            })
+            .collect()
+    };
+
+    let default_profile = crate::grpc::emby::PlaybackInfoDeviceProfile {
+        direct_play_profiles: vec![
+            crate::grpc::emby::DirectPlayProfileHint {
+                container: "webm".to_string(),
+                video_codecs: vec!["vp9".to_string(), "av1".to_string()],
+                audio_codecs: vec!["vorbis".to_string(), "opus".to_string()],
+            },
+            crate::grpc::emby::DirectPlayProfileHint {
+                container: "mp4,m4v".to_string(),
+                video_codecs: vec![
+                    "h264".to_string(),
+                    "hevc".to_string(),
+                    "vp9".to_string(),
+                    "av1".to_string(),
+                ],
+                audio_codecs: vec![
+                    "aac".to_string(),
+                    "mp3".to_string(),
+                    "ac3".to_string(),
+                    "eac3".to_string(),
+                    "flac".to_string(),
+                    "alac".to_string(),
+                ],
+            },
+            crate::grpc::emby::DirectPlayProfileHint {
+                container: "mkv".to_string(),
+                video_codecs: vec![
+                    "h264".to_string(),
+                    "hevc".to_string(),
+                    "vp9".to_string(),
+                    "av1".to_string(),
+                ],
+                audio_codecs: vec![
+                    "aac".to_string(),
+                    "mp3".to_string(),
+                    "ac3".to_string(),
+                    "eac3".to_string(),
+                    "flac".to_string(),
+                    "alac".to_string(),
+                    "dts".to_string(),
+                    "truehd".to_string(),
+                ],
+            },
+        ],
+        transcoding_container: String::new(),
+        transcoding_protocol: String::new(),
+        transcoding_video_codec: String::new(),
+        transcoding_audio_codec: String::new(),
+        subtitle_profiles: default_subtitle_profiles(),
+    };
+    let profile = profile.unwrap_or(&default_profile);
+
+    let direct_play_profiles: Vec<serde_json::Value> = profile
+        .direct_play_profiles
+        .iter()
+        .filter(|profile| !profile.container.is_empty() && !profile.video_codecs.is_empty())
+        .map(|profile| {
+            serde_json::json!({
+                "Container": profile.container,
+                "VideoCodec": profile.video_codecs.join(","),
+                "AudioCodec": profile.audio_codecs.join(","),
+                "Type": "Video"
+            })
+        })
+        .collect();
+
+    let transcoding_profiles = vec![serde_json::json!({
+        "Container": if profile.transcoding_container.is_empty() { "ts" } else { profile.transcoding_container.as_str() },
+        "Type": "Video",
+        "VideoCodec": if profile.transcoding_video_codec.is_empty() { "h264" } else { profile.transcoding_video_codec.as_str() },
+        "AudioCodec": if profile.transcoding_audio_codec.is_empty() { "aac" } else { profile.transcoding_audio_codec.as_str() },
+        "Protocol": if profile.transcoding_protocol.is_empty() { "hls" } else { profile.transcoding_protocol.as_str() },
+        "EstimateContentLength": false,
+        "EnableMpegtsM2TsMode": false,
+        "TranscodeSeekInfo": "Auto",
+        "CopyTimestamps": false,
+        "Context": "Streaming"
+    })];
+
+    let subtitle_profiles = {
+        let hints = &profile.subtitle_profiles;
+        if hints.is_empty() {
+            Vec::new()
+        } else {
+            hints
+                .iter()
+                .filter(|hint| !hint.format.is_empty())
+                .filter_map(|hint| {
+                    crate::grpc::emby::SubtitleDeliveryMethod::try_from(hint.method)
+                        .ok()
+                        .map(|method| (hint.format.as_str(), method))
+                })
+                .filter_map(|(format, method)| {
+                    let method = match method {
+                        crate::grpc::emby::SubtitleDeliveryMethod::Encode => "Encode",
+                        crate::grpc::emby::SubtitleDeliveryMethod::Embed => "Embed",
+                        crate::grpc::emby::SubtitleDeliveryMethod::External => "External",
+                        crate::grpc::emby::SubtitleDeliveryMethod::Hls => "Hls",
+                        crate::grpc::emby::SubtitleDeliveryMethod::VideoSideData => "VideoSideData",
+                        crate::grpc::emby::SubtitleDeliveryMethod::Unspecified => return None,
+                    };
+                    Some(serde_json::json!({
+                        "Format": format,
+                        "Method": method
+                    }))
+                })
+                .collect()
+        }
+    };
+
     serde_json::json!({
-        "DirectPlayProfiles": [
-            {
-                "Container": "webm",
-                "VideoCodec": "vp8,vp9,av1",
-                "AudioCodec": "vorbis,opus",
-                "Type": "Video"
-            },
-            {
-                "Container": "mp4,m4v",
-                "VideoCodec": "h264,hevc,vp9,av1",
-                "AudioCodec": "aac,mp3,ac3,eac3,flac,alac",
-                "Type": "Video"
-            },
-            {
-                "Container": "mkv",
-                "VideoCodec": "h264,hevc,vp9,av1",
-                "AudioCodec": "aac,mp3,ac3,eac3,flac,alac,dts,truehd",
-                "Type": "Video"
-            }
-        ],
-        "TranscodingProfiles": [
-            {
-                "Container": "ts",
-                "Type": "Video",
-                "VideoCodec": "h264",
-                "AudioCodec": "aac",
-                "Protocol": "hls",
-                "EstimateContentLength": false,
-                "EnableMpegtsM2TsMode": false,
-                "TranscodeSeekInfo": "Auto",
-                "CopyTimestamps": false,
-                "Context": "Streaming",
-                "MaxAudioChannels": "2"
-            }
-        ],
-        "SubtitleProfiles": [
-            {
-                "Format": "srt",
-                "Method": "External"
-            },
-            {
-                "Format": "vtt",
-                "Method": "External"
-            },
-            {
-                "Format": "ass",
-                "Method": "External"
-            }
-        ]
+        "DirectPlayProfiles": direct_play_profiles,
+        "TranscodingProfiles": transcoding_profiles,
+        "SubtitleProfiles": subtitle_profiles
     })
 }
 

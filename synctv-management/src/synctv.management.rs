@@ -362,6 +362,10 @@ pub struct StopPlaybackRequest {
 pub struct GetPlaybackRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub playback_client_profile: ::core::option::Option<
+        ::synctv_proto::client::PlaybackClientProfile,
+    >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -593,89 +597,177 @@ pub struct DeleteMediaRequest {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListProviderInstancesRequest {
-    #[prost(int32, tag = "1")]
-    pub page: i32,
-    #[prost(int32, tag = "2")]
-    pub page_size: i32,
-    #[prost(string, tag = "3")]
-    pub provider_type: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub search: ::prost::alloc::string::String,
-    #[prost(bool, optional, tag = "5")]
-    pub enabled: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag = "6")]
-    pub tls: ::core::option::Option<bool>,
-    #[prost(enumeration = "ProviderInstanceListSortBy", tag = "7")]
-    pub sort_by: i32,
-    #[prost(enumeration = "SortDirection", tag = "8")]
-    pub sort_direction: i32,
+pub struct AlistLoginRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::alist::LoginRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct AddProviderInstanceRequest {
+pub struct AlistListRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub endpoint: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub comment: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "4")]
-    pub timeout_seconds: u32,
-    #[prost(bool, tag = "5")]
-    pub tls: bool,
-    #[prost(bool, tag = "6")]
-    pub insecure_tls: bool,
-    #[prost(string, repeated, tag = "7")]
-    pub providers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(bytes = "vec", tag = "8")]
-    pub config_json: ::prost::alloc::vec::Vec<u8>,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::alist::ListRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UpdateProviderInstanceRequest {
+pub struct AlistGetMeRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, optional, tag = "2")]
-    pub endpoint: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "3")]
-    pub comment: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bool, tag = "4")]
-    pub clear_comment: bool,
-    #[prost(uint32, optional, tag = "5")]
-    pub timeout_seconds: ::core::option::Option<u32>,
-    #[prost(bool, optional, tag = "6")]
-    pub tls: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag = "7")]
-    pub insecure_tls: ::core::option::Option<bool>,
-    #[prost(string, repeated, tag = "8")]
-    pub providers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(bytes = "vec", tag = "9")]
-    pub config_json: ::prost::alloc::vec::Vec<u8>,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::alist::GetMeRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DeleteProviderInstanceRequest {
+pub struct AlistLogoutRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::alist::LogoutRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReconnectProviderInstanceRequest {
+pub struct AlistGetBindsRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::alist::GetBindsRequest,
+    >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct EnableProviderInstanceRequest {
+pub struct EmbyLoginRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::emby::LoginRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DisableProviderInstanceRequest {
+pub struct EmbyListRequest {
     #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::emby::ListRequest>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EmbyGetMeRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::emby::GetMeRequest>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EmbyLogoutRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::emby::LogoutRequest>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EmbyGetBindsRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::emby::GetBindsRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliParseRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::ParseRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliLoginQrRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::LoginQrRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliCheckQrRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::CheckQrRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliGetCaptchaRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::GetCaptchaRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliSendSmsRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::SendSmsRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliLoginSmsRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::LoginSmsRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliGetUserInfoRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::UserInfoRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliLogoutRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::LogoutRequest,
+    >,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BilibiliGetBindsRequest {
+    #[prost(string, tag = "1")]
+    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<
+        ::synctv_proto::providers::bilibili::GetBindsRequest,
+    >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1202,42 +1294,6 @@ impl RelatedRoomListSortBy {
             "RELATED_ROOM_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
             "RELATED_ROOM_LIST_SORT_BY_LAST_ACTIVITY_AT" => Some(Self::LastActivityAt),
             "RELATED_ROOM_LIST_SORT_BY_NAME" => Some(Self::Name),
-            _ => None,
-        }
-    }
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum ProviderInstanceListSortBy {
-    Unspecified = 0,
-    Name = 1,
-    Endpoint = 2,
-    CreatedAt = 3,
-    UpdatedAt = 4,
-}
-impl ProviderInstanceListSortBy {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED",
-            Self::Name => "PROVIDER_INSTANCE_LIST_SORT_BY_NAME",
-            Self::Endpoint => "PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT",
-            Self::CreatedAt => "PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT",
-            Self::UpdatedAt => "PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "PROVIDER_INSTANCE_LIST_SORT_BY_UNSPECIFIED" => Some(Self::Unspecified),
-            "PROVIDER_INSTANCE_LIST_SORT_BY_NAME" => Some(Self::Name),
-            "PROVIDER_INSTANCE_LIST_SORT_BY_ENDPOINT" => Some(Self::Endpoint),
-            "PROVIDER_INSTANCE_LIST_SORT_BY_CREATED_AT" => Some(Self::CreatedAt),
-            "PROVIDER_INSTANCE_LIST_SORT_BY_UPDATED_AT" => Some(Self::UpdatedAt),
             _ => None,
         }
     }
@@ -2473,7 +2529,7 @@ pub mod management_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::CreatePublishKeyRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::CreatePublishKeyResponse>,
+            tonic::Response<::synctv_proto::providers::rtmp::CreatePublishKeyResponse>,
             tonic::Status,
         > {
             self.inner
@@ -2502,7 +2558,7 @@ pub mod management_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetStreamInfoRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::GetStreamInfoResponse>,
+            tonic::Response<::synctv_proto::providers::rtmp::GetStreamInfoResponse>,
             tonic::Status,
         > {
             self.inner
@@ -2552,6 +2608,533 @@ pub mod management_service_client {
                     GrpcMethod::new(
                         "synctv.management.ManagementService",
                         "ListRoomStreams",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::LoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AlistLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_list(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistListRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::ListResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistList",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AlistList"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_get_me(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistGetMeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::GetMeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistGetMe",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AlistGetMe"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_logout(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::LogoutResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistLogout",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AlistLogout"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_get_binds(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::GetBindsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistGetBinds",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "AlistGetBinds",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn emby_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EmbyLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::LoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EmbyLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "EmbyLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn emby_list(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EmbyListRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::ListResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EmbyList",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "EmbyList"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn emby_get_me(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EmbyGetMeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::GetMeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EmbyGetMe",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "EmbyGetMe"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn emby_logout(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EmbyLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::LogoutResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EmbyLogout",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "EmbyLogout"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn emby_get_binds(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EmbyGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::GetBindsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EmbyGetBinds",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "EmbyGetBinds",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_parse(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliParseRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::ParseResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliParse",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliParse",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_login_qr(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliLoginQrRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::QrCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliLoginQr",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliLoginQr",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_check_qr(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliCheckQrRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::QrStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliCheckQr",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliCheckQr",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_get_captcha(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliGetCaptchaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::CaptchaResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliGetCaptcha",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliGetCaptcha",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_send_sms(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliSendSmsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::SendSmsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliSendSms",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliSendSms",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_login_sms(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliLoginSmsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::LoginSmsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliLoginSms",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliLoginSms",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_get_user_info(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliGetUserInfoRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::UserInfoResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliGetUserInfo",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliGetUserInfo",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_logout(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::LogoutResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliLogout",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliLogout",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn bilibili_get_binds(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BilibiliGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::GetBindsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/BilibiliGetBinds",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "BilibiliGetBinds",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -2886,11 +3469,79 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn list_available_provider_instances(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::ListAvailableProviderInstancesRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<
+                ::synctv_proto::providers::common::ProviderInstancesResponse,
+            >,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/ListAvailableProviderInstances",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "ListAvailableProviderInstances",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_provider_backends(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::ListProviderBackendsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::common::ProviderBackendsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/ListProviderBackends",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "ListProviderBackends",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn list_provider_instances(
             &mut self,
-            request: impl tonic::IntoRequest<super::ListProviderInstancesRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::ListProviderInstancesRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ListProviderInstancesResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::ListProviderInstancesResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -2917,9 +3568,13 @@ pub mod management_service_client {
         }
         pub async fn add_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::AddProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::AddProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::AddProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::AddProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -2946,9 +3601,13 @@ pub mod management_service_client {
         }
         pub async fn update_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::UpdateProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::UpdateProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::UpdateProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::UpdateProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -2975,9 +3634,13 @@ pub mod management_service_client {
         }
         pub async fn delete_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::DeleteProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::DeleteProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::DeleteProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::DeleteProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -3004,9 +3667,13 @@ pub mod management_service_client {
         }
         pub async fn reconnect_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::ReconnectProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::ReconnectProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ReconnectProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::ReconnectProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -3033,9 +3700,13 @@ pub mod management_service_client {
         }
         pub async fn enable_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::EnableProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::EnableProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::EnableProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::EnableProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -3062,9 +3733,13 @@ pub mod management_service_client {
         }
         pub async fn disable_provider_instance(
             &mut self,
-            request: impl tonic::IntoRequest<super::DisableProviderInstanceRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::providers::common::DisableProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::DisableProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::DisableProviderInstanceResponse,
+            >,
             tonic::Status,
         > {
             self.inner
@@ -3608,14 +4283,14 @@ pub mod management_service_server {
             &self,
             request: tonic::Request<super::CreatePublishKeyRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::CreatePublishKeyResponse>,
+            tonic::Response<::synctv_proto::providers::rtmp::CreatePublishKeyResponse>,
             tonic::Status,
         >;
         async fn get_stream_info(
             &self,
             request: tonic::Request<super::GetStreamInfoRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::GetStreamInfoResponse>,
+            tonic::Response<::synctv_proto::providers::rtmp::GetStreamInfoResponse>,
             tonic::Status,
         >;
         async fn list_room_streams(
@@ -3623,6 +4298,139 @@ pub mod management_service_server {
             request: tonic::Request<super::ListRoomStreamsRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::ListRoomStreamsResponse>,
+            tonic::Status,
+        >;
+        async fn alist_login(
+            &self,
+            request: tonic::Request<super::AlistLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::LoginResponse>,
+            tonic::Status,
+        >;
+        async fn alist_list(
+            &self,
+            request: tonic::Request<super::AlistListRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::ListResponse>,
+            tonic::Status,
+        >;
+        async fn alist_get_me(
+            &self,
+            request: tonic::Request<super::AlistGetMeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::GetMeResponse>,
+            tonic::Status,
+        >;
+        async fn alist_logout(
+            &self,
+            request: tonic::Request<super::AlistLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::LogoutResponse>,
+            tonic::Status,
+        >;
+        async fn alist_get_binds(
+            &self,
+            request: tonic::Request<super::AlistGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::GetBindsResponse>,
+            tonic::Status,
+        >;
+        async fn emby_login(
+            &self,
+            request: tonic::Request<super::EmbyLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::LoginResponse>,
+            tonic::Status,
+        >;
+        async fn emby_list(
+            &self,
+            request: tonic::Request<super::EmbyListRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::ListResponse>,
+            tonic::Status,
+        >;
+        async fn emby_get_me(
+            &self,
+            request: tonic::Request<super::EmbyGetMeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::GetMeResponse>,
+            tonic::Status,
+        >;
+        async fn emby_logout(
+            &self,
+            request: tonic::Request<super::EmbyLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::LogoutResponse>,
+            tonic::Status,
+        >;
+        async fn emby_get_binds(
+            &self,
+            request: tonic::Request<super::EmbyGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::emby::GetBindsResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_parse(
+            &self,
+            request: tonic::Request<super::BilibiliParseRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::ParseResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_login_qr(
+            &self,
+            request: tonic::Request<super::BilibiliLoginQrRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::QrCodeResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_check_qr(
+            &self,
+            request: tonic::Request<super::BilibiliCheckQrRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::QrStatusResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_get_captcha(
+            &self,
+            request: tonic::Request<super::BilibiliGetCaptchaRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::CaptchaResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_send_sms(
+            &self,
+            request: tonic::Request<super::BilibiliSendSmsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::SendSmsResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_login_sms(
+            &self,
+            request: tonic::Request<super::BilibiliLoginSmsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::LoginSmsResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_get_user_info(
+            &self,
+            request: tonic::Request<super::BilibiliGetUserInfoRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::UserInfoResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_logout(
+            &self,
+            request: tonic::Request<super::BilibiliLogoutRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::LogoutResponse>,
+            tonic::Status,
+        >;
+        async fn bilibili_get_binds(
+            &self,
+            request: tonic::Request<super::BilibiliGetBindsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::bilibili::GetBindsResponse>,
             tonic::Status,
         >;
         async fn list_playlists(
@@ -3709,53 +4517,101 @@ pub mod management_service_server {
             tonic::Response<::synctv_proto::client::DeleteMediaResponse>,
             tonic::Status,
         >;
+        async fn list_available_provider_instances(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::ListAvailableProviderInstancesRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<
+                ::synctv_proto::providers::common::ProviderInstancesResponse,
+            >,
+            tonic::Status,
+        >;
+        async fn list_provider_backends(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::ListProviderBackendsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::common::ProviderBackendsResponse>,
+            tonic::Status,
+        >;
         async fn list_provider_instances(
             &self,
-            request: tonic::Request<super::ListProviderInstancesRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::ListProviderInstancesRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ListProviderInstancesResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::ListProviderInstancesResponse,
+            >,
             tonic::Status,
         >;
         async fn add_provider_instance(
             &self,
-            request: tonic::Request<super::AddProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::AddProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::AddProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::AddProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn update_provider_instance(
             &self,
-            request: tonic::Request<super::UpdateProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::UpdateProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::UpdateProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::UpdateProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn delete_provider_instance(
             &self,
-            request: tonic::Request<super::DeleteProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::DeleteProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::DeleteProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::DeleteProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn reconnect_provider_instance(
             &self,
-            request: tonic::Request<super::ReconnectProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::ReconnectProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ReconnectProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::ReconnectProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn enable_provider_instance(
             &self,
-            request: tonic::Request<super::EnableProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::EnableProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::EnableProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::EnableProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn disable_provider_instance(
             &self,
-            request: tonic::Request<super::DisableProviderInstanceRequest>,
+            request: tonic::Request<
+                ::synctv_proto::providers::common::DisableProviderInstanceRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::DisableProviderInstanceResponse>,
+            tonic::Response<
+                ::synctv_proto::providers::common::DisableProviderInstanceResponse,
+            >,
             tonic::Status,
         >;
         async fn get_settings(
@@ -5713,7 +6569,7 @@ pub mod management_service_server {
                         T: ManagementService,
                     > tonic::server::UnaryService<super::CreatePublishKeyRequest>
                     for CreatePublishKeySvc<T> {
-                        type Response = ::synctv_proto::client::CreatePublishKeyResponse;
+                        type Response = ::synctv_proto::providers::rtmp::CreatePublishKeyResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -5762,7 +6618,7 @@ pub mod management_service_server {
                         T: ManagementService,
                     > tonic::server::UnaryService<super::GetStreamInfoRequest>
                     for GetStreamInfoSvc<T> {
-                        type Response = ::synctv_proto::client::GetStreamInfoResponse;
+                        type Response = ::synctv_proto::providers::rtmp::GetStreamInfoResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -5832,6 +6688,886 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListRoomStreamsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistLoginSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistLoginRequest>
+                    for AlistLoginSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_login(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistList" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistListSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistListRequest>
+                    for AlistListSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::ListResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistListRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_list(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistListSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistGetMe" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistGetMeSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistGetMeRequest>
+                    for AlistGetMeSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::GetMeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistGetMeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_get_me(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistGetMeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistLogout" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistLogoutSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistLogoutRequest>
+                    for AlistLogoutSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::LogoutResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistLogoutRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_logout(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistLogoutSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistGetBinds" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistGetBindsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistGetBindsRequest>
+                    for AlistGetBindsSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::GetBindsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistGetBindsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_get_binds(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistGetBindsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EmbyLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmbyLoginSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EmbyLoginRequest>
+                    for EmbyLoginSvc<T> {
+                        type Response = ::synctv_proto::providers::emby::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EmbyLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::emby_login(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EmbyLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EmbyList" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmbyListSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EmbyListRequest>
+                    for EmbyListSvc<T> {
+                        type Response = ::synctv_proto::providers::emby::ListResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EmbyListRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::emby_list(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EmbyListSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EmbyGetMe" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmbyGetMeSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EmbyGetMeRequest>
+                    for EmbyGetMeSvc<T> {
+                        type Response = ::synctv_proto::providers::emby::GetMeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EmbyGetMeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::emby_get_me(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EmbyGetMeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EmbyLogout" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmbyLogoutSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EmbyLogoutRequest>
+                    for EmbyLogoutSvc<T> {
+                        type Response = ::synctv_proto::providers::emby::LogoutResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EmbyLogoutRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::emby_logout(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EmbyLogoutSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EmbyGetBinds" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmbyGetBindsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EmbyGetBindsRequest>
+                    for EmbyGetBindsSvc<T> {
+                        type Response = ::synctv_proto::providers::emby::GetBindsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EmbyGetBindsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::emby_get_binds(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EmbyGetBindsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliParse" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliParseSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliParseRequest>
+                    for BilibiliParseSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::ParseResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliParseRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_parse(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliParseSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliLoginQr" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliLoginQrSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliLoginQrRequest>
+                    for BilibiliLoginQrSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::QrCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliLoginQrRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_login_qr(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliLoginQrSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliCheckQr" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliCheckQrSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliCheckQrRequest>
+                    for BilibiliCheckQrSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::QrStatusResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliCheckQrRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_check_qr(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliCheckQrSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliGetCaptcha" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliGetCaptchaSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliGetCaptchaRequest>
+                    for BilibiliGetCaptchaSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::CaptchaResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliGetCaptchaRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_get_captcha(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliGetCaptchaSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliSendSms" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliSendSmsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliSendSmsRequest>
+                    for BilibiliSendSmsSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::SendSmsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliSendSmsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_send_sms(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliSendSmsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliLoginSms" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliLoginSmsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliLoginSmsRequest>
+                    for BilibiliLoginSmsSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::LoginSmsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliLoginSmsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_login_sms(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliLoginSmsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliGetUserInfo" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliGetUserInfoSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliGetUserInfoRequest>
+                    for BilibiliGetUserInfoSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::UserInfoResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliGetUserInfoRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_get_user_info(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliGetUserInfoSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliLogout" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliLogoutSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliLogoutRequest>
+                    for BilibiliLogoutSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::LogoutResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliLogoutRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_logout(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliLogoutSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/BilibiliGetBinds" => {
+                    #[allow(non_camel_case_types)]
+                    struct BilibiliGetBindsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::BilibiliGetBindsRequest>
+                    for BilibiliGetBindsSvc<T> {
+                        type Response = ::synctv_proto::providers::bilibili::GetBindsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BilibiliGetBindsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::bilibili_get_binds(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BilibiliGetBindsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6398,21 +8134,130 @@ pub mod management_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.management.ManagementService/ListProviderInstances" => {
+                "/synctv.management.ManagementService/ListAvailableProviderInstances" => {
                     #[allow(non_camel_case_types)]
-                    struct ListProviderInstancesSvc<T: ManagementService>(pub Arc<T>);
+                    struct ListAvailableProviderInstancesSvc<T: ManagementService>(
+                        pub Arc<T>,
+                    );
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::ListProviderInstancesRequest>
-                    for ListProviderInstancesSvc<T> {
-                        type Response = ::synctv_proto::admin::ListProviderInstancesResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::ListAvailableProviderInstancesRequest,
+                    > for ListAvailableProviderInstancesSvc<T> {
+                        type Response = ::synctv_proto::providers::common::ProviderInstancesResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::ListProviderInstancesRequest>,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::ListAvailableProviderInstancesRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::list_available_provider_instances(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListAvailableProviderInstancesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/ListProviderBackends" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListProviderBackendsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::ListProviderBackendsRequest,
+                    > for ListProviderBackendsSvc<T> {
+                        type Response = ::synctv_proto::providers::common::ProviderBackendsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::ListProviderBackendsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::list_provider_backends(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListProviderBackendsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/ListProviderInstances" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListProviderInstancesSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::ListProviderInstancesRequest,
+                    > for ListProviderInstancesSvc<T> {
+                        type Response = ::synctv_proto::providers::common::ListProviderInstancesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::ListProviderInstancesRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -6452,16 +8297,19 @@ pub mod management_service_server {
                     struct AddProviderInstanceSvc<T: ManagementService>(pub Arc<T>);
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::AddProviderInstanceRequest>
-                    for AddProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::AddProviderInstanceResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::AddProviderInstanceRequest,
+                    > for AddProviderInstanceSvc<T> {
+                        type Response = ::synctv_proto::providers::common::AddProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::AddProviderInstanceRequest>,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::AddProviderInstanceRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -6501,16 +8349,19 @@ pub mod management_service_server {
                     struct UpdateProviderInstanceSvc<T: ManagementService>(pub Arc<T>);
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::UpdateProviderInstanceRequest>
-                    for UpdateProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::UpdateProviderInstanceResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::UpdateProviderInstanceRequest,
+                    > for UpdateProviderInstanceSvc<T> {
+                        type Response = ::synctv_proto::providers::common::UpdateProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::UpdateProviderInstanceRequest>,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::UpdateProviderInstanceRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -6550,16 +8401,19 @@ pub mod management_service_server {
                     struct DeleteProviderInstanceSvc<T: ManagementService>(pub Arc<T>);
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::DeleteProviderInstanceRequest>
-                    for DeleteProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::DeleteProviderInstanceResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::DeleteProviderInstanceRequest,
+                    > for DeleteProviderInstanceSvc<T> {
+                        type Response = ::synctv_proto::providers::common::DeleteProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::DeleteProviderInstanceRequest>,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::DeleteProviderInstanceRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -6602,9 +8456,9 @@ pub mod management_service_server {
                     impl<
                         T: ManagementService,
                     > tonic::server::UnaryService<
-                        super::ReconnectProviderInstanceRequest,
+                        ::synctv_proto::providers::common::ReconnectProviderInstanceRequest,
                     > for ReconnectProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::ReconnectProviderInstanceResponse;
+                        type Response = ::synctv_proto::providers::common::ReconnectProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -6612,7 +8466,7 @@ pub mod management_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                super::ReconnectProviderInstanceRequest,
+                                ::synctv_proto::providers::common::ReconnectProviderInstanceRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
@@ -6653,16 +8507,19 @@ pub mod management_service_server {
                     struct EnableProviderInstanceSvc<T: ManagementService>(pub Arc<T>);
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::EnableProviderInstanceRequest>
-                    for EnableProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::EnableProviderInstanceResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::EnableProviderInstanceRequest,
+                    > for EnableProviderInstanceSvc<T> {
+                        type Response = ::synctv_proto::providers::common::EnableProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::EnableProviderInstanceRequest>,
+                            request: tonic::Request<
+                                ::synctv_proto::providers::common::EnableProviderInstanceRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -6702,9 +8559,10 @@ pub mod management_service_server {
                     struct DisableProviderInstanceSvc<T: ManagementService>(pub Arc<T>);
                     impl<
                         T: ManagementService,
-                    > tonic::server::UnaryService<super::DisableProviderInstanceRequest>
-                    for DisableProviderInstanceSvc<T> {
-                        type Response = ::synctv_proto::admin::DisableProviderInstanceResponse;
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::providers::common::DisableProviderInstanceRequest,
+                    > for DisableProviderInstanceSvc<T> {
+                        type Response = ::synctv_proto::providers::common::DisableProviderInstanceResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -6712,7 +8570,7 @@ pub mod management_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                super::DisableProviderInstanceRequest,
+                                ::synctv_proto::providers::common::DisableProviderInstanceRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);

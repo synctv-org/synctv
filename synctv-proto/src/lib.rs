@@ -24,6 +24,12 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
 /// Encoded file descriptor set for provider proto definitions.
 pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("providers/descriptor.bin");
 
+pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
+    std::sync::LazyLock::new(|| {
+        prost_reflect::DescriptorPool::decode(PROVIDERS_FILE_DESCRIPTOR_SET)
+            .expect("synctv-proto provider descriptor pool must decode")
+    });
+
 pub fn validate<M: prost_reflect::ReflectMessage>(
     message: &M,
 ) -> Result<(), prost_protovalidate::Error> {
@@ -52,6 +58,16 @@ pub mod admin {
 // Providers
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod providers {
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    pub mod common {
+        include!("providers/synctv.provider.common.rs");
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    pub mod rtmp {
+        include!("providers/synctv.provider.rtmp.rs");
+    }
+
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod bilibili {
         include!("providers/synctv.provider.bilibili.rs");
@@ -333,17 +349,18 @@ mod tests {
     #[test]
     fn enum_roundtrip_provider_instance_status() {
         for status in [
-            crate::admin::ProviderInstanceStatus::Unspecified,
-            crate::admin::ProviderInstanceStatus::Connected,
-            crate::admin::ProviderInstanceStatus::Disconnected,
-            crate::admin::ProviderInstanceStatus::Error,
+            crate::providers::common::ProviderInstanceStatus::Unspecified,
+            crate::providers::common::ProviderInstanceStatus::Connected,
+            crate::providers::common::ProviderInstanceStatus::Disconnected,
+            crate::providers::common::ProviderInstanceStatus::Error,
         ] {
-            let pi = crate::admin::ProviderInstance {
+            let pi = crate::providers::common::ProviderInstance {
                 status: status.into(),
                 ..Default::default()
             };
             let bytes = pi.encode_to_vec();
-            let decoded = crate::admin::ProviderInstance::decode(bytes.as_slice()).unwrap();
+            let decoded =
+                crate::providers::common::ProviderInstance::decode(bytes.as_slice()).unwrap();
             assert_eq!(decoded.status, i32::from(status));
         }
     }
@@ -812,10 +829,10 @@ mod tests {
     }
 
     #[test]
-    fn http_json_admin_add_provider_instance_request_defaults_optional_scalars() {
+    fn http_json_provider_common_add_provider_instance_request_defaults_optional_scalars() {
         let json = r#"{"name":"emby-main","endpoint":"https://provider.example.com"}"#;
 
-        let decoded: crate::admin::AddProviderInstanceRequest =
+        let decoded: crate::providers::common::AddProviderInstanceRequest =
             serde_json::from_str(json).expect("optional provider fields should default");
 
         assert_eq!(decoded.name, "emby-main");
@@ -825,15 +842,18 @@ mod tests {
         assert!(!decoded.tls);
         assert!(!decoded.insecure_tls);
         assert!(decoded.providers.is_empty());
-        assert!(decoded.config.is_empty());
+        assert_eq!(decoded.jwt_secret, None);
+        assert_eq!(decoded.custom_ca, None);
     }
 
     #[test]
-    fn http_json_admin_update_provider_instance_request_defaults_path_and_repeated_fields() {
+    fn http_json_provider_common_update_provider_instance_request_defaults_path_and_repeated_fields(
+    ) {
         let json = r#"{"endpoint":"https://provider.example.com"}"#;
 
-        let decoded: crate::admin::UpdateProviderInstanceRequest = serde_json::from_str(json)
-            .expect("path-populated provider update fields should default");
+        let decoded: crate::providers::common::UpdateProviderInstanceRequest =
+            serde_json::from_str(json)
+                .expect("path-populated provider update fields should default");
 
         assert!(decoded.name.is_empty());
         assert_eq!(
@@ -841,7 +861,11 @@ mod tests {
             Some("https://provider.example.com")
         );
         assert!(decoded.providers.is_empty());
-        assert!(decoded.config.is_empty());
+        assert_eq!(decoded.jwt_secret, None);
+        assert_eq!(decoded.custom_ca, None);
+        assert_eq!(decoded.clear_comment, None);
+        assert_eq!(decoded.clear_jwt_secret, None);
+        assert_eq!(decoded.clear_custom_ca, None);
     }
 
     #[test]
@@ -946,28 +970,41 @@ mod tests {
         let req = crate::providers::alist::LoginRequest {
             host: "https://alist.example.com".into(),
             username: "user".into(),
-            password: "pass".into(),
-            hashed_password: String::new(),
+            credential: Some(
+                crate::providers::alist::login_request::Credential::Password("pass".into()),
+            ),
             instance_name: "alist_main".into(),
         };
         let bytes = req.encode_to_vec();
         let decoded = crate::providers::alist::LoginRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.host, req.host);
         assert_eq!(decoded.username, "user");
-        assert_eq!(decoded.password, "pass");
+        assert_eq!(
+            decoded.credential,
+            Some(crate::providers::alist::login_request::Credential::Password("pass".into()))
+        );
     }
 
     #[test]
     fn roundtrip_emby_login_request() {
         let req = crate::providers::emby::LoginRequest {
             host: "https://emby.example.com".into(),
-            api_key: "secret-api-key".into(),
+            username: "admin".into(),
+            credential: Some(crate::providers::emby::login_request::Credential::ApiKey(
+                "secret-api-key".into(),
+            )),
             instance_name: "emby_main".into(),
         };
         let bytes = req.encode_to_vec();
         let decoded = crate::providers::emby::LoginRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.host, req.host);
-        assert_eq!(decoded.api_key, "secret-api-key");
+        assert_eq!(decoded.username, "admin");
+        assert_eq!(
+            decoded.credential,
+            Some(crate::providers::emby::login_request::Credential::ApiKey(
+                "secret-api-key".into()
+            ))
+        );
     }
 
     #[test]
@@ -979,8 +1016,10 @@ mod tests {
 
         assert_eq!(decoded.host, "https://alist.example.com");
         assert_eq!(decoded.username, "user");
-        assert_eq!(decoded.password, "pass");
-        assert_eq!(decoded.hashed_password, "");
+        assert_eq!(
+            decoded.credential,
+            Some(crate::providers::alist::login_request::Credential::Password("pass".into()))
+        );
         assert_eq!(decoded.instance_name, "");
     }
 
@@ -1010,14 +1049,36 @@ mod tests {
 
     #[test]
     fn http_json_emby_login_request_defaults_instance_name() {
-        let json = r#"{"host":"https://emby.example.com","api_key":"secret-api-key"}"#;
+        let json =
+            r#"{"host":"https://emby.example.com","username":"admin","api_key":"secret-api-key"}"#;
 
         let decoded: crate::providers::emby::LoginRequest =
             serde_json::from_str(json).expect("missing optional instance_name should default");
 
         assert_eq!(decoded.host, "https://emby.example.com");
-        assert_eq!(decoded.api_key, "secret-api-key");
+        assert_eq!(decoded.username, "admin");
+        assert_eq!(
+            decoded.credential,
+            Some(crate::providers::emby::login_request::Credential::ApiKey(
+                "secret-api-key".into()
+            ))
+        );
         assert_eq!(decoded.instance_name, "");
+    }
+
+    #[test]
+    fn http_json_provider_login_requests_reject_duplicate_credentials() {
+        let alist_err = serde_json::from_str::<crate::providers::alist::LoginRequest>(
+            r#"{"host":"https://alist.example.com","username":"user","password":"pass","hashed_password":"hash"}"#,
+        )
+        .expect_err("alist login should reject multiple credentials");
+        assert!(alist_err.is_data());
+
+        let emby_err = serde_json::from_str::<crate::providers::emby::LoginRequest>(
+            r#"{"host":"https://emby.example.com","username":"admin","password":"pass","api_key":"token"}"#,
+        )
+        .expect_err("emby login should reject multiple credentials");
+        assert!(emby_err.is_data());
     }
 
     #[test]
@@ -1297,7 +1358,7 @@ mod tests {
 
     #[test]
     fn validate_admin_list_requests_reject_invalid_pagination_and_enums() {
-        let provider_instances = crate::admin::ListProviderInstancesRequest {
+        let provider_instances = crate::providers::common::ListProviderInstancesRequest {
             page: -1,
             page_size: 101,
             provider_type: String::new(),
@@ -1380,15 +1441,15 @@ mod tests {
 
     #[test]
     fn validate_admin_list_requests_accept_defaultable_values() {
-        crate::validate(&crate::admin::ListProviderInstancesRequest {
+        crate::validate(&crate::providers::common::ListProviderInstancesRequest {
             page: 0,
             page_size: 0,
             provider_type: "alist".into(),
             search: "edge".into(),
             enabled: Some(true),
             tls: Some(true),
-            sort_by: crate::admin::ProviderInstanceListSortBy::Unspecified as i32,
-            sort_direction: crate::admin::SortDirection::Unspecified as i32,
+            sort_by: crate::providers::common::ProviderInstanceListSortBy::Unspecified as i32,
+            sort_direction: crate::providers::common::SortDirection::Unspecified as i32,
         })
         .unwrap();
 

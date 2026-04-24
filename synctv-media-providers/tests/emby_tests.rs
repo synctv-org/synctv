@@ -4,7 +4,7 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::EmbyClient;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // validate_item_id is a private function tested indirectly through get_item which calls it.
@@ -134,6 +134,58 @@ async fn test_emby_client_get_items_success() {
     assert_eq!(resp.items[0].name, "Test Movie");
     assert!(!resp.items[0].is_folder);
     assert!(resp.items[1].is_folder);
+}
+
+#[tokio::test]
+async fn test_emby_client_me_uses_current_user_endpoint_when_user_id_is_empty() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/emby/Users/Me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "user-uuid-123",
+            "Name": "admin",
+            "ServerId": "server-1"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "").unwrap();
+    let resp = client.me().await.unwrap();
+    assert_eq!(resp.id, "user-uuid-123");
+    assert_eq!(resp.name, "admin");
+}
+
+#[tokio::test]
+async fn test_emby_client_list_users_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/emby/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "Id": "user-uuid-123",
+                "Name": "admin",
+                "ServerId": "server-1",
+                "Policy": {
+                    "IsAdministrator": true
+                }
+            }
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "").unwrap();
+    let users = client.list_users().await.unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].id, "user-uuid-123");
+    assert_eq!(users[0].name, "admin");
+    assert!(users[0]
+        .policy
+        .as_ref()
+        .is_some_and(|policy| policy.is_administrator));
 }
 
 #[tokio::test]
@@ -354,13 +406,131 @@ async fn test_emby_get_playback_info_success() {
 
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
-        .get_playback_info("item-1", None, None, None, None)
+        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+            item_id: "item-1",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(resp.play_session_id, "play-session-abc");
     assert_eq!(resp.media_sources.len(), 1);
     assert_eq!(resp.media_sources[0].id, "source-1");
     assert_eq!(resp.media_sources[0].container, "mkv");
+}
+
+#[tokio::test]
+async fn test_emby_get_playback_info_sends_playback_request_controls() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Items/item-1/PlaybackInfo"))
+        .and(body_partial_json(serde_json::json!({
+            "UserId": "user-uuid-123",
+            "MaxStreamingBitrate": 8_000_000_i64,
+            "MaxAudioChannels": 2,
+            "EnableDirectPlay": false,
+            "EnableDirectStream": false,
+            "EnableTranscoding": true,
+            "DeviceProfile": {
+                "DirectPlayProfiles": [],
+                "TranscodingProfiles": [
+                    {
+                        "Container": "ts",
+                        "Protocol": "hls",
+                        "VideoCodec": "h264",
+                        "AudioCodec": "aac"
+                    }
+                ],
+                "SubtitleProfiles": [
+                    {
+                        "Format": "srt",
+                        "Method": "External"
+                    }
+                ]
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "MediaSources": [],
+            "PlaySessionId": "play-session-xyz"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client
+        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+            item_id: "item-1",
+            max_streaming_bitrate: Some(8_000_000),
+            max_audio_channels: Some(2),
+            enable_direct_play: Some(false),
+            enable_direct_stream: Some(false),
+            enable_transcoding: Some(true),
+            device_profile: Some(
+                &synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile {
+                    direct_play_profiles: Vec::new(),
+                    transcoding_container: "ts".to_string(),
+                    transcoding_protocol: "hls".to_string(),
+                    transcoding_video_codec: "h264".to_string(),
+                    transcoding_audio_codec: "aac".to_string(),
+                    subtitle_profiles: vec![
+                        synctv_media_providers::grpc::emby::SubtitleProfileHint {
+                            format: "srt".to_string(),
+                            method:
+                                synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::External
+                                    as i32,
+                        },
+                    ],
+                },
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(resp.play_session_id, "play-session-xyz");
+}
+
+#[tokio::test]
+async fn test_emby_get_playback_info_preserves_explicit_empty_subtitle_profiles() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Items/item-1/PlaybackInfo"))
+        .and(body_partial_json(serde_json::json!({
+            "UserId": "user-uuid-123",
+            "DeviceProfile": {
+                "SubtitleProfiles": []
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "MediaSources": [],
+            "PlaySessionId": "play-session-no-subtitles"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client
+        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+            item_id: "item-1",
+            device_profile: Some(
+                &synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile {
+                    direct_play_profiles: Vec::new(),
+                    transcoding_container: "ts".to_string(),
+                    transcoding_protocol: "hls".to_string(),
+                    transcoding_video_codec: "h264".to_string(),
+                    transcoding_audio_codec: "aac".to_string(),
+                    subtitle_profiles: Vec::new(),
+                },
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(resp.play_session_id, "play-session-no-subtitles");
 }
 
 #[tokio::test]

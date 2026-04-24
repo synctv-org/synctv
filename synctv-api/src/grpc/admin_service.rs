@@ -9,30 +9,25 @@ use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{
-    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
-    AddProviderInstanceRequest, AddProviderInstanceResponse, ApproveMemberRequest,
+    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse, ApproveMemberRequest,
     ApproveMemberResponse, ApproveRoomRequest, ApproveRoomResponse, ApproveUserRequest,
     ApproveUserResponse, BanMemberRequest, BanMemberResponse, BanRoomRequest, BanRoomResponse,
     BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
     BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
     BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
-    DeleteProviderInstanceRequest, DeleteProviderInstanceResponse, DeleteRoomRequest,
-    DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse, DisableProviderInstanceRequest,
-    DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
+    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
     GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
     GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
     GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
     GetSystemStatsResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
     GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
     KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
-    ListAdminsResponse, ListProviderInstancesRequest, ListProviderInstancesResponse,
-    ListRoomsRequest, ListRoomsResponse, ListUsersRequest, ListUsersResponse,
-    ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse, RejectMemberRequest,
-    RejectMemberResponse, RemoveAdminRequest, RemoveAdminResponse, ResetRoomSettingsRequest,
-    ResetRoomSettingsResponse, SendTestEmailRequest, SendTestEmailResponse, UnbanMemberRequest,
-    UnbanMemberResponse, UnbanRoomRequest, UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse,
-    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdateProviderInstanceRequest,
-    UpdateProviderInstanceResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
+    ListAdminsResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest, ListUsersResponse,
+    RejectMemberRequest, RejectMemberResponse, RemoveAdminRequest, RemoveAdminResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
+    SendTestEmailResponse, UnbanMemberRequest, UnbanMemberResponse, UnbanRoomRequest,
+    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateMemberPermissionsRequest,
+    UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
     UpdateSettingsResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
     UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
@@ -155,81 +150,6 @@ impl AdminServiceImpl {
         self.execute_scoped_admin_rpc(request, false, operation)
     }
 
-    fn execute_scoped_admin_rpc_with_control<TReq, TResp, F, Fut>(
-        &self,
-        request: Request<TReq>,
-        require_root: bool,
-        operation: F,
-    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
-    where
-        TReq: std::fmt::Debug + Send + 'static,
-        TResp: Send + 'static,
-        F: FnOnce(
-                Arc<AdminApiImpl>,
-                synctv_core::provider::ExecutionControl,
-                crate::impls::admin::ValidatedAdmin,
-                RequestContext,
-                TReq,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
-    {
-        async move {
-            let metadata = self.request_metadata(&request);
-            let ctx = grpc_request_context(&request, &self.config);
-            let api = self.admin_api.clone();
-            let executor = api.clone();
-            let req = request.into_inner();
-
-            let response = if require_root {
-                executor
-                    .execute_root_endpoint_with_control(
-                        &metadata,
-                        move |request_control, validated| {
-                            operation(api, request_control, validated, ctx, req)
-                        },
-                    )
-                    .await
-            } else {
-                executor
-                    .execute_admin_endpoint_with_control(
-                        &metadata,
-                        move |request_control, validated| {
-                            operation(api, request_control, validated, ctx, req)
-                        },
-                    )
-                    .await
-            }
-            .map_err(map_api_error)?;
-
-            Ok(Response::new(response))
-        }
-        .boxed()
-    }
-
-    fn execute_admin_rpc_with_control<TReq, TResp, F, Fut>(
-        &self,
-        request: Request<TReq>,
-        operation: F,
-    ) -> BoxFuture<'_, Result<Response<TResp>, Status>>
-    where
-        TReq: std::fmt::Debug + Send + 'static,
-        TResp: Send + 'static,
-        F: FnOnce(
-                Arc<AdminApiImpl>,
-                synctv_core::provider::ExecutionControl,
-                crate::impls::admin::ValidatedAdmin,
-                RequestContext,
-                TReq,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: Future<Output = Result<TResp, crate::impls::ApiError>> + Send + 'static,
-    {
-        self.execute_scoped_admin_rpc_with_control(request, false, operation)
-    }
-
     fn execute_root_rpc<TReq, TResp, F, Fut>(
         &self,
         request: Request<TReq>,
@@ -305,110 +225,6 @@ impl AdminService for AdminServiceImpl {
             .map_err(map_api_error)?;
 
         Ok(Response::new(response))
-    }
-
-    // Provider Instance Management
-
-    async fn list_provider_instances(
-        &self,
-        request: Request<ListProviderInstancesRequest>,
-    ) -> Result<Response<ListProviderInstancesResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, _, _, req| async move {
-            api.list_provider_instances(req).await
-        })
-        .await
-    }
-
-    async fn add_provider_instance(
-        &self,
-        request: Request<AddProviderInstanceRequest>,
-    ) -> Result<Response<AddProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc_with_control(
-            request,
-            move |api, request_control, validated, ctx, req| async move {
-                api.add_provider_instance_with_control(
-                    req,
-                    &validated.user_id,
-                    &ctx,
-                    Some(&request_control),
-                )
-                .await
-            },
-        )
-        .await
-    }
-
-    async fn update_provider_instance(
-        &self,
-        request: Request<UpdateProviderInstanceRequest>,
-    ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc_with_control(
-            request,
-            move |api, request_control, validated, ctx, req| async move {
-                api.update_provider_instance_with_control(
-                    req,
-                    &validated.user_id,
-                    &ctx,
-                    Some(&request_control),
-                )
-                .await
-            },
-        )
-        .await
-    }
-
-    async fn delete_provider_instance(
-        &self,
-        request: Request<DeleteProviderInstanceRequest>,
-    ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.delete_provider_instance(req, &validated.user_id, &ctx)
-                .await
-        })
-        .await
-    }
-
-    async fn reconnect_provider_instance(
-        &self,
-        request: Request<ReconnectProviderInstanceRequest>,
-    ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc_with_control(
-            request,
-            move |api, request_control, validated, ctx, req| async move {
-                api.reconnect_provider_instance_with_control(
-                    req,
-                    &validated.user_id,
-                    &ctx,
-                    Some(&request_control),
-                )
-                .await
-            },
-        )
-        .await
-    }
-
-    async fn enable_provider_instance(
-        &self,
-        request: Request<EnableProviderInstanceRequest>,
-    ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc_with_control(
-            request,
-            move |api, request_control, _, _, req| async move {
-                api.enable_provider_instance_with_control(req, Some(&request_control))
-                    .await
-            },
-        )
-        .await
-    }
-
-    async fn disable_provider_instance(
-        &self,
-        request: Request<DisableProviderInstanceRequest>,
-    ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, _, _, req| async move {
-            api.disable_provider_instance(req).await
-        })
-        .await
     }
 
     // User Management

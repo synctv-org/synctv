@@ -36,6 +36,11 @@ fn usize_to_i64_api(value: usize, field: &str) -> Result<i64, ApiError> {
     i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
 }
 
+fn normalize_non_empty_filter(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
 pub(crate) fn build_create_playlist_request(
     room_id: &synctv_core::models::RoomId,
     req: crate::proto::client::CreatePlaylistRequest,
@@ -50,7 +55,7 @@ pub(crate) fn build_create_playlist_request(
     } = req;
 
     let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id);
-    let source_provider = (!source_provider.is_empty()).then_some(source_provider);
+    let source_provider = normalize_non_empty_filter(&source_provider);
     let source_config = if source_config.is_empty() {
         None
     } else {
@@ -59,8 +64,7 @@ pub(crate) fn build_create_playlist_request(
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?,
         )
     };
-    let provider_instance_name =
-        (!provider_instance_name.is_empty()).then_some(provider_instance_name);
+    let provider_instance_name = normalize_non_empty_filter(&provider_instance_name);
 
     Ok(CoreCreatePlaylistRequest {
         room_id: room_id.clone(),
@@ -423,10 +427,10 @@ impl ClientApiImpl {
         } else {
             page_i32_to_usize(req.page_size.min(MAX_PLAYLIST_PAGE_SIZE), "page_size")?
         };
-        let search = (!req.search.is_empty()).then(|| req.search.to_ascii_lowercase());
-        let source_provider = (!req.source_provider.is_empty()).then_some(req.source_provider);
-        let provider_instance_name =
-            (!req.provider_instance_name.is_empty()).then_some(req.provider_instance_name);
+        let search =
+            normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase());
+        let source_provider = normalize_non_empty_filter(&req.source_provider);
+        let provider_instance_name = normalize_non_empty_filter(&req.provider_instance_name);
         let sort_by = match crate::proto::client::PlaylistListSortBy::try_from(req.sort_by) {
             Ok(crate::proto::client::PlaylistListSortBy::Name) => CorePlaylistListSortBy::Name,
             Ok(crate::proto::client::PlaylistListSortBy::CreatedAt) => {

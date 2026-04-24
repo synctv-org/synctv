@@ -378,6 +378,62 @@ impl ProvidersManager {
         self.instances.read().await.get(instance_id).cloned()
     }
 
+    /// Resolve a provider by requested type and optional bound instance name.
+    ///
+    /// Bound instance names may refer either to a locally configured provider alias
+    /// stored in `instances` or to a dynamic remote provider instance managed by
+    /// `RemoteProviderManager`.
+    pub async fn resolve_provider(
+        &self,
+        provider_type: &str,
+        provider_instance_name: Option<&str>,
+    ) -> Result<Arc<dyn MediaProvider>> {
+        let trimmed_provider = provider_type.trim();
+        if trimmed_provider.is_empty() {
+            return Err(crate::Error::InvalidInput(
+                "provider_type is required".to_string(),
+            ));
+        }
+
+        let trimmed_instance = provider_instance_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if let Some(instance_name) = trimmed_instance {
+            if let Some(provider) = self.get(instance_name).await {
+                if provider.name() != trimmed_provider {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "Provider instance '{instance_name}' is type '{}' but request declared '{trimmed_provider}'",
+                        provider.name()
+                    )));
+                }
+                return Ok(provider);
+            }
+
+            let Some(instance) = self.instance_manager.get_instance(instance_name).await? else {
+                return Err(crate::Error::NotFound(format!(
+                    "Provider instance not found: {instance_name}"
+                )));
+            };
+
+            if !instance.enabled {
+                return Err(crate::Error::NotFound(format!(
+                    "Provider instance not found: {instance_name}"
+                )));
+            }
+
+            if !instance.supports_provider(trimmed_provider) {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Provider instance '{instance_name}' does not support provider '{trimmed_provider}'"
+                )));
+            }
+        }
+
+        self.get_by_type(trimmed_provider).await.ok_or_else(|| {
+            crate::Error::NotFound(format!("Provider not found: {trimmed_provider}"))
+        })
+    }
+
     /// Get provider by type (returns default instance)
     pub async fn get_by_type(&self, provider_type: &str) -> Option<Arc<dyn MediaProvider>> {
         let instance_id = Self::default_instance_id(provider_type);
@@ -736,6 +792,60 @@ mod tests {
         // Get unknown type
         let not_found = manager.get_by_type("unknown").await;
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_provider_uses_default_for_missing_or_empty_instance() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        manager
+            .create_provider("alist", "alist", &serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let implicit_default = manager.resolve_provider("alist", None).await.unwrap();
+        let empty_default = manager.resolve_provider("alist", Some("  ")).await.unwrap();
+
+        assert_eq!(implicit_default.name(), "alist");
+        assert_eq!(empty_default.name(), "alist");
+        assert!(
+            Arc::ptr_eq(&implicit_default, &empty_default),
+            "None and empty provider_instance_name must resolve to the same default provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_provider_uses_explicit_local_instance_and_checks_type() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        manager
+            .create_provider("alist", "alist_alt", &serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let provider = manager
+            .resolve_provider("alist", Some(" alist_alt "))
+            .await
+            .unwrap();
+        assert_eq!(provider.name(), "alist");
+
+        let error = match manager.resolve_provider("emby", Some("alist_alt")).await {
+            Ok(provider) => panic!(
+                "explicit local instance must match the requested provider type, got provider '{}'",
+                provider.name()
+            ),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("request declared 'emby'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

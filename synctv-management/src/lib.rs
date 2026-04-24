@@ -9,6 +9,10 @@ pub mod service;
 
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
 
+pub mod provider {
+    pub use synctv_proto::providers::{alist, bilibili, common, emby, rtmp};
+}
+
 pub mod proto {
     include!("synctv.management.rs");
 }
@@ -62,5 +66,37 @@ mod tests {
                 method.name.as_deref().unwrap_or("<unknown>")
             );
         }
+    }
+
+    #[test]
+    fn management_descriptor_does_not_embed_provider_service_contracts() {
+        let descriptor = FileDescriptorSet::decode(FILE_DESCRIPTOR_SET)
+            .expect("management descriptor set should decode");
+
+        let forbidden_services = [
+            ("synctv.provider.alist", "AlistProviderService"),
+            ("synctv.provider.bilibili", "BilibiliProviderService"),
+            ("synctv.provider.emby", "EmbyProviderService"),
+            ("synctv.provider.rtmp", "RtmpProviderService"),
+        ];
+
+        let embedded_provider_service = descriptor.file.iter().find_map(|file| {
+            forbidden_services
+                .iter()
+                .find_map(|(package, service_name)| {
+                    file.service
+                        .iter()
+                        .find(|service| {
+                            service.name.as_deref() == Some(*service_name)
+                                && file.package.as_deref() == Some(*package)
+                        })
+                        .map(|_| format!("{package}.{service_name}"))
+                })
+        });
+
+        assert!(
+            embedded_provider_service.is_none(),
+            "management descriptor must reference provider messages without embedding provider service contracts: {embedded_provider_service:?}"
+        );
     }
 }

@@ -4,10 +4,10 @@
 //! Used by both HTTP and gRPC handlers.
 
 use crate::proto::providers::bilibili::{
-    CaptchaResponse, CheckQrRequest, GetCaptchaRequest, LoginQrRequest, LoginSmsRequest,
-    LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse,
-    QrStatusResponse, SendSmsRequest, SendSmsResponse, UserInfoRequest, UserInfoResponse,
-    VideoInfo,
+    BindInfo, CaptchaResponse, CheckQrRequest, GetBindsResponse, GetCaptchaRequest, LoginQrRequest,
+    LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse,
+    QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse, UserInfoRequest,
+    UserInfoResponse, VideoInfo,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{BilibiliProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::resolve_bound_instance_name;
+use super::{get_provider_credentials, resolve_bound_instance_name};
 
 /// Bilibili API implementation
 ///
@@ -116,7 +116,7 @@ impl BilibiliApiImpl {
         }
 
         let credential = UserProviderCredential {
-            id: synctv_common::snanoid!(),
+            id: UserProviderCredential::new_id(),
             user_id: caller_user_id.to_string(),
             provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),
@@ -533,6 +533,29 @@ impl BilibiliApiImpl {
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })
+    }
+
+    pub async fn get_binds(
+        &self,
+        caller_user_id: &str,
+        instance_name: Option<&str>,
+    ) -> Result<GetBindsResponse, crate::impls::ApiError> {
+        let binds = get_provider_credentials(
+            &self.credential_repo,
+            caller_user_id,
+            synctv_core::provider::BilibiliProvider::NAME,
+            instance_name,
+        )
+        .await?
+        .into_iter()
+        .map(|credential| BindInfo {
+            id: credential.id,
+            server_id: credential.server_id,
+            created_at: credential.created_at.timestamp(),
+        })
+        .collect();
+
+        Ok(GetBindsResponse { binds })
     }
 }
 

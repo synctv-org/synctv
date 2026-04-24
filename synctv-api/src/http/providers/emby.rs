@@ -19,14 +19,14 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, provider_common::provider_instance_name,
-    validation::ValidatedQuery, AppError, AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppError,
+    AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::client::ProviderInstanceQuery;
-use crate::proto::providers::emby::{BindInfo, GetBindsResponse};
+use crate::proto::providers::common::ProviderInstanceQuery;
+use crate::proto::providers::emby::GetBindsResponse;
 
-use crate::impls::providers::get_provider_binds;
+use super::common::provider_instance_name;
 
 const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
 const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
@@ -541,7 +541,7 @@ pub(crate) async fn binds(
     ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     let instance_name = provider_instance_name(&query)?;
-    let repository = state.user_provider_credential_repository.clone();
+    let api = state.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
         .client_api
@@ -550,26 +550,8 @@ pub(crate) async fn binds(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 tracing::info!("Emby binds request for user: {}", authenticated.user_id);
-                let provider_binds = get_provider_binds(
-                    &repository,
-                    authenticated.user_id.as_str(),
-                    synctv_core::provider::EmbyProvider::NAME,
-                    "emby_user_id",
-                    instance_name,
-                )
-                .await?;
-
-                let binds = provider_binds
-                    .into_iter()
-                    .map(|b| BindInfo {
-                        id: b.id,
-                        host: b.host,
-                        user_id: b.label_value,
-                        created_at: b.created_at,
-                    })
-                    .collect();
-
-                Ok::<GetBindsResponse, crate::impls::ApiError>(GetBindsResponse { binds })
+                api.get_binds(authenticated.user_id.as_str(), instance_name)
+                    .await
             },
         )
         .await

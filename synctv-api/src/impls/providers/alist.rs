@@ -4,15 +4,15 @@
 //! Used by both HTTP and gRPC handlers.
 
 use crate::proto::providers::alist::{
-    FileItem, GetMeRequest, GetMeResponse, ListRequest, ListResponse, LoginRequest, LoginResponse,
-    LogoutRequest, LogoutResponse,
+    BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{AlistProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::resolve_bound_instance_name;
+use super::{get_provider_binds, resolve_bound_instance_name};
 
 /// Alist API implementation
 ///
@@ -25,6 +25,8 @@ pub struct AlistApiImpl {
 }
 
 impl AlistApiImpl {
+    const ALIST_PASSWORD_HASH_SALT: &'static str = "https://github.com/alist-org/alist";
+
     #[must_use]
     pub const fn new(
         provider: Arc<AlistProvider>,
@@ -80,8 +82,11 @@ impl AlistApiImpl {
                 let login_req = synctv_media_providers::grpc::alist::LoginReq {
                     host: host.clone(),
                     username,
-                    password,
-                    hashed: true,
+                    credential: Some(
+                        synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
+                            password,
+                        ),
+                    ),
                 };
 
                 let token = self
@@ -122,8 +127,15 @@ impl AlistApiImpl {
         let login_req = synctv_media_providers::grpc::alist::LoginReq {
             host: req.host,
             username: req.username.clone(),
-            password: password.clone(),
-            hashed,
+            credential: Some(if hashed {
+                synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
+                    password.clone(),
+                )
+            } else {
+                synctv_media_providers::grpc::alist::login_req::Credential::Password(
+                    password.clone(),
+                )
+            }),
         };
 
         let token = self
@@ -139,10 +151,7 @@ impl AlistApiImpl {
         let stored_password = if hashed {
             password
         } else {
-            use sha2::{Digest, Sha256};
-            hex::encode(Sha256::digest(
-                format!("{password}-https://github.com/AlistGo/alist").as_bytes(),
-            ))
+            Self::hash_password_for_storage(&password)
         };
 
         let credential_data = ProviderCredential::alist(host, req.username, stored_password);
@@ -163,7 +172,7 @@ impl AlistApiImpl {
         }
 
         let credential = UserProviderCredential {
-            id: synctv_common::snanoid!(),
+            id: UserProviderCredential::new_id(),
             user_id: caller_user_id.to_string(),
             provider: synctv_core::provider::AlistProvider::NAME.to_string(),
             server_id: server_id.clone(),
@@ -193,20 +202,40 @@ impl AlistApiImpl {
     fn resolve_login_credential(
         req: &LoginRequest,
     ) -> Result<(String, bool), synctv_core::provider::ProviderError> {
-        let password = req.password.trim();
-        let hashed_password = req.hashed_password.trim();
+        match req.credential.as_ref() {
+            Some(crate::proto::providers::alist::login_request::Credential::Password(password)) => {
+                if password.trim().is_empty() {
+                    return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                        "Alist login password must not be empty".to_string(),
+                    ));
+                }
 
-        if hashed_password.is_empty() {
-            if password.is_empty() {
-                return Err(synctv_core::provider::ProviderError::InvalidConfig(
-                    "Alist login requires password or hashed_password".to_string(),
-                ));
+                Ok((password.clone(), false))
             }
+            Some(crate::proto::providers::alist::login_request::Credential::HashedPassword(
+                hashed_password,
+            )) => {
+                if hashed_password.trim().is_empty() {
+                    return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                        "Alist login hashed_password must not be empty".to_string(),
+                    ));
+                }
 
-            return Ok((req.password.clone(), false));
+                Ok((hashed_password.clone(), true))
+            }
+            None => Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Alist login requires exactly one credential".to_string(),
+            )),
         }
+    }
 
-        Ok((req.hashed_password.clone(), true))
+    #[must_use]
+    fn hash_password_for_storage(password: &str) -> String {
+        use sha2::{Digest, Sha256};
+
+        hex::encode(Sha256::digest(
+            format!("{password}-{}", Self::ALIST_PASSWORD_HASH_SALT).as_bytes(),
+        ))
     }
 
     /// List Alist directory using stored credential
@@ -353,6 +382,31 @@ impl AlistApiImpl {
             message: "Logout successful".to_string(),
         })
     }
+
+    pub async fn get_binds(
+        &self,
+        caller_user_id: &str,
+        instance_name: Option<&str>,
+    ) -> Result<GetBindsResponse, crate::impls::ApiError> {
+        let binds = get_provider_binds(
+            &self.credential_repo,
+            caller_user_id,
+            synctv_core::provider::AlistProvider::NAME,
+            "username",
+            instance_name,
+        )
+        .await?
+        .into_iter()
+        .map(|bind| BindInfo {
+            id: bind.id,
+            host: bind.host,
+            username: bind.label_value,
+            created_at: bind.created_at,
+        })
+        .collect();
+
+        Ok(GetBindsResponse { binds })
+    }
 }
 
 #[cfg(test)]
@@ -378,15 +432,14 @@ mod tests {
         let err = AlistApiImpl::resolve_login_credential(&LoginRequest {
             host: "https://alist.example.com".to_string(),
             username: "alice".to_string(),
-            password: String::new(),
-            hashed_password: String::new(),
+            credential: None,
             instance_name: String::new(),
         })
         .expect_err("missing both credential forms must fail");
 
         match err {
             ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("password or hashed_password"));
+                assert!(message.contains("exactly one credential"));
             }
             other => panic!("expected InvalidConfig, got {other:?}"),
         }
@@ -397,8 +450,11 @@ mod tests {
         let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
             host: "https://alist.example.com".to_string(),
             username: "alice".to_string(),
-            password: "secret123".to_string(),
-            hashed_password: String::new(),
+            credential: Some(
+                synctv_proto::providers::alist::login_request::Credential::Password(
+                    "secret123".to_string(),
+                ),
+            ),
             instance_name: String::new(),
         })
         .expect("plaintext password must remain valid");
@@ -412,14 +468,25 @@ mod tests {
         let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
             host: "https://alist.example.com".to_string(),
             username: "alice".to_string(),
-            password: String::new(),
-            hashed_password: "sha256:abc123".to_string(),
+            credential: Some(
+                synctv_proto::providers::alist::login_request::Credential::HashedPassword(
+                    "sha256:abc123".to_string(),
+                ),
+            ),
             instance_name: String::new(),
         })
         .expect("hashed password must remain valid");
 
         assert_eq!(credential, "sha256:abc123");
         assert!(hashed);
+    }
+
+    #[test]
+    fn hash_password_for_storage_matches_current_alist_hash_endpoint_contract() {
+        assert_eq!(
+            AlistApiImpl::hash_password_for_storage("kaR6YeYA"),
+            "6a977a872a0c445d98fc3d34634705b98716d89d7491637f0ce2f3cb6e5d4d31"
+        );
     }
 
     #[tokio::test]
@@ -436,8 +503,7 @@ mod tests {
                 LoginRequest {
                     host: "https://alist.example.com".to_string(),
                     username: "alice".to_string(),
-                    password: String::new(),
-                    hashed_password: String::new(),
+                    credential: None,
                     instance_name: String::new(),
                 },
                 None,
@@ -447,7 +513,7 @@ mod tests {
 
         match err {
             ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("password or hashed_password"));
+                assert!(message.contains("exactly one credential"));
             }
             other => panic!("expected InvalidConfig, got {other:?}"),
         }

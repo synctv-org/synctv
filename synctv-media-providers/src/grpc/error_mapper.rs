@@ -36,8 +36,12 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
         ProviderClientError::Auth(_) => {
             Status::unauthenticated(format!("{context}: authentication failed"))
         }
-        ProviderClientError::Http { status, .. } => match status.as_u16() {
-            400 | 422 => Status::invalid_argument(format!("{context}: invalid request")),
+        ProviderClientError::Http {
+            status, url, body, ..
+        } => match status.as_u16() {
+            400 | 422 => {
+                Status::invalid_argument(format!("{context}: invalid request for {url}: {body}"))
+            }
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
             409 => Status::failed_precondition(format!("{context}: request conflict")),
@@ -61,8 +65,8 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
         ProviderClientError::ResponseTooLarge { size } => {
             Status::resource_exhausted(format!("{context}: response too large ({size} bytes)"))
         }
-        ProviderClientError::Api { code, .. } => match code {
-            400 | 422 => Status::invalid_argument(format!("{context}: invalid request")),
+        ProviderClientError::Api { code, message } => match code {
+            400 | 422 => Status::invalid_argument(format!("{context}: invalid request: {message}")),
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
             409 => Status::failed_precondition(format!("{context}: request conflict")),

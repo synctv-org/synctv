@@ -24,22 +24,21 @@ use crate::proto::client::{
     ApproveMemberResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
     CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse,
-    CreatePublishKeyRequest, CreatePublishKeyResponse, CreateRoomRequest, CreateRoomResponse,
-    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
-    DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse,
-    EditMediaRequest, EditMediaResponse, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
+    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
+    DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
+    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
+    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetStreamInfoRequest, GetStreamInfoResponse, JoinRoomRequest,
-    JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse,
-    ListMyRoomsRequest, ListMyRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
-    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
-    ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest,
-    LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
+    GetRoomSettingsResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
+    KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
+    ListMyRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
+    ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
+    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
     RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
     RejectMemberRequest, RejectMemberResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
     RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
@@ -664,6 +663,29 @@ impl RoomService for ClientServiceImpl {
                 move |authenticated| async move {
                     client_api
                         .get_room_members(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_room_streams(
+        &self,
+        request: Request<ListRoomStreamsRequest>,
+    ) -> Result<Response<ListRoomStreamsResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .list_room_streams(authenticated.user_id.as_str(), room_id.as_str(), req)
                         .await
                 },
             )
@@ -1455,80 +1477,6 @@ impl RoomService for ClientServiceImpl {
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
-    }
-
-    async fn create_publish_key(
-        &self,
-        request: Request<CreatePublishKeyRequest>,
-    ) -> Result<Response<CreatePublishKeyResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Media,
-                move |authenticated| async move {
-                    client_api
-                        .create_publish_key(authenticated.user_id.as_str(), room_id.as_str(), req)
-                        .await
-                },
-            )
-            .await
-            .map(Response::new)
-            .map_err(map_api_error)
-    }
-
-    async fn get_stream_info(
-        &self,
-        request: Request<GetStreamInfoRequest>,
-    ) -> Result<Response<GetStreamInfoResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
-        let req = request.into_inner();
-        let media_id = req.media_id;
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_stream_info(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            &media_id,
-                        )
-                        .await
-                },
-            )
-            .await
-            .map(Response::new)
-            .map_err(map_api_error)
-    }
-
-    async fn list_room_streams(
-        &self,
-        request: Request<ListRoomStreamsRequest>,
-    ) -> Result<Response<ListRoomStreamsResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
-        let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .list_room_streams(authenticated.user_id.as_str(), room_id.as_str(), req)
-                        .await
-                },
-            )
-            .await
-            .map(Response::new)
-            .map_err(map_api_error)
     }
 
     // Playlist Management

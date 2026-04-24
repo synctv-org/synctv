@@ -314,10 +314,6 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-pub(crate) fn resolve_add_media_provider_instance(provider_instance_name: &str) -> String {
-    provider_instance_name.trim().to_string()
-}
-
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
@@ -461,7 +457,7 @@ pub(crate) fn build_add_media_request(
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
     };
 
-    let provider_instance_name = resolve_add_media_provider_instance(&provider_instance_name);
+    let provider_instance_name = normalize_non_empty_filter(&provider_instance_name);
 
     Ok(CoreAddMediaRequest {
         playlist_id,
@@ -1432,8 +1428,8 @@ mod tests {
     use super::{
         build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
         build_delete_media_request, build_edit_media_request, build_move_media_request,
-        compute_playlist_items_response_version, resolve_add_media_provider_instance,
-        validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
+        compute_playlist_items_response_version, validate_dynamic_playlist_query_support,
+        DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
     use serde_json::json;
@@ -1458,18 +1454,6 @@ mod tests {
             updated_at: Utc::now(),
             version: 0,
         }
-    }
-
-    #[test]
-    fn test_resolve_add_media_provider_instance_preserves_empty_binding_for_default_provider() {
-        let resolved = resolve_add_media_provider_instance("");
-        assert_eq!(resolved, "");
-    }
-
-    #[test]
-    fn test_resolve_add_media_provider_instance_uses_explicit_binding() {
-        let resolved = resolve_add_media_provider_instance("alist_main");
-        assert_eq!(resolved, "alist_main");
     }
 
     #[test]
@@ -1540,12 +1524,15 @@ mod tests {
         );
         assert_eq!(request.name, "Episode 1");
         assert_eq!(request.source_provider, "alist");
-        assert_eq!(request.provider_instance_name, "alist-main");
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-main")
+        );
         assert_eq!(request.source_config, serde_json::json!({"path":"/tv"}));
     }
 
     #[test]
-    fn test_build_add_media_request_preserves_empty_provider_instance_for_default_resolution() {
+    fn test_build_add_media_request_maps_empty_provider_instance_to_none() {
         let request = build_add_media_request(crate::proto::client::AddMediaRequest {
             playlist_id: None,
             provider: "direct_url".into(),
@@ -1556,7 +1543,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(request.source_provider, "direct_url");
-        assert!(request.provider_instance_name.is_empty());
+        assert!(request.provider_instance_name.is_none());
     }
 
     #[test]

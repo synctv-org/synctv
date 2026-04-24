@@ -76,7 +76,7 @@ impl MediaRepository {
                 format!("m.source_provider {direction}, m.name {direction}, m.id {direction}")
             }
             crate::models::MediaListSortBy::ProviderInstanceName => format!(
-                "m.provider_instance_name {direction}, m.name {direction}, m.id {direction}"
+                "NULLIF(m.provider_instance_name, '') {direction}, m.name {direction}, m.id {direction}"
             ),
             crate::models::MediaListSortBy::Position => {
                 format!("m.position {direction}, m.name {direction}, m.id {direction}")
@@ -84,9 +84,13 @@ impl MediaRepository {
         }
     }
 
-    fn normalize_provider_instance_name_for_db(provider_instance_name: &str) -> Option<&str> {
-        let trimmed = provider_instance_name.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
+    fn normalize_provider_instance_name_for_db(
+        provider_instance_name: Option<&str>,
+    ) -> Option<&str> {
+        provider_instance_name.and_then(|provider_instance_name| {
+            let trimmed = provider_instance_name.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
     }
 
     fn push_media_scope_filters(
@@ -170,7 +174,7 @@ impl MediaRepository {
 
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.position,
-                    m.source_provider, m.source_config, COALESCE(m.provider_instance_name, '') AS provider_instance_name,
+                    m.source_provider, m.source_config, NULLIF(m.provider_instance_name, '') AS provider_instance_name,
                     m.added_at, m.updated_at, m.version,
                     CASE
                       WHEN m.creator_id IS NULL THEN TRUE
@@ -218,7 +222,7 @@ impl MediaRepository {
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             "
         )
@@ -231,7 +235,7 @@ impl MediaRepository {
         .bind(media.source_provider.as_str())
         .bind(&source_config_json)
         .bind(Self::normalize_provider_instance_name_for_db(
-            &media.provider_instance_name,
+            media.provider_instance_name.as_deref(),
         ))
         .bind(media.added_at)
         .fetch_one(executor)
@@ -332,7 +336,7 @@ impl MediaRepository {
         }
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version",
         );
 
@@ -352,7 +356,7 @@ impl MediaRepository {
                 .bind(item.source_provider.as_str())
                 .bind(&binds[i])
                 .bind(Self::normalize_provider_instance_name_for_db(
-                    &item.provider_instance_name,
+                    item.provider_instance_name.as_deref(),
                 ))
                 .bind(item.added_at);
         }
@@ -396,7 +400,7 @@ impl MediaRepository {
             SET name = $2, position = $3, source_config = $4,
                 provider_instance_name = $5
              WHERE id = $1             RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             "
         )
@@ -405,7 +409,7 @@ impl MediaRepository {
         .bind(media.position)
         .bind(&source_config_json)
         .bind(Self::normalize_provider_instance_name_for_db(
-            &media.provider_instance_name,
+            media.provider_instance_name.as_deref(),
         ))
         .fetch_one(&self.pool)
         .await?;
@@ -442,7 +446,7 @@ impl MediaRepository {
                 provider_instance_name = $5, version = version + 1
              WHERE id = $1 AND version = $6
              RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             ",
         )
@@ -451,7 +455,7 @@ impl MediaRepository {
         .bind(media.position)
         .bind(&source_config_json)
         .bind(Self::normalize_provider_instance_name_for_db(
-            &media.provider_instance_name,
+            media.provider_instance_name.as_deref(),
         ))
         .bind(expected_version)
         .fetch_optional(&self.pool)
@@ -468,7 +472,7 @@ impl MediaRepository {
         let row = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE id = $1            ",
@@ -505,7 +509,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE id = ANY($1)            ",
@@ -532,7 +536,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1
@@ -555,7 +559,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -577,7 +581,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -615,7 +619,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -661,7 +665,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -697,7 +701,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -726,7 +730,7 @@ impl MediaRepository {
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -959,7 +963,7 @@ impl MediaRepository {
         let moved_rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = ANY($1)
@@ -1016,7 +1020,7 @@ impl MediaRepository {
             let anchor_media = sqlx::query(
                 r"
                 SELECT id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
                 FROM media
                 WHERE id = $1
@@ -1146,7 +1150,7 @@ impl MediaRepository {
                         version = version + 1
                     WHERE id = $1
                     RETURNING id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                              source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                               added_at, updated_at, version
                     ",
                 )
@@ -1334,7 +1338,7 @@ impl MediaRepository {
         let moved = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = $1
@@ -1351,7 +1355,7 @@ impl MediaRepository {
         let anchor = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
-                   source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                    added_at, updated_at, version
             FROM media
             WHERE id = $1
@@ -1421,7 +1425,7 @@ impl MediaRepository {
                     SET position = $2, version = version + 1
                     WHERE id = $1
                     RETURNING id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, COALESCE(provider_instance_name, '') AS provider_instance_name,
+                              source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                               added_at, updated_at, version
                     ",
                 )
@@ -1578,7 +1582,7 @@ mod tests {
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             0.0,
         );
 
@@ -1628,7 +1632,7 @@ mod tests {
 
         assert_eq!(media.name, "Single Mode Video");
         assert!((media.position - 5.0).abs() < f64::EPSILON);
-        assert_eq!(media.provider_instance_name, "direct_url");
+        assert!(media.provider_instance_name.is_none());
         assert!(media.source_config.get("playback_infos").is_some());
     }
 
@@ -1670,7 +1674,7 @@ mod tests {
 
         assert_eq!(media.name, "Multimode Video");
         assert!((media.position - 10.0).abs() < f64::EPSILON);
-        assert_eq!(media.provider_instance_name, "direct_url");
+        assert!(media.provider_instance_name.is_none());
         assert!(media.source_config.get("playback_infos").is_some());
         assert!(media.source_config.get("metadata").is_some());
     }
@@ -1725,7 +1729,7 @@ mod tests {
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             0.0,
         );
 
@@ -1782,7 +1786,7 @@ mod tests {
             "Original Name".to_string(),
             serde_json::json!({}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
@@ -1839,7 +1843,7 @@ mod tests {
             "To Delete".to_string(),
             serde_json::json!({}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
@@ -1907,7 +1911,7 @@ mod tests {
             "Default Backend".to_string(),
             serde_json::json!({"url": "https://example.com/default.mp4"}),
             "direct_url",
-            String::new(),
+            None,
             0.0,
         );
         let explicit_media = Media::from_provider(
@@ -1917,7 +1921,7 @@ mod tests {
             "Explicit Backend".to_string(),
             serde_json::json!({"url": "https://example.com/explicit.mp4"}),
             "direct_url",
-            "direct_url_remote".to_string(),
+            Some("direct_url_remote".to_string()),
             1.0,
         );
 
@@ -1942,7 +1946,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].media.id, created_default.id);
-        assert!(rows[0].media.provider_instance_name.is_empty());
+        assert!(rows[0].media.provider_instance_name.is_none());
     }
 
     /// Integration test: Batch create media
@@ -1988,7 +1992,7 @@ mod tests {
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
-                    "default".to_string(),
+                    Some("default".to_string()),
                     f64::from(i),
                 )
             })
@@ -2019,7 +2023,7 @@ mod tests {
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
-                    "default".to_string(),
+                    Some("default".to_string()),
                     f64::from(i),
                 )
             })
@@ -2085,7 +2089,7 @@ mod tests {
             "Video 1".to_string(),
             serde_json::json!({}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             1024.0,
         );
         let media2 = Media::from_provider(
@@ -2095,7 +2099,7 @@ mod tests {
             "Video 2".to_string(),
             serde_json::json!({}),
             "direct_url",
-            "default".to_string(),
+            Some("default".to_string()),
             2048.0,
         );
 
@@ -2165,7 +2169,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                "default".to_string(),
+                Some("default".to_string()),
                 f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
@@ -2217,7 +2221,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                "default".to_string(),
+                Some("default".to_string()),
                 f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
@@ -2287,7 +2291,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                "default".to_string(),
+                Some("default".to_string()),
                 f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();
@@ -2346,7 +2350,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                "default".to_string(),
+                Some("default".to_string()),
                 f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();

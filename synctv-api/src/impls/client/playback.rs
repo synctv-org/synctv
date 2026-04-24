@@ -8,8 +8,8 @@ use synctv_core::provider::{ExecutionControl, ProviderContext};
 
 use super::convert::{
     bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-    playback_snapshot_to_proto, playback_state_to_proto, provider_playback_info_to_model,
-    sign_local_bilibili_danmaku_urls,
+    playback_client_profile_from_proto, playback_snapshot_to_proto, playback_state_to_proto,
+    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
 };
 use super::ClientApiImpl;
 use crate::impls::playback_snapshot::{
@@ -23,14 +23,7 @@ fn providers_manager_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Playback providers are not available on this server.".to_string())
 }
 
-fn static_media_provider_binding(
-    media: &synctv_core::models::Media,
-) -> Result<(&str, bool), ApiError> {
-    let instance_name = media.provider_instance_name.trim();
-    if !instance_name.is_empty() {
-        return Ok((instance_name, true));
-    }
-
+fn static_media_source_provider(media: &synctv_core::models::Media) -> Result<&str, ApiError> {
     let source_provider = media.source_provider.trim();
     if source_provider.is_empty() {
         return Err(ApiError::Internal(format!(
@@ -39,7 +32,7 @@ fn static_media_provider_binding(
         )));
     }
 
-    Ok((source_provider, false))
+    Ok(source_provider)
 }
 
 #[derive(Debug)]
@@ -151,12 +144,21 @@ impl ClientApiImpl {
         &'a self,
         user_id: &'a str,
         room_id: &'a str,
+        provider_instance_name: Option<&'a str>,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id)
             .with_room_id(room_id)
+            .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
+        if let Some(provider_instance_name) = provider_instance_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
         }
@@ -185,6 +187,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
@@ -205,22 +208,23 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(providers_manager_unavailable_error)?;
 
-        let (provider_key, is_instance_name) = static_media_provider_binding(&media)?;
-
-        let provider = if is_instance_name {
-            providers_manager.get(provider_key).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{provider_key}' not found"))
-            })?
-        } else {
-            providers_manager
-                .get_by_type(provider_key)
-                .await
-                .ok_or_else(|| ApiError::NotFound(format!("Provider '{provider_key}' not found")))?
-        };
+        let provider = providers_manager
+            .resolve_provider(
+                static_media_source_provider(&media)?,
+                media.provider_instance_name.as_deref(),
+            )
+            .await
+            .map_err(ApiError::from)?;
 
         let ctx = self.attach_provider_store(
-            self.build_provider_context(user_id, room_id, request_control)
-                .with_media_id(media.id.as_str()),
+            self.build_provider_context(
+                user_id,
+                room_id,
+                media.provider_instance_name.as_deref(),
+                playback_client_profile,
+                request_control,
+            )
+            .with_media_id(media.id.as_str()),
             provider.as_ref(),
         );
         let provider_result = provider
@@ -279,6 +283,7 @@ impl ClientApiImpl {
         user_id_model: &UserId,
         playlist_id: &PlaylistId,
         target: &[u8],
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let playlist = self
@@ -322,23 +327,17 @@ impl ClientApiImpl {
                 Some(trimmed)
             }
         });
-        let provider = if let Some(instance_name) = bound_instance {
-            providers_manager.get(instance_name).await.ok_or_else(|| {
-                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-            })?
-        } else {
-            providers_manager
-                .get_by_type(provider_name)
-                .await
-                .ok_or_else(|| {
-                    ApiError::NotFound(format!("Provider '{provider_name}' not found"))
-                })?
-        };
+        let provider = providers_manager
+            .resolve_provider(provider_name, bound_instance)
+            .await
+            .map_err(ApiError::from)?;
 
         let ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id_model.as_str(),
                 room_id_model.as_str(),
+                playlist.provider_instance_name.as_deref(),
+                playback_client_profile,
                 request_control,
             ),
             provider.as_ref(),
@@ -382,6 +381,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
@@ -397,6 +397,7 @@ impl ClientApiImpl {
                     user_id.as_str(),
                     room_id.as_str(),
                     media,
+                    playback_client_profile,
                     request_control,
                 )
                 .await;
@@ -409,6 +410,7 @@ impl ClientApiImpl {
                     user_id,
                     playlist_id,
                     &state.target,
+                    playback_client_profile,
                     request_control,
                 )
                 .await;
@@ -509,7 +511,7 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-        _req: crate::proto::client::GetPlaybackRequest,
+        req: crate::proto::client::GetPlaybackRequest,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
@@ -521,6 +523,9 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
+        let playback_client_profile =
+            playback_client_profile_from_proto(req.playback_client_profile.as_ref());
+
         // Get playback state
         let state = self
             .room_service
@@ -528,7 +533,13 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let playback_snapshot = match self
-            .build_playback_snapshot_from_state(&uid, &rid, &state, request_control)
+            .build_playback_snapshot_from_state(
+                &uid,
+                &rid,
+                &state,
+                playback_client_profile.as_ref(),
+                request_control,
+            )
             .await
         {
             Ok(snapshot) => Some(snapshot),
@@ -596,7 +607,9 @@ impl ClientApiImpl {
         self.get_playback(
             user_id,
             room_id,
-            crate::proto::client::GetPlaybackRequest {},
+            crate::proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
         )
         .await
     }
@@ -698,9 +711,16 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
         user_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        self.build_playback_snapshot_from_state(user_id, room_id, state, None)
-            .await
+        self.build_playback_snapshot_from_state(
+            user_id,
+            room_id,
+            state,
+            playback_client_profile,
+            None,
+        )
+        .await
     }
 }
 
@@ -852,7 +872,7 @@ mod start_playback_builder_tests {
 mod tests {
     use super::{
         build_start_playback_request, build_update_playback_request,
-        providers_manager_unavailable_error, static_media_provider_binding, PlaybackUpdateCommand,
+        providers_manager_unavailable_error, static_media_source_provider, PlaybackUpdateCommand,
     };
     use crate::impls::ErrorKind;
     use chrono::Utc;
@@ -868,7 +888,7 @@ mod tests {
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-            provider_instance_name: provider_instance_name.to_string(),
+            provider_instance_name: Some(provider_instance_name.to_string()),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -876,19 +896,15 @@ mod tests {
     }
 
     #[test]
-    fn test_static_media_provider_binding_uses_explicit_instance() {
+    fn test_static_media_source_provider_ignores_explicit_instance_binding() {
         let media = make_media("direct_url");
-        let (key, is_instance_name) = static_media_provider_binding(&media).unwrap();
-        assert_eq!(key, "direct_url");
-        assert!(is_instance_name);
+        assert_eq!(static_media_source_provider(&media).unwrap(), "direct_url");
     }
 
     #[test]
-    fn test_static_media_provider_binding_falls_back_to_source_provider() {
+    fn test_static_media_source_provider_accepts_default_instance_binding() {
         let media = make_media("");
-        let (key, is_instance_name) = static_media_provider_binding(&media).unwrap();
-        assert_eq!(key, "direct_url");
-        assert!(!is_instance_name);
+        assert_eq!(static_media_source_provider(&media).unwrap(), "direct_url");
     }
 
     #[test]

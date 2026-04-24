@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package synctv.provider.common;
+
+import "proto/providers/common.proto";
+
+service ProviderCommonService {
+  rpc ListAvailableProviderInstances(ListAvailableProviderInstancesRequest) returns (ProviderInstancesResponse);
+  rpc ListProviderBackends(ListProviderBackendsRequest) returns (ProviderBackendsResponse);
+  rpc ListProviderInstances(ListProviderInstancesRequest) returns (ListProviderInstancesResponse);
+  rpc AddProviderInstance(AddProviderInstanceRequest) returns (AddProviderInstanceResponse);
+  rpc UpdateProviderInstance(UpdateProviderInstanceRequest) returns (UpdateProviderInstanceResponse);
+  rpc DeleteProviderInstance(DeleteProviderInstanceRequest) returns (DeleteProviderInstanceResponse);
+  rpc ReconnectProviderInstance(ReconnectProviderInstanceRequest) returns (ReconnectProviderInstanceResponse);
+  rpc EnableProviderInstance(EnableProviderInstanceRequest) returns (EnableProviderInstanceResponse);
+  rpc DisableProviderInstance(DisableProviderInstanceRequest) returns (DisableProviderInstanceResponse);
+}

@@ -11,7 +11,7 @@ use futures::FutureExt;
 use std::future::Future;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use super::validation::ValidatedQuery;
+use super::validation::{StrictQuery, ValidatedQuery};
 use super::{middleware::RequestMetadata, AppResult, AppState, WithMediaId, WithPlaylistId};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
@@ -23,13 +23,13 @@ use crate::proto::client::{
     GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse,
     GetPlaybackRequest, GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse,
     GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
-    ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse, ListRoomsRequest,
-    ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
-    MovePlaylistResponse, ResetRoomSettingsResponse, SetRoomPasswordRequest,
-    SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, TransferRoomOwnershipRequest, TransferRoomOwnershipResponse,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdatePlaylistResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest,
+    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, MoveMediaRequest,
+    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, ResetRoomSettingsResponse,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistRequest,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 pub type JoinRoomBody = JoinRoomRequest;
@@ -80,6 +80,137 @@ pub type EditMediaBody = EditMediaRequest;
 pub type CreatePlaylistBody = CreatePlaylistRequest;
 pub type UpdatePlaylistBody = UpdatePlaylistRequest;
 pub type MovePlaylistBody = MovePlaylistRequest;
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct GetPlaybackQuery {
+    pub delivery_preference: Option<String>,
+    pub max_streaming_bitrate: Option<i64>,
+    pub max_audio_channels: Option<i32>,
+    pub video_codecs: Option<String>,
+    pub containers: Option<String>,
+    pub audio_capability: Option<String>,
+    pub subtitle_preference: Option<String>,
+}
+
+fn parse_delivery_preference(
+    value: Option<&str>,
+) -> Result<crate::proto::client::PlaybackDeliveryPreference, super::AppError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(crate::proto::client::PlaybackDeliveryPreference::Unspecified),
+        Some("auto") => Ok(crate::proto::client::PlaybackDeliveryPreference::Auto),
+        Some("direct_play") => Ok(crate::proto::client::PlaybackDeliveryPreference::DirectPlay),
+        Some("transcode") => Ok(crate::proto::client::PlaybackDeliveryPreference::Transcode),
+        Some(other) => Err(super::AppError::bad_request(format!(
+            "Invalid delivery_preference '{other}'. Expected auto, direct_play, or transcode"
+        ))),
+    }
+}
+
+fn parse_subtitle_preference(
+    value: Option<&str>,
+) -> Result<crate::proto::client::PlaybackSubtitlePreference, super::AppError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(crate::proto::client::PlaybackSubtitlePreference::Unspecified),
+        Some("external") => Ok(crate::proto::client::PlaybackSubtitlePreference::External),
+        Some("embedded_or_external") => {
+            Ok(crate::proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal)
+        }
+        Some("none") => Ok(crate::proto::client::PlaybackSubtitlePreference::None),
+        Some(other) => Err(super::AppError::bad_request(format!(
+            "Invalid subtitle_preference '{other}'. Expected external, embedded_or_external, or none"
+        ))),
+    }
+}
+
+fn parse_video_codecs(value: Option<&str>) -> Result<Vec<i32>, super::AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|codec| match codec {
+            "h264" => Ok(crate::proto::client::PlaybackVideoCodec::H264 as i32),
+            "hevc" => Ok(crate::proto::client::PlaybackVideoCodec::Hevc as i32),
+            "vp9" => Ok(crate::proto::client::PlaybackVideoCodec::Vp9 as i32),
+            "av1" => Ok(crate::proto::client::PlaybackVideoCodec::Av1 as i32),
+            other => Err(super::AppError::bad_request(format!(
+                "Invalid video codec '{other}'. Expected h264, hevc, vp9, or av1"
+            ))),
+        })
+        .collect()
+}
+
+fn parse_containers(value: Option<&str>) -> Result<Vec<i32>, super::AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|container| match container {
+            "mp4" => Ok(crate::proto::client::PlaybackContainer::Mp4 as i32),
+            "mkv" => Ok(crate::proto::client::PlaybackContainer::Mkv as i32),
+            "webm" => Ok(crate::proto::client::PlaybackContainer::Webm as i32),
+            other => Err(super::AppError::bad_request(format!(
+                "Invalid container '{other}'. Expected mp4, mkv, or webm"
+            ))),
+        })
+        .collect()
+}
+
+fn parse_audio_capability(
+    value: Option<&str>,
+) -> Result<crate::proto::client::PlaybackAudioCapability, super::AppError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(crate::proto::client::PlaybackAudioCapability::Unspecified),
+        Some("stereo") => Ok(crate::proto::client::PlaybackAudioCapability::Stereo),
+        Some("surround") => Ok(crate::proto::client::PlaybackAudioCapability::Surround),
+        Some("lossless_surround") => {
+            Ok(crate::proto::client::PlaybackAudioCapability::LosslessSurround)
+        }
+        Some(other) => Err(super::AppError::bad_request(format!(
+            "Invalid audio_capability '{other}'. Expected stereo, surround, or lossless_surround"
+        ))),
+    }
+}
+
+fn build_get_playback_request(query: &GetPlaybackQuery) -> AppResult<GetPlaybackRequest> {
+    let has_profile = query.delivery_preference.is_some()
+        || query.max_streaming_bitrate.is_some()
+        || query.max_audio_channels.is_some()
+        || query.video_codecs.is_some()
+        || query.containers.is_some()
+        || query.audio_capability.is_some()
+        || query.subtitle_preference.is_some();
+
+    let playback_client_profile = if has_profile {
+        Some(crate::proto::client::PlaybackClientProfile {
+            delivery_preference: parse_delivery_preference(query.delivery_preference.as_deref())?
+                as i32,
+            max_streaming_bitrate: query.max_streaming_bitrate,
+            max_audio_channels: query.max_audio_channels,
+            supported_video_codecs: parse_video_codecs(query.video_codecs.as_deref())?,
+            supported_containers: parse_containers(query.containers.as_deref())?,
+            audio_capability: parse_audio_capability(query.audio_capability.as_deref())? as i32,
+            subtitle_preference: parse_subtitle_preference(query.subtitle_preference.as_deref())?
+                as i32,
+        })
+    } else {
+        None
+    };
+
+    let request = GetPlaybackRequest {
+        playback_client_profile,
+    };
+    crate::impls::validate_proto_request(&request).map_err(super::error::map_api_error)?;
+    Ok(request)
+}
 
 fn validate_room_path(
     path: crate::proto::client::RoomPathRequest,
@@ -694,7 +825,8 @@ pub async fn stop_playback(
         path = "/api/rooms/{room_id}/playback",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("room_id" = String, Path, description = "Room ID"),
+            GetPlaybackQuery
         ),
         responses(
             (status = 200, description = "Current playback state", body = GetPlaybackResponse),
@@ -710,8 +842,10 @@ pub async fn get_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
+    StrictQuery(query): StrictQuery<GetPlaybackQuery>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
+    let req = build_get_playback_request(&query)?;
     let request_meta = request_metadata(request_meta);
     let executor = state.client_api.clone();
     let client_api = state.client_api.clone();
@@ -724,7 +858,7 @@ pub async fn get_playback(
                     .get_playback_with_context(
                         authenticated.user_id.as_str(),
                         &room_id,
-                        GetPlaybackRequest {},
+                        req,
                         &request_control,
                     )
                     .await
@@ -771,6 +905,49 @@ pub async fn get_room_members(
         move |client_api, authenticated| async move {
             client_api
                 .get_room_members(authenticated.user_id.as_str(), &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/streams",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ListRoomStreamsRequest
+        ),
+        responses(
+            (status = 200, description = "Active room live streams", body = ListRoomStreamsResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn list_room_streams(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    ValidatedQuery(req): ValidatedQuery<ListRoomStreamsRequest>,
+) -> AppResult<Json<ListRoomStreamsResponse>> {
+    let room_id = validate_room_path(path)?;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |client_api, authenticated| async move {
+            client_api
+                .list_room_streams(authenticated.user_id.as_str(), &room_id, req)
                 .await
         },
     )
@@ -1671,8 +1848,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        parse_optional_query_bool, parse_optional_query_i32, validate_chat_history_query,
-        AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody, UpdatePlaybackRequest,
+        build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
+        validate_chat_history_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
+        GetPlaybackQuery, UpdatePlaybackRequest,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetRoomMembersRequest,
@@ -1731,6 +1909,140 @@ mod tests {
         assert_eq!(req.media_id, "media_abc123");
         assert!(req.playlist_id.is_empty());
         assert!(req.target.is_empty());
+    }
+
+    #[test]
+    fn test_build_get_playback_request_parses_generic_profile_query() {
+        let request = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: Some("transcode".to_string()),
+            max_streaming_bitrate: Some(8_000_000),
+            max_audio_channels: Some(2),
+            video_codecs: Some("h264,av1".to_string()),
+            containers: Some("mp4,webm".to_string()),
+            audio_capability: Some("surround".to_string()),
+            subtitle_preference: Some("embedded_or_external".to_string()),
+        })
+        .expect("playback query should parse");
+
+        let profile = request
+            .playback_client_profile
+            .expect("query should produce playback client profile");
+        assert_eq!(
+            profile.delivery_preference,
+            crate::proto::client::PlaybackDeliveryPreference::Transcode as i32
+        );
+        assert_eq!(profile.max_streaming_bitrate, Some(8_000_000));
+        assert_eq!(profile.max_audio_channels, Some(2));
+        assert_eq!(
+            profile.supported_video_codecs,
+            vec![
+                crate::proto::client::PlaybackVideoCodec::H264 as i32,
+                crate::proto::client::PlaybackVideoCodec::Av1 as i32,
+            ]
+        );
+        assert_eq!(
+            profile.supported_containers,
+            vec![
+                crate::proto::client::PlaybackContainer::Mp4 as i32,
+                crate::proto::client::PlaybackContainer::Webm as i32,
+            ]
+        );
+        assert_eq!(
+            profile.audio_capability,
+            crate::proto::client::PlaybackAudioCapability::Surround as i32
+        );
+        assert_eq!(
+            profile.subtitle_preference,
+            crate::proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32
+        );
+    }
+
+    #[test]
+    fn test_build_get_playback_request_omits_profile_when_query_is_empty() {
+        let request = build_get_playback_request(&GetPlaybackQuery::default())
+            .expect("empty query should be valid");
+
+        assert!(request.playback_client_profile.is_none());
+    }
+
+    #[test]
+    fn test_build_get_playback_request_rejects_invalid_video_codec() {
+        let error = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: None,
+            max_streaming_bitrate: None,
+            max_audio_channels: None,
+            video_codecs: Some("h264,divx".to_string()),
+            containers: None,
+            audio_capability: None,
+            subtitle_preference: None,
+        })
+        .expect_err("unknown codec must be rejected");
+
+        assert!(error.message.contains("video codec"), "{error:?}");
+    }
+
+    #[test]
+    fn test_build_get_playback_request_rejects_invalid_delivery_preference() {
+        let error = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: Some("download".to_string()),
+            max_streaming_bitrate: None,
+            max_audio_channels: None,
+            video_codecs: None,
+            containers: None,
+            audio_capability: None,
+            subtitle_preference: None,
+        })
+        .expect_err("unknown delivery preference must be rejected");
+
+        assert!(error.message.contains("delivery_preference"), "{error:?}");
+    }
+
+    #[test]
+    fn test_build_get_playback_request_rejects_invalid_container() {
+        let error = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: None,
+            max_streaming_bitrate: None,
+            max_audio_channels: None,
+            video_codecs: None,
+            containers: Some("mp4,avi".to_string()),
+            audio_capability: None,
+            subtitle_preference: None,
+        })
+        .expect_err("unknown container must be rejected");
+
+        assert!(error.message.contains("container"), "{error:?}");
+    }
+
+    #[test]
+    fn test_build_get_playback_request_rejects_invalid_audio_capability() {
+        let error = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: None,
+            max_streaming_bitrate: None,
+            max_audio_channels: None,
+            video_codecs: None,
+            containers: None,
+            audio_capability: Some("mono".to_string()),
+            subtitle_preference: None,
+        })
+        .expect_err("unknown audio capability must be rejected");
+
+        assert!(error.message.contains("audio_capability"), "{error:?}");
+    }
+
+    #[test]
+    fn test_build_get_playback_request_rejects_invalid_subtitle_preference() {
+        let error = build_get_playback_request(&GetPlaybackQuery {
+            delivery_preference: None,
+            max_streaming_bitrate: None,
+            max_audio_channels: None,
+            video_codecs: None,
+            containers: None,
+            audio_capability: None,
+            subtitle_preference: Some("burn_in".to_string()),
+        })
+        .expect_err("unknown subtitle preference must be rejected");
+
+        assert!(error.message.contains("subtitle_preference"), "{error:?}");
     }
 
     #[test]

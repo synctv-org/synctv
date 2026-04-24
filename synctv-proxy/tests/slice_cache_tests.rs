@@ -2714,11 +2714,13 @@ async fn test_range_miss_does_not_send_conditional_headers_from_head_metadata() 
     // Cold slice-cache misses must not attach validators learned from HEAD.
     // Some origins respond with a full-body 200 when Range and validators are
     // combined, which breaks slice caching.
+    let total_size_usize =
+        usize::try_from(total_size).expect("test total_size should fit in usize");
     Mock::given(method("GET"))
         .and(path("/range-miss.bin"))
         .and(header("Range", "bytes=0-1023"))
         .and(header("If-None-Match", "\"etag-v1\""))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xCD; total_size as usize]))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xCD; total_size_usize]))
         .expect(0)
         .mount(&mock_server)
         .await;
@@ -3212,7 +3214,9 @@ async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin
     let mock_server = MockServer::start().await;
 
     let total_size: u64 = 1024;
-    let full_body = Bytes::from(vec![0x5Au8; total_size as usize]);
+    let total_size_usize =
+        usize::try_from(total_size).expect("test total_size should fit in usize");
+    let full_body = Bytes::from(vec![0x5Au8; total_size_usize]);
 
     Mock::given(method("HEAD"))
         .and(path("/single-slice.bin"))

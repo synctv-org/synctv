@@ -150,8 +150,18 @@ impl AlistInterface for AlistService {
 
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
         let mut client = AlistClient::with_http_client(&request.host, self.client.clone())?;
-        client
-            .login(&request.username, &request.password, request.hashed)
-            .await
+        match request.credential {
+            Some(crate::grpc::alist::login_req::Credential::Password(password)) => {
+                client.login(&request.username, &password, false).await
+            }
+            Some(crate::grpc::alist::login_req::Credential::HashedPassword(hashed_password)) => {
+                client
+                    .login(&request.username, &hashed_password, true)
+                    .await
+            }
+            None => Err(AlistError::InvalidConfig(
+                "exactly one of password or hashed_password must be provided".to_string(),
+            )),
+        }
     }
 }

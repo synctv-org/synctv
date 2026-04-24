@@ -175,14 +175,30 @@ async fn build_proxy_slice_cache(
     Ok(Arc::new(cache))
 }
 
+struct ManagementApiHandles {
+    client: Arc<ClientApiImpl>,
+    admin: Arc<AdminApiImpl>,
+    provider_common: Arc<synctv_api::impls::ProviderCommonApiImpl>,
+    alist: Arc<synctv_api::impls::AlistApiImpl>,
+    bilibili: Arc<synctv_api::impls::BilibiliApiImpl>,
+    emby: Arc<synctv_api::impls::EmbyApiImpl>,
+}
+
 fn management_apis_from_http_state(
     state: &synctv_api::http::AppState,
-) -> anyhow::Result<(Arc<ClientApiImpl>, Arc<AdminApiImpl>)> {
+) -> anyhow::Result<ManagementApiHandles> {
     let admin_api = state
         .admin_api
         .clone()
         .ok_or_else(|| anyhow::anyhow!("management server requires shared admin API wiring"))?;
-    Ok((state.client_api.clone(), admin_api))
+    Ok(ManagementApiHandles {
+        client: state.client_api.clone(),
+        admin: admin_api,
+        provider_common: state.provider_common_api.clone(),
+        alist: state.alist_api.clone(),
+        bilibili: state.bilibili_api.clone(),
+        emby: state.emby_api.clone(),
+    })
 }
 
 async fn serve_metrics_connection<S>(stream: S, app: axum::Router) -> anyhow::Result<()>
@@ -444,8 +460,10 @@ async fn shutdown_runtime_phase(
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     cleanup_handle: JoinHandle<()>,
     total_budget: Duration,
-) {
+    defer_management_wait: bool,
+) -> Option<JoinHandle<anyhow::Result<()>>> {
     let deadline = tokio::time::Instant::now() + total_budget;
+    let mut management_handle = management_handle;
 
     info!(
         "Waiting up to {}s for API server, management server, and cleanup task to stop...",
@@ -470,7 +488,9 @@ async fn shutdown_runtime_phase(
         }
     }
 
-    if let Some(management_handle) = management_handle {
+    if defer_management_wait {
+        info!("Deferring management server shutdown wait until stop-stream consumers disconnect");
+    } else if let Some(management_handle) = management_handle.take() {
         let budget = remaining_budget(deadline);
         if budget.is_zero() {
             force_abort_runtime_server("Management server", management_handle).await;
@@ -485,6 +505,12 @@ async fn shutdown_runtime_phase(
         remaining_budget(deadline),
     )
     .await;
+
+    if defer_management_wait {
+        management_handle
+    } else {
+        None
+    }
 }
 
 async fn cleanup_partial_startup(
@@ -989,7 +1015,14 @@ impl SyncTvServer {
         let mut metrics_handle = self.metrics_handle.take();
         let mut management_handle = self.management_handle.take();
 
-        let (shutdown_mode, unexpected_exit, api_handle, metrics_handle, management_handle) = tokio::select! {
+        let (
+            shutdown_mode,
+            unexpected_exit,
+            api_handle,
+            metrics_handle,
+            management_handle,
+            defer_management_shutdown_wait,
+        ) = tokio::select! {
             result = async {
                 api_handle
                     .as_mut()
@@ -1003,6 +1036,7 @@ impl SyncTvServer {
                     None,
                     metrics_handle.take(),
                     management_handle.take(),
+                    false,
                 )
             },
             result = async {
@@ -1018,6 +1052,7 @@ impl SyncTvServer {
                     api_handle.take(),
                     None,
                     management_handle.take(),
+                    false,
                 )
             },
             result = async {
@@ -1033,6 +1068,7 @@ impl SyncTvServer {
                     api_handle.take(),
                     metrics_handle.take(),
                     None,
+                    false,
                 )
             },
             lifecycle_mode = async {
@@ -1048,6 +1084,7 @@ impl SyncTvServer {
                     api_handle.take(),
                     metrics_handle.take(),
                     management_handle.take(),
+                    true,
                 )
             },
             () = &mut shutdown_signal => {
@@ -1060,6 +1097,7 @@ impl SyncTvServer {
                     api_handle.take(),
                     metrics_handle.take(),
                     management_handle.take(),
+                    false,
                 )
             }
         };
@@ -1084,15 +1122,20 @@ impl SyncTvServer {
             "Waiting up to {}s for API server and management server to shut down...",
             http_drain_budget.as_secs()
         );
-        shutdown_runtime_phase(
+        let deferred_management_handle = shutdown_runtime_phase(
             api_handle,
             metrics_handle,
             management_handle,
             cleanup_handle,
             http_drain_budget,
+            defer_management_shutdown_wait,
         )
         .await;
-        info!("API, metrics, and management servers shut down");
+        if deferred_management_handle.is_some() {
+            info!("API and metrics servers shut down; management server wait deferred");
+        } else {
+            info!("API, metrics, and management servers shut down");
+        }
 
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
@@ -1204,6 +1247,14 @@ impl SyncTvServer {
             return result;
         }
         self.lifecycle_controller.publish_completed();
+        if let Some(handle) = deferred_management_handle {
+            let timeout = if matches!(*lifecycle_shutdown_rx.borrow(), Some(ShutdownMode::Force)) {
+                Duration::ZERO
+            } else {
+                total_drain_budget.saturating_sub(shutdown_start.elapsed())
+            };
+            await_runtime_server_shutdown("Management server", handle, timeout).await;
+        }
         Ok(())
     }
 
@@ -1538,14 +1589,17 @@ impl SyncTvServer {
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::http::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let (client_api, admin_api) =
-            management_apis_from_http_state(shared_http_app_state.as_ref())?;
+        let management_apis = management_apis_from_http_state(shared_http_app_state.as_ref())?;
 
         spawn_management_server(ManagementServerConfig {
             config: Arc::new(self.config.clone()),
             user_service: self.services.user_service.clone(),
-            admin_api,
-            client_api,
+            admin_api: management_apis.admin,
+            provider_common_api: management_apis.provider_common,
+            client_api: management_apis.client,
+            alist_api: management_apis.alist,
+            bilibili_api: management_apis.bilibili,
+            emby_api: management_apis.emby,
             lifecycle_controller: self.lifecycle_controller.clone(),
             shutdown_rx,
         })
@@ -1767,20 +1821,27 @@ mod tests {
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(providers_manager),
             });
-        let (client_api, admin_api) =
+        let management_apis =
             management_apis_from_http_state(&http_state).expect("shared management APIs");
 
         assert!(
-            client_api.signing_key.is_some(),
+            management_apis.client.signing_key.is_some(),
             "management client API must carry proxy signing key for signed playback"
         );
         assert!(
-            client_api.provider_stores.is_some(),
+            management_apis.client.provider_stores.is_some(),
             "management client API must carry provider stores for versioned playback mappings"
         );
+        assert!(Arc::ptr_eq(&management_apis.alist, &http_state.alist_api));
+        assert!(Arc::ptr_eq(
+            &management_apis.bilibili,
+            &http_state.bilibili_api
+        ));
+        assert!(Arc::ptr_eq(&management_apis.emby, &http_state.emby_api));
         assert!(
             Arc::ptr_eq(
-                client_api
+                management_apis
+                    .client
                     .signing_key
                     .as_ref()
                     .expect("management client API should set signing key"),
@@ -1790,7 +1851,8 @@ mod tests {
         );
         assert!(
             Arc::ptr_eq(
-                client_api
+                management_apis
+                    .client
                     .provider_stores
                     .as_ref()
                     .expect("management client API should set provider stores"),
@@ -1800,7 +1862,8 @@ mod tests {
         );
         assert!(
             Arc::ptr_eq(
-                client_api
+                management_apis
+                    .client
                     .credential_repo
                     .as_ref()
                     .expect("management client API should keep credential repo"),
@@ -1809,12 +1872,12 @@ mod tests {
             "shared HTTP state must keep the credential repository wiring"
         );
         assert!(
-            Arc::ptr_eq(&client_api, &http_state.client_api),
+            Arc::ptr_eq(&management_apis.client, &http_state.client_api),
             "management server must reuse the shared HTTP client API instance"
         );
         assert!(
             Arc::ptr_eq(
-                &admin_api,
+                &management_apis.admin,
                 http_state
                     .admin_api
                     .as_ref()
@@ -2221,6 +2284,7 @@ mod tests {
             None,
             cleanup_handle,
             Duration::from_millis(60),
+            false,
         )
         .await;
 
@@ -2232,6 +2296,42 @@ mod tests {
             cleanup_tx.send(()).is_err(),
             "cleanup task should no longer be running after shutdown phase returns"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_runtime_phase_can_defer_management_wait() {
+        let (management_tx, management_rx) = oneshot::channel::<()>();
+        let management_handle = tokio::spawn(async move {
+            let _ = management_rx.await;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let (cleanup_tx, cleanup_rx) = oneshot::channel::<()>();
+        let cleanup_handle = tokio::spawn(async move {
+            let _ = cleanup_rx.await;
+        });
+
+        let deferred_management = shutdown_runtime_phase(
+            None,
+            None,
+            Some(management_handle),
+            cleanup_handle,
+            Duration::from_millis(60),
+            true,
+        )
+        .await;
+
+        assert!(
+            cleanup_tx.send(()).is_err(),
+            "cleanup task should no longer be running after shutdown phase returns"
+        );
+
+        let management_handle =
+            deferred_management.expect("management handle should be returned when deferred");
+        management_tx
+            .send(())
+            .expect("management completion signal should be delivered");
+        await_runtime_server_shutdown("Management server", management_handle, Duration::ZERO).await;
     }
 
     #[tokio::test]

@@ -178,7 +178,7 @@ async fn test_edit_media_sends_notification() {
         playlist_id: Some(playlist.id.clone()),
         name: "Test Media".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: json!({
             "url": "https://example.com/video.mp4"
         }),
@@ -356,7 +356,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
         playlist_id: Some(playlist.id.clone()),
         name: "Test Media".to_string(),
         source_provider: "direct_url".to_string(),
-        provider_instance_name: "direct_url".to_string(),
+        provider_instance_name: Some("direct_url".to_string()),
         source_config: json!({
             "url": "https://example.com/video.mp4"
         }),

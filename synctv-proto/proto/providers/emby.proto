@@ -9,31 +9,15 @@ syntax = "proto3";
 
 package synctv.provider.emby;
 
-// Emby Provider Service
-//
-// Client-facing API for Emby/Jellyfin media server access
-service EmbyProviderService {
-  // Login to Emby/Jellyfin server (validate API key and persist credential)
-  rpc Login(LoginRequest) returns (LoginResponse);
-
-  // List library items (uses stored credential via server_id)
-  rpc List(ListRequest) returns (ListResponse);
-
-  // Get current user info (uses stored credential via server_id)
-  rpc GetMe(GetMeRequest) returns (GetMeResponse);
-
-  // Logout from Emby (delete stored credential)
-  rpc Logout(LogoutRequest) returns (LogoutResponse);
-
-  // Get saved credentials (binds)
-  rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
-}
-
 // Login request
 message LoginRequest {
   string host = 1;
-  string api_key = 2;  // SECURITY: Plaintext credential - requires TLS in transit, do not log
-  string instance_name = 3; // Optional provider instance name
+  string username = 2; // Target Emby/Jellyfin username to bind and validate
+  oneof credential {
+    string password = 3; // SECURITY: Plaintext password - requires TLS in transit.
+    string api_key = 4;  // SECURITY: Plaintext credential - requires TLS in transit.
+  }
+  string instance_name = 5; // Optional provider instance name
 }
 
 // Login response

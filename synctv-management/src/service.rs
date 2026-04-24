@@ -9,31 +9,43 @@ use tonic::{Request, Response, Status};
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
 use crate::proto::{
     management_service_server::ManagementService, AddAdminRequest, AddDirectUrlMediaRequest,
-    AddMediaRequest, AddProviderInstanceRequest, ApproveRoomRequest, ApproveUserRequest,
-    BanMemberRequest, BanRoomRequest, BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest,
-    BatchDeleteRoomsRequest, BatchDeleteUsersRequest, CreatePlaylistRequest,
-    CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
-    DeletePlaylistRequest, DeleteProviderInstanceRequest, DeleteRoomRequest, DeleteUserRequest,
-    DisableProviderInstanceRequest, EditMediaRequest, EnableProviderInstanceRequest,
-    GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-    GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest, GetStreamInfoRequest,
-    GetSystemStatsRequest, GetUserByUsernameRequest, GetUserRequest, GetUserRoomsRequest,
-    KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-    ListMediaRequest, ListPlaylistsRequest, ListProviderInstancesRequest, ListRoomStreamsRequest,
-    ListRoomsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
-    ReconnectProviderInstanceRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
-    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
-    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-    UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
-    UpdatePlaylistRequest, UpdateProviderInstanceRequest, UpdateRoomPasswordRequest,
+    AddMediaRequest, AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
+    AlistLogoutRequest, ApproveRoomRequest, ApproveUserRequest, BanMemberRequest, BanRoomRequest,
+    BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
+    BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
+    BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
+    BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest,
+    CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
+    DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
+    EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
+    EmbyLogoutRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
+    GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
+    GetStreamInfoRequest, GetSystemStatsRequest, GetUserByUsernameRequest, GetUserRequest,
+    GetUserRoomsRequest, KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest,
+    ListAdminsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomStreamsRequest,
+    ListRoomsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, RemoveAdminRequest,
+    ResetRoomSettingsRequest, RoomStatus, SendTestEmailRequest, ShutdownMode as ProtoShutdownMode,
+    StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
+    TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest,
+    UpdateMemberPermissionsRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
     UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
     UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRole, UserStatus,
 };
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
-use synctv_api::impls::{AdminApiImpl, ApiError, ClientApiImpl, ErrorKind};
+use synctv_api::impls::{
+    AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ErrorKind,
+    ProviderCommonApiImpl,
+};
 use synctv_core::models::{UserId, UserRole as CoreUserRole, UserStatus as CoreUserStatus};
 use synctv_core::service::UserService;
-use synctv_proto::{admin as admin_proto, client as client_proto, common as common_proto};
+use synctv_core::Config;
+use synctv_proto::{
+    admin as admin_proto, client as client_proto, common as common_proto,
+    providers::{
+        alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
+        emby as emby_proto, rtmp as rtmp_proto,
+    },
+};
 
 struct ValidatedManagementUser {
     user_id: UserId,
@@ -88,28 +100,58 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[derive(Clone)]
 pub struct ManagementServiceImpl {
+    config: Arc<Config>,
     user_service: Arc<UserService>,
     admin_api: Arc<AdminApiImpl>,
+    provider_common_api: Arc<ProviderCommonApiImpl>,
     client_api: Arc<ClientApiImpl>,
+    alist_api: Arc<AlistApiImpl>,
+    bilibili_api: Arc<BilibiliApiImpl>,
+    emby_api: Arc<EmbyApiImpl>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
 }
 
+pub struct ManagementServiceDependencies {
+    pub config: Arc<Config>,
+    pub user_service: Arc<UserService>,
+    pub admin_api: Arc<AdminApiImpl>,
+    pub provider_common_api: Arc<ProviderCommonApiImpl>,
+    pub client_api: Arc<ClientApiImpl>,
+    pub alist_api: Arc<AlistApiImpl>,
+    pub bilibili_api: Arc<BilibiliApiImpl>,
+    pub emby_api: Arc<EmbyApiImpl>,
+    pub lifecycle_controller: Arc<ManagementLifecycleController>,
+    pub management_auth_token: String,
+}
+
 impl ManagementServiceImpl {
     #[must_use]
-    pub fn new(
-        user_service: Arc<UserService>,
-        admin_api: Arc<AdminApiImpl>,
-        client_api: Arc<ClientApiImpl>,
-        lifecycle_controller: Arc<ManagementLifecycleController>,
-        management_auth_token: &str,
-    ) -> Self {
-        Self {
+    pub fn new(deps: ManagementServiceDependencies) -> Self {
+        let ManagementServiceDependencies {
+            config,
             user_service,
             admin_api,
+            provider_common_api,
             client_api,
+            alist_api,
+            bilibili_api,
+            emby_api,
             lifecycle_controller,
-            access_controller: ManagementAccessController::new(management_auth_token),
+            management_auth_token,
+        } = deps;
+
+        Self {
+            config,
+            user_service,
+            admin_api,
+            provider_common_api,
+            client_api,
+            alist_api,
+            bilibili_api,
+            emby_api,
+            lifecycle_controller,
+            access_controller: ManagementAccessController::new(&management_auth_token),
         }
     }
 
@@ -153,12 +195,19 @@ impl ManagementServiceImpl {
         Ok(user.id.to_string())
     }
 
-    fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestContext {
-        let ip_address = request
-            .extensions()
-            .get::<tonic::transport::server::TcpConnectInfo>()
-            .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
-            .map(|addr| addr.ip().to_string());
+    async fn resolve_client_actor_and_request<T>(
+        &self,
+        actor_user_id: &str,
+        request: Option<T>,
+    ) -> Result<(String, T), Status> {
+        let actor_user_id = self.resolve_client_actor_user_id(actor_user_id).await?;
+        let request = Self::required_nested_request(request, "request")?;
+        Ok((actor_user_id, request))
+    }
+
+    fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
+        let ip_address =
+            synctv_api::grpc::extract_client_ip(request, &self.config).map(|ip| ip.to_string());
         let user_agent = request
             .metadata()
             .get("user-agent")
@@ -172,6 +221,33 @@ impl ManagementServiceImpl {
 
     fn proto_response<T>(value: T) -> Response<T> {
         Response::new(value)
+    }
+
+    fn required_nested_request<T>(
+        request: Option<T>,
+        request_name: &'static str,
+    ) -> Result<T, Status> {
+        request.ok_or_else(|| Status::invalid_argument(format!("{request_name} is required")))
+    }
+
+    fn optional_instance_name(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn map_api_result<T>(result: Result<T, ApiError>) -> Result<T, Status> {
+        result.map_err(|error| map_api_error(&error))
+    }
+
+    fn map_into_api_result<T, E>(result: Result<T, E>) -> Result<T, Status>
+    where
+        ApiError: From<E>,
+    {
+        result.map_err(|error| map_api_error(&ApiError::from(error)))
     }
 }
 
@@ -270,7 +346,7 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::AddAdminResponse>, Status> {
         self.check_root(&request)?;
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -292,7 +368,7 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::RemoveAdminResponse>, Status> {
         self.check_root(&request)?;
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -333,7 +409,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<CreateUserRequest>,
     ) -> Result<Response<admin_proto::CreateUserResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -359,7 +435,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<DeleteUserRequest>,
     ) -> Result<Response<admin_proto::DeleteUserResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -380,7 +456,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BanUserRequest>,
     ) -> Result<Response<admin_proto::BanUserResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -403,7 +479,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UnbanUserRequest>,
     ) -> Result<Response<admin_proto::UnbanUserResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -424,7 +500,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<ApproveUserRequest>,
     ) -> Result<Response<admin_proto::ApproveUserResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -445,7 +521,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateUserRoleRequest>,
     ) -> Result<Response<admin_proto::UpdateUserRoleResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -468,7 +544,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<admin_proto::UpdateUserPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -492,7 +568,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateUserUsernameRequest>,
     ) -> Result<Response<admin_proto::UpdateUserUsernameResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -551,7 +627,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BatchBanUsersRequest>,
     ) -> Result<Response<admin_proto::BatchBanUsersResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -574,7 +650,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BatchDeleteUsersRequest>,
     ) -> Result<Response<admin_proto::BatchDeleteUsersResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -713,7 +789,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateMemberPermissionsRequest>,
     ) -> Result<Response<client_proto::UpdateMemberPermissionsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -744,7 +820,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<KickMemberRequest>,
     ) -> Result<Response<client_proto::KickMemberResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -768,7 +844,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BanMemberRequest>,
     ) -> Result<Response<client_proto::BanMemberResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -793,7 +869,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UnbanMemberRequest>,
     ) -> Result<Response<client_proto::UnbanMemberResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -895,7 +971,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateRoomPasswordRequest>,
     ) -> Result<Response<admin_proto::UpdateRoomPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -921,7 +997,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BanRoomRequest>,
     ) -> Result<Response<admin_proto::BanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -943,7 +1019,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UnbanRoomRequest>,
     ) -> Result<Response<admin_proto::UnbanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -964,7 +1040,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<DeleteRoomRequest>,
     ) -> Result<Response<admin_proto::DeleteRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -985,7 +1061,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<ApproveRoomRequest>,
     ) -> Result<Response<admin_proto::ApproveRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1006,7 +1082,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BatchBanRoomsRequest>,
     ) -> Result<Response<admin_proto::BatchBanRoomsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1028,7 +1104,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<BatchDeleteRoomsRequest>,
     ) -> Result<Response<admin_proto::BatchDeleteRoomsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1049,7 +1125,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<StartPlaybackRequest>,
     ) -> Result<Response<client_proto::StartPlaybackResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1073,7 +1149,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<StopPlaybackRequest>,
     ) -> Result<Response<client_proto::StopPlaybackResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1091,7 +1167,11 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .get_playback(&req.room_id, &validated.user_id)
+            .get_playback(
+                &req.room_id,
+                &validated.user_id,
+                req.playback_client_profile,
+            )
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1100,18 +1180,22 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_publish_key(
         &self,
         request: Request<CreatePublishKeyRequest>,
-    ) -> Result<Response<client_proto::CreatePublishKeyResponse>, Status> {
-        self.check_admin_get_validated(&request)?;
+    ) -> Result<Response<rtmp_proto::CreatePublishKeyResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let actor_user_id = self
-            .resolve_client_actor_user_id(&req.actor_user_id)
-            .await?;
+        let actor_user_id = UserId::from_string(
+            self.resolve_client_actor_user_id(&req.actor_user_id)
+                .await?,
+        );
         let response = self
-            .client_api
-            .create_publish_key(
-                &actor_user_id,
+            .admin_api
+            .create_publish_key_for_actor(
                 &req.room_id,
-                client_proto::CreatePublishKeyRequest { id: req.media_id },
+                &req.media_id,
+                &actor_user_id,
+                &validated.user_id,
+                &ctx,
             )
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -1121,7 +1205,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,
-    ) -> Result<Response<client_proto::GetStreamInfoResponse>, Status> {
+    ) -> Result<Response<rtmp_proto::GetStreamInfoResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -1471,24 +1555,380 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
-    async fn list_provider_instances(
+    async fn alist_login(
         &self,
-        request: Request<ListProviderInstancesRequest>,
-    ) -> Result<Response<admin_proto::ListProviderInstancesResponse>, Status> {
+        request: Request<AlistLoginRequest>,
+    ) -> Result<Response<alist_proto::LoginResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.alist_api
+                .login(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn alist_list(
+        &self,
+        request: Request<AlistListRequest>,
+    ) -> Result<Response<alist_proto::ListResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.alist_api
+                .list(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn alist_get_me(
+        &self,
+        request: Request<AlistGetMeRequest>,
+    ) -> Result<Response<alist_proto::GetMeResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.alist_api
+                .get_me(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn alist_logout(
+        &self,
+        request: Request<AlistLogoutRequest>,
+    ) -> Result<Response<alist_proto::LogoutResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let response = Self::map_into_api_result(
+            self.alist_api
+                .logout(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn alist_get_binds(
+        &self,
+        request: Request<AlistGetBindsRequest>,
+    ) -> Result<Response<alist_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_api_result(
+            self.alist_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn emby_login(
+        &self,
+        request: Request<EmbyLoginRequest>,
+    ) -> Result<Response<emby_proto::LoginResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.emby_api
+                .login(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn emby_list(
+        &self,
+        request: Request<EmbyListRequest>,
+    ) -> Result<Response<emby_proto::ListResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.emby_api
+                .list(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn emby_get_me(
+        &self,
+        request: Request<EmbyGetMeRequest>,
+    ) -> Result<Response<emby_proto::GetMeResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.emby_api
+                .get_me(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn emby_logout(
+        &self,
+        request: Request<EmbyLogoutRequest>,
+    ) -> Result<Response<emby_proto::LogoutResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let response = Self::map_into_api_result(
+            self.emby_api.logout(&actor_user_id, provider_request).await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn emby_get_binds(
+        &self,
+        request: Request<EmbyGetBindsRequest>,
+    ) -> Result<Response<emby_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_api_result(
+            self.emby_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_parse(
+        &self,
+        request: Request<BilibiliParseRequest>,
+    ) -> Result<Response<bilibili_proto::ParseResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .parse(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_login_qr(
+        &self,
+        request: Request<BilibiliLoginQrRequest>,
+    ) -> Result<Response<bilibili_proto::QrCodeResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (_actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .login_qr(provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_check_qr(
+        &self,
+        request: Request<BilibiliCheckQrRequest>,
+    ) -> Result<Response<bilibili_proto::QrStatusResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .check_qr(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_get_captcha(
+        &self,
+        request: Request<BilibiliGetCaptchaRequest>,
+    ) -> Result<Response<bilibili_proto::CaptchaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (_actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .get_captcha(provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_send_sms(
+        &self,
+        request: Request<BilibiliSendSmsRequest>,
+    ) -> Result<Response<bilibili_proto::SendSmsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (_actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .send_sms(provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_login_sms(
+        &self,
+        request: Request<BilibiliLoginSmsRequest>,
+    ) -> Result<Response<bilibili_proto::LoginSmsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .login_sms(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_get_user_info(
+        &self,
+        request: Request<BilibiliGetUserInfoRequest>,
+    ) -> Result<Response<bilibili_proto::UserInfoResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .get_user_info(&actor_user_id, provider_request, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_logout(
+        &self,
+        request: Request<BilibiliLogoutRequest>,
+    ) -> Result<Response<bilibili_proto::LogoutResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .logout(&actor_user_id, provider_request)
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn bilibili_get_binds(
+        &self,
+        request: Request<BilibiliGetBindsRequest>,
+    ) -> Result<Response<bilibili_proto::GetBindsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, provider_request) = self
+            .resolve_client_actor_and_request(&req.actor_user_id, req.request)
+            .await?;
+        let instance_name = Self::optional_instance_name(&provider_request.instance_name);
+        let response = Self::map_api_result(
+            self.bilibili_api
+                .get_binds(&actor_user_id, instance_name.as_deref())
+                .await,
+        )?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_available_provider_instances(
+        &self,
+        request: Request<provider_common_proto::ListAvailableProviderInstancesRequest>,
+    ) -> Result<Response<provider_common_proto::ProviderInstancesResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .list_provider_instances(admin_proto::ListProviderInstancesRequest {
-                page: req.page,
-                page_size: req.page_size,
-                provider_type: req.provider_type,
-                search: req.search,
-                enabled: req.enabled,
-                tls: req.tls,
-                sort_by: req.sort_by,
-                sort_direction: req.sort_direction,
-            })
+            .provider_common_api
+            .list_available_provider_instances(req)
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_provider_backends(
+        &self,
+        request: Request<provider_common_proto::ListProviderBackendsRequest>,
+    ) -> Result<Response<provider_common_proto::ProviderBackendsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .provider_common_api
+            .list_provider_backends(req)
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_provider_instances(
+        &self,
+        request: Request<provider_common_proto::ListProviderInstancesRequest>,
+    ) -> Result<Response<provider_common_proto::ListProviderInstancesResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .provider_common_api
+            .list_provider_instances(req)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1496,27 +1936,14 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn add_provider_instance(
         &self,
-        request: Request<AddProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::AddProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::AddProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::AddProviderInstanceResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .add_provider_instance(
-                admin_proto::AddProviderInstanceRequest {
-                    name: req.name,
-                    endpoint: req.endpoint,
-                    comment: req.comment,
-                    timeout_seconds: req.timeout_seconds,
-                    tls: req.tls,
-                    insecure_tls: req.insecure_tls,
-                    providers: req.providers,
-                    config: req.config_json,
-                },
-                &validated.user_id,
-                &ctx,
-            )
+            .provider_common_api
+            .add_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1524,32 +1951,14 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn update_provider_instance(
         &self,
-        request: Request<UpdateProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::UpdateProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::UpdateProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::UpdateProviderInstanceResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let comment = if req.clear_comment {
-            Some(String::new())
-        } else {
-            req.comment
-        };
         let response = self
-            .admin_api
-            .update_provider_instance(
-                admin_proto::UpdateProviderInstanceRequest {
-                    name: req.name,
-                    endpoint: req.endpoint,
-                    comment,
-                    timeout_seconds: req.timeout_seconds,
-                    tls: req.tls,
-                    insecure_tls: req.insecure_tls,
-                    providers: req.providers,
-                    config: req.config_json,
-                },
-                &validated.user_id,
-                &ctx,
-            )
+            .provider_common_api
+            .update_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1557,18 +1966,14 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn delete_provider_instance(
         &self,
-        request: Request<DeleteProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::DeleteProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::DeleteProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::DeleteProviderInstanceResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .delete_provider_instance(
-                admin_proto::DeleteProviderInstanceRequest { name: req.name },
-                &validated.user_id,
-                &ctx,
-            )
+            .provider_common_api
+            .delete_provider_instance(req, &validated.user_id, &ctx)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1576,18 +1981,14 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn reconnect_provider_instance(
         &self,
-        request: Request<ReconnectProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::ReconnectProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::ReconnectProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::ReconnectProviderInstanceResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .reconnect_provider_instance(
-                admin_proto::ReconnectProviderInstanceRequest { name: req.name },
-                &validated.user_id,
-                &ctx,
-            )
+            .provider_common_api
+            .reconnect_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1595,13 +1996,13 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn enable_provider_instance(
         &self,
-        request: Request<EnableProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::EnableProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::EnableProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::EnableProviderInstanceResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .enable_provider_instance(admin_proto::EnableProviderInstanceRequest { name: req.name })
+            .provider_common_api
+            .enable_provider_instance(req, None)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1609,15 +2010,13 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn disable_provider_instance(
         &self,
-        request: Request<DisableProviderInstanceRequest>,
-    ) -> Result<Response<admin_proto::DisableProviderInstanceResponse>, Status> {
+        request: Request<provider_common_proto::DisableProviderInstanceRequest>,
+    ) -> Result<Response<provider_common_proto::DisableProviderInstanceResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
-            .admin_api
-            .disable_provider_instance(admin_proto::DisableProviderInstanceRequest {
-                name: req.name,
-            })
+            .provider_common_api
+            .disable_provider_instance(req, None)
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -1628,7 +2027,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<admin_proto::GetSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let response = self
             .admin_api
             .get_settings(admin_proto::GetSettingsRequest {}, &validated.user_id, &ctx)
@@ -1642,7 +2041,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<GetSettingsGroupRequest>,
     ) -> Result<Response<admin_proto::GetSettingsGroupResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1661,7 +2060,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<admin_proto::UpdateSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
@@ -1733,7 +2132,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<KickStreamRequest>,
     ) -> Result<Response<admin_proto::KickStreamResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
-        let ctx = Self::grpc_request_context(&request);
+        let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         self.admin_api
             .kick_stream(

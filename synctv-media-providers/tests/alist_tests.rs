@@ -211,6 +211,49 @@ async fn test_alist_client_fs_list_success() {
 }
 
 #[tokio::test]
+async fn test_alist_client_fs_list_accepts_rfc3339_timestamps() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "content": [
+                    {
+                        "name": "config.json",
+                        "size": 2446,
+                        "is_dir": false,
+                        "modified": "2026-04-23T12:05:17.760140848Z",
+                        "sign": "sig",
+                        "thumb": "",
+                        "type": 4
+                    }
+                ],
+                "total": 1,
+                "readme": "",
+                "write": true,
+                "provider": "Local",
+                "filtered_total": 1,
+                "page": 1,
+                "per_page": 50,
+                "has_more": false,
+                "pages_total": 1
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client.fs_list("/local", 1, 50, None).await.unwrap();
+    assert_eq!(resp.total, 1);
+    assert_eq!(resp.content.len(), 1);
+    assert_eq!(resp.content[0].name, "config.json");
+    assert!(resp.content[0].modified > 0);
+}
+
+#[tokio::test]
 async fn test_alist_client_5xx_retries() {
     let server = MockServer::start().await;
 
@@ -446,6 +489,42 @@ async fn test_alist_client_me_success() {
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.me().await.unwrap();
     assert_eq!(resp.id, 1);
+    assert_eq!(resp.username, "admin");
+    assert_eq!(resp.base_path, "/");
+    assert_eq!(resp.role, 2);
+    assert!(!resp.disabled);
+    assert!(!resp.otp);
+}
+
+#[tokio::test]
+async fn test_alist_client_me_accepts_role_array_response() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "id": 2,
+                "username": "admin",
+                "password": "",
+                "base_path": "/",
+                "role": [2],
+                "disabled": false,
+                "permission": 65535,
+                "sso_id": "",
+                "otp": false,
+                "role_names": ["admin"],
+                "permissions": [{"path": "/", "permission": 65535}]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client.me().await.unwrap();
+    assert_eq!(resp.id, 2);
     assert_eq!(resp.username, "admin");
     assert_eq!(resp.base_path, "/");
     assert_eq!(resp.role, 2);

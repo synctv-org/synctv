@@ -1,17 +1,20 @@
 use synctv_proto::client::{
-    AddMediaRequest, CheckRoomRequest, CreatePublishKeyRequest, CreateWebSocketTicketRequest,
-    DeleteEntriesRequest, DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest,
-    EditMediaRequest, ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
+    AddMediaRequest, CheckRoomRequest, CreateWebSocketTicketRequest, DeleteEntriesRequest,
+    DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest, EditMediaRequest,
+    ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
     GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
-    GetRoomMembersRequest, GetRoomRequest, GetStreamInfoRequest, ListMyRoomsRequest,
-    ListNotificationsRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
-    ListProviderBackendsRequest, ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest,
-    MovePlaylistRequest, OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest,
-    ProviderInstanceQuery, ProviderProxyPathRequest, RoomMediaTargetPathRequest,
-    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
+    GetRoomMembersRequest, GetRoomRequest, ListMyRoomsRequest, ListNotificationsRequest,
+    ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomStreamsRequest, MarkAsReadRequest,
+    MoveMediaRequest, MovePlaylistRequest, OAuth2ProviderInstancePathRequest,
+    OAuth2ProviderTypePathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
+    RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
     StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
     UpdatePlaybackRequest, UpdatePlaylistRequest, WebSocketConnectRequest,
 };
+use synctv_proto::providers::common::{
+    ListProviderBackendsRequest, ProviderInstanceQuery, ProviderProxyPathRequest,
+};
+use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
 
 #[test]
 fn test_add_media_request_allows_room_root_without_playlist_id() {
@@ -586,8 +589,8 @@ fn test_list_room_streams_request_rejects_too_long_search() {
         page: 1,
         page_size: 20,
         search: "a".repeat(101),
-        sort_by: synctv_proto::client::RoomStreamListSortBy::Unspecified as i32,
-        sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        sort_by: RoomStreamListSortBy::Unspecified as i32,
+        sort_direction: SortDirection::Unspecified as i32,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -637,17 +640,19 @@ fn test_check_room_request_rejects_invalid_room_id() {
 #[test]
 fn test_create_publish_key_request_rejects_invalid_media_id() {
     let request = CreatePublishKeyRequest {
-        id: "bad-media".to_string(),
+        room_id: "room1234_abx".to_string(),
+        media_id: "bad-media".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("id"), "{message}");
+    assert!(message.contains("media_id"), "{message}");
 }
 
 #[test]
 fn test_get_stream_info_request_rejects_invalid_media_id() {
     let request = GetStreamInfoRequest {
+        room_id: "room1234_abx".to_string(),
         media_id: "bad-media".to_string(),
     };
 

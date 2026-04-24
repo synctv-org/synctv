@@ -12,9 +12,10 @@ use synctv_core::Config;
 // Import generated proto types from synctv_proto
 use crate::proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
 use crate::proto::providers::bilibili::{
-    CaptchaResponse, CheckQrRequest, GetCaptchaRequest, LoginQrRequest, LoginSmsRequest,
-    LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse,
-    QrStatusResponse, SendSmsRequest, SendSmsResponse, UserInfoRequest, UserInfoResponse,
+    CaptchaResponse, CheckQrRequest, GetBindsRequest, GetBindsResponse, GetCaptchaRequest,
+    LoginQrRequest, LoginSmsRequest, LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest,
+    ParseResponse, QrCodeResponse, QrStatusResponse, SendSmsRequest, SendSmsResponse,
+    UserInfoRequest, UserInfoResponse,
 };
 
 /// Bilibili Provider gRPC Service
@@ -304,6 +305,33 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                     api.logout(authenticated.user_id.as_str(), req)
                         .await
                         .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn get_binds(
+        &self,
+        request: Request<GetBindsRequest>,
+    ) -> Result<Response<GetBindsResponse>, Status> {
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
+        let req = request.get_ref();
+        let instance_name = extract_instance_name(&req.instance_name);
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    api.get_binds(authenticated.user_id.as_str(), instance_name.as_deref())
+                        .await
                 },
             )
             .await

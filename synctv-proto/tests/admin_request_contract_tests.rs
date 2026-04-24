@@ -3,10 +3,10 @@ use synctv_proto::admin::{
     BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
     DeleteRoomRequest, DeleteUserRequest, GetRoomMembersRequest, GetRoomRequest,
     GetRoomSettingsRequest, GetSettingsGroupRequest, GetUserRequest, GetUserRoomsRequest,
-    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListProviderInstancesRequest,
-    ListRoomsRequest, ListUsersRequest, ProviderInstancePathRequest, RemoveAdminRequest,
-    ResetRoomSettingsRequest, RoomPathRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateUserRoleRequest, UserPathRequest,
+    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListRoomsRequest,
+    ListUsersRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomPathRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
+    UpdateUserRoleRequest, UserPathRequest,
 };
 
 #[test]
@@ -331,42 +331,6 @@ fn test_admin_get_room_members_request_rejects_too_long_search() {
 }
 
 #[test]
-fn test_admin_list_provider_instances_request_rejects_too_long_search() {
-    let request = ListProviderInstancesRequest {
-        page: 1,
-        page_size: 20,
-        provider_type: String::new(),
-        search: "a".repeat(101),
-        enabled: None,
-        tls: None,
-        sort_by: 0,
-        sort_direction: 0,
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("search"), "{message}");
-}
-
-#[test]
-fn test_admin_list_provider_instances_request_rejects_invalid_provider_type_format() {
-    let request = ListProviderInstancesRequest {
-        page: 1,
-        page_size: 20,
-        provider_type: "Bad Provider".to_string(),
-        search: String::new(),
-        enabled: None,
-        tls: None,
-        sort_by: 0,
-        sort_direction: 0,
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("provider_type"), "{message}");
-}
-
-#[test]
 fn test_admin_settings_group_request_rejects_invalid_group_name() {
     let request = GetSettingsGroupRequest {
         group: "bad group".to_string(),
@@ -375,17 +339,6 @@ fn test_admin_settings_group_request_rejects_invalid_group_name() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("group"), "{message}");
-}
-
-#[test]
-fn test_admin_provider_instance_path_request_rejects_invalid_name() {
-    let request = ProviderInstancePathRequest {
-        name: "../../../etc/passwd".to_string(),
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("name"), "{message}");
 }
 
 #[test]

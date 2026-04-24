@@ -58,12 +58,12 @@ message NewSMSReq {
   string validate = 4;
 }
 
-message NewSMSResp { string captchaKey = 1; }
+message NewSMSResp { string captcha_key = 1; }
 
 message LoginWithSMSReq {
   string phone = 1;
   string code = 2;
-  string captchaKey = 3;
+  string captcha_key = 3;
 }
 
 message LoginWithSMSResp { map<string, string> cookies = 1; }
@@ -71,7 +71,7 @@ message LoginWithSMSResp { map<string, string> cookies = 1; }
 message VideoPageInfo {
   string title = 2;
   string actors = 3;
-  repeated VideoInfo videoInfos = 4;
+  repeated VideoInfo video_infos = 4;
 }
 
 message VideoInfo {
@@ -79,7 +79,7 @@ message VideoInfo {
   uint64 cid = 3;
   uint64 epid = 4;
   string name = 5;
-  string coverImage = 6;
+  string cover_image = 6;
   bool live = 7;
 }
 
@@ -91,9 +91,9 @@ message ParseVideoPageReq {
 }
 
 message VideoURL {
-  repeated string acceptDescription = 1;
-  repeated uint64 acceptQuality = 2;
-  uint64 currentQuality = 3;
+  repeated string accept_description = 1;
+  repeated uint64 accept_quality = 2;
+  uint64 current_quality = 3;
   string url = 4;
   repeated VideoSegment segments = 5;
 }
@@ -121,47 +121,47 @@ message GetDashVideoURLReq {
 
 message GetDashVideoURLResp {
   DashInfo dash = 1;
-  DashInfo hevcDash = 2;
+  DashInfo hevc_dash = 2;
 }
 
 // DASH stream information
 message DashInfo {
   double duration = 1;
-  double minBufferTime = 2;
-  repeated VideoStream videoStreams = 3;
-  repeated AudioStream audioStreams = 4;
+  double min_buffer_time = 2;
+  repeated VideoStream video_streams = 3;
+  repeated AudioStream audio_streams = 4;
 }
 
 // Video stream representation
 message VideoStream {
   uint64 id = 1;
-  string baseUrl = 2;
-  string mimeType = 3;
+  string base_url = 2;
+  string mime_type = 3;
   string codecs = 4;
   uint64 width = 5;
   uint64 height = 6;
-  string frameRate = 7;
+  string frame_rate = 7;
   uint64 bandwidth = 8;
-  uint64 startWithSap = 9;
-  SegmentBase segmentBase = 10;
+  uint64 start_with_sap = 9;
+  SegmentBase segment_base = 10;
 }
 
 // Audio stream representation
 message AudioStream {
   uint64 id = 1;
-  string baseUrl = 2;
-  string mimeType = 3;
+  string base_url = 2;
+  string mime_type = 3;
   string codecs = 4;
   uint64 bandwidth = 5;
-  uint64 startWithSap = 6;
-  SegmentBase segmentBase = 7;
-  uint32 audioSamplingRate = 8;
+  uint64 start_with_sap = 6;
+  SegmentBase segment_base = 7;
+  uint32 audio_sampling_rate = 8;
 }
 
 // Segment base information
 message SegmentBase {
-  string indexRange = 1;
-  string initializationRange = 2;
+  string index_range = 1;
+  string initialization_range = 2;
 }
 
 message GetSubtitlesReq {
@@ -194,16 +194,16 @@ message GetDashPGCURLReq {
 
 message GetDashPGCURLResp {
   DashInfo dash = 1;
-  DashInfo hevcDash = 2;
+  DashInfo hevc_dash = 2;
 }
 
 message UserInfoReq { map<string, string> cookies = 1; }
 
 message UserInfoResp {
-  bool isLogin = 1;
+  bool is_login = 1;
   string username = 2;
   string face = 3;
-  bool isVip = 4;
+  bool is_vip = 4;
 }
 
 message MatchReq { string url = 1; }
@@ -226,17 +226,17 @@ message LiveStream {
 }
 
 message GetLiveStreamsResp {
-  repeated LiveStream liveStreams = 1;
+  repeated LiveStream live_streams = 1;
 }
 
 message ParseLivePageReq {
   map<string, string> cookies = 1;
-  uint64 roomID = 2;
+  uint64 room_id = 2;
 }
 
 message GetLiveDanmuInfoReq {
   map<string, string> cookies = 1;
-  uint64 roomID = 2;
+  uint64 room_id = 2;
 }
 
 message GetLiveDanmuInfoResp {
@@ -247,5 +247,5 @@ message GetLiveDanmuInfoResp {
     uint32 ws_port = 4;
   }
   string token = 1;
-  repeated Host hostList = 2;
+  repeated Host host_list = 2;
 }

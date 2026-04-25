@@ -23,6 +23,7 @@ pub struct ProviderPlaybackDeps<'a> {
 
 fn build_provider_context<'a>(
     user_id: &'a UserId,
+    credential_owner_id: Option<&'a UserId>,
     room_id: &'a RoomId,
     media_id: Option<&'a MediaId>,
     provider_instance_name: Option<&'a str>,
@@ -33,6 +34,9 @@ fn build_provider_context<'a>(
         .with_room_id(room_id.as_str())
         .with_playback_client_profile(deps.playback_client_profile.cloned())
         .with_request_context(deps.request_context.cloned());
+    if let Some(credential_owner_id) = credential_owner_id {
+        ctx = ctx.with_credential_owner_id(credential_owner_id.as_str());
+    }
     if let Some(media_id) = media_id {
         ctx = ctx.with_media_id(media_id.as_str());
     }
@@ -95,6 +99,7 @@ pub async fn resolve_provider_playback_url(
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
     let ctx = build_provider_context(
         user_id,
+        media.creator_id.as_ref(),
         room_id,
         Some(media_id),
         media.provider_instance_name.as_deref(),
@@ -131,6 +136,7 @@ pub async fn resolve_provider_playback_result(
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
     let ctx = build_provider_context(
         user_id,
+        media.creator_id.as_ref(),
         room_id,
         Some(media_id),
         media.provider_instance_name.as_deref(),

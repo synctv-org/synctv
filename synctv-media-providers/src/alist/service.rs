@@ -11,6 +11,11 @@ use crate::grpc::alist::{
 use async_trait::async_trait;
 use reqwest::Client;
 
+fn non_empty_otp_code(otp_code: &str) -> Option<&str> {
+    let trimmed = otp_code.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
 /// Unified Alist service interface
 ///
 /// This trait defines all Alist operations using proto request/response types.
@@ -88,7 +93,13 @@ impl AlistInterface for AlistService {
             Some(request.password.as_str())
         };
         let http_resp = client
-            .fs_list(&request.path, request.page, request.per_page, password)
+            .fs_list_with_refresh(
+                &request.path,
+                request.page,
+                request.per_page,
+                password,
+                request.refresh,
+            )
             .await?;
 
         Ok(http_resp.into())
@@ -152,11 +163,23 @@ impl AlistInterface for AlistService {
         let mut client = AlistClient::with_http_client(&request.host, self.client.clone())?;
         match request.credential {
             Some(crate::grpc::alist::login_req::Credential::Password(password)) => {
-                client.login(&request.username, &password, false).await
+                client
+                    .login_with_otp(
+                        &request.username,
+                        &password,
+                        false,
+                        non_empty_otp_code(&request.otp_code),
+                    )
+                    .await
             }
             Some(crate::grpc::alist::login_req::Credential::HashedPassword(hashed_password)) => {
                 client
-                    .login(&request.username, &hashed_password, true)
+                    .login_with_otp(
+                        &request.username,
+                        &hashed_password,
+                        true,
+                        non_empty_otp_code(&request.otp_code),
+                    )
                     .await
             }
             None => Err(AlistError::InvalidConfig(

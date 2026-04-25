@@ -3,7 +3,8 @@
 // This is the client-facing gRPC API for Bilibili provider
 //
 // SECURITY: This service transmits Bilibili session cookies during login only.
-// After login, credentials are stored server-side and referenced by server_id.
+// After login, credentials are stored server-side as the user's single global
+// Bilibili binding.
 // Deployments MUST use TLS for all connections to this service.
 
 syntax = "proto3";
@@ -13,8 +14,7 @@ package synctv.provider.bilibili;
 // Parse video URL request
 message ParseRequest {
   string url = 1;
-  string server_id = 2; // Stored credential identifier (use stored cookies)
-  string instance_name = 3; // Optional provider instance name
+  string instance_name = 2; // Optional provider instance name
 }
 
 // Parse video URL response
@@ -64,7 +64,6 @@ enum QRLoginStatus {
 // QR status response
 message QRStatusResponse {
   QRLoginStatus status = 1;
-  string server_id = 2; // Stored credential identifier returned after successful login
 }
 
 // Get captcha request
@@ -102,14 +101,11 @@ message LoginSMSRequest {
 }
 
 // Login with SMS response
-message LoginSMSResponse {
-  string server_id = 1; // Stored credential identifier returned after successful login
-}
+message LoginSMSResponse {}
 
 // User info request
 message UserInfoRequest {
-  string server_id = 1; // Stored credential identifier
-  string instance_name = 2; // Optional provider instance name
+  string instance_name = 1; // Optional provider instance name
 }
 
 // User info response
@@ -122,8 +118,7 @@ message UserInfoResponse {
 
 // Logout request
 message LogoutRequest {
-  string server_id = 1; // Which credential to unbind
-  string instance_name = 2; // Optional provider instance name
+  string instance_name = 1; // Optional provider instance name
 }
 
 // Logout response
@@ -144,6 +139,5 @@ message GetBindsResponse {
 // Saved credential information
 message BindInfo {
   string id = 1;
-  string server_id = 2;
-  int64 created_at = 3; // Unix epoch timestamp
+  int64 created_at = 2; // Unix epoch timestamp
 }

@@ -3,8 +3,19 @@
 //! Tests for path validation, client creation, and HTTP API interactions using wiremock.
 
 #![allow(clippy::unwrap_used)]
+use serde_json::json;
+use synctv_media_providers::alist::{AlistInterface, AlistService};
+use synctv_media_providers::grpc::alist::{
+    alist_client::AlistClient as GrpcAlistClient, alist_server::AlistServer, login_req, FsGetReq,
+    FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq,
+};
+use synctv_media_providers::grpc::AlistService as GrpcAlistService;
 use synctv_media_providers::AlistClient;
-use wiremock::matchers::{method, path};
+use testcontainers::core::{CmdWaitFor, ExecCommand, IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use tonic::transport::Server;
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // validate_path is a private function, but we test it indirectly through the public API
@@ -177,6 +188,44 @@ async fn test_alist_client_fs_get_success() {
 }
 
 #[tokio::test]
+async fn test_alist_client_fs_get_sends_auth_headers_and_password() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/get"))
+        .and(header("authorization", "token123"))
+        .and(header("origin", server.uri()))
+        .and(body_json(json!({
+            "path": "/protected/movie.mkv",
+            "password": "dir-password"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "name": "movie.mkv",
+                "size": 4096,
+                "is_dir": false,
+                "modified": "2026-04-24T19:08:51.041866104Z",
+                "created": "2026-04-24T19:08:51.041866104Z",
+                "raw_url": "https://cdn.example.com/movie.mkv",
+                "provider": "Local",
+                "related": null
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client
+        .fs_get("/protected/movie.mkv", Some("dir-password"))
+        .await
+        .unwrap();
+    assert_eq!(resp.name, "movie.mkv");
+    assert!(resp.related.is_empty());
+}
+
+#[tokio::test]
 async fn test_alist_client_fs_list_success() {
     let server = MockServer::start().await;
 
@@ -208,6 +257,44 @@ async fn test_alist_client_fs_list_success() {
     assert_eq!(resp.content[0].name, "file1.mp4");
     assert!(!resp.content[0].is_dir);
     assert!(resp.content[1].is_dir);
+}
+
+#[tokio::test]
+async fn test_alist_client_fs_list_with_refresh_sends_full_request_and_accepts_null_content() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/list"))
+        .and(header("authorization", "token123"))
+        .and(body_json(json!({
+            "path": "/empty",
+            "password": "dir-password",
+            "page": 2,
+            "per_page": 25,
+            "refresh": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "content": null,
+                "total": 0,
+                "readme": "",
+                "write": true,
+                "provider": "Local"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client
+        .fs_list_with_refresh("/empty", 2, 25, Some("dir-password"), true)
+        .await
+        .unwrap();
+    assert_eq!(resp.total, 0);
+    assert!(resp.content.is_empty());
+    assert!(resp.write);
 }
 
 #[tokio::test]
@@ -374,6 +461,45 @@ async fn test_alist_client_fs_other_no_preview() {
     assert!(resp.video_preview_play_info.is_none());
 }
 
+#[tokio::test]
+async fn test_alist_client_get_video_transcode_uses_video_preview_method_and_accepts_null_lists() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/other"))
+        .and(body_json(json!({
+            "path": "/movies/video.mp4",
+            "method": "video_preview",
+            "password": ""
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "drive_id": "drive-abc",
+                "file_id": "file-xyz",
+                "video_preview_play_info": {
+                    "category": "live_transcoding",
+                    "live_transcoding_subtitle_task_list": null,
+                    "live_transcoding_task_list": null,
+                    "meta": null
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client
+        .get_video_transcode("/movies/video.mp4", None)
+        .await
+        .unwrap();
+    let preview = resp.video_preview_play_info.unwrap();
+    assert_eq!(preview.category, "live_transcoding");
+    assert!(preview.live_transcoding_task_list.is_empty());
+    assert!(preview.live_transcoding_subtitle_task_list.is_empty());
+}
+
 // MP4: AlistClient::fs_search wiremock test
 
 #[tokio::test]
@@ -441,6 +567,41 @@ async fn test_alist_client_fs_search_empty_results() {
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client
         .fs_search("/movies", "nonexistent", 0, 1, 20, None)
+        .await
+        .unwrap();
+    assert_eq!(resp.total, 0);
+    assert!(resp.content.is_empty());
+}
+
+#[tokio::test]
+async fn test_alist_client_fs_search_sends_password_and_accepts_null_content() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/search"))
+        .and(header("authorization", "token123"))
+        .and(body_json(json!({
+            "parent": "/movies",
+            "keywords": "clip",
+            "scope": 1,
+            "page": 3,
+            "per_page": 10,
+            "password": "search-password"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "content": null,
+                "total": 0
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let resp = client
+        .fs_search("/movies", "clip", 1, 3, 10, Some("search-password"))
         .await
         .unwrap();
     assert_eq!(resp.total, 0);
@@ -582,6 +743,34 @@ async fn test_alist_client_login_hashed_success() {
 }
 
 #[tokio::test]
+async fn test_alist_client_login_forwards_otp_code() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/auth/login/hash"))
+        .and(body_json(json!({
+            "username": "admin",
+            "password": "hashed-secret",
+            "otp_code": "123456"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {"token": "otp-token"}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut client = AlistClient::new(server.uri()).unwrap();
+    let token = client
+        .login_with_otp("admin", "hashed-secret", true, Some("123456"))
+        .await
+        .unwrap();
+
+    assert_eq!(token, "otp-token");
+}
+
+#[tokio::test]
 async fn test_alist_client_login_hashed_wrong_password() {
     let server = MockServer::start().await;
 
@@ -598,4 +787,376 @@ async fn test_alist_client_login_hashed_wrong_password() {
     let mut client = AlistClient::new(server.uri()).unwrap();
     let result = client.login("admin", "wrong_hash", true).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_alist_service_login_requires_one_credential() {
+    let service = AlistService::new();
+    let err = service
+        .login(LoginReq {
+            host: "http://127.0.0.1:5244".to_string(),
+            username: "admin".to_string(),
+            credential: None,
+            otp_code: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("password"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_alist_service_login_uses_hashed_password_endpoint() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/auth/login/hash"))
+        .and(body_json(json!({
+            "username": "admin",
+            "password": "hashed-secret",
+            "otp_code": ""
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {"token": "hashed-token"}
+        })))
+        .mount(&server)
+        .await;
+
+    let service = AlistService::new();
+    let token = service
+        .login(LoginReq {
+            host: server.uri(),
+            username: "admin".to_string(),
+            credential: Some(login_req::Credential::HashedPassword(
+                "hashed-secret".to_string(),
+            )),
+            otp_code: String::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(token, "hashed-token");
+}
+
+#[tokio::test]
+async fn test_alist_service_fs_list_forwards_refresh_password_and_pagination() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/fs/list"))
+        .and(header("authorization", "token123"))
+        .and(body_json(json!({
+            "path": "/local",
+            "password": "dir-password",
+            "page": 4,
+            "per_page": 8,
+            "refresh": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "message": "success",
+            "data": {
+                "content": [
+                    {"name": "video.mp4", "size": 15, "is_dir": false, "modified": 0, "sign": "", "thumb": "", "type": 2}
+                ],
+                "total": 1,
+                "readme": "",
+                "write": true,
+                "provider": "Local"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let service = AlistService::new();
+    let resp = service
+        .fs_list(FsListReq {
+            host: server.uri(),
+            token: "token123".to_string(),
+            path: "/local".to_string(),
+            password: "dir-password".to_string(),
+            page: 4,
+            per_page: 8,
+            refresh: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(resp.total, 1);
+    assert_eq!(resp.content[0].name, "video.mp4");
+}
+
+struct OpenListFixture {
+    _container: ContainerAsync<GenericImage>,
+    host: String,
+    token: String,
+}
+
+async fn start_openlist_fixture() -> OpenListFixture {
+    const ADMIN_PASSWORD: &str = "synctv-openlist-test";
+    let image = GenericImage::new("openlistteam/openlist", "latest")
+        .with_exposed_port(5244.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("start HTTP server"));
+
+    let container = image
+        .with_user("0:0")
+        .with_env_var("OPENLIST_ADMIN_PASSWORD", ADMIN_PASSWORD)
+        .with_copy_to(
+            "/srv/openlist-files/video.mp4",
+            b"hello-openlist\n".to_vec(),
+        )
+        .with_copy_to(
+            "/srv/openlist-files/folder/subtitle.srt",
+            b"subtitle\n".to_vec(),
+        )
+        .start()
+        .await
+        .unwrap();
+
+    container
+        .exec(
+            ExecCommand::new(["sh", "-c", "mkdir -p /srv/openlist-files/empty"])
+                .with_cmd_ready_condition(CmdWaitFor::exit_code(0)),
+        )
+        .await
+        .unwrap();
+
+    let port = container.get_host_port_ipv4(5244.tcp()).await.unwrap();
+    let host = format!("http://127.0.0.1:{port}");
+    let mut client = AlistClient::new(&host).unwrap();
+    let token = client.login("admin", ADMIN_PASSWORD, false).await.unwrap();
+
+    let addition = json!({
+        "root_folder_path": "/srv/openlist-files",
+        "thumbnail": false,
+        "thumb_cache_folder": "",
+        "show_hidden": true,
+        "mkdir_perm": "777"
+    })
+    .to_string();
+
+    let create_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("{host}/api/admin/storage/create"))
+        .header("Authorization", &token)
+        .json(&json!({
+            "mount_path": "/local",
+            "order": 0,
+            "remark": "synctv test local",
+            "cache_expiration": 30,
+            "web_proxy": false,
+            "webdav_policy": "native_proxy",
+            "down_proxy_url": "",
+            "extract_folder": "front",
+            "enable_sign": false,
+            "driver": "Local",
+            "order_by": "name",
+            "order_direction": "asc",
+            "addition": addition,
+            "disabled": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        create_resp["code"], 200,
+        "storage create failed: {create_resp}"
+    );
+
+    OpenListFixture {
+        _container: container,
+        host,
+        token,
+    }
+}
+
+async fn spawn_alist_grpc_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(AlistServer::new(GrpcAlistService::new()))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker and the openlistteam/openlist image"]
+async fn test_openlist_container_exercises_real_alist_client_api() {
+    let fixture = start_openlist_fixture().await;
+    let client = AlistClient::with_token(&fixture.host, &fixture.token).unwrap();
+
+    let me = client.me().await.unwrap();
+    assert_eq!(me.username, "admin");
+    assert_eq!(me.base_path, "/");
+    assert!(!me.disabled);
+
+    let root = client
+        .fs_list_with_refresh("/local", 1, 20, None, true)
+        .await
+        .unwrap();
+    assert_eq!(root.total, 3);
+    let names: Vec<&str> = root.content.iter().map(|item| item.name.as_str()).collect();
+    assert!(names.contains(&"video.mp4"));
+    assert!(names.contains(&"folder"));
+    assert!(names.contains(&"empty"));
+
+    let empty = client
+        .fs_list_with_refresh("/local/empty", 1, 20, None, true)
+        .await
+        .unwrap();
+    assert_eq!(empty.total, 0);
+    assert!(empty.content.is_empty());
+
+    let file = client.fs_get("/local/video.mp4", None).await.unwrap();
+    assert_eq!(file.name, "video.mp4");
+    assert_eq!(file.size, 15);
+    assert_eq!(file.provider, "Local");
+    assert!(file.related.is_empty());
+    assert!(!file.raw_url.is_empty());
+
+    let body = reqwest::get(&file.raw_url)
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "hello-openlist\n");
+
+    let search_err = client
+        .fs_search("/local", "video", 1, 1, 20, None)
+        .await
+        .unwrap_err();
+    assert!(
+        search_err.to_string().contains("search not available")
+            || search_err.to_string().contains("404"),
+        "unexpected search error: {search_err}"
+    );
+
+    let other_err = client
+        .get_video_transcode("/local/video.mp4", None)
+        .await
+        .unwrap_err();
+    assert!(
+        other_err.to_string().contains("not implement") || other_err.to_string().contains("500"),
+        "unexpected fs/other error: {other_err}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker and the openlistteam/openlist image"]
+async fn test_openlist_container_rejects_wrong_password() {
+    let fixture = start_openlist_fixture().await;
+    let mut client = AlistClient::new(&fixture.host).unwrap();
+    let err = client
+        .login("admin", "wrong-password", false)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("password") || err.to_string().contains("401"),
+        "unexpected login error: {err}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker and the openlistteam/openlist image"]
+async fn test_openlist_container_exercises_real_alist_grpc_service() {
+    let fixture = start_openlist_fixture().await;
+    let (grpc_endpoint, server_handle) = spawn_alist_grpc_server().await;
+    let mut client = GrpcAlistClient::connect(grpc_endpoint).await.unwrap();
+
+    let token = client
+        .login(LoginReq {
+            host: fixture.host.clone(),
+            username: "admin".to_string(),
+            credential: Some(login_req::Credential::Password(
+                "synctv-openlist-test".to_string(),
+            )),
+            otp_code: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .token;
+    assert!(!token.is_empty());
+
+    let me = client
+        .me(MeReq {
+            host: fixture.host.clone(),
+            token: token.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(me.username, "admin");
+    assert_eq!(me.base_path, "/");
+
+    let list = client
+        .fs_list(FsListReq {
+            host: fixture.host.clone(),
+            token: token.clone(),
+            path: "/local".to_string(),
+            password: String::new(),
+            page: 1,
+            per_page: 20,
+            refresh: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(list.total, 3);
+    assert!(list.content.iter().any(|item| item.name == "video.mp4"));
+
+    let file = client
+        .fs_get(FsGetReq {
+            host: fixture.host.clone(),
+            token: token.clone(),
+            path: "/local/video.mp4".to_string(),
+            password: String::new(),
+            user_agent: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(file.name, "video.mp4");
+    assert_eq!(file.size, 15);
+    assert_eq!(file.provider, "Local");
+    assert!(!file.raw_url.is_empty());
+
+    let search_status = client
+        .fs_search(FsSearchReq {
+            host: fixture.host.clone(),
+            token: token.clone(),
+            parent: "/local".to_string(),
+            keywords: "video".to_string(),
+            scope: 1,
+            page: 1,
+            per_page: 20,
+            password: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(search_status.code(), tonic::Code::NotFound);
+
+    let other_status = client
+        .fs_other(FsOtherReq {
+            host: fixture.host,
+            token,
+            path: "/local/video.mp4".to_string(),
+            method: "video_preview".to_string(),
+            password: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(other_status.code(), tonic::Code::Internal);
+
+    server_handle.abort();
 }

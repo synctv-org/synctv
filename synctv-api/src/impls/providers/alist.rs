@@ -12,7 +12,36 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{AlistProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::{get_provider_binds, resolve_bound_instance_name};
+use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
+fn otp_code_from_secret(
+    otp_secret: Option<&str>,
+) -> Result<String, synctv_core::provider::ProviderError> {
+    otp_secret.map_or_else(
+        || Ok(String::new()),
+        |secret| {
+            ProviderCredential::current_alist_otp_code(secret)
+                .map_err(synctv_core::provider::ProviderError::InvalidConfig)
+        },
+    )
+}
+
+fn resolve_alist_login_otp_code(
+    otp_code: &str,
+    otp_secret: Option<&str>,
+) -> Result<String, synctv_core::provider::ProviderError> {
+    let trimmed_code = otp_code.trim();
+    if !trimmed_code.is_empty() {
+        return Ok(trimmed_code.to_string());
+    }
+
+    otp_code_from_secret(otp_secret)
+}
 
 /// Alist API implementation
 ///
@@ -22,6 +51,7 @@ use super::{get_provider_binds, resolve_bound_instance_name};
 pub struct AlistApiImpl {
     provider: Arc<AlistProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
 impl AlistApiImpl {
@@ -35,7 +65,17 @@ impl AlistApiImpl {
         Self {
             provider,
             credential_repo,
+            event_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_event_service(
+        mut self,
+        event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    ) -> Self {
+        self.event_service = event_service;
+        self
     }
 
     /// Resolve Alist credentials from DB using server_id.
@@ -77,7 +117,9 @@ impl AlistApiImpl {
                 host,
                 username,
                 password,
+                otp_secret,
             }) => {
+                let otp_code = otp_code_from_secret(otp_secret.as_deref())?;
                 // Re-login with stored credentials to get a fresh token
                 let login_req = synctv_media_providers::grpc::alist::LoginReq {
                     host: host.clone(),
@@ -87,6 +129,7 @@ impl AlistApiImpl {
                             password,
                         ),
                     ),
+                    otp_code,
                 };
 
                 let token = self
@@ -123,6 +166,9 @@ impl AlistApiImpl {
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
         let (password, hashed) = Self::resolve_login_credential(&req)?;
+        let otp_secret =
+            ProviderCredential::normalize_alist_otp_secret(non_empty_string(&req.otp_secret));
+        let otp_code = resolve_alist_login_otp_code(req.otp_code.as_str(), otp_secret.as_deref())?;
 
         let login_req = synctv_media_providers::grpc::alist::LoginReq {
             host: req.host,
@@ -136,6 +182,7 @@ impl AlistApiImpl {
                     password.clone(),
                 )
             }),
+            otp_code,
         };
 
         let token = self
@@ -154,22 +201,8 @@ impl AlistApiImpl {
             Self::hash_password_for_storage(&password)
         };
 
-        let credential_data = ProviderCredential::alist(host, req.username, stored_password);
-
-        // Upsert: delete existing then create
-        if let Some(existing) = self
-            .credential_repo
-            .get_by_provider_and_server(
-                caller_user_id,
-                synctv_core::provider::AlistProvider::NAME,
-                &server_id,
-            )
-            .await
-            .ok()
-            .flatten()
-        {
-            let _ = self.credential_repo.delete(&existing.id).await;
-        }
+        let credential_data =
+            ProviderCredential::alist(host, req.username, stored_password, otp_secret);
 
         let credential = UserProviderCredential {
             id: UserProviderCredential::new_id(),
@@ -188,13 +221,20 @@ impl AlistApiImpl {
         };
 
         self.credential_repo
-            .create(&credential)
+            .upsert_by_user_provider_server(&credential)
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to persist alist credential: {e}"
                 ))
             })?;
+
+        publish_provider_credential_changed(
+            self.event_service.as_ref(),
+            caller_user_id,
+            synctv_core::provider::AlistProvider::NAME,
+            &server_id,
+        );
 
         Ok(LoginResponse { token, server_id })
     }
@@ -376,6 +416,12 @@ impl AlistApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            publish_provider_credential_changed(
+                self.event_service.as_ref(),
+                caller_user_id,
+                synctv_core::provider::AlistProvider::NAME,
+                &req.server_id,
+            );
         }
 
         Ok(LogoutResponse {
@@ -411,7 +457,7 @@ impl AlistApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::AlistApiImpl;
+    use super::{resolve_alist_login_otp_code, AlistApiImpl};
     use std::sync::Arc;
     use synctv_core::provider::{AlistProvider, ProviderError};
     use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
@@ -433,6 +479,8 @@ mod tests {
             host: "https://alist.example.com".to_string(),
             username: "alice".to_string(),
             credential: None,
+            otp_code: String::new(),
+            otp_secret: String::new(),
             instance_name: String::new(),
         })
         .expect_err("missing both credential forms must fail");
@@ -455,6 +503,8 @@ mod tests {
                     "secret123".to_string(),
                 ),
             ),
+            otp_code: String::new(),
+            otp_secret: String::new(),
             instance_name: String::new(),
         })
         .expect("plaintext password must remain valid");
@@ -473,6 +523,8 @@ mod tests {
                     "sha256:abc123".to_string(),
                 ),
             ),
+            otp_code: String::new(),
+            otp_secret: String::new(),
             instance_name: String::new(),
         })
         .expect("hashed password must remain valid");
@@ -487,6 +539,23 @@ mod tests {
             AlistApiImpl::hash_password_for_storage("kaR6YeYA"),
             "6a977a872a0c445d98fc3d34634705b98716d89d7491637f0ce2f3cb6e5d4d31"
         );
+    }
+
+    #[test]
+    fn resolve_alist_login_otp_prefers_explicit_code_over_secret() {
+        let code = resolve_alist_login_otp_code("654321", Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
+            .expect("explicit OTP code should be accepted");
+
+        assert_eq!(code, "654321");
+    }
+
+    #[test]
+    fn resolve_alist_login_otp_generates_code_from_secret_when_code_missing() {
+        let code = resolve_alist_login_otp_code("", Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
+            .expect("OTP secret should generate a current code");
+
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|ch| ch.is_ascii_digit()));
     }
 
     #[tokio::test]
@@ -504,6 +573,8 @@ mod tests {
                     host: "https://alist.example.com".to_string(),
                     username: "alice".to_string(),
                     credential: None,
+                    otp_code: String::new(),
+                    otp_secret: String::new(),
                     instance_name: String::new(),
                 },
                 None,

@@ -6,6 +6,8 @@ pub struct LoginReq {
     pub host: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub otp_code: ::prost::alloc::string::String,
     #[prost(oneof = "login_req::Credential", tags = "3, 4")]
     pub credential: ::core::option::Option<login_req::Credential>,
 }
@@ -93,6 +95,10 @@ pub mod fs_get_resp {
         pub r#type: u64,
         #[prost(string, tag = "9")]
         pub hashinfo: ::prost::alloc::string::String,
+        #[prost(string, tag = "10")]
+        pub raw_url: ::prost::alloc::string::String,
+        #[prost(string, tag = "11")]
+        pub provider: ::prost::alloc::string::String,
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -173,6 +179,8 @@ pub struct FsOtherResp {
     pub video_preview_play_info: ::core::option::Option<
         fs_other_resp::VideoPreviewPlayInfo,
     >,
+    #[prost(string, tag = "4")]
+    pub provider: ::prost::alloc::string::String,
 }
 /// Nested message and enum types in `FsOtherResp`.
 pub mod fs_other_resp {

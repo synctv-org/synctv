@@ -18,6 +18,7 @@ message LoginReq {
     string password = 3;
     string hashed_password = 4;
   }
+  string otp_code = 5;
 }
 
 message LoginResp { string token = 1; }
@@ -42,6 +43,8 @@ message FsGetResp {
     string thumb = 7;
     uint64 type = 8;
     string hashinfo = 9;
+    string raw_url = 10;
+    string provider = 11;
   }
   string name = 1;
   uint64 size = 2;
@@ -123,6 +126,7 @@ message FsOtherResp {
   string drive_id = 1;
   string file_id = 2;
   VideoPreviewPlayInfo video_preview_play_info = 3;
+  string provider = 4;
 }
 
 message MeReq {

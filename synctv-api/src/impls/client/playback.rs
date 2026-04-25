@@ -13,7 +13,8 @@ use super::convert::{
 };
 use super::ClientApiImpl;
 use crate::impls::playback_snapshot::{
-    dynamic_playback_snapshot_version, playback_snapshot_expires_at,
+    compose_playback_snapshot_version, dynamic_playback_snapshot_version,
+    playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
     static_playback_snapshot_version,
 };
 use crate::impls::ApiError;
@@ -143,6 +144,7 @@ impl ClientApiImpl {
     fn build_provider_context<'a>(
         &'a self,
         user_id: &'a str,
+        credential_owner_id: Option<&'a str>,
         room_id: &'a str,
         provider_instance_name: Option<&'a str>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -153,6 +155,9 @@ impl ClientApiImpl {
             .with_room_id(room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
+        if let Some(credential_owner_id) = credential_owner_id {
+            ctx = ctx.with_credential_owner_id(credential_owner_id);
+        }
         if let Some(provider_instance_name) = provider_instance_name
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -180,6 +185,49 @@ impl ClientApiImpl {
             Some(stores) => ctx.with_store(stores.load(provider.name())),
             None => ctx,
         }
+    }
+
+    async fn playback_snapshot_version_from_state(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<String, ApiError> {
+        let base_version = if let Some(media_id) = &state.playing_media_id {
+            let media = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+            static_playback_snapshot_version(&media)
+        } else if let Some(playlist_id) = &state.playing_playlist_id {
+            let playlist = self
+                .room_service
+                .playlist_service()
+                .get_playlist(playlist_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
+            dynamic_playback_snapshot_version(&playlist)
+        } else {
+            state.version.to_string()
+        };
+
+        let dependencies = self
+            .playback_credential_dependencies_from_state(user_id, room_id, state)
+            .await?;
+        let credential_fingerprint = provider_credential_dependency_fingerprint(
+            self.credential_repo.as_deref(),
+            &dependencies,
+        )
+        .await?;
+
+        Ok(compose_playback_snapshot_version(
+            base_version,
+            credential_fingerprint.as_deref(),
+        ))
     }
 
     async fn build_static_media_playback_result(
@@ -219,6 +267,10 @@ impl ClientApiImpl {
         let ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id,
+                media
+                    .creator_id
+                    .as_ref()
+                    .map(synctv_core::models::UserId::as_str),
                 room_id,
                 media.provider_instance_name.as_deref(),
                 playback_client_profile,
@@ -335,6 +387,10 @@ impl ClientApiImpl {
         let ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id_model.as_str(),
+                playlist
+                    .creator_id
+                    .as_ref()
+                    .map(synctv_core::models::UserId::as_str),
                 room_id_model.as_str(),
                 playlist.provider_instance_name.as_deref(),
                 playback_client_profile,
@@ -428,6 +484,100 @@ impl ClientApiImpl {
             version: state.version.to_string(),
             expires_at: None,
         })
+    }
+
+    async fn playback_credential_dependencies_from_state(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, ApiError> {
+        if let Some(ref media_id) = state.playing_media_id {
+            let media = self
+                .room_service
+                .media_service()
+                .get_media(media_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
+
+            if direct_url_embedded_playback_result_to_model(&media)?.is_some() {
+                return Ok(Vec::new());
+            }
+
+            let providers_manager = self
+                .providers_manager
+                .as_ref()
+                .ok_or_else(providers_manager_unavailable_error)?;
+            let provider = providers_manager
+                .resolve_provider(
+                    static_media_source_provider(&media)?,
+                    media.provider_instance_name.as_deref(),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            let ctx = self.build_provider_context(
+                user_id.as_str(),
+                media
+                    .creator_id
+                    .as_ref()
+                    .map(synctv_core::models::UserId::as_str),
+                room_id.as_str(),
+                media.provider_instance_name.as_deref(),
+                None,
+                None,
+            );
+
+            return provider
+                .credential_dependencies(&ctx, &media.source_config)
+                .map_err(ApiError::from);
+        }
+
+        if let Some(ref playlist_id) = state.playing_playlist_id {
+            let playlist = self
+                .room_service
+                .playlist_service()
+                .get_playlist(playlist_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
+            self.room_service
+                .ensure_client_usable_playlist(&playlist)
+                .await
+                .map_err(ApiError::from)?;
+
+            let provider_name = playlist.source_provider.as_deref().ok_or_else(|| {
+                ApiError::Internal("Dynamic playlist missing provider".to_string())
+            })?;
+            let source_config = playlist.source_config.as_ref().ok_or_else(|| {
+                ApiError::Internal("Dynamic playlist missing source_config".to_string())
+            })?;
+            let providers_manager = self
+                .providers_manager
+                .as_ref()
+                .ok_or_else(providers_manager_unavailable_error)?;
+            let provider = providers_manager
+                .resolve_provider(provider_name, playlist.provider_instance_name.as_deref())
+                .await
+                .map_err(ApiError::from)?;
+            let ctx = self.build_provider_context(
+                user_id.as_str(),
+                playlist
+                    .creator_id
+                    .as_ref()
+                    .map(synctv_core::models::UserId::as_str),
+                room_id.as_str(),
+                playlist.provider_instance_name.as_deref(),
+                None,
+                None,
+            );
+
+            return provider
+                .credential_dependencies(&ctx, source_config)
+                .map_err(ApiError::from);
+        }
+
+        Ok(Vec::new())
     }
 
     /// Start playback of either a static media item or a dynamic playlist item
@@ -713,14 +863,40 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        self.build_playback_snapshot_from_state(
-            user_id,
-            room_id,
-            state,
-            playback_client_profile,
-            None,
-        )
-        .await
+        let mut snapshot = self
+            .build_playback_snapshot_from_state(
+                user_id,
+                room_id,
+                state,
+                playback_client_profile,
+                None,
+            )
+            .await?;
+        snapshot.version = self
+            .playback_snapshot_version_from_state(user_id, room_id, state)
+            .await?;
+        Ok(snapshot)
+    }
+
+    async fn playback_credential_dependencies(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, ApiError> {
+        self.playback_credential_dependencies_from_state(user_id, room_id, state)
+            .await
+    }
+
+    async fn playback_snapshot_version_for_state(
+        &self,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) -> Result<Option<String>, ApiError> {
+        self.playback_snapshot_version_from_state(user_id, room_id, state)
+            .await
+            .map(Some)
     }
 }
 

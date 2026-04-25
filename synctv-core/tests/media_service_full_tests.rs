@@ -6,7 +6,6 @@
 //! Run with: cargo test -p synctv-core --test `media_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -14,23 +13,18 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{
-        PermissionBits, Playlist, User, UserId, UserProviderCredential, UserRole, UserStatus,
-    },
-    repository::{UserProviderCredentialRepository, UserRepository},
+    models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
+    repository::UserRepository,
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         media::{AddMediaRequest, EditMediaRequest},
         playlist::CreatePlaylistRequest,
-        CredentialEncryption, InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
 use synctv_core_testing::create_test_pool;
 
-fn test_encryption() -> CredentialEncryption {
-    CredentialEncryption::new(&[0x24; 32]).expect("test credential encryption")
-}
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -237,18 +231,10 @@ async fn test_add_media_with_permission_succeeds() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_media_ignores_forged_credential_owner_id_for_bilibili() {
+async fn test_add_media_rejects_credential_ref_for_bilibili() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let mut room_service = make_room_service(pool.clone());
-    let encryption = test_encryption();
-    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
-        pool.clone(),
-        encryption.clone(),
-    ));
-
-    room_service.set_media_credential_encryption(encryption);
-    room_service.set_media_credential_repo(Arc::clone(&credential_repo));
+    let room_service = make_room_service(pool.clone());
 
     let creator = user_repo
         .create(&make_user("addm_bili_creator"))
@@ -267,28 +253,6 @@ async fn test_add_media_ignores_forged_credential_owner_id_for_bilibili() {
         .unwrap();
     register_bilibili_provider(&room_service).await;
 
-    let server_id = UserProviderCredential::bilibili_server_id(None);
-    credential_repo
-        .create(&UserProviderCredential {
-            id: synctv_common::snanoid!(12),
-            user_id: creator.id.to_string(),
-            provider: "bilibili".to_string(),
-            server_id: server_id.clone(),
-            provider_instance_name: None,
-            credential_data: serde_json::to_value(
-                synctv_core::models::ProviderCredential::bilibili(HashMap::from([(
-                    "SESSDATA".to_string(),
-                    "test_session".to_string(),
-                )])),
-            )
-            .expect("bilibili credential should serialize"),
-            expires_at: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .unwrap();
-
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
 
@@ -303,25 +267,25 @@ async fn test_add_media_ignores_forged_credential_owner_id_for_bilibili() {
             "cid": 12345,
             "credential_ref": {
                 "credential_owner_id": "forged-user-id",
-                "server_id": server_id
+                "server_id": "bilibili"
             }
         }),
     };
 
-    let media = media_service
+    let err = media_service
         .add_media(room.id.clone(), creator.id.clone(), request)
         .await
-        .expect("add_media should ignore forged credential owner ids");
+        .expect_err("Bilibili media must reject embedded credential references");
 
-    assert_eq!(
-        media.source_config["credential_ref"]["credential_owner_id"],
-        serde_json::Value::String(creator.id.to_string())
-    );
+    match err {
+        Error::InvalidInput(message) => assert!(message.contains("credential_ref")),
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_media_with_credential_backed_provider_without_repo_fails_closed() {
+async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -352,27 +316,19 @@ async fn test_add_media_with_credential_backed_provider_without_repo_fails_close
         source_config: serde_json::json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": creator.id.to_string(),
-                "server_id": "bilibili"
-            }
+            "cid": 12345
         }),
     };
 
-    let err = room_service
+    let media = room_service
         .media_service()
         .add_media(room.id.clone(), creator.id.clone(), request)
         .await
-        .expect_err("credential-backed media should fail closed without repo wiring");
+        .expect(
+            "Bilibili media should not require credential repo because anonymous playback is valid",
+        );
 
-    match err {
-        Error::ServiceUnavailable(message) => {
-            assert!(message.contains("bilibili"));
-            assert!(message.contains("credential repository"));
-        }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
-    }
+    assert_eq!(media.source_provider, "bilibili");
 }
 
 #[tokio::test]
@@ -406,10 +362,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({
             "path": "/media/library",
-            "credential_ref": {
-                "credential_owner_id": creator.id.to_string(),
-                "server_id": "alist-server"
-            }
+            "server_id": "alist-server"
         })),
         provider_instance_name: Some("alist".to_string()),
     };
@@ -464,10 +417,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({
             "path": "/media/library",
-            "credential_ref": {
-                "credential_owner_id": creator.id.to_string(),
-                "server_id": "alist-server"
-            }
+            "server_id": "alist-server"
         })),
         provider_instance_name: Some("alist".to_string()),
         created_at: Utc::now(),

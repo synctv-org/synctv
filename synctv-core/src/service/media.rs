@@ -48,9 +48,7 @@ fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
 fn provider_requires_credential_repo(provider_name: &str) -> bool {
     matches!(
         provider_name,
-        crate::provider::AlistProvider::NAME
-            | crate::provider::BilibiliProvider::NAME
-            | crate::provider::EmbyProvider::NAME
+        crate::provider::AlistProvider::NAME | crate::provider::EmbyProvider::NAME
     )
 }
 
@@ -123,11 +121,15 @@ impl MediaService {
         &'a self,
         user_id: &'a UserId,
         room_id: &'a RoomId,
+        credential_owner_id: Option<&'a UserId>,
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
+        if let Some(credential_owner_id) = credential_owner_id {
+            ctx = ctx.with_credential_owner_id(credential_owner_id.as_str());
+        }
         if let Some(provider_instance_name) =
             normalize_provider_instance_name(provider_instance_name)
         {
@@ -311,7 +313,12 @@ impl MediaService {
         self.ensure_provider_credential_repo(provider.name())?;
 
         // Validate source_config using provider trait method
-        let ctx = self.build_provider_context(&user_id, &room_id, bound_provider_instance);
+        let ctx = self.build_provider_context(
+            &user_id,
+            &room_id,
+            Some(&user_id),
+            bound_provider_instance,
+        );
 
         provider
             .validate_source_config(&ctx, &request.source_config)
@@ -428,7 +435,12 @@ impl MediaService {
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
 
-        let ctx = self.build_provider_context(&admin_user_id, &room_id, bound_provider_instance);
+        let ctx = self.build_provider_context(
+            &admin_user_id,
+            &room_id,
+            Some(&admin_user_id),
+            bound_provider_instance,
+        );
 
         provider
             .validate_source_config(&ctx, &request.source_config)
@@ -551,8 +563,12 @@ impl MediaService {
                 .await?;
             self.ensure_provider_credential_repo(provider.name())?;
 
-            let ctx =
-                self.build_provider_context(&user_id, &room_id, bound_provider_instance.as_deref());
+            let ctx = self.build_provider_context(
+                &user_id,
+                &room_id,
+                Some(&user_id),
+                bound_provider_instance.as_deref(),
+            );
 
             // Validate source_config using provider trait method
             provider
@@ -1435,6 +1451,7 @@ impl MediaService {
         let ctx = self.build_provider_context(
             &admin_user_id,
             &room_id,
+            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -1478,6 +1495,7 @@ impl MediaService {
         let ctx = self.build_provider_context(
             &admin_user_id,
             &room_id,
+            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -1596,6 +1614,7 @@ impl MediaService {
         let ctx = self.build_provider_context(
             &user_id,
             &room_id,
+            playlist.creator_id.as_ref().or(Some(&user_id)),
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -1643,6 +1662,7 @@ impl MediaService {
         let ctx = self.build_provider_context(
             &user_id,
             &room_id,
+            playlist.creator_id.as_ref().or(Some(&user_id)),
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -1696,6 +1716,7 @@ impl MediaService {
         let ctx = self.build_provider_context(
             &user_id,
             &room_id,
+            playlist.creator_id.as_ref().or(Some(&user_id)),
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -1745,7 +1766,7 @@ impl MediaService {
             id: MediaId::new(),
             playlist_id: Some(playlist.id.clone()),
             room_id: room_id.clone(),
-            creator_id: None,
+            creator_id: playlist.creator_id.clone(),
             name: format!("dynamic:{playlist_id}"),
             position: 0.0,
             source_provider: provider_name.clone(),
@@ -1757,6 +1778,9 @@ impl MediaService {
         };
 
         let mut ctx = ProviderContext::new("synctv").with_room_id(room_id.as_str());
+        if let Some(creator_id) = playlist.creator_id.as_ref() {
+            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+        }
         if let Some(provider_instance_name) =
             current_dynamic_media.provider_instance_name.as_deref()
         {

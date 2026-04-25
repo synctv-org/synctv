@@ -8,7 +8,7 @@ import "proto/providers/bilibili.proto";
 //
 // Client-facing API for Bilibili video parsing, login, and user management
 service BilibiliProviderService {
-  // Parse Bilibili URL (video, anime, live) - uses stored credential via server_id
+  // Parse Bilibili URL (video, anime, live), using the user's global bind when available
   rpc Parse(ParseRequest) returns (ParseResponse);
 
   // Generate QR code for login
@@ -26,7 +26,7 @@ service BilibiliProviderService {
   // Login with SMS code (persists credential on success)
   rpc LoginSMS(LoginSMSRequest) returns (LoginSMSResponse);
 
-  // Get user info (uses stored credential via server_id)
+  // Get user info from the user's global bind
   rpc GetUserInfo(UserInfoRequest) returns (UserInfoResponse);
 
   // Logout (delete stored credential)

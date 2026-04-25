@@ -132,6 +132,22 @@ pub(crate) fn reject_source_config_provider_instance_name(
     Ok(())
 }
 
+pub(crate) fn reject_source_config_credential_ref(
+    source_config: &serde_json::Value,
+    provider_name: &str,
+) -> std::result::Result<(), ProviderError> {
+    if source_config
+        .as_object()
+        .is_some_and(|object| object.contains_key("credential_ref"))
+    {
+        return Err(ProviderError::InvalidConfig(format!(
+            "{provider_name} source_config must not contain credential_ref; provider credentials are resolved from the media/playlist creator at runtime"
+        )));
+    }
+
+    Ok(())
+}
+
 pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> Option<&'a str> {
     normalized_provider_instance_name(ctx.provider_instance_name())
 }
@@ -211,7 +227,6 @@ const CREDENTIAL_FIELDS: &[&str] = &[
     "cookies",
     "secret",
     "access_token",
-    "credential_ref",
 ];
 
 /// Rewrite playback URLs in a `PlaybackResult` to use signed proxy URLs.
@@ -230,6 +245,7 @@ pub fn sign_playback_urls(
     user_id: &str,
     expires_at: i64,
 ) {
+    let default_mode = result.default_mode.clone();
     for (mode_name, info) in &mut result.playback_infos {
         if info.urls.is_empty() {
             continue;
@@ -254,26 +270,68 @@ pub fn sign_playback_urls(
                 .collect();
             info.headers.clear();
             info.cors_proxy_required = false;
-        } else {
-            // Determine the action based on the mode/format
-            let action = if info.format == "m3u8" || mode_name.contains("hls") {
-                "m3u8"
+        } else if info.format == "m3u8" || info.format == "hls" || mode_name.contains("hls") {
+            if mode_name == &default_mode && info.urls.len() == 1 {
+                info.urls = vec![crate::service::proxy_signature::build_signed_proxy_url(
+                    provider_name,
+                    version,
+                    "m3u8",
+                    signing_key,
+                    room_id,
+                    user_id,
+                    expires_at,
+                )];
             } else {
-                "stream"
-            };
-
-            let signed_url = crate::service::proxy_signature::build_signed_proxy_url(
+                info.urls = info
+                    .urls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        crate::service::proxy_signature::build_signed_proxy_url(
+                            provider_name,
+                            version,
+                            &format!("m3u8/{mode_name}/{index}"),
+                            signing_key,
+                            room_id,
+                            user_id,
+                            expires_at,
+                        )
+                    })
+                    .collect();
+            }
+            // Proxy handles headers — client doesn't need them
+            info.headers.clear();
+            info.cors_proxy_required = false;
+        } else if mode_name == &default_mode && info.urls.len() == 1 {
+            info.urls = vec![crate::service::proxy_signature::build_signed_proxy_url(
                 provider_name,
                 version,
-                action,
+                "stream",
                 signing_key,
                 room_id,
                 user_id,
                 expires_at,
-            );
-
-            // Replace the first URL with the signed proxy URL
-            info.urls = vec![signed_url];
+            )];
+            // Proxy handles headers — client doesn't need them
+            info.headers.clear();
+            info.cors_proxy_required = false;
+        } else {
+            info.urls = info
+                .urls
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    crate::service::proxy_signature::build_signed_proxy_url(
+                        provider_name,
+                        version,
+                        &format!("stream/{mode_name}/{index}"),
+                        signing_key,
+                        room_id,
+                        user_id,
+                        expires_at,
+                    )
+                })
+                .collect();
             // Proxy handles headers — client doesn't need them
             info.headers.clear();
             info.cors_proxy_required = false;
@@ -577,6 +635,55 @@ mod tests {
                 .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle%2Fdash%2F0?"),
             "subtitle URLs may still use the signed proxy contract"
         );
+    }
+
+    #[test]
+    fn test_sign_playback_urls_preserves_multiple_plain_stream_urls() {
+        let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+        let mut result = PlaybackResult {
+            playback_infos: std::collections::HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec![
+                        "https://cdn.example.com/video-primary.mp4".to_string(),
+                        "https://cdn.example.com/video-backup.mp4".to_string(),
+                    ],
+                    format: "mp4".to_string(),
+                    headers: std::collections::HashMap::from([(
+                        "Authorization".to_string(),
+                        "Bearer hidden".to_string(),
+                    )]),
+                    subtitles: Vec::new(),
+                    expires_at: None,
+                    cors_proxy_required: true,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        sign_playback_urls(
+            &mut result,
+            "alist",
+            "ver-1",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        let direct = &result.playback_infos["direct"];
+        assert_eq!(direct.urls.len(), 2);
+        assert!(
+            direct.urls[0].starts_with("/api/providers/proxy/alist/ver-1/stream%2Fdirect%2F0?"),
+            "first direct stream should use an indexed signed proxy URL"
+        );
+        assert!(
+            direct.urls[1].starts_with("/api/providers/proxy/alist/ver-1/stream%2Fdirect%2F1?"),
+            "second direct stream should use an indexed signed proxy URL"
+        );
+        assert!(direct.headers.is_empty(), "proxy should own stream headers");
+        assert!(!direct.cors_proxy_required);
     }
 
     #[tokio::test]

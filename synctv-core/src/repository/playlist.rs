@@ -1201,7 +1201,7 @@ mod tests {
             .build();
         default_provider_playlist.source_provider = Some("alist".to_string());
         default_provider_playlist.source_config = Some(serde_json::json!({ "path": "/default" }));
-        default_provider_playlist.provider_instance_name = Some(String::new());
+        default_provider_playlist.provider_instance_name = None;
         let default_provider_playlist = playlist_repo
             .create(&default_provider_playlist)
             .await

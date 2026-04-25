@@ -4387,9 +4387,9 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     let banned_publish_key_error = run_synctv_remote_cli_failure(
         &server,
         &[
-            "room",
-            "stream",
-            "publish-key",
+            "provider",
+            "rtmp",
+            "create-publish-key",
             "--room-id",
             &room_id,
             "--username",

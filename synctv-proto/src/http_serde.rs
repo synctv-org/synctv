@@ -133,6 +133,10 @@ pub struct AlistLoginRequestDef {
     #[serde(default)]
     hashed_password: Option<String>,
     #[serde(default)]
+    otp_code: String,
+    #[serde(default)]
+    otp_secret: String,
+    #[serde(default)]
     instance_name: String,
 }
 
@@ -146,6 +150,8 @@ impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::LoginRequest {
                 username: value.username.clone(),
                 password: value.password,
                 hashed_password: value.hashed_password,
+                otp_code: value.otp_code.clone(),
+                otp_secret: value.otp_secret.clone(),
                 instance_name: value.instance_name.clone(),
             })?,
         );
@@ -154,6 +160,8 @@ impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::LoginRequest {
             host: value.host,
             username: value.username,
             credential,
+            otp_code: value.otp_code,
+            otp_secret: value.otp_secret,
             instance_name: value.instance_name,
         })
     }

@@ -340,6 +340,20 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// A user's provider credential was created, replaced, or removed.
+    ///
+    /// Broadcast on the admin channel because the affected WebSocket
+    /// connections may be in any room. Consumers should use provider-owned
+    /// credential dependency resolution to decide whether a watched playback
+    /// snapshot must be refreshed.
+    ProviderCredentialChanged {
+        event_id: String,
+        user_id: UserId,
+        provider: String,
+        server_id: String,
+        timestamp: DateTime<Utc>,
+    },
+
     /// Generic cache invalidation event.
     ///
     /// Broadcast cluster-wide when a service mutates data that is cached on
@@ -394,6 +408,7 @@ impl ClusterEvent {
             | Self::RoomBanned { event_id, .. }
             | Self::RoomOwnerInactive { event_id, .. }
             | Self::UserNotification { event_id, .. }
+            | Self::ProviderCredentialChanged { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
         }
     }
@@ -428,6 +443,7 @@ impl ClusterEvent {
             Self::SystemNotification { .. }
             | Self::KickUser { .. }
             | Self::UserNotification { .. }
+            | Self::ProviderCredentialChanged { .. }
             | Self::CacheInvalidate { .. } => None,
         }
     }
@@ -453,7 +469,8 @@ impl ClusterEvent {
             | Self::WebRTCLeave { user_id, .. }
             | Self::KickUser { user_id, .. }
             | Self::KickUserFromRoom { user_id, .. }
-            | Self::UserNotification { user_id, .. } => Some(user_id),
+            | Self::UserNotification { user_id, .. }
+            | Self::ProviderCredentialChanged { user_id, .. } => Some(user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::RoomBanned { banned_by, .. } => Some(banned_by),
@@ -496,6 +513,7 @@ impl ClusterEvent {
             | Self::RoomBanned { timestamp, .. }
             | Self::RoomOwnerInactive { timestamp, .. }
             | Self::UserNotification { timestamp, .. }
+            | Self::ProviderCredentialChanged { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
         }
     }
@@ -548,6 +566,19 @@ impl ClusterEvent {
             } => {
                 format!("user_notification:{}:{}", user_id.as_str(), notification_id)
             }
+            Self::ProviderCredentialChanged {
+                user_id,
+                provider,
+                server_id,
+                ..
+            } => {
+                format!(
+                    "provider_credential_changed:{}:{}:{}",
+                    user_id.as_str(),
+                    provider,
+                    server_id
+                )
+            }
             _ => String::new(),
         }
     }
@@ -582,6 +613,7 @@ impl ClusterEvent {
             Self::RoomOwnerInactive { .. } => "room_owner_inactive",
             Self::RoomDeleted { .. } => "room_deleted",
             Self::UserNotification { .. } => "user_notification",
+            Self::ProviderCredentialChanged { .. } => "provider_credential_changed",
             Self::CacheInvalidate { .. } => "cache_invalidate",
         }
     }
@@ -612,6 +644,26 @@ mod tests {
         // Deserialize back
         let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "chat_message");
+    }
+
+    #[test]
+    fn test_provider_credential_changed_is_admin_channel_event() {
+        let event = ClusterEvent::ProviderCredentialChanged {
+            event_id: synctv_common::snanoid!(16),
+            user_id: UserId::from_string("user-credential".to_string()),
+            provider: "bilibili".to_string(),
+            server_id: "global".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(event.event_type(), "provider_credential_changed");
+        assert!(event.room_id().is_none());
+        assert_eq!(event.user_id().map(UserId::as_str), Some("user-credential"));
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("provider_credential_changed"));
+        let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "provider_credential_changed");
     }
 
     #[test]

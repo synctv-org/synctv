@@ -44,7 +44,7 @@ pub struct HttpFsGetResp {
     pub readme: String,
     #[serde(default)]
     pub provider: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_vec_as_empty")]
     pub related: Vec<HttpFsGetRelated>,
 }
 
@@ -66,11 +66,16 @@ pub struct HttpFsGetRelated {
     pub r#type: u64,
     #[serde(default)]
     pub hashinfo: String,
+    #[serde(default)]
+    pub raw_url: String,
+    #[serde(default)]
+    pub provider: String,
 }
 
 /// Directory listing from HTTP API
 #[derive(Debug, Deserialize)]
 pub struct HttpFsListResp {
+    #[serde(default, deserialize_with = "deserialize_null_vec_as_empty")]
     pub content: Vec<HttpFsListContent>,
     pub total: u64,
     #[serde(default)]
@@ -171,6 +176,14 @@ where
     }
 }
 
+fn deserialize_null_vec_as_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Search content item from HTTP API
 #[derive(Debug, Deserialize)]
 pub struct HttpFsSearchContent {
@@ -186,6 +199,7 @@ pub struct HttpFsSearchContent {
 /// Search response from HTTP API
 #[derive(Debug, Deserialize)]
 pub struct HttpFsSearchResp {
+    #[serde(default, deserialize_with = "deserialize_null_vec_as_empty")]
     pub content: Vec<HttpFsSearchContent>,
     pub total: u64,
 }
@@ -198,15 +212,17 @@ pub struct HttpFsOtherResp {
     #[serde(default)]
     pub file_id: String,
     pub video_preview_play_info: Option<HttpVideoPreviewPlayInfo>,
+    #[serde(default)]
+    pub provider: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct HttpVideoPreviewPlayInfo {
     #[serde(default)]
     pub category: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_vec_as_empty")]
     pub live_transcoding_subtitle_task_list: Vec<HttpSubtitleTask>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_vec_as_empty")]
     pub live_transcoding_task_list: Vec<HttpTranscodingTask>,
     pub meta: Option<HttpVideoMeta>,
 }
@@ -263,6 +279,8 @@ impl From<HttpFsGetRelated> for crate::grpc::alist::fs_get_resp::FsGetRelated {
             thumb: related.thumb,
             r#type: related.r#type,
             hashinfo: related.hashinfo,
+            raw_url: related.raw_url,
+            provider: related.provider,
         }
     }
 }
@@ -384,6 +402,7 @@ impl From<HttpFsOtherResp> for crate::grpc::alist::FsOtherResp {
             drive_id: resp.drive_id,
             file_id: resp.file_id,
             video_preview_play_info: resp.video_preview_play_info.map(std::convert::Into::into),
+            provider: resp.provider,
         }
     }
 }

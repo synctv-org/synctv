@@ -3,8 +3,10 @@
 // Supports both local (in-process) and remote (gRPC) provider instances.
 
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha1::Sha1;
 use std::collections::HashMap;
 
 use super::{pagination::PageParams, query::SortDirection};
@@ -160,7 +162,7 @@ pub struct UserProviderCredential {
     pub provider: String,
 
     /// Server identifier
-    /// - Bilibili: SHA-256(provider scope + optional instance name)
+    /// - Bilibili: SHA-256(provider scope), globally unique per user
     /// - Alist/Emby: SHA-256(host or host+instance) (allows multiple servers per user)
     pub server_id: String,
 
@@ -224,16 +226,11 @@ impl UserProviderCredential {
         }
     }
 
-    /// Generate the Bilibili `server_id`, optionally scoped to a provider instance.
+    /// Generate the single global Bilibili `server_id`.
     #[must_use]
-    pub fn bilibili_server_id(provider_instance_name: Option<&str>) -> String {
+    pub fn bilibili_server_id() -> String {
         use sha2::{Digest, Sha256};
-
-        let input = match Self::normalized_instance_name(provider_instance_name) {
-            Some(instance_name) => format!("{}\n{instance_name}", Self::BILIBILI_SCOPE),
-            None => Self::BILIBILI_SCOPE.to_string(),
-        };
-        hex::encode(Sha256::digest(input.as_bytes()))
+        hex::encode(Sha256::digest(Self::BILIBILI_SCOPE.as_bytes()))
     }
 
     /// Check if this credential has expired
@@ -272,6 +269,8 @@ pub enum ProviderCredential {
         host: String,
         username: String,
         password: String, // Already hashed
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        otp_secret: Option<String>,
     },
 
     /// Emby/Jellyfin credentials (API key)
@@ -291,12 +290,69 @@ impl ProviderCredential {
 
     /// Create Alist credential
     #[must_use]
-    pub const fn alist(host: String, username: String, password: String) -> Self {
+    pub fn alist(
+        host: String,
+        username: String,
+        password: String,
+        otp_secret: Option<String>,
+    ) -> Self {
         Self::Alist {
             host,
             username,
             password,
+            otp_secret: Self::normalize_alist_otp_secret(otp_secret),
         }
+    }
+
+    #[must_use]
+    pub fn normalize_alist_otp_secret(otp_secret: Option<String>) -> Option<String> {
+        otp_secret.and_then(|otp_secret| {
+            let trimmed = otp_secret.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            if trimmed
+                .get(..10)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("otpauth://"))
+            {
+                return url::Url::parse(trimmed).ok().and_then(|url| {
+                    url.query_pairs()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("secret"))
+                        .map(|(_, value)| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                });
+            }
+
+            Some(trimmed.to_string())
+        })
+    }
+
+    pub fn current_alist_otp_code(otp_secret: &str) -> Result<String, String> {
+        Self::alist_otp_code_at_timestamp(otp_secret, Utc::now().timestamp())
+    }
+
+    pub fn alist_otp_code_at_timestamp(otp_secret: &str, timestamp: i64) -> Result<String, String> {
+        let secret = Self::normalize_alist_otp_secret(Some(otp_secret.to_string()))
+            .ok_or_else(|| "Alist OTP secret must not be empty".to_string())?;
+        let key = decode_base32_secret(&secret)?;
+        if key.is_empty() {
+            return Err("Alist OTP secret must not decode to an empty key".to_string());
+        }
+
+        let counter = u64::try_from(timestamp.max(0) / 30)
+            .map_err(|_| "Invalid Alist OTP timestamp".to_string())?;
+        let mut mac = Hmac::<Sha1>::new_from_slice(&key)
+            .map_err(|_| "Invalid Alist OTP secret key".to_string())?;
+        mac.update(&counter.to_be_bytes());
+        let digest = mac.finalize().into_bytes();
+        let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+        let binary = ((u32::from(digest[offset]) & 0x7f) << 24)
+            | (u32::from(digest[offset + 1]) << 16)
+            | (u32::from(digest[offset + 2]) << 8)
+            | u32::from(digest[offset + 3]);
+
+        Ok(format!("{:06}", binary % 1_000_000))
     }
 
     /// Create Emby credential
@@ -318,6 +374,37 @@ impl ProviderCredential {
             Self::Emby { .. } => "emby",
         }
     }
+}
+
+fn decode_base32_secret(secret: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    let mut decoded = Vec::new();
+
+    for ch in secret.chars() {
+        if ch == '=' || ch.is_whitespace() {
+            continue;
+        }
+
+        let value = match ch.to_ascii_uppercase() {
+            'A'..='Z' => u32::from(ch.to_ascii_uppercase()) - u32::from('A'),
+            '2'..='7' => u32::from(ch) - u32::from('2') + 26,
+            _ => return Err("Alist OTP secret must be RFC 4648 base32".to_string()),
+        };
+
+        buffer = (buffer << 5) | value;
+        bits += 5;
+
+        if bits >= 8 {
+            bits -= 8;
+            let byte = u8::try_from((buffer >> bits) & 0xff)
+                .map_err(|_| "Invalid Alist OTP base32 byte".to_string())?;
+            decoded.push(byte);
+            buffer &= (1_u32 << bits) - 1;
+        }
+    }
+
+    Ok(decoded)
 }
 
 #[cfg(test)]
@@ -410,24 +497,12 @@ mod tests {
     }
 
     #[test]
-    fn test_bilibili_server_id_without_instance_is_stable_hash() {
-        let default = UserProviderCredential::bilibili_server_id(None);
-        let blank = UserProviderCredential::bilibili_server_id(Some("   "));
+    fn test_bilibili_server_id_is_global_stable_hash() {
+        let first = UserProviderCredential::bilibili_server_id();
+        let second = UserProviderCredential::bilibili_server_id();
 
-        assert_eq!(default.len(), 64);
-        assert_eq!(default, blank);
-    }
-
-    #[test]
-    fn test_bilibili_server_id_scopes_by_instance_name() {
-        let main = UserProviderCredential::bilibili_server_id(Some("bili-main"));
-        let main_dup = UserProviderCredential::bilibili_server_id(Some("bili-main"));
-        let backup = UserProviderCredential::bilibili_server_id(Some("bili-backup"));
-
-        assert_eq!(main.len(), 64);
-        assert_eq!(main, main_dup);
-        assert_ne!(main, backup);
-        assert_ne!(main, UserProviderCredential::bilibili_server_id(None));
+        assert_eq!(first.len(), 64);
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -439,7 +514,7 @@ mod tests {
             id: "test_id".to_string(),
             user_id: "user_id".to_string(),
             provider: "bilibili".to_string(),
-            server_id: UserProviderCredential::bilibili_server_id(None),
+            server_id: UserProviderCredential::bilibili_server_id(),
             provider_instance_name: None,
             credential_data: serde_json::json!({}),
             expires_at: Some(Utc::now() - Duration::hours(1)),
@@ -478,6 +553,7 @@ mod tests {
             "https://alist.example.com".to_string(),
             "admin".to_string(),
             "hashed_password".to_string(),
+            None,
         );
         assert_eq!(alist.provider_type(), "alist");
 
@@ -487,5 +563,25 @@ mod tests {
             "user_uuid".to_string(),
         );
         assert_eq!(emby.provider_type(), "emby");
+    }
+
+    #[test]
+    fn alist_otp_code_matches_rfc6238_sha1_vector_truncated_to_six_digits() {
+        let code =
+            ProviderCredential::alist_otp_code_at_timestamp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59)
+                .expect("RFC test vector secret should decode");
+
+        assert_eq!(code, "287082");
+    }
+
+    #[test]
+    fn alist_otp_secret_normalization_accepts_otpauth_uri() {
+        assert_eq!(
+            ProviderCredential::normalize_alist_otp_secret(Some(
+                "otpauth://totp/Alist:admin?secret=JBSWY3DPEHPK3PXP&issuer=Alist".to_string()
+            ))
+            .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
     }
 }

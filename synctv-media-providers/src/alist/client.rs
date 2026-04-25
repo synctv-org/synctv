@@ -156,6 +156,21 @@ impl AlistClient {
         password: &str,
         hashed: bool,
     ) -> Result<String, AlistError> {
+        self.login_with_otp(username, password, hashed, None).await
+    }
+
+    /// Login to Alist server with an optional TOTP/2FA code.
+    ///
+    /// Returns authentication token on success.
+    /// When `hashed` is true, uses the `/api/auth/login/hash` endpoint
+    /// which accepts a pre-hashed password.
+    pub async fn login_with_otp(
+        &mut self,
+        username: &str,
+        password: &str,
+        hashed: bool,
+        otp_code: Option<&str>,
+    ) -> Result<String, AlistError> {
         let url = if hashed {
             format!("{}/api/auth/login/hash", self.host)
         } else {
@@ -164,6 +179,7 @@ impl AlistClient {
         let body = json!({
             "username": username,
             "password": password,
+            "otp_code": otp_code.unwrap_or(""),
         });
         let headers = self.build_headers()?;
         let client = self.client.clone();
@@ -269,6 +285,19 @@ impl AlistClient {
         per_page: u64,
         password: Option<&str>,
     ) -> Result<HttpFsListResp, AlistError> {
+        self.fs_list_with_refresh(path, page, per_page, password, false)
+            .await
+    }
+
+    /// List directory contents, optionally forcing upstream refresh.
+    pub async fn fs_list_with_refresh(
+        &self,
+        path: &str,
+        page: u64,
+        per_page: u64,
+        password: Option<&str>,
+        refresh: bool,
+    ) -> Result<HttpFsListResp, AlistError> {
         validate_path(path)?;
         let url = format!("{}/api/fs/list", self.host);
         let body = json!({
@@ -276,7 +305,7 @@ impl AlistClient {
             "password": password.unwrap_or(""),
             "page": page,
             "per_page": per_page,
-            "refresh": false,
+            "refresh": refresh,
         });
         let headers = self.build_headers()?;
         let client = self.client.clone();

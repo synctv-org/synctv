@@ -496,8 +496,10 @@ mod tests {
     use synctv_core::models::UserProviderCredential;
 
     #[test]
-    fn bilibili_server_id_scopes_to_requested_instance() {
-        let scoped = UserProviderCredential::bilibili_server_id(Some("bili-main"));
-        assert_ne!(scoped, UserProviderCredential::bilibili_server_id(None));
+    fn bilibili_server_id_is_global_for_all_instances() {
+        assert_eq!(
+            UserProviderCredential::bilibili_server_id(),
+            UserProviderCredential::bilibili_server_id()
+        );
     }
 }

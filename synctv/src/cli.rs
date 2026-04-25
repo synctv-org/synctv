@@ -2431,7 +2431,7 @@ pub struct ProviderBilibiliCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ProviderBilibiliSubcommand {
-    /// Parse a Bilibili URL using a saved bind
+    /// Parse a Bilibili URL, using the user's global bind when available
     Parse(ProviderBilibiliParseArgs),
     /// Generate a QR code for Bilibili login
     LoginQr(ProviderBilibiliLoginQrArgs),
@@ -2443,7 +2443,7 @@ pub enum ProviderBilibiliSubcommand {
     SendSms(ProviderBilibiliSendSmsArgs),
     /// Log in with Bilibili SMS and persist the bind
     LoginSms(ProviderBilibiliLoginSmsArgs),
-    /// Show the current Bilibili account info for a saved bind
+    /// Show the current Bilibili account info for the user's global bind
     Me(ProviderBilibiliGetUserInfoArgs),
     /// Remove a saved Bilibili bind
     Logout(ProviderBilibiliLogoutArgs),
@@ -2519,6 +2519,14 @@ pub struct ProviderAlistLoginArgs {
     /// Pre-hashed Alist password stored by compatible Alist clients
     #[arg(long, group = "alist_login_credential")]
     pub hashed_password: Option<String>,
+
+    /// Current Alist TOTP/2FA code. This is not persisted.
+    #[arg(long = "otp-code")]
+    pub otp_code: Option<String>,
+
+    /// Alist TOTP secret used to generate future 2FA codes for automatic token refresh.
+    #[arg(long = "otp-secret")]
+    pub otp_secret: Option<String>,
 
     #[command(flatten)]
     pub instance: ProviderServiceInstanceArgs,
@@ -2664,7 +2672,7 @@ pub struct ProviderBilibiliParseArgs {
     pub access: ProviderServiceRemoteActorArgs,
 
     #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
+    pub instance: ProviderServiceInstanceArgs,
 
     /// Bilibili page URL to parse
     pub url: String,
@@ -2753,7 +2761,7 @@ pub struct ProviderBilibiliGetUserInfoArgs {
     pub access: ProviderServiceRemoteActorArgs,
 
     #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
+    pub instance: ProviderServiceInstanceArgs,
 }
 
 #[derive(Debug, Args)]
@@ -2762,7 +2770,7 @@ pub struct ProviderBilibiliLogoutArgs {
     pub access: ProviderServiceRemoteActorArgs,
 
     #[command(flatten)]
-    pub bind: ProviderBoundCredentialArgs,
+    pub instance: ProviderServiceInstanceArgs,
 }
 
 #[derive(Debug, Args)]
@@ -3018,9 +3026,9 @@ pub struct MediaProviderBilibiliVideoArgs {
     #[arg(long)]
     pub playlist_id: Option<String>,
 
-    /// Saved Bilibili credential server identifier
+    /// Share creator's Bilibili login for playback instead of each viewer's own login
     #[arg(long)]
-    pub server_id: String,
+    pub shared: bool,
 
     /// Explicit provider instance name to store alongside the media item
     #[arg(long)]
@@ -3049,9 +3057,9 @@ pub struct MediaProviderBilibiliPgcArgs {
     #[arg(long)]
     pub playlist_id: Option<String>,
 
-    /// Saved Bilibili credential server identifier
+    /// Share creator's Bilibili login for playback instead of each viewer's own login
     #[arg(long)]
-    pub server_id: String,
+    pub shared: bool,
 
     /// Explicit provider instance name to store alongside the media item
     #[arg(long)]
@@ -3076,9 +3084,9 @@ pub struct MediaProviderBilibiliLiveArgs {
     #[arg(long)]
     pub playlist_id: Option<String>,
 
-    /// Saved Bilibili credential server identifier
+    /// Share creator's Bilibili login for playback instead of each viewer's own login
     #[arg(long)]
-    pub server_id: String,
+    pub shared: bool,
 
     /// Explicit provider instance name to store alongside the media item
     #[arg(long)]
@@ -4778,7 +4786,6 @@ async fn execute_playlist_provider(command: PlaylistProviderCommand) -> Result<(
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
             let source_config_json = build_alist_source_config_json(
-                &actor_user_id,
                 &args.server_id,
                 &args.path,
                 args.password.as_deref(),
@@ -4802,8 +4809,7 @@ async fn execute_playlist_provider(command: PlaylistProviderCommand) -> Result<(
         PlaylistProviderSubcommand::Emby(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
-            let source_config_json =
-                build_emby_source_config_json(&actor_user_id, &args.server_id, &args.item_id)?;
+            let source_config_json = build_emby_source_config_json(&args.server_id, &args.item_id)?;
             let response = management_unary_call!(
                 session,
                 "create emby dynamic playlist",
@@ -4829,7 +4835,6 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
             let source_config_json = build_alist_source_config_json(
-                &actor_user_id,
                 &args.server_id,
                 &args.path,
                 args.password.as_deref(),
@@ -4853,8 +4858,7 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
         MediaProviderSubcommand::Emby(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
-            let source_config_json =
-                build_emby_source_config_json(&actor_user_id, &args.server_id, &args.item_id)?;
+            let source_config_json = build_emby_source_config_json(&args.server_id, &args.item_id)?;
             let response = management_unary_call!(
                 session,
                 "add emby media",
@@ -4883,8 +4887,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
             let source_config_json = build_bilibili_video_source_config_json(
-                &actor_user_id,
-                &args.server_id,
+                args.shared,
                 args.video.bvid.as_deref(),
                 args.video.aid,
                 args.cid,
@@ -4908,12 +4911,8 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
         MediaProviderBilibiliSubcommand::Pgc(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
-            let source_config_json = build_bilibili_pgc_source_config_json(
-                &actor_user_id,
-                &args.server_id,
-                args.epid,
-                args.cid,
-            )?;
+            let source_config_json =
+                build_bilibili_pgc_source_config_json(args.shared, args.epid, args.cid)?;
             let response = management_unary_call!(
                 session,
                 "add bilibili pgc media",
@@ -4933,11 +4932,8 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
         MediaProviderBilibiliSubcommand::Live(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
             let actor_user_id = resolve_user_ref(&session, &args.actor.to_user_ref()).await?;
-            let source_config_json = build_bilibili_live_source_config_json(
-                &actor_user_id,
-                &args.server_id,
-                args.room_live_id,
-            )?;
+            let source_config_json =
+                build_bilibili_live_source_config_json(args.shared, args.room_live_id)?;
             let response = management_unary_call!(
                 session,
                 "add bilibili live media",
@@ -4984,6 +4980,8 @@ async fn execute_provider_alist(command: ProviderAlistCommand) -> Result<()> {
                                     ),
                                 )
                         },),
+                        otp_code: args.otp_code.unwrap_or_default(),
+                        otp_secret: args.otp_secret.unwrap_or_default(),
                         instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
@@ -5174,7 +5172,6 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
     match command.command {
         ProviderBilibiliSubcommand::Parse(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
-            let server_id = required_provider_server_id(&args.bind)?;
             let response = management_unary_call!(
                 session,
                 "bilibili parse",
@@ -5183,8 +5180,7 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
                     actor_user_id,
                     request: Some(synctv_proto::providers::bilibili::ParseRequest {
                         url: required_non_empty_cli_value("url", &args.url)?,
-                        server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
             )?;
@@ -5278,7 +5274,6 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
         }
         ProviderBilibiliSubcommand::Me(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
-            let server_id = required_provider_server_id(&args.bind)?;
             let response = management_unary_call!(
                 session,
                 "bilibili me",
@@ -5286,8 +5281,7 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
                 management_proto::BilibiliGetUserInfoRequest {
                     actor_user_id,
                     request: Some(synctv_proto::providers::bilibili::UserInfoRequest {
-                        server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
             )?;
@@ -5295,7 +5289,6 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
         }
         ProviderBilibiliSubcommand::Logout(args) => {
             let (session, actor_user_id) = connect_provider_actor_access(&args.access).await?;
-            let server_id = required_provider_server_id(&args.bind)?;
             let response = management_unary_call!(
                 session,
                 "bilibili logout",
@@ -5303,8 +5296,7 @@ async fn execute_provider_bilibili(command: ProviderBilibiliCommand) -> Result<(
                 management_proto::BilibiliLogoutRequest {
                     actor_user_id,
                     request: Some(synctv_proto::providers::bilibili::LogoutRequest {
-                        server_id,
-                        instance_name: provider_service_instance_name(&args.bind.instance),
+                        instance_name: provider_service_instance_name(&args.instance),
                     }),
                 }
             )?;
@@ -5856,20 +5848,12 @@ fn build_provider_media_request(
     }
 }
 
-fn credential_ref_json(actor_user_id: &str, server_id: &str) -> Result<Value> {
-    Ok(serde_json::json!({
-        "credential_owner_id": required_non_empty_cli_value("actor_user_id", actor_user_id)?,
-        "server_id": required_non_empty_cli_value("server_id", server_id)?,
-    }))
-}
-
 fn encode_json_value(field_name: &str, value: &Value) -> Result<Vec<u8>> {
     serde_json::to_vec(value)
         .with_context(|| format!("failed to encode {field_name} as JSON bytes"))
 }
 
 fn build_alist_source_config_json(
-    actor_user_id: &str,
     server_id: &str,
     path: &str,
     password: Option<&str>,
@@ -5883,32 +5867,27 @@ fn build_alist_source_config_json(
         source_config.insert("password".to_string(), Value::String(password));
     }
     source_config.insert(
-        "credential_ref".to_string(),
-        credential_ref_json(actor_user_id, server_id)?,
+        "server_id".to_string(),
+        Value::String(required_non_empty_cli_value("server_id", server_id)?),
     );
     encode_json_value("source_config_json", &Value::Object(source_config))
 }
 
-fn build_emby_source_config_json(
-    actor_user_id: &str,
-    server_id: &str,
-    item_id: &str,
-) -> Result<Vec<u8>> {
+fn build_emby_source_config_json(server_id: &str, item_id: &str) -> Result<Vec<u8>> {
     let mut source_config = Map::new();
     source_config.insert(
         "item_id".to_string(),
         Value::String(required_non_empty_cli_value("item_id", item_id)?),
     );
     source_config.insert(
-        "credential_ref".to_string(),
-        credential_ref_json(actor_user_id, server_id)?,
+        "server_id".to_string(),
+        Value::String(required_non_empty_cli_value("server_id", server_id)?),
     );
     encode_json_value("source_config_json", &Value::Object(source_config))
 }
 
 fn build_bilibili_video_source_config_json(
-    actor_user_id: &str,
-    server_id: &str,
+    shared: bool,
     bvid: Option<&str>,
     aid: Option<u64>,
     cid: u64,
@@ -5929,19 +5908,13 @@ fn build_bilibili_video_source_config_json(
         source_config.insert("aid".to_string(), Value::from(aid));
     }
     source_config.insert("cid".to_string(), Value::from(cid));
-    source_config.insert(
-        "credential_ref".to_string(),
-        credential_ref_json(actor_user_id, server_id)?,
-    );
+    if shared {
+        source_config.insert("shared".to_string(), Value::Bool(true));
+    }
     encode_json_value("source_config_json", &Value::Object(source_config))
 }
 
-fn build_bilibili_pgc_source_config_json(
-    actor_user_id: &str,
-    server_id: &str,
-    epid: u64,
-    cid: u64,
-) -> Result<Vec<u8>> {
+fn build_bilibili_pgc_source_config_json(shared: bool, epid: u64, cid: u64) -> Result<Vec<u8>> {
     if epid == 0 {
         bail!("epid must be non-zero");
     }
@@ -5953,18 +5926,13 @@ fn build_bilibili_pgc_source_config_json(
     source_config.insert("type".to_string(), Value::String("pgc".to_string()));
     source_config.insert("epid".to_string(), Value::from(epid));
     source_config.insert("cid".to_string(), Value::from(cid));
-    source_config.insert(
-        "credential_ref".to_string(),
-        credential_ref_json(actor_user_id, server_id)?,
-    );
+    if shared {
+        source_config.insert("shared".to_string(), Value::Bool(true));
+    }
     encode_json_value("source_config_json", &Value::Object(source_config))
 }
 
-fn build_bilibili_live_source_config_json(
-    actor_user_id: &str,
-    server_id: &str,
-    room_id: u64,
-) -> Result<Vec<u8>> {
+fn build_bilibili_live_source_config_json(shared: bool, room_id: u64) -> Result<Vec<u8>> {
     if room_id == 0 {
         bail!("room_id must be non-zero");
     }
@@ -5972,10 +5940,9 @@ fn build_bilibili_live_source_config_json(
     let mut source_config = Map::new();
     source_config.insert("type".to_string(), Value::String("live".to_string()));
     source_config.insert("room_id".to_string(), Value::from(room_id));
-    source_config.insert(
-        "credential_ref".to_string(),
-        credential_ref_json(actor_user_id, server_id)?,
-    );
+    if shared {
+        source_config.insert("shared".to_string(), Value::Bool(true));
+    }
     encode_json_value("source_config_json", &Value::Object(source_config))
 }
 
@@ -10226,6 +10193,10 @@ mod tests {
             "alist-user",
             "--password",
             "secret",
+            "--otp-code",
+            "123456",
+            "--otp-secret",
+            "JBSWY3DPEHPK3PXP",
             "--instance-name",
             "alist-edge",
         ]);
@@ -10240,6 +10211,8 @@ mod tests {
                 assert_eq!(args.host, "https://alist.example.com");
                 assert_eq!(args.account_username, "alist-user");
                 assert_eq!(args.password.as_deref(), Some("secret"));
+                assert_eq!(args.otp_code.as_deref(), Some("123456"));
+                assert_eq!(args.otp_secret.as_deref(), Some("JBSWY3DPEHPK3PXP"));
                 assert_eq!(args.instance.instance_name.as_deref(), Some("alist-edge"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -10531,8 +10504,6 @@ mod tests {
             "parse",
             "--username",
             "alice",
-            "--server-id",
-            "bili-srv",
             "https://www.bilibili.com/video/BV1xx411c7mD",
             "--instance-name",
             "bili-main",
@@ -10545,12 +10516,8 @@ mod tests {
                     }),
             }) => {
                 assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.bind.server_id, "bili-srv");
                 assert_eq!(args.url, "https://www.bilibili.com/video/BV1xx411c7mD");
-                assert_eq!(
-                    args.bind.instance.instance_name.as_deref(),
-                    Some("bili-main")
-                );
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10719,8 +10686,6 @@ mod tests {
             "me",
             "--username",
             "alice",
-            "--server-id",
-            "bili-srv",
             "--instance-name",
             "bili-main",
         ]);
@@ -10732,11 +10697,7 @@ mod tests {
                     }),
             }) => {
                 assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-                assert_eq!(args.bind.server_id, "bili-srv");
-                assert_eq!(
-                    args.bind.instance.instance_name.as_deref(),
-                    Some("bili-main")
-                );
+                assert_eq!(args.instance.instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10748,8 +10709,6 @@ mod tests {
             "logout",
             "--user-id",
             "user-1",
-            "--server-id",
-            "bili-srv",
         ]);
         match cli_logout.command {
             Commands::Provider(ProviderCommand {
@@ -10759,7 +10718,7 @@ mod tests {
                     }),
             }) => {
                 assert_eq!(args.access.actor.user_id.as_deref(), Some("user-1"));
-                assert_eq!(args.bind.server_id, "bili-srv");
+                assert_eq!(args.instance.instance_name, None);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -11061,8 +11020,6 @@ mod tests {
             "1001",
             "--cid",
             "2002",
-            "--server-id",
-            "bili-srv",
             "--playlist-id",
             "playlist-1",
             "--title",
@@ -11082,7 +11039,6 @@ mod tests {
                 assert_eq!(args.actor.user_id.as_deref(), Some("user-1"));
                 assert_eq!(args.epid, 1001);
                 assert_eq!(args.cid, 2002);
-                assert_eq!(args.server_id, "bili-srv");
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
                 assert_eq!(args.title.as_deref(), Some("Episode 1"));
             }
@@ -11104,8 +11060,6 @@ mod tests {
             "alice",
             "--room-live-id",
             "778899",
-            "--server-id",
-            "bili-srv",
             "--provider-instance-name",
             "bili-main",
         ]);
@@ -11122,7 +11076,6 @@ mod tests {
                 assert_eq!(args.room.room_id, "room-1");
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.room_live_id, 778_899);
-                assert_eq!(args.server_id, "bili-srv");
                 assert_eq!(args.provider_instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -11145,8 +11098,6 @@ mod tests {
             "BV1xx411c7mD",
             "--cid",
             "2333",
-            "--server-id",
-            "bili-srv",
             "--provider-instance-name",
             "bili-main",
         ]);
@@ -11165,7 +11116,6 @@ mod tests {
                 assert_eq!(args.video.bvid.as_deref(), Some("BV1xx411c7mD"));
                 assert_eq!(args.video.aid, None);
                 assert_eq!(args.cid, 2333);
-                assert_eq!(args.server_id, "bili-srv");
                 assert_eq!(args.provider_instance_name.as_deref(), Some("bili-main"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -11174,9 +11124,8 @@ mod tests {
 
     #[test]
     fn build_alist_source_config_json_matches_runtime_contract() {
-        let encoded =
-            build_alist_source_config_json("user-1", "srv-1", "/movies/demo.mp4", Some("dir-pass"))
-                .expect("alist source config should encode");
+        let encoded = build_alist_source_config_json("srv-1", "/movies/demo.mp4", Some("dir-pass"))
+            .expect("alist source config should encode");
         let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
 
         assert_eq!(
@@ -11184,17 +11133,14 @@ mod tests {
             json!({
                 "path": "/movies/demo.mp4",
                 "password": "dir-pass",
-                "credential_ref": {
-                    "credential_owner_id": "user-1",
-                    "server_id": "srv-1",
-                }
+                "server_id": "srv-1"
             })
         );
     }
 
     #[test]
     fn build_emby_source_config_json_matches_runtime_contract() {
-        let encoded = build_emby_source_config_json("user-1", "srv-2", "item-123")
+        let encoded = build_emby_source_config_json("srv-2", "item-123")
             .expect("emby source config should encode");
         let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
 
@@ -11202,24 +11148,16 @@ mod tests {
             value,
             json!({
                 "item_id": "item-123",
-                "credential_ref": {
-                    "credential_owner_id": "user-1",
-                    "server_id": "srv-2",
-                }
+                "server_id": "srv-2"
             })
         );
     }
 
     #[test]
     fn build_bilibili_video_source_config_json_matches_runtime_contract() {
-        let encoded = build_bilibili_video_source_config_json(
-            "user-1",
-            "srv-3",
-            Some("BV1xx411c7mD"),
-            None,
-            2333,
-        )
-        .expect("bilibili video source config should encode");
+        let encoded =
+            build_bilibili_video_source_config_json(false, Some("BV1xx411c7mD"), None, 2333)
+                .expect("bilibili video source config should encode");
         let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
 
         assert_eq!(
@@ -11227,18 +11165,14 @@ mod tests {
             json!({
                 "type": "video",
                 "bvid": "BV1xx411c7mD",
-                "cid": 2333,
-                "credential_ref": {
-                    "credential_owner_id": "user-1",
-                    "server_id": "srv-3",
-                }
+                "cid": 2333
             })
         );
     }
 
     #[test]
     fn build_bilibili_pgc_source_config_json_matches_runtime_contract() {
-        let encoded = build_bilibili_pgc_source_config_json("user-1", "srv-3", 1001, 2002)
+        let encoded = build_bilibili_pgc_source_config_json(true, 1001, 2002)
             .expect("bilibili pgc source config should encode");
         let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
 
@@ -11248,17 +11182,14 @@ mod tests {
                 "type": "pgc",
                 "epid": 1001,
                 "cid": 2002,
-                "credential_ref": {
-                    "credential_owner_id": "user-1",
-                    "server_id": "srv-3",
-                }
+                "shared": true
             })
         );
     }
 
     #[test]
     fn build_bilibili_live_source_config_json_matches_runtime_contract() {
-        let encoded = build_bilibili_live_source_config_json("user-1", "srv-3", 778_899)
+        let encoded = build_bilibili_live_source_config_json(false, 778_899)
             .expect("bilibili live source config should encode");
         let value: Value = serde_json::from_slice(&encoded).expect("source config should be json");
 
@@ -11266,11 +11197,7 @@ mod tests {
             value,
             json!({
                 "type": "live",
-                "room_id": 778_899,
-                "credential_ref": {
-                    "credential_owner_id": "user-1",
-                    "server_id": "srv-3",
-                }
+                "room_id": 778_899
             })
         );
     }

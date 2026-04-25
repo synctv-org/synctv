@@ -59,9 +59,7 @@ const OPTIMISTIC_LOCK_BACKOFF_BASE_MS: u64 = 5;
 fn provider_requires_credential_repo(provider_name: &str) -> bool {
     matches!(
         provider_name,
-        crate::provider::AlistProvider::NAME
-            | crate::provider::BilibiliProvider::NAME
-            | crate::provider::EmbyProvider::NAME
+        crate::provider::AlistProvider::NAME | crate::provider::EmbyProvider::NAME
     )
 }
 
@@ -246,7 +244,8 @@ impl PlaylistService {
 
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
+            .with_room_id(room_id.as_str())
+            .with_credential_owner_id(user_id.as_str());
         if let Some(provider_instance_name) = trimmed_instance.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
@@ -765,12 +764,94 @@ impl PlaylistService {
 mod tests {
     use super::*;
     use crate::models::PlaylistId;
+    use crate::provider::{
+        DirectoryItem, DynamicFolder, MediaProvider, NextPlayItem, PlaybackResult, ProviderError,
+    };
     use crate::repository::{
         PlaylistRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
     };
     use crate::service::{PermissionService, RemoteProviderManager};
+    use async_trait::async_trait;
+    use serde_json::Value;
     use sqlx::PgPool;
     use std::sync::Arc;
+
+    struct CredentialOwnerCheckProvider;
+
+    #[async_trait]
+    impl MediaProvider for CredentialOwnerCheckProvider {
+        fn name(&self) -> &'static str {
+            "credential_check"
+        }
+
+        async fn generate_playback(
+            &self,
+            _ctx: &ProviderContext<'_>,
+            _source_config: &Value,
+        ) -> std::result::Result<PlaybackResult, ProviderError> {
+            Err(ProviderError::UnsupportedFormat(
+                "test provider does not generate playback".to_string(),
+            ))
+        }
+
+        fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+            Some(self)
+        }
+
+        async fn validate_source_config(
+            &self,
+            ctx: &ProviderContext<'_>,
+            _source_config: &Value,
+        ) -> std::result::Result<(), ProviderError> {
+            let user_id = ctx
+                .user_id
+                .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
+            let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+                ProviderError::Internal("missing credential_owner_id".to_string())
+            })?;
+            if credential_owner_id != user_id {
+                return Err(ProviderError::Internal(
+                    "credential_owner_id must match playlist creator during validation".to_string(),
+                ));
+            }
+
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl DynamicFolder for CredentialOwnerCheckProvider {
+        async fn list_playlist(
+            &self,
+            _ctx: &ProviderContext<'_>,
+            _playlist: &Playlist,
+            _target: Option<&[u8]>,
+            _page: usize,
+            _page_size: usize,
+        ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
+            Ok(Vec::new())
+        }
+
+        async fn resolve_item(
+            &self,
+            _ctx: &ProviderContext<'_>,
+            _playlist: &Playlist,
+            _target: &[u8],
+        ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
+            Ok(None)
+        }
+
+        async fn next(
+            &self,
+            _ctx: &ProviderContext<'_>,
+            _playlist: &Playlist,
+            _playing_media: &crate::models::Media,
+            _target: &[u8],
+            _play_mode: crate::models::PlayMode,
+        ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
+            Ok(None)
+        }
+    }
 
     #[test]
     fn test_create_playlist_request_basic() {
@@ -1094,6 +1175,34 @@ mod tests {
         service
     }
 
+    async fn test_playlist_service_with_credential_check_provider() -> PlaylistService {
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
+            provider_repo,
+            None,
+        ));
+        let mut providers_manager =
+            crate::service::ProvidersManager::new(provider_instance_manager);
+        providers_manager.register_factory(
+            "credential_check",
+            Box::new(|_instance_id, _config, _instance_manager| {
+                Ok(Arc::new(CredentialOwnerCheckProvider))
+            }),
+        );
+        let providers_manager = Arc::new(providers_manager);
+        providers_manager
+            .create_builtin_defaults()
+            .await
+            .expect("provider defaults should initialize");
+
+        PlaylistService::new(
+            PlaylistRepository::new(pool.clone()),
+            test_permission_service(&pool),
+            providers_manager,
+        )
+    }
+
     #[tokio::test]
     async fn test_validate_dynamic_playlist_source_requires_credential_repo_wiring() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
@@ -1121,7 +1230,7 @@ mod tests {
                 &RoomId::new(),
                 &UserId::new(),
                 "alist".to_string(),
-                serde_json::json!({"path": "/movies", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                serde_json::json!({"path": "/movies", "server_id": "srv"}),
                 Some("alist".to_string()),
             )
             .await
@@ -1144,7 +1253,7 @@ mod tests {
                 &RoomId::new(),
                 &UserId::new(),
                 "alist".to_string(),
-                serde_json::json!({"path": "/movies", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                serde_json::json!({"path": "/movies", "server_id": "srv"}),
                 Some("alist-main".to_string()),
             )
             .await
@@ -1210,7 +1319,7 @@ mod tests {
                 &RoomId::new(),
                 &UserId::new(),
                 "alist".to_string(),
-                serde_json::json!({"path": "", "credential_ref": {"credential_owner_id": "owner", "server_id": "srv"}}),
+                serde_json::json!({"path": "", "server_id": "srv"}),
                 Some("alist".to_string()),
             )
             .await
@@ -1223,6 +1332,23 @@ mod tests {
             }
             other => panic!("expected InvalidInput, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
+        let service = test_playlist_service_with_credential_check_provider().await;
+        let user_id = UserId::new();
+
+        service
+            .validate_dynamic_playlist_source(
+                &RoomId::new(),
+                &user_id,
+                "credential_check".to_string(),
+                serde_json::json!({}),
+                Some("credential_check".to_string()),
+            )
+            .await
+            .expect("dynamic playlist validation should expose creator credentials");
     }
 
     #[test]

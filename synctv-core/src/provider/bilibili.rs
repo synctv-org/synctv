@@ -5,7 +5,8 @@
 use super::{
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SubtitleTrack,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -352,81 +353,109 @@ impl BilibiliProvider {
 
 /// Bilibili source configuration structs
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum BilibiliSourceConfig {
     Video {
         bvid: Option<String>,
         aid: Option<u64>,
         cid: u64,
-        /// Reference to stored credentials (server-side)
-        credential_ref: super::credential_resolver::CredentialRef,
+        /// Whether playback should use the media creator's Bilibili login.
+        #[serde(default)]
+        shared: bool,
     },
     Pgc {
         epid: u64,
         cid: u64,
-        /// Reference to stored credentials (server-side)
-        credential_ref: super::credential_resolver::CredentialRef,
+        /// Whether playback should use the media creator's Bilibili login.
+        #[serde(default)]
+        shared: bool,
     },
     Live {
         room_id: u64,
-        /// Reference to stored credentials (server-side)
-        credential_ref: super::credential_resolver::CredentialRef,
+        /// Whether playback should use the media creator's Bilibili login.
+        #[serde(default)]
+        shared: bool,
     },
 }
 
 impl BilibiliSourceConfig {
-    /// Get a reference to the credential_ref from any variant
-    const fn credential_ref(&self) -> &super::credential_resolver::CredentialRef {
+    const fn shared(&self) -> bool {
         match self {
-            Self::Video { credential_ref, .. }
-            | Self::Pgc { credential_ref, .. }
-            | Self::Live { credential_ref, .. } => credential_ref,
+            Self::Video { shared, .. } | Self::Pgc { shared, .. } | Self::Live { shared, .. } => {
+                *shared
+            }
         }
     }
 }
 
-fn playback_cache_entry(config: &BilibiliSourceConfig) -> (String, Duration) {
+fn bilibili_credential_server_id() -> String {
+    crate::models::UserProviderCredential::bilibili_server_id()
+}
+
+fn playback_cache_entry(
+    config: &BilibiliSourceConfig,
+    credential_cache_partition: &str,
+) -> (String, Duration) {
     match config {
-        BilibiliSourceConfig::Video {
-            bvid,
-            aid,
-            cid,
-            credential_ref,
-            ..
-        } => (
+        BilibiliSourceConfig::Video { bvid, aid, cid, .. } => (
             format!(
-                "playback:video:{}:{}:{}:{}:{}",
+                "playback:video:{}:{}:{}:{}",
                 bvid.as_deref().unwrap_or(""),
                 aid.unwrap_or(0),
                 cid,
-                credential_ref.server_id,
-                credential_ref.credential_owner_id
+                credential_cache_partition
             ),
             Duration::from_hours(2),
         ),
-        BilibiliSourceConfig::Pgc {
-            epid,
-            cid,
-            credential_ref,
-            ..
-        } => (
-            format!(
-                "playback:pgc:{epid}:{cid}:{}:{}",
-                credential_ref.server_id, credential_ref.credential_owner_id
-            ),
+        BilibiliSourceConfig::Pgc { epid, cid, .. } => (
+            format!("playback:pgc:{epid}:{cid}:{credential_cache_partition}"),
             Duration::from_hours(2),
         ),
-        BilibiliSourceConfig::Live {
-            room_id,
-            credential_ref,
-            ..
-        } => (
-            format!(
-                "playback:live:{room_id}:{}:{}",
-                credential_ref.server_id, credential_ref.credential_owner_id
-            ),
+        BilibiliSourceConfig::Live { room_id, .. } => (
+            format!("playback:live:{room_id}:{credential_cache_partition}"),
             Duration::from_mins(2),
         ),
+    }
+}
+
+async fn resolve_optional_bilibili_cookies(
+    ctx: &ProviderContext<'_>,
+    credential_owner_id: &str,
+) -> Result<(HashMap<String, String>, String), ProviderError> {
+    let Some(repo) = ctx.credential_repo else {
+        return Ok((HashMap::new(), "anon".to_string()));
+    };
+
+    let server_id = bilibili_credential_server_id();
+    let credential = repo
+        .get_by_provider_and_server(credential_owner_id, BilibiliProvider::NAME, &server_id)
+        .await
+        .map_err(|e| {
+            ProviderError::Internal(format!("Failed to query bilibili credential: {e}"))
+        })?;
+
+    let Some(credential) = credential else {
+        return Ok((HashMap::new(), "anon".to_string()));
+    };
+    if credential.is_expired() {
+        return Ok((HashMap::new(), "anon".to_string()));
+    }
+
+    match credential.get_credential() {
+        Ok(crate::models::ProviderCredential::Bilibili { cookies }) => Ok((
+            cookies,
+            format!(
+                "auth:{credential_owner_id}:{server_id}:{}",
+                super::credential_resolver::credential_revision(
+                    &credential.id,
+                    credential.updated_at
+                )
+            ),
+        )),
+        Ok(_) => Err(ProviderError::InvalidCredentialType),
+        Err(e) => Err(ProviderError::Internal(format!(
+            "Failed to parse bilibili credential: {e}"
+        ))),
     }
 }
 
@@ -435,6 +464,7 @@ impl TryFrom<&Value> for BilibiliSourceConfig {
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         super::reject_source_config_provider_instance_name(value, "Bilibili")?;
+        super::reject_source_config_credential_ref(value, "Bilibili")?;
         super::parse_source_config(value, "Bilibili")
     }
 }
@@ -458,26 +488,25 @@ impl MediaProvider for BilibiliProvider {
         // Parse source_config
         let config = BilibiliSourceConfig::try_from(source_config)?;
 
-        // Resolve cookies from DB using credential_ref
-        let repo = _ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
-        })?;
-
-        let cred_ref = config.credential_ref();
-        let credential = super::credential_resolver::resolve_credential(
-            repo,
-            Self::NAME,
-            cred_ref,
-            _ctx.request_context(),
-        )
-        .await?;
-
-        let crate::models::ProviderCredential::Bilibili { cookies } = credential else {
-            return Err(ProviderError::InvalidCredentialType);
+        // Resolve cookies from DB. Shared Bilibili media uses the creator's
+        // login; non-shared media uses the requesting user's own login. Missing
+        // credentials are valid and fall back to anonymous playback.
+        let credential_owner_id = if config.shared() {
+            _ctx.credential_owner_id().ok_or_else(|| {
+                ProviderError::Internal(
+                    "credential_owner_id not available in ProviderContext".to_string(),
+                )
+            })?
+        } else {
+            _ctx.user_id.ok_or_else(|| {
+                ProviderError::Internal("user_id not available in ProviderContext".to_string())
+            })?
         };
+        let (cookies, credential_cache_partition) =
+            resolve_optional_bilibili_cookies(_ctx, credential_owner_id).await?;
 
         // Cache by content identity plus the exact credential binding that resolved it.
-        let (cache_key, cache_ttl) = playback_cache_entry(&config);
+        let (cache_key, cache_ttl) = playback_cache_entry(&config, &credential_cache_partition);
 
         let store = _ctx.store.as_ref();
 
@@ -590,23 +619,32 @@ impl MediaProvider for BilibiliProvider {
             }
         }
 
-        // Verify credential_ref points to an existing credential
-        if let Some(repo) = _ctx.credential_repo {
-            let cred_ref = config.credential_ref();
-            let credential_owner_id = _ctx.user_id.unwrap_or(&cred_ref.credential_owner_id);
-            repo.get_by_provider_and_server(credential_owner_id, Self::NAME, &cred_ref.server_id)
-                .await
-                .map_err(|e| {
-                    ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
-                })?
-                .ok_or_else(|| {
-                    ProviderError::CredentialNotFound(
-                        "Referenced bilibili credential does not exist".to_string(),
-                    )
-                })?;
-        }
-
         Ok(())
+    }
+
+    fn credential_dependencies(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
+        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let credential_owner_id = if config.shared() {
+            ctx.credential_owner_id().ok_or_else(|| {
+                ProviderError::Internal(
+                    "credential_owner_id not available in ProviderContext".to_string(),
+                )
+            })?
+        } else {
+            ctx.user_id.ok_or_else(|| {
+                ProviderError::Internal("user_id not available in ProviderContext".to_string())
+            })?
+        };
+
+        Ok(vec![ProviderCredentialDependency::new(
+            Self::NAME,
+            credential_owner_id,
+            bilibili_credential_server_id(),
+        )])
     }
 
     async fn prepare_source_config(
@@ -615,15 +653,8 @@ impl MediaProvider for BilibiliProvider {
         source_config: Value,
     ) -> Result<Value, ProviderError> {
         super::reject_source_config_provider_instance_name(&source_config, "Bilibili")?;
-
-        // Inject credential_owner_id from context (server-side, not trusting client)
-        let mut config = source_config;
-        if let Some(user_id) = _ctx.user_id {
-            if let Some(cred_ref) = config.get_mut("credential_ref") {
-                cred_ref["credential_owner_id"] = serde_json::Value::String(user_id.to_string());
-            }
-        }
-        Ok(config)
+        super::reject_source_config_credential_ref(&source_config, "Bilibili")?;
+        Ok(source_config)
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
@@ -825,22 +856,58 @@ impl BilibiliProvider {
         match &config {
             BilibiliSourceConfig::Live {
                 room_id: bilibili_room_id,
-                credential_ref,
+                shared,
                 ..
             } => {
                 // Resolve cookies from credential store
                 let cookies = {
                     let repo = &ctx.services.credential_repo;
-                    let credential = super::credential_resolver::resolve_credential(
-                        repo,
-                        Self::NAME,
-                        credential_ref,
-                        ctx.request_context,
-                    )
-                    .await?;
+                    let credential_owner_id = if *shared {
+                        media
+                            .creator_id
+                            .as_ref()
+                            .map(crate::models::UserId::as_str)
+                            .ok_or_else(|| {
+                                ProviderError::Internal(
+                                    "media creator_id is required for shared Bilibili danmaku"
+                                        .to_string(),
+                                )
+                            })?
+                    } else {
+                        ctx.verified_claims
+                            .as_ref()
+                            .map(|claims| claims.user_id.as_str())
+                            .ok_or_else(|| {
+                                ProviderError::Internal(
+                                    "verified proxy claims are required for Bilibili danmaku"
+                                        .to_string(),
+                                )
+                            })?
+                    };
+                    let server_id = bilibili_credential_server_id();
+                    let credential = repo
+                        .get_by_provider_and_server(credential_owner_id, Self::NAME, &server_id)
+                        .await
+                        .map_err(|e| {
+                            ProviderError::Internal(format!(
+                                "Failed to query bilibili credential: {e}"
+                            ))
+                        })?;
                     match credential {
-                        crate::models::ProviderCredential::Bilibili { cookies } => cookies,
-                        _ => return Err(ProviderError::InvalidCredentialType),
+                        Some(credential) if !credential.is_expired() => {
+                            match credential.get_credential() {
+                                Ok(crate::models::ProviderCredential::Bilibili { cookies }) => {
+                                    cookies
+                                }
+                                Ok(_) => return Err(ProviderError::InvalidCredentialType),
+                                Err(e) => {
+                                    return Err(ProviderError::Internal(format!(
+                                        "Failed to parse bilibili credential: {e}"
+                                    )));
+                                }
+                            }
+                        }
+                        _ => HashMap::new(),
                     }
                 };
 
@@ -1123,13 +1190,6 @@ mod tests {
     use crate::service::RemoteProviderManager;
     use std::sync::Arc;
 
-    fn test_cred_ref() -> serde_json::Value {
-        json!({
-            "credential_owner_id": "user123",
-            "server_id": "bilibili"
-        })
-    }
-
     fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
@@ -1152,8 +1212,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_ok());
     }
@@ -1163,8 +1222,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "aid": 12345,
-            "cid": 67890,
-            "credential_ref": test_cred_ref()
+            "cid": 67890
         });
         assert!(validate_bilibili(&config).is_ok());
     }
@@ -1175,10 +1233,86 @@ mod tests {
             "type": "video",
             "bvid": "BV1xx411c7mD",
             "cid": 12345,
-            "provider_instance_name": "remote-bili-1",
-            "credential_ref": test_cred_ref()
+            "provider_instance_name": "remote-bili-1"
         });
         assert!(validate_bilibili(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_shared_credential_dependency_uses_creator() {
+        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test")
+            .with_user_id("viewer-1")
+            .with_credential_owner_id("creator-1");
+        let dependencies = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "type": "video",
+                    "bvid": "BV1xx411c7mD",
+                    "cid": 12345,
+                    "shared": true
+                }),
+            )
+            .expect("Bilibili shared dependency extraction should succeed");
+
+        assert_eq!(
+            dependencies,
+            vec![ProviderCredentialDependency::new(
+                BilibiliProvider::NAME,
+                "creator-1",
+                bilibili_credential_server_id()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
+        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let err = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "type": "video",
+                    "bvid": "BV1xx411c7mD",
+                    "cid": 12345,
+                    "shared": true
+                }),
+            )
+            .expect_err("shared Bilibili media must not fall back to viewer credentials");
+
+        assert!(
+            err.to_string().contains("credential_owner_id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
+        let provider = BilibiliProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test")
+            .with_user_id("viewer-1")
+            .with_credential_owner_id("creator-1");
+        let dependencies = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "type": "video",
+                    "bvid": "BV1xx411c7mD",
+                    "cid": 12345
+                }),
+            )
+            .expect("Bilibili non-shared dependency extraction should succeed");
+
+        assert_eq!(
+            dependencies,
+            vec![ProviderCredentialDependency::new(
+                BilibiliProvider::NAME,
+                "viewer-1",
+                bilibili_credential_server_id()
+            )]
+        );
     }
 
     #[tokio::test]
@@ -1188,8 +1322,7 @@ mod tests {
             "type": "video",
             "bvid": "BV1xx411c7mD",
             "cid": 12345,
-            "provider_instance_name": "remote-bili-1",
-            "credential_ref": test_cred_ref()
+            "provider_instance_name": "remote-bili-1"
         });
 
         let result = provider
@@ -1203,8 +1336,7 @@ mod tests {
     fn test_video_config_missing_bvid_and_aid() {
         let config = json!({
             "type": "video",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1214,8 +1346,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
-            "cid": 0,
-            "credential_ref": test_cred_ref()
+            "cid": 0
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1225,8 +1356,7 @@ mod tests {
         let config = json!({
             "type": "pgc",
             "epid": 12345,
-            "cid": 67890,
-            "credential_ref": test_cred_ref()
+            "cid": 67890
         });
         assert!(validate_bilibili(&config).is_ok());
     }
@@ -1236,8 +1366,7 @@ mod tests {
         let config = json!({
             "type": "pgc",
             "epid": 0,
-            "cid": 67890,
-            "credential_ref": test_cred_ref()
+            "cid": 67890
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1246,8 +1375,7 @@ mod tests {
     fn test_valid_live_config() {
         let config = json!({
             "type": "live",
-            "room_id": 12345,
-            "credential_ref": test_cred_ref()
+            "room_id": 12345
         });
         assert!(validate_bilibili(&config).is_ok());
     }
@@ -1256,8 +1384,7 @@ mod tests {
     fn test_live_config_zero_room_id() {
         let config = json!({
             "type": "live",
-            "room_id": 0,
-            "credential_ref": test_cred_ref()
+            "room_id": 0
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1266,8 +1393,7 @@ mod tests {
     fn test_invalid_type() {
         let config = json!({
             "type": "unknown_type",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1277,8 +1403,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx/../../../etc/passwd",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1288,8 +1413,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx;DROP TABLE",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1299,8 +1423,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "1xx411c7mD12",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1310,8 +1433,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "bv1xx411c7mD",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1321,8 +1443,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7m",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1332,8 +1453,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mDxx",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_err());
     }
@@ -1343,8 +1463,7 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": test_cred_ref()
+            "cid": 12345
         });
         assert!(validate_bilibili(&config).is_ok());
     }
@@ -1355,25 +1474,23 @@ mod tests {
             "type": "video",
             "bvid": "",
             "aid": 12345,
-            "cid": 67890,
-            "credential_ref": test_cred_ref()
+            "cid": 67890
         });
         assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
-    fn test_missing_credential_ref_rejected() {
-        // credential_ref is required, config without it should fail to parse
+    fn test_missing_credential_ref_allowed_for_anonymous_fallback() {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
             "cid": 12345
         });
-        assert!(validate_bilibili(&config).is_err());
+        assert!(validate_bilibili(&config).is_ok());
     }
 
     #[test]
-    fn test_credential_ref_fields() {
+    fn test_credential_ref_rejected() {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
@@ -1383,71 +1500,53 @@ mod tests {
                 "server_id": "bilibili"
             }
         });
-        let parsed = BilibiliSourceConfig::try_from(&config).unwrap();
-        let cred_ref = parsed.credential_ref();
-        assert_eq!(cred_ref.credential_owner_id, "user456");
-        assert_eq!(cred_ref.server_id, "bilibili");
+        assert!(validate_bilibili(&config).is_err());
     }
 
     #[test]
-    fn test_playback_cache_entry_isolated_by_server_id() {
-        let first = BilibiliSourceConfig::try_from(&json!({
+    fn test_server_id_in_source_config_is_rejected() {
+        let config = json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
             "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": "user456",
-                "server_id": "bilibili-main"
-            }
-        }))
-        .expect("first config should parse");
-        let second = BilibiliSourceConfig::try_from(&json!({
+            "server_id": "legacy-client-value"
+        });
+        assert!(validate_bilibili(&config).is_err());
+    }
+
+    #[test]
+    fn test_playback_cache_entry_isolated_by_credential_partition() {
+        let config = BilibiliSourceConfig::try_from(&json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": "user456",
-                "server_id": "bilibili-backup"
-            }
+            "cid": 12345
         }))
-        .expect("second config should parse");
+        .expect("config should parse");
 
-        let (first_key, first_ttl) = playback_cache_entry(&first);
-        let (second_key, second_ttl) = playback_cache_entry(&second);
+        let (anon_key, anon_ttl) = playback_cache_entry(&config, "anon");
+        let (auth_key, auth_ttl) = playback_cache_entry(&config, "auth:user-alpha:global-bilibili");
 
-        assert_eq!(first_ttl, Duration::from_hours(2));
-        assert_eq!(second_ttl, Duration::from_hours(2));
+        assert_eq!(anon_ttl, Duration::from_hours(2));
+        assert_eq!(auth_ttl, Duration::from_hours(2));
         assert_ne!(
-            first_key, second_key,
-            "Bilibili playback cache must not collide across distinct credential server_ids"
+            anon_key, auth_key,
+            "Bilibili playback cache must not collide between anonymous and authenticated playback"
         );
     }
 
     #[test]
     fn test_playback_cache_entry_isolated_by_credential_owner() {
-        let first = BilibiliSourceConfig::try_from(&json!({
+        let config = BilibiliSourceConfig::try_from(&json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": "user-alpha",
-                "server_id": "bilibili-main"
-            }
+            "cid": 12345
         }))
-        .expect("first config should parse");
-        let second = BilibiliSourceConfig::try_from(&json!({
-            "type": "video",
-            "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": "user-beta",
-                "server_id": "bilibili-main"
-            }
-        }))
-        .expect("second config should parse");
+        .expect("config should parse");
 
-        let (first_key, first_ttl) = playback_cache_entry(&first);
-        let (second_key, second_ttl) = playback_cache_entry(&second);
+        let (first_key, first_ttl) =
+            playback_cache_entry(&config, "auth:user-alpha:global-bilibili");
+        let (second_key, second_ttl) =
+            playback_cache_entry(&config, "auth:user-beta:global-bilibili");
 
         assert_eq!(first_ttl, Duration::from_hours(2));
         assert_eq!(second_ttl, Duration::from_hours(2));

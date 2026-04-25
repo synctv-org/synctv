@@ -14,7 +14,6 @@ const SOURCE_CONFIG_CREDENTIAL_FIELDS: &[&str] = &[
     "cookies",
     "secret",
     "access_token",
-    "credential_ref",
 ];
 
 fn usize_to_i32_saturating(value: usize) -> i32 {
@@ -1169,11 +1168,7 @@ mod tests {
             source_provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             source_config: serde_json::json!({
                 "type": "live",
-                "room_id": 12345_u64,
-                "credential_ref": {
-                    "server_id": "srv-1",
-                    "credential_owner_id": "owner-1"
-                }
+                "room_id": 12345_u64
             }),
             provider_instance_name: Some("bilibili".to_string()),
             added_at: chrono::Utc::now(),

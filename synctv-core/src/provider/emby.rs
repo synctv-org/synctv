@@ -6,8 +6,8 @@ use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
-    PlaybackClientProfile, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
-    SubtitleTrack,
+    PlaybackClientProfile, PlaybackInfo, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
@@ -15,6 +15,7 @@ use chrono::Utc;
 use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -395,14 +396,30 @@ impl EmbyProvider {
     fn build_next_source_config(base_config: &EmbySourceConfig, item_id: &str) -> Value {
         json!({
             "item_id": item_id,
-            "credential_ref": {
-                "credential_owner_id": base_config.credential_ref.credential_owner_id,
-                "server_id": base_config.credential_ref.server_id,
-            },
+            "server_id": base_config.server_id,
         })
     }
 
-    /// Resolve EmbySourceConfig + credential_ref into ResolvedEmbyConfig.
+    fn playback_cache_key(
+        server_id: &str,
+        credential_owner_id: &str,
+        credential_revision: &str,
+        item_id: &str,
+        playback_profile_cache_key: &str,
+    ) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(credential_owner_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(credential_revision.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(item_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(playback_profile_cache_key.as_bytes());
+        let scoped_hash: String = hex::encode(hasher.finalize()).chars().take(24).collect();
+        format!("playback:{server_id}:{scoped_hash}")
+    }
+
+    /// Resolve EmbySourceConfig into credentials owned by the media/playlist creator.
     async fn resolve_config(
         &self,
         ctx: &ProviderContext<'_>,
@@ -413,16 +430,22 @@ impl EmbyProvider {
         let repo = ctx.credential_repo.ok_or_else(|| {
             ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
 
-        let credential = super::credential_resolver::resolve_credential(
+        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,
             Self::NAME,
-            &config.credential_ref,
+            credential_owner_id,
+            &config.server_id,
             ctx.request_context(),
         )
         .await?;
 
-        match credential {
+        match resolved_credential.credential {
             crate::models::ProviderCredential::Emby {
                 host,
                 api_key,
@@ -432,6 +455,8 @@ impl EmbyProvider {
                 token: api_key,
                 user_id: emby_user_id,
                 item_id: config.item_id,
+                credential_owner_id: credential_owner_id.to_string(),
+                credential_revision: resolved_credential.revision,
                 provider_instance_name: super::bound_provider_instance_name(ctx)
                     .map(std::string::ToString::to_string),
             }),
@@ -610,7 +635,7 @@ impl EmbyProvider {
                         headers: emby_auth_headers.clone(),
                         subtitles: Vec::new(), // Subtitles burned in for transcode
                         expires_at: emby_expires_at,
-                        cors_proxy_required: false,
+                        cors_proxy_required: true,
                     },
                 );
             }
@@ -641,8 +666,8 @@ impl EmbyProvider {
 #[derive(Debug, Deserialize, Serialize)]
 struct EmbySourceConfig {
     item_id: String,
-    /// Reference to stored credentials (server-side)
-    credential_ref: super::credential_resolver::CredentialRef,
+    /// Saved Emby credential server identifier.
+    server_id: String,
 }
 
 /// Resolved Emby configuration with credentials ready for API calls.
@@ -651,6 +676,8 @@ struct ResolvedEmbyConfig {
     token: String,
     user_id: String,
     item_id: String,
+    credential_owner_id: String,
+    credential_revision: String,
     provider_instance_name: Option<String>,
 }
 
@@ -659,6 +686,7 @@ impl TryFrom<&Value> for EmbySourceConfig {
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         super::reject_source_config_provider_instance_name(value, "Emby")?;
+        super::reject_source_config_credential_ref(value, "Emby")?;
         super::parse_source_config(value, "Emby")
     }
 }
@@ -690,17 +718,21 @@ impl MediaProvider for EmbyProvider {
             ));
         }
 
-        // Validate credential_ref exists and the referenced credential is accessible
+        if config.server_id.trim().is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby server_id must not be empty".to_string(),
+            ));
+        }
+
+        // Validate creator-owned credential exists
         if let Some(repo) = _ctx.credential_repo {
-            let credential_owner_id = _ctx
-                .user_id
-                .unwrap_or(&config.credential_ref.credential_owner_id);
-            let cred = repo
-                .get_by_provider_and_server(
-                    credential_owner_id,
-                    Self::NAME,
-                    &config.credential_ref.server_id,
+            let credential_owner_id = _ctx.credential_owner_id().ok_or_else(|| {
+                ProviderError::Internal(
+                    "credential_owner_id not available in ProviderContext".to_string(),
                 )
+            })?;
+            let cred = repo
+                .get_by_provider_and_server(credential_owner_id, Self::NAME, &config.server_id)
                 .await
                 .map_err(|e| {
                     ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
@@ -709,7 +741,7 @@ impl MediaProvider for EmbyProvider {
             if cred.is_none() {
                 return Err(ProviderError::CredentialNotFound(format!(
                     "Referenced emby credential not found for server_id '{}'",
-                    config.credential_ref.server_id
+                    config.server_id
                 )));
             }
         }
@@ -717,26 +749,32 @@ impl MediaProvider for EmbyProvider {
         Ok(())
     }
 
+    fn credential_dependencies(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        Ok(vec![ProviderCredentialDependency::new(
+            Self::NAME,
+            credential_owner_id,
+            config.server_id,
+        )])
+    }
+
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        mut source_config: Value,
+        source_config: Value,
     ) -> Result<Value, ProviderError> {
         super::reject_source_config_provider_instance_name(&source_config, "Emby")?;
-
-        // Server-side: ensure credential_owner_id is set to the current user
-        if let Some(user_id) = _ctx.user_id {
-            if let Some(obj) = source_config.as_object_mut() {
-                if let Some(cred_ref) = obj.get_mut("credential_ref") {
-                    if let Some(cred_obj) = cred_ref.as_object_mut() {
-                        cred_obj.insert(
-                            "credential_owner_id".to_string(),
-                            Value::String(user_id.to_string()),
-                        );
-                    }
-                }
-            }
-        }
+        super::reject_source_config_credential_ref(&source_config, "Emby")?;
 
         Ok(source_config)
     }
@@ -746,39 +784,8 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Parse source_config
         let config = EmbySourceConfig::try_from(source_config)?;
-
-        // Resolve credentials from DB using credential_ref
-        let repo = _ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
-        })?;
-
-        let credential = super::credential_resolver::resolve_credential(
-            repo,
-            Self::NAME,
-            &config.credential_ref,
-            _ctx.request_context(),
-        )
-        .await?;
-
-        let crate::models::ProviderCredential::Emby {
-            host,
-            api_key: token,
-            emby_user_id: user_id,
-        } = credential
-        else {
-            return Err(ProviderError::InvalidCredentialType);
-        };
-
-        let resolved = ResolvedEmbyConfig {
-            host: host.clone(),
-            token: token.clone(),
-            user_id,
-            item_id: config.item_id.clone(),
-            provider_instance_name: super::bound_provider_instance_name(_ctx)
-                .map(std::string::ToString::to_string),
-        };
+        let resolved = self.resolve_config(_ctx, source_config).await?;
         let playback_client_profile = _ctx.playback_client_profile();
         let playback_profile_cache_key = playback_client_profile.map_or_else(
             || "default".to_string(),
@@ -788,9 +795,12 @@ impl MediaProvider for EmbyProvider {
         // Cache must be partitioned by the effective playback capability
         // profile, otherwise different clients can receive each other's Emby
         // negotiation result.
-        let cache_key = format!(
-            "playback:{}:{}:{}",
-            config.credential_ref.server_id, config.item_id, playback_profile_cache_key
+        let cache_key = Self::playback_cache_key(
+            &config.server_id,
+            &resolved.credential_owner_id,
+            &resolved.credential_revision,
+            &config.item_id,
+            &playback_profile_cache_key,
         );
         let cache_ttl = Duration::from_mins(30); // 30 minutes
 
@@ -1163,14 +1173,10 @@ impl DynamicFolder for EmbyProvider {
             .into_iter()
             .filter_map(|item| {
                 let item_type = Self::item_type_from_listing(&item)?;
-                let server_id =
-                    crate::models::UserProviderCredential::generate_server_id_for_instance(
-                        &resolved.host,
-                        resolved.provider_instance_name.as_deref(),
-                    );
+                let credential_owner_id = ctx.credential_owner_id()?;
                 let thumbnail_url = Self::build_thumbnail_url(
-                    &server_id,
-                    &base_config.credential_ref.credential_owner_id,
+                    &base_config.server_id,
+                    credential_owner_id,
                     &item.id,
                 );
 
@@ -1491,8 +1497,8 @@ mod tests {
         Arc::new(RemoteProviderManager::new(repo))
     }
 
-    /// Validate Emby source config: checks item_id and credential_ref fields.
-    /// Host/token/user_id are no longer in source_config (resolved from credential_ref at runtime).
+    /// Validate Emby source config: checks item_id and server_id fields.
+    /// Host/token/user_id are resolved from the media or playlist creator at runtime.
     fn validate_emby(config: &Value) -> Result<(), ProviderError> {
         let config = EmbySourceConfig::try_from(config)?;
 
@@ -1501,14 +1507,9 @@ mod tests {
                 "Emby item_id must not be empty".to_string(),
             ));
         }
-        if config.credential_ref.credential_owner_id.is_empty() {
+        if config.server_id.trim().is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "credential_ref.credential_owner_id must not be empty".to_string(),
-            ));
-        }
-        if config.credential_ref.server_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "credential_ref.server_id must not be empty".to_string(),
+                "Emby server_id must not be empty".to_string(),
             ));
         }
         Ok(())
@@ -1518,10 +1519,7 @@ mod tests {
     fn test_valid_emby_config() {
         let config = json!({
             "item_id": "item-456",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_emby(&config).is_ok());
     }
@@ -1531,12 +1529,55 @@ mod tests {
         let config = json!({
             "item_id": "item-456",
             "provider_instance_name": "remote-emby-1",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_emby(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_emby_credential_dependencies_use_creator_credential() {
+        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test")
+            .with_user_id("viewer-1")
+            .with_credential_owner_id("creator-1");
+        let dependencies = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "item_id": "item-456",
+                    "server_id": "emby-main"
+                }),
+            )
+            .expect("Emby dependency extraction should succeed");
+
+        assert_eq!(
+            dependencies,
+            vec![ProviderCredentialDependency::new(
+                EmbyProvider::NAME,
+                "creator-1",
+                "emby-main"
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
+        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let err = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "item_id": "item-456",
+                    "server_id": "emby-main"
+                }),
+            )
+            .expect_err("Emby must not silently fall back to viewer credentials");
+
+        assert!(
+            err.to_string().contains("credential_owner_id"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1545,10 +1586,7 @@ mod tests {
         let config = json!({
             "item_id": "item-456",
             "provider_instance_name": "remote-emby-1",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
 
         let result = provider
@@ -1562,17 +1600,14 @@ mod tests {
     fn test_emby_config_empty_item_id() {
         let config = json!({
             "item_id": "",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_emby(&config).is_err());
     }
 
     #[test]
     fn test_emby_config_missing_required_fields() {
-        // Missing credential_ref entirely
+        // Missing server_id entirely
         let config = json!({
             "item_id": "item-456"
         });
@@ -1583,26 +1618,19 @@ mod tests {
     fn test_emby_config_missing_item_id() {
         // Missing item_id field
         let config = json!({
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_emby(&config).is_err());
     }
 
     #[test]
-    fn test_emby_credential_ref_parsing() {
+    fn test_emby_server_id_parsing() {
         let config = json!({
             "item_id": "item-456",
-            "credential_ref": {
-                "credential_owner_id": "owner-abc",
-                "server_id": "srv-xyz"
-            }
+            "server_id": "srv-xyz"
         });
         let parsed = EmbySourceConfig::try_from(&config).unwrap();
-        assert_eq!(parsed.credential_ref.credential_owner_id, "owner-abc");
-        assert_eq!(parsed.credential_ref.server_id, "srv-xyz");
+        assert_eq!(parsed.server_id, "srv-xyz");
         assert_eq!(parsed.item_id, "item-456");
     }
 
@@ -1688,6 +1716,57 @@ mod tests {
         assert!(
             thumbnail_url.contains("credential_owner_id=owner-456"),
             "Thumbnail URL must include the credential owner for shared Emby media"
+        );
+    }
+
+    #[test]
+    fn test_emby_playback_cache_key_includes_credential_owner() {
+        let revision = "credential-1:1000";
+        let owner_a =
+            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "default");
+        let owner_b =
+            EmbyProvider::playback_cache_key("server-1", "owner-b", revision, "item-1", "default");
+
+        assert_ne!(
+            owner_a, owner_b,
+            "Emby playback cache must be isolated by credential owner"
+        );
+    }
+
+    #[test]
+    fn test_emby_playback_cache_key_includes_client_profile() {
+        let revision = "credential-1:1000";
+        let default_profile =
+            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "default");
+        let mobile_profile =
+            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "mobile");
+
+        assert_ne!(
+            default_profile, mobile_profile,
+            "Emby playback cache must remain isolated by playback client profile"
+        );
+    }
+
+    #[test]
+    fn test_emby_playback_cache_key_includes_credential_update_time() {
+        let first = EmbyProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:1000",
+            "item-1",
+            "default",
+        );
+        let second = EmbyProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:2000",
+            "item-1",
+            "default",
+        );
+
+        assert_ne!(
+            first, second,
+            "Credential changes must invalidate Emby playback cache entries"
         );
     }
 

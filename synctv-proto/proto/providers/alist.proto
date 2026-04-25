@@ -18,7 +18,9 @@ message LoginRequest {
     string password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Prefer hashed_password.
     string hashed_password = 4; // Hashed password preferred when available.
   }
-  string instance_name = 5; // Optional provider instance name
+  string otp_code = 5; // Optional current TOTP/2FA code for one-time login verification.
+  string otp_secret = 6; // Optional TOTP secret to persist for automatic token refresh.
+  string instance_name = 7; // Optional provider instance name
 }
 
 // Login response

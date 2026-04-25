@@ -15,7 +15,7 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{BilibiliProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::{get_provider_credentials, resolve_bound_instance_name};
+use super::{get_provider_credentials, publish_provider_credential_changed};
 
 /// Bilibili API implementation
 ///
@@ -25,6 +25,7 @@ use super::{get_provider_credentials, resolve_bound_instance_name};
 pub struct BilibiliApiImpl {
     provider: Arc<BilibiliProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
 impl BilibiliApiImpl {
@@ -36,53 +37,49 @@ impl BilibiliApiImpl {
         Self {
             provider,
             credential_repo,
+            event_service: None,
         }
     }
 
-    /// Resolve Bilibili cookies from DB using server_id.
+    #[must_use]
+    pub fn with_event_service(
+        mut self,
+        event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    ) -> Self {
+        self.event_service = event_service;
+        self
+    }
+
+    /// Resolve the user's single global Bilibili credential.
     async fn resolve_cookies(
         &self,
         caller_user_id: &str,
-        server_id: &str,
-        requested_instance_name: Option<&str>,
-    ) -> Result<(HashMap<String, String>, Option<String>), synctv_core::provider::ProviderError>
-    {
-        if server_id.is_empty() {
-            return Err(synctv_core::provider::ProviderError::InvalidConfig(
-                "Bilibili requests must provide an explicit server_id".to_string(),
-            ));
-        }
-
+    ) -> Result<Option<HashMap<String, String>>, synctv_core::provider::ProviderError> {
+        let server_id = UserProviderCredential::bilibili_server_id();
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
                 caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
-                server_id,
+                &server_id,
             )
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to query bilibili credential: {e}"
                 ))
-            })?
-            .ok_or(synctv_core::provider::ProviderError::CredentialNotFound(
-                format!("No bilibili credential found for server_id '{server_id}'"),
-            ))?;
+            })?;
+
+        let Some(cred) = cred else {
+            return Ok(None);
+        };
 
         if cred.is_expired() {
-            return Err(synctv_core::provider::ProviderError::CredentialExpired(
-                "Bilibili credential has expired".to_string(),
-            ));
+            return Ok(None);
         }
 
-        let effective_instance_name = resolve_bound_instance_name(
-            requested_instance_name,
-            cred.provider_instance_name.as_deref(),
-        )?;
-
         match cred.get_credential() {
-            Ok(ProviderCredential::Bilibili { cookies }) => Ok((cookies, effective_instance_name)),
+            Ok(ProviderCredential::Bilibili { cookies }) => Ok(Some(cookies)),
             Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
             Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
                 "Failed to parse bilibili credential: {e}"
@@ -95,32 +92,16 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &str,
         cookies: &HashMap<String, String>,
-        instance_name: Option<&str>,
     ) -> Result<String, synctv_core::provider::ProviderError> {
-        let server_id = UserProviderCredential::bilibili_server_id(instance_name);
+        let server_id = UserProviderCredential::bilibili_server_id();
         let credential_data = ProviderCredential::bilibili(cookies.clone());
-
-        // Upsert: delete existing then create
-        if let Some(existing) = self
-            .credential_repo
-            .get_by_provider_and_server(
-                caller_user_id,
-                synctv_core::provider::BilibiliProvider::NAME,
-                &server_id,
-            )
-            .await
-            .ok()
-            .flatten()
-        {
-            let _ = self.credential_repo.delete(&existing.id).await;
-        }
 
         let credential = UserProviderCredential {
             id: UserProviderCredential::new_id(),
             user_id: caller_user_id.to_string(),
             provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),
-            provider_instance_name: instance_name.map(ToString::to_string),
+            provider_instance_name: None,
             credential_data: serde_json::to_value(&credential_data).map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to serialize credential: {e}"
@@ -132,13 +113,20 @@ impl BilibiliApiImpl {
         };
 
         self.credential_repo
-            .create(&credential)
+            .upsert_by_user_provider_server(&credential)
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to persist bilibili credential: {e}"
                 ))
             })?;
+
+        publish_provider_credential_changed(
+            self.event_service.as_ref(),
+            caller_user_id,
+            synctv_core::provider::BilibiliProvider::NAME,
+            &server_id,
+        );
 
         Ok(server_id)
     }
@@ -161,18 +149,15 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
-        let (cookies, effective_instance_name) = self
-            .resolve_cookies(caller_user_id, &req.server_id, requested_instance_name)
-            .await?;
+        let cookies = self
+            .resolve_cookies(caller_user_id)
+            .await?
+            .unwrap_or_default();
 
         // Step 1: Match URL
         let match_resp = self
             .provider
-            .r#match_with_context(
-                req.url.clone(),
-                effective_instance_name.as_deref(),
-                request_context,
-            )
+            .r#match_with_context(req.url.clone(), requested_instance_name, request_context)
             .await?;
 
         // Step 2: Parse based on type
@@ -196,7 +181,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_video_page_with_context(
                         parse_req,
-                        effective_instance_name.as_deref(),
+                        requested_instance_name,
                         request_context,
                     )
                     .await?
@@ -219,7 +204,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_pgc_page_with_context(
                         parse_req,
-                        effective_instance_name.as_deref(),
+                        requested_instance_name,
                         request_context,
                     )
                     .await?
@@ -233,7 +218,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_live_page_with_context(
                         parse_req,
-                        effective_instance_name.as_deref(),
+                        requested_instance_name,
                         request_context,
                     )
                     .await?
@@ -343,16 +328,12 @@ impl BilibiliApiImpl {
             .await?;
 
         // If login succeeded (status = 4 = SUCCESS), persist cookies
-        let server_id = if resp.status == 4 && !resp.cookies.is_empty() {
-            self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
-                .await?
-        } else {
-            String::new()
-        };
+        if resp.status == 4 && !resp.cookies.is_empty() {
+            self.persist_cookies(caller_user_id, &resp.cookies).await?;
+        }
 
         Ok(QrStatusResponse {
             status: resp.status,
-            server_id,
         })
     }
 
@@ -446,11 +427,9 @@ impl BilibiliApiImpl {
             .await?;
 
         // Persist cookies server-side
-        let server_id = self
-            .persist_cookies(caller_user_id, &resp.cookies, instance_name)
-            .await?;
+        self.persist_cookies(caller_user_id, &resp.cookies).await?;
 
-        Ok(LoginSmsResponse { server_id })
+        Ok(LoginSmsResponse {})
     }
 
     /// Get user info using stored cookies
@@ -467,23 +446,24 @@ impl BilibiliApiImpl {
     pub async fn get_user_info_with_context(
         &self,
         caller_user_id: &str,
-        req: UserInfoRequest,
+        _req: UserInfoRequest,
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
-        let (cookies, effective_instance_name) = self
-            .resolve_cookies(caller_user_id, &req.server_id, requested_instance_name)
-            .await?;
+        let Some(cookies) = self.resolve_cookies(caller_user_id).await? else {
+            return Ok(UserInfoResponse {
+                is_login: false,
+                username: String::new(),
+                face: String::new(),
+                is_vip: false,
+            });
+        };
 
         let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq { cookies };
 
         let resp = self
             .provider
-            .user_info_with_context(
-                info_req,
-                effective_instance_name.as_deref(),
-                request_context,
-            )
+            .user_info_with_context(info_req, requested_instance_name, request_context)
             .await?;
 
         Ok(UserInfoResponse {
@@ -498,20 +478,15 @@ impl BilibiliApiImpl {
     pub async fn logout(
         &self,
         caller_user_id: &str,
-        req: LogoutRequest,
+        _req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
-        if req.server_id.is_empty() {
-            return Err(synctv_core::provider::ProviderError::InvalidConfig(
-                "Bilibili logout requires an explicit server_id".to_string(),
-            ));
-        }
-
+        let server_id = UserProviderCredential::bilibili_server_id();
         if let Some(existing) = self
             .credential_repo
             .get_by_provider_and_server(
                 caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
-                &req.server_id,
+                &server_id,
             )
             .await
             .map_err(|e| {
@@ -528,6 +503,12 @@ impl BilibiliApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            publish_provider_credential_changed(
+                self.event_service.as_ref(),
+                caller_user_id,
+                synctv_core::provider::BilibiliProvider::NAME,
+                &server_id,
+            );
         }
 
         Ok(LogoutResponse {
@@ -538,19 +519,20 @@ impl BilibiliApiImpl {
     pub async fn get_binds(
         &self,
         caller_user_id: &str,
-        instance_name: Option<&str>,
+        _instance_name: Option<&str>,
     ) -> Result<GetBindsResponse, crate::impls::ApiError> {
+        let server_id = UserProviderCredential::bilibili_server_id();
         let binds = get_provider_credentials(
             &self.credential_repo,
             caller_user_id,
             synctv_core::provider::BilibiliProvider::NAME,
-            instance_name,
+            None,
         )
         .await?
         .into_iter()
+        .filter(|credential| credential.server_id == server_id)
         .map(|credential| BindInfo {
             id: credential.id,
-            server_id: credential.server_id,
             created_at: credential.created_at.timestamp(),
         })
         .collect();
@@ -563,7 +545,7 @@ impl BilibiliApiImpl {
 mod tests {
     use super::BilibiliApiImpl;
     use std::sync::Arc;
-    use synctv_core::provider::{BilibiliProvider, ProviderError};
+    use synctv_core::provider::BilibiliProvider;
     use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
     use synctv_core::service::RemoteProviderManager;
     use synctv_core_testing::create_test_pool;
@@ -578,58 +560,47 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn get_user_info_rejects_empty_server_id() {
+    async fn get_user_info_without_binding_reports_logged_out() {
         let (_postgres, pool) = create_test_pool().await;
         let api = BilibiliApiImpl::new(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
         );
 
-        let err = api
+        let response = api
             .get_user_info(
                 "user-1",
                 crate::proto::providers::bilibili::UserInfoRequest {
-                    server_id: String::new(),
                     instance_name: String::new(),
                 },
                 None,
             )
             .await
-            .expect_err("empty server_id must fail before credential lookup");
+            .expect("missing Bilibili binding should be a logged-out state");
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("explicit server_id"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(!response.is_login);
+        assert!(response.username.is_empty());
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn logout_rejects_empty_server_id() {
+    async fn logout_without_binding_is_idempotent() {
         let (_postgres, pool) = create_test_pool().await;
         let api = BilibiliApiImpl::new(
             provider(),
             Arc::new(UserProviderCredentialRepository::new(pool)),
         );
 
-        let err = api
+        let response = api
             .logout(
                 "user-1",
                 crate::proto::providers::bilibili::LogoutRequest {
-                    server_id: String::new(),
                     instance_name: String::new(),
                 },
             )
             .await
-            .expect_err("empty server_id must fail before credential lookup");
+            .expect("logout without a Bilibili binding should be idempotent");
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("explicit server_id"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert_eq!(response.message, "Logout successful");
     }
 }

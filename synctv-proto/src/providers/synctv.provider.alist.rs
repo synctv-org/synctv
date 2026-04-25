@@ -15,8 +15,14 @@ pub struct LoginRequest {
     pub host: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub username: ::prost::alloc::string::String,
-    /// Optional provider instance name
+    /// Optional current TOTP/2FA code for one-time login verification.
     #[prost(string, tag = "5")]
+    pub otp_code: ::prost::alloc::string::String,
+    /// Optional TOTP secret to persist for automatic token refresh.
+    #[prost(string, tag = "6")]
+    pub otp_secret: ::prost::alloc::string::String,
+    /// Optional provider instance name
+    #[prost(string, tag = "7")]
     #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
     #[prost(oneof = "login_request::Credential", tags = "3, 4")]

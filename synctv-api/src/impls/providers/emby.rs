@@ -12,7 +12,7 @@ use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
-use super::{get_provider_binds, resolve_bound_instance_name};
+use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
 
 /// Emby API implementation
 ///
@@ -22,6 +22,7 @@ use super::{get_provider_binds, resolve_bound_instance_name};
 pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
 impl EmbyApiImpl {
@@ -33,7 +34,17 @@ impl EmbyApiImpl {
         Self {
             provider,
             credential_repo,
+            event_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_event_service(
+        mut self,
+        event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+    ) -> Self {
+        self.event_service = event_service;
+        self
     }
 
     /// Resolve Emby credentials from DB using server_id, returning (host, api_key, emby_user_id).
@@ -148,21 +159,6 @@ impl EmbyApiImpl {
         let credential_data =
             ProviderCredential::emby(host, login_resp.token, login_resp.user_id.clone());
 
-        // Upsert: delete existing then create
-        if let Some(existing) = self
-            .credential_repo
-            .get_by_provider_and_server(
-                caller_user_id,
-                synctv_core::provider::EmbyProvider::NAME,
-                &server_id,
-            )
-            .await
-            .ok()
-            .flatten()
-        {
-            let _ = self.credential_repo.delete(&existing.id).await;
-        }
-
         let credential = UserProviderCredential {
             id: UserProviderCredential::new_id(),
             user_id: caller_user_id.to_string(),
@@ -180,13 +176,20 @@ impl EmbyApiImpl {
         };
 
         self.credential_repo
-            .create(&credential)
+            .upsert_by_user_provider_server(&credential)
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to persist emby credential: {e}"
                 ))
             })?;
+
+        publish_provider_credential_changed(
+            self.event_service.as_ref(),
+            caller_user_id,
+            synctv_core::provider::EmbyProvider::NAME,
+            &server_id,
+        );
 
         Ok(LoginResponse {
             user_id: login_resp.user_id,
@@ -338,6 +341,12 @@ impl EmbyApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            publish_provider_credential_changed(
+                self.event_service.as_ref(),
+                caller_user_id,
+                synctv_core::provider::EmbyProvider::NAME,
+                &req.server_id,
+            );
         }
 
         Ok(LogoutResponse {

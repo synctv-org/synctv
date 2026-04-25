@@ -117,6 +117,7 @@ impl Alist for AlistService {
         let req = request.into_inner();
         validate_provider_grpc_host(&req.host)?;
         validate_required("token", &req.token)?;
+        validate_required("method", &req.method)?;
 
         let resp = self
             .service

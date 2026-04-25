@@ -36,7 +36,8 @@ use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutServ
 use crate::impls::client::media::{build_move_media_fanout_plan, publish_move_media_fanout};
 use crate::impls::client::proto_role_to_room_role;
 use crate::impls::playback_snapshot::{
-    dynamic_playback_snapshot_version, playback_snapshot_expires_at,
+    compose_playback_snapshot_version, dynamic_playback_snapshot_version,
+    playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
     static_playback_snapshot_version,
 };
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
@@ -737,6 +738,9 @@ impl AdminApiImpl {
             .with_media_id(media.id.as_str())
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
+        if let Some(creator_id) = media.creator_id.as_ref() {
+            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+        }
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
@@ -794,7 +798,21 @@ impl AdminApiImpl {
             default_mode_expires_at,
         );
         let mut snapshot = playback_snapshot_to_proto(&full_result);
-        snapshot.version = static_playback_snapshot_version(&media);
+        let credential_dependencies = provider
+            .credential_dependencies(&ctx, &media.source_config)
+            .map_err(ApiError::from)?;
+        let credential_fingerprint = provider_credential_dependency_fingerprint(
+            self.room_service
+                .media_service()
+                .credential_repo()
+                .map(std::convert::AsRef::as_ref),
+            &credential_dependencies,
+        )
+        .await?;
+        snapshot.version = compose_playback_snapshot_version(
+            static_playback_snapshot_version(&media),
+            credential_fingerprint.as_deref(),
+        );
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
     }
@@ -859,6 +877,9 @@ impl AdminApiImpl {
             .with_room_id(room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
+        if let Some(creator_id) = playlist.creator_id.as_ref() {
+            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+        }
         if let Some(provider_instance_name) = bound_instance {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
@@ -900,7 +921,24 @@ impl AdminApiImpl {
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
         let mut snapshot = playback_snapshot_to_proto(&full_result);
-        snapshot.version = dynamic_playback_snapshot_version(&playlist);
+        let playlist_source_config = playlist.source_config.as_ref().ok_or_else(|| {
+            ApiError::Internal("Dynamic playlist missing source_config".to_string())
+        })?;
+        let credential_dependencies = provider
+            .credential_dependencies(&ctx, playlist_source_config)
+            .map_err(ApiError::from)?;
+        let credential_fingerprint = provider_credential_dependency_fingerprint(
+            self.room_service
+                .media_service()
+                .credential_repo()
+                .map(std::convert::AsRef::as_ref),
+            &credential_dependencies,
+        )
+        .await?;
+        snapshot.version = compose_playback_snapshot_version(
+            dynamic_playback_snapshot_version(&playlist),
+            credential_fingerprint.as_deref(),
+        );
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
     }
@@ -11660,7 +11698,7 @@ mod tests {
                     page_size: 10,
                     search: "alpha".to_string(),
                     source_provider: "direct_url".to_string(),
-                    provider_instance_name: "direct_url".to_string(),
+                    provider_instance_name: String::new(),
                     sort_by: crate::proto::client::MediaListSortBy::Name as i32,
                     sort_direction: crate::proto::client::SortDirection::Asc as i32,
                     availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,

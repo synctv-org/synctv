@@ -11,11 +11,8 @@
 pub struct ParseRequest {
     #[prost(string, tag = "1")]
     pub url: ::prost::alloc::string::String,
-    /// Stored credential identifier (use stored cookies)
-    #[prost(string, tag = "2")]
-    pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "2")]
     #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
@@ -114,13 +111,10 @@ pub struct CheckQrRequest {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_bilibili_QRStatusResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct QrStatusResponse {
     #[prost(enumeration = "QrLoginStatus", tag = "1")]
     pub status: i32,
-    /// Stored credential identifier returned after successful login
-    #[prost(string, tag = "2")]
-    pub server_id: ::prost::alloc::string::String,
 }
 /// Get captcha request
 #[derive(::prost_reflect::ReflectMessage)]
@@ -219,12 +213,8 @@ pub struct LoginSmsRequest {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_bilibili_LoginSMSResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LoginSmsResponse {
-    /// Stored credential identifier returned after successful login
-    #[prost(string, tag = "1")]
-    pub server_id: ::prost::alloc::string::String,
-}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LoginSmsResponse {}
 /// User info request
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.provider.bilibili.UserInfoRequest")]
@@ -235,11 +225,8 @@ pub struct LoginSmsResponse {
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_bilibili_UserInfoRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserInfoRequest {
-    /// Stored credential identifier
-    #[prost(string, tag = "1")]
-    pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "1")]
     #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
@@ -272,11 +259,8 @@ pub struct UserInfoResponse {
 #[cfg_attr(feature = "openapi", schema(as = synctv_provider_bilibili_LogoutRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {
-    /// Which credential to unbind
-    #[prost(string, tag = "1")]
-    pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "1")]
     #[serde(default)]
     pub instance_name: ::prost::alloc::string::String,
 }
@@ -332,10 +316,8 @@ pub struct GetBindsResponse {
 pub struct BindInfo {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub server_id: ::prost::alloc::string::String,
     /// Unix epoch timestamp
-    #[prost(int64, tag = "3")]
+    #[prost(int64, tag = "2")]
     pub created_at: i64,
 }
 /// QR login status enum
@@ -475,7 +457,7 @@ pub mod bilibili_provider_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Parse Bilibili URL (video, anime, live) - uses stored credential via server_id
+        /// Parse Bilibili URL (video, anime, live), using the user's global bind when available
         pub async fn parse(
             &mut self,
             request: impl tonic::IntoRequest<super::ParseRequest>,
@@ -649,7 +631,7 @@ pub mod bilibili_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Get user info (uses stored credential via server_id)
+        /// Get user info from the user's global bind
         pub async fn get_user_info(
             &mut self,
             request: impl tonic::IntoRequest<super::UserInfoRequest>,
@@ -751,7 +733,7 @@ pub mod bilibili_provider_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with BilibiliProviderServiceServer.
     #[async_trait]
     pub trait BilibiliProviderService: std::marker::Send + std::marker::Sync + 'static {
-        /// Parse Bilibili URL (video, anime, live) - uses stored credential via server_id
+        /// Parse Bilibili URL (video, anime, live), using the user's global bind when available
         async fn parse(
             &self,
             request: tonic::Request<super::ParseRequest>,
@@ -787,7 +769,7 @@ pub mod bilibili_provider_service_server {
             tonic::Response<super::LoginSmsResponse>,
             tonic::Status,
         >;
-        /// Get user info (uses stored credential via server_id)
+        /// Get user info from the user's global bind
         async fn get_user_info(
             &self,
             request: tonic::Request<super::UserInfoRequest>,

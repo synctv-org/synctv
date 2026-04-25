@@ -523,18 +523,21 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
 
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
     let credential_repo = config.user_provider_credential_repository.clone();
-    let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(
-        config.providers.bilibili.clone(),
-        credential_repo.clone(),
-    ));
-    let alist_api = Arc::new(crate::impls::AlistApiImpl::new(
-        config.providers.alist.clone(),
-        credential_repo.clone(),
-    ));
-    let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(
-        config.providers.emby.clone(),
-        credential_repo.clone(),
-    ));
+    let bilibili_api = Arc::new(
+        crate::impls::BilibiliApiImpl::new(
+            config.providers.bilibili.clone(),
+            credential_repo.clone(),
+        )
+        .with_event_service(config.event_service.clone()),
+    );
+    let alist_api = Arc::new(
+        crate::impls::AlistApiImpl::new(config.providers.alist.clone(), credential_repo.clone())
+            .with_event_service(config.event_service.clone()),
+    );
+    let emby_api = Arc::new(
+        crate::impls::EmbyApiImpl::new(config.providers.emby.clone(), credential_repo.clone())
+            .with_event_service(config.event_service.clone()),
+    );
 
     // Build proxy provider registry from ProviderSet (single source of truth)
     let proxy_provider_registry = Arc::new(config.providers.build_proxy_registry());
@@ -1863,7 +1866,7 @@ mod tests {
         assert_eq!(
             response.status(),
             StatusCode::METHOD_NOT_ALLOWED,
-            "Bilibili /me must require an explicit request body carrying server_id"
+            "Bilibili /me must require POST so provider requests stay consistently structured"
         );
     }
 

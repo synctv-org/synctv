@@ -309,12 +309,23 @@ mod alist_type_tests {
             "size": 1024000,
             "is_dir": false,
             "related": [
-                {"name": "subtitle.srt", "size": 5000, "is_dir": false}
+                {
+                    "name": "subtitle.srt",
+                    "size": 5000,
+                    "is_dir": false,
+                    "raw_url": "https://cdn.example.com/subtitle.srt",
+                    "provider": "AliyundriveOpen"
+                }
             ]
         }"#;
         let resp: HttpFsGetResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.related.len(), 1);
         assert_eq!(resp.related[0].name, "subtitle.srt");
+        assert_eq!(
+            resp.related[0].raw_url,
+            "https://cdn.example.com/subtitle.srt"
+        );
+        assert_eq!(resp.related[0].provider, "AliyundriveOpen");
     }
 
     #[test]
@@ -373,6 +384,7 @@ mod alist_type_tests {
         let json = r#"{
             "drive_id": "d1",
             "file_id": "f1",
+            "provider": "AliyundriveOpen",
             "video_preview_play_info": {
                 "category": "live_transcoding",
                 "live_transcoding_subtitle_task_list": [],
@@ -384,6 +396,7 @@ mod alist_type_tests {
         }"#;
         let resp: HttpFsOtherResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.drive_id, "d1");
+        assert_eq!(resp.provider, "AliyundriveOpen");
         let preview = resp.video_preview_play_info.unwrap();
         assert_eq!(preview.live_transcoding_task_list.len(), 1);
         assert_eq!(preview.live_transcoding_task_list[0].template_height, 720);

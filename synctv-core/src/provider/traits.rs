@@ -78,6 +78,38 @@ pub struct PlaybackResult {
     pub metadata: HashMap<String, Value>,
 }
 
+/// Provider credential binding that a media or dynamic playlist playback depends on.
+///
+/// The provider owns source-config parsing and credential policy decisions. Callers
+/// can compare this value against a credential mutation event without knowing
+/// provider-specific fields such as Bilibili's shared/non-shared flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCredentialDependency {
+    pub provider: String,
+    pub user_id: String,
+    pub server_id: String,
+}
+
+impl ProviderCredentialDependency {
+    #[must_use]
+    pub fn new(
+        provider: impl Into<String>,
+        user_id: impl Into<String>,
+        server_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            user_id: user_id.into(),
+            server_id: server_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn matches(&self, provider: &str, user_id: &str, server_id: &str) -> bool {
+        self.provider == provider && self.user_id == user_id && self.server_id == server_id
+    }
+}
+
 /// Item type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +232,19 @@ pub trait MediaProvider: Send + Sync {
         _source_config: &Value,
     ) -> Result<(), ProviderError> {
         Ok(()) // Default: no validation
+    }
+
+    /// Return provider credentials that this playback source depends on.
+    ///
+    /// This is intentionally provider-owned so generic real-time code never has
+    /// to parse provider-specific `source_config` fields. Providers that do not
+    /// use persisted user credentials should keep the default empty result.
+    fn credential_dependencies(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _source_config: &Value,
+    ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
+        Ok(Vec::new())
     }
 
     /// Prepare `source_config` for storage by encrypting sensitive fields.

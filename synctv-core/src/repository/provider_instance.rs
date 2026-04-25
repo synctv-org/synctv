@@ -526,6 +526,44 @@ impl UserProviderCredentialRepository {
         Ok(())
     }
 
+    /// Insert or replace the credential for a `(user_id, provider, server_id)` binding.
+    ///
+    /// This is intentionally a repository-level primitive so provider login flows do not
+    /// implement non-atomic delete-then-create upserts.
+    pub async fn upsert_by_user_provider_server(
+        &self,
+        credential: &UserProviderCredential,
+    ) -> Result<()> {
+        let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+
+        sqlx::query(
+            r"
+            INSERT INTO user_media_provider_credentials
+            (id, user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (user_id, provider, server_id)
+            DO UPDATE SET
+                provider_instance_name = EXCLUDED.provider_instance_name,
+                credential_data = EXCLUDED.credential_data,
+                expires_at = EXCLUDED.expires_at,
+                updated_at = NOW()
+            ",
+        )
+        .bind(&credential.id)
+        .bind(&credential.user_id)
+        .bind(&credential.provider)
+        .bind(&credential.server_id)
+        .bind(Self::normalize_provider_instance_name_for_db(
+            credential.provider_instance_name.as_deref(),
+        ))
+        .bind(&encrypted_data)
+        .bind(credential.expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Update an existing user credential (encrypts before storage)
     pub async fn update(&self, credential: &UserProviderCredential) -> Result<()> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;

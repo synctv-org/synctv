@@ -559,7 +559,10 @@ impl ClusterManager {
             return self.message_hub.broadcast(&room_id, &event);
         }
 
-        if matches!(&event, ClusterEvent::UserNotification { .. }) {
+        if matches!(
+            &event,
+            ClusterEvent::UserNotification { .. } | ClusterEvent::ProviderCredentialChanged { .. }
+        ) {
             let _ = self.admin_event_tx.send(event);
         }
 
@@ -962,7 +965,10 @@ impl ClusterManager {
 
         // UserNotification events are user-targeted (no room_id), so they are
         // delivered via the admin event channel to reach connected WebSocket handlers.
-        if matches!(&event, ClusterEvent::UserNotification { .. }) {
+        if matches!(
+            &event,
+            ClusterEvent::UserNotification { .. } | ClusterEvent::ProviderCredentialChanged { .. }
+        ) {
             let _ = self.admin_event_tx.send(event.clone());
         }
 

@@ -874,7 +874,7 @@ fn test_media_to_proto_basic() {
 }
 
 #[test]
-fn test_media_to_proto_direct_media_uses_direct_url_instance_binding() {
+fn test_media_to_proto_direct_media_omits_default_instance_binding() {
     let media = synctv_core::models::Media::from_direct_single_mode(
         Some(PlaylistId::from_string("playlist1".to_string())),
         RoomId::from_string("room1".to_string()),
@@ -888,7 +888,8 @@ fn test_media_to_proto_direct_media_uses_direct_url_instance_binding() {
         1.0,
     );
     let proto = media_to_proto(&media);
-    assert_eq!(proto.provider_instance_name, "direct_url");
+    assert_eq!(proto.provider, "direct_url");
+    assert!(proto.provider_instance_name.is_empty());
 }
 
 fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {

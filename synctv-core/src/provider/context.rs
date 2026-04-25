@@ -20,6 +20,10 @@ pub struct ProviderContext<'a> {
     /// User ID requesting playback (optional)
     pub user_id: Option<&'a str>,
 
+    /// User ID whose provider credentials should be used when provider semantics
+    /// require creator-owned shared credentials.
+    pub credential_owner_id: Option<&'a str>,
+
     /// Room ID (optional)
     pub room_id: Option<&'a str>,
 
@@ -63,6 +67,7 @@ impl<'a> ProviderContext<'a> {
     pub fn new(key_prefix: &'a str) -> Self {
         Self {
             user_id: None,
+            credential_owner_id: None,
             room_id: None,
             media_id: None,
             provider_instance_name: None,
@@ -82,6 +87,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_user_id(mut self, user_id: &'a str) -> Self {
         self.user_id = Some(user_id);
+        self
+    }
+
+    /// Set credential owner ID
+    #[must_use]
+    pub const fn with_credential_owner_id(mut self, credential_owner_id: &'a str) -> Self {
+        self.credential_owner_id = Some(credential_owner_id);
         self
     }
 
@@ -180,6 +192,19 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn provider_instance_name(&self) -> Option<&str> {
         self.provider_instance_name
+    }
+
+    #[must_use]
+    pub const fn credential_owner_id(&self) -> Option<&str> {
+        self.credential_owner_id
+    }
+
+    #[must_use]
+    pub const fn credential_owner_or_user_id(&self) -> Option<&str> {
+        match self.credential_owner_id {
+            Some(credential_owner_id) => Some(credential_owner_id),
+            None => self.user_id,
+        }
     }
 
     pub fn check_active(&self) -> Result<(), crate::Error> {

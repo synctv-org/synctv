@@ -28,7 +28,7 @@ fn make_user(username: &str) -> User {
 }
 
 fn bilibili_server_id() -> String {
-    UserProviderCredential::bilibili_server_id(None)
+    UserProviderCredential::bilibili_server_id()
 }
 
 fn make_credential(user_id: &str, provider: &str, server_id: &str) -> UserProviderCredential {
@@ -428,6 +428,61 @@ async fn test_blank_provider_instance_name_is_normalized_to_null() {
         .unwrap()
         .expect("credential should exist");
     assert_eq!(found.provider_instance_name, None);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomically() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let cred_repo =
+        UserProviderCredentialRepository::new_with_encryption(pool.clone(), test_encryption());
+
+    let user = user_repo
+        .create(&make_user("credential_upsert_user"))
+        .await
+        .unwrap();
+    let server_id = bilibili_server_id();
+    let first = make_credential(user.id.as_str(), "bilibili", &server_id);
+    cred_repo
+        .upsert_by_user_provider_server(&first)
+        .await
+        .unwrap();
+
+    let mut replacement = make_credential(user.id.as_str(), "bilibili", &server_id);
+    replacement.credential_data = json!({
+        "type": "bilibili",
+        "cookies": {"SESSDATA": "replacement_session"}
+    });
+    cred_repo
+        .upsert_by_user_provider_server(&replacement)
+        .await
+        .unwrap();
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3",
+    )
+    .bind(user.id.as_str())
+    .bind("bilibili")
+    .bind(&server_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+
+    let found = cred_repo
+        .get_by_provider_and_server(user.id.as_str(), "bilibili", &server_id)
+        .await
+        .unwrap()
+        .expect("upserted credential should exist");
+    assert_eq!(
+        found.id, first.id,
+        "upsert should keep the stable credential id"
+    );
+    assert_eq!(
+        found.credential_data["cookies"]["SESSDATA"],
+        "replacement_session"
+    );
 }
 
 #[tokio::test]

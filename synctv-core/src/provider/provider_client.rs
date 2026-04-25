@@ -545,6 +545,15 @@ pub struct AlistFileInfo {
     pub raw_url: String,
     pub provider: String,
     pub thumb: String,
+    pub related: Vec<AlistRelatedFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistRelatedFile {
+    pub name: String,
+    pub is_dir: bool,
+    pub raw_url: String,
+    pub provider: String,
 }
 
 impl From<FsGetResp> for AlistFileInfo {
@@ -556,6 +565,16 @@ impl From<FsGetResp> for AlistFileInfo {
             raw_url: data.raw_url,
             provider: data.provider,
             thumb: data.thumb,
+            related: data
+                .related
+                .into_iter()
+                .map(|related| AlistRelatedFile {
+                    name: related.name,
+                    is_dir: related.is_dir,
+                    raw_url: related.raw_url,
+                    provider: related.provider,
+                })
+                .collect(),
         }
     }
 }
@@ -565,20 +584,67 @@ impl From<FsGetResp> for AlistFileInfo {
 pub struct AlistVideoPreview {
     pub transcoding_tasks: Vec<AlistTranscodingTask>,
     pub subtitle_tasks: Vec<AlistSubtitleTask>,
+    pub drive_id: String,
+    pub file_id: String,
+    pub provider: String,
+    pub category: String,
     pub duration: f64,
     pub width: u64,
     pub height: u64,
 }
 
+impl AlistVideoPreview {
+    #[must_use]
+    pub fn from_fs_other_resp(other_data: FsOtherResp) -> Option<Self> {
+        other_data.video_preview_play_info.map(|preview| Self {
+            transcoding_tasks: preview
+                .live_transcoding_task_list
+                .into_iter()
+                .map(|task| AlistTranscodingTask {
+                    template_name: task.template_name,
+                    template_id: task.template_id,
+                    template_width: task.template_width,
+                    template_height: task.template_height,
+                    stage: task.stage,
+                    status: task.status,
+                    url: task.url,
+                })
+                .collect(),
+            subtitle_tasks: preview
+                .live_transcoding_subtitle_task_list
+                .into_iter()
+                .map(|sub| AlistSubtitleTask {
+                    language: sub.language,
+                    status: sub.status,
+                    url: sub.url,
+                })
+                .collect(),
+            drive_id: other_data.drive_id,
+            file_id: other_data.file_id,
+            provider: other_data.provider,
+            category: preview.category,
+            duration: preview.meta.as_ref().map_or(0.0, |m| m.duration),
+            width: preview.meta.as_ref().map_or(0, |m| m.width),
+            height: preview.meta.as_ref().map_or(0, |m| m.height),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AlistTranscodingTask {
     pub template_name: String,
+    pub template_id: String,
+    pub template_width: u64,
+    pub template_height: u64,
+    pub stage: String,
+    pub status: String,
     pub url: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct AlistSubtitleTask {
     pub language: String,
+    pub status: String,
     pub url: String,
 }
 
@@ -616,29 +682,7 @@ impl AlistClientExt for Arc<dyn AlistInterface> {
             .await
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
-        Ok(other_data
-            .video_preview_play_info
-            .map(|preview| AlistVideoPreview {
-                transcoding_tasks: preview
-                    .live_transcoding_task_list
-                    .into_iter()
-                    .map(|task| AlistTranscodingTask {
-                        template_name: task.template_name,
-                        url: task.url,
-                    })
-                    .collect(),
-                subtitle_tasks: preview
-                    .live_transcoding_subtitle_task_list
-                    .into_iter()
-                    .map(|sub| AlistSubtitleTask {
-                        language: sub.language,
-                        url: sub.url,
-                    })
-                    .collect(),
-                duration: preview.meta.as_ref().map_or(0.0, |m| m.duration),
-                width: preview.meta.as_ref().map_or(0, |m| m.width),
-                height: preview.meta.as_ref().map_or(0, |m| m.height),
-            }))
+        Ok(AlistVideoPreview::from_fs_other_resp(other_data))
     }
 }
 

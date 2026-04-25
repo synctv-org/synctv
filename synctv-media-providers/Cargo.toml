@@ -93,5 +93,7 @@ protoc-bin-vendored.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream = { workspace = true, features = ["net"] }
 wiremock.workspace = true
 futures.workspace = true
+testcontainers.workspace = true

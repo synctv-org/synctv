@@ -173,6 +173,122 @@ async fn test_m3u8_proxy() {
 }
 
 #[tokio::test]
+async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
+    let store = new_store();
+    let version = "alist-hls";
+    let mut result = PlaybackResult {
+        playback_infos: HashMap::from([
+            (
+                "transcoded_HD".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://aliyun.example.com/hd/master.m3u8".to_string()],
+                    format: "hls".to_string(),
+                    headers: HashMap::new(),
+                    subtitles: vec![],
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            ),
+            (
+                "transcoded_SD".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://aliyun.example.com/sd/master.m3u8".to_string()],
+                    format: "hls".to_string(),
+                    headers: HashMap::new(),
+                    subtitles: vec![],
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            ),
+        ]),
+        default_mode: "transcoded_HD".to_string(),
+        metadata: HashMap::new(),
+    };
+    let stored = VersionedPlayback {
+        version: version.to_string(),
+        result: result.clone(),
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+    };
+    store_versioned(&store, &stored).await;
+
+    let signing_key =
+        synctv_core::service::ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+    sign_playback_urls(
+        &mut result,
+        "alist",
+        version,
+        &signing_key,
+        "room-1",
+        "user-1",
+        chrono::Utc::now().timestamp() + 3600,
+    );
+
+    assert!(
+        result.playback_infos["transcoded_HD"].urls[0].contains("/m3u8?"),
+        "default HLS mode should use the default m3u8 proxy action"
+    );
+    assert!(
+        result.playback_infos["transcoded_SD"].urls[0].contains("m3u8%2Ftranscoded_SD%2F0?"),
+        "non-default HLS modes must keep their own m3u8 proxy action"
+    );
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path: "alist-hls/m3u8/transcoded_SD/0",
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
+        request_context: None,
+    };
+    let action = p.resolve_proxy(&ctx).await.unwrap();
+    match action {
+        ProxyAction::M3u8Rewrite {
+            url, proxy_base, ..
+        } => {
+            assert_eq!(url, "https://aliyun.example.com/sd/master.m3u8");
+            assert_eq!(proxy_base, "/api/providers/proxy/alist/alist-hls");
+        }
+        other => panic!("Expected M3u8Rewrite, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
+    let store = new_store();
+    let vp = make_versioned(
+        "alist-segment",
+        "https://aliyun.example.com/hd/master.m3u8",
+        HashMap::new(),
+        vec![],
+        3600,
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path: "alist-segment",
+        store: Some(&store),
+        query_string: Some("url=https%3A%2F%2Faliyun.example.com%2Fhd%2Fseg-1.ts"),
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
+        request_context: None,
+    };
+    let action = p.resolve_proxy(&ctx).await.unwrap();
+    match action {
+        ProxyAction::FetchAndForward { url, headers } => {
+            assert_eq!(url, "https://aliyun.example.com/hd/seg-1.ts");
+            assert!(headers.is_empty());
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_unknown_sub_path() {
     let store = new_store();
     let vp = make_versioned(

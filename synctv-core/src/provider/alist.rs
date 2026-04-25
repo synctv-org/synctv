@@ -6,11 +6,12 @@
 use super::{
     provider_client::{
         create_remote_alist_client, AlistClientArc, AlistClientExt, AlistFileInfo,
-        ProviderClientManager,
+        AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview, ProviderClientManager,
     },
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
@@ -25,9 +26,161 @@ use std::time::Duration;
 
 const LIST_PAGE_SIZE: usize = 50;
 const SHUFFLE_MAX_ITEMS: usize = 200;
+const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 
 fn alist_modified_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn is_subtitle_filename(name: &str) -> bool {
+    matches!(
+        name.rsplit('.')
+            .next()
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("srt" | "vtt" | "ass" | "ssa")
+    )
+}
+
+fn subtitle_format_from_name(name: &str) -> String {
+    name.rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .filter(|ext| matches!(ext.as_str(), "srt" | "vtt" | "ass" | "ssa"))
+        .unwrap_or_else(|| "srt".to_string())
+}
+
+fn external_subtitle_language(name: &str) -> String {
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    let token = stem
+        .rsplit(['.', '_'])
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+
+    if token.is_empty() || token == stem || token.len() > 16 {
+        return "und".to_string();
+    }
+
+    let looks_like_language = token
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        && token.chars().any(|ch| ch.is_ascii_alphabetic())
+        && token.chars().filter(char::is_ascii_alphabetic).count() <= 8;
+
+    if looks_like_language {
+        token.to_string()
+    } else {
+        "und".to_string()
+    }
+}
+
+fn subtitle_name_from_task(task: &AlistSubtitleTask, index: usize) -> String {
+    let language = task.language.trim();
+    if language.is_empty() {
+        format!("Transcoded Subtitle {}", index + 1)
+    } else {
+        language.to_string()
+    }
+}
+
+fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<SubtitleTrack> {
+    preview.map_or_else(Vec::new, |preview| {
+        preview
+            .subtitle_tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, sub)| !sub.url.trim().is_empty())
+            .map(|(idx, sub)| {
+                let name = subtitle_name_from_task(sub, idx);
+                SubtitleTrack {
+                    language: if sub.language.trim().is_empty() {
+                        "und".to_string()
+                    } else {
+                        sub.language.clone()
+                    },
+                    name,
+                    url: sub.url.clone(),
+                    headers: HashMap::new(),
+                    format: "srt".to_string(),
+                }
+            })
+            .collect()
+    })
+}
+
+fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<SubtitleTrack> {
+    related
+        .iter()
+        .filter(|related| {
+            !related.is_dir
+                && !related.raw_url.trim().is_empty()
+                && is_subtitle_filename(&related.name)
+        })
+        .map(|related| SubtitleTrack {
+            language: external_subtitle_language(&related.name),
+            name: related.name.clone(),
+            url: related.raw_url.clone(),
+            headers: HashMap::new(),
+            format: subtitle_format_from_name(&related.name),
+        })
+        .collect()
+}
+
+fn merge_subtitles(
+    mut primary: Vec<SubtitleTrack>,
+    secondary: Vec<SubtitleTrack>,
+) -> Vec<SubtitleTrack> {
+    for subtitle in secondary {
+        if !primary.iter().any(|existing| existing.url == subtitle.url) {
+            primary.push(subtitle);
+        }
+    }
+    primary
+}
+
+fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || validate_path_for_traversal(name).is_err()
+    {
+        return None;
+    }
+
+    let parent = parent_path.trim_end_matches('/');
+    Some(if parent.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    })
+}
+
+fn proxy_target_url_from_query(query_string: Option<&str>) -> Option<String> {
+    query_string.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            if key == "url" {
+                urlencoding::decode(value)
+                    .ok()
+                    .map(std::borrow::Cow::into_owned)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn signed_m3u8_segment_proxy_base(
+    ctx: &super::proxy::ProxyRequestContext<'_>,
+    version: &str,
+) -> String {
+    if let Some(claims) = ctx.verified_claims {
+        let signed_query = ctx.services.signing_key.build_signed_query(claims);
+        format!("{}/{version}?{signed_query}", ctx.proxy_base)
+    } else {
+        format!("{}/{version}", ctx.proxy_base)
+    }
 }
 
 /// Alist `MediaProvider`
@@ -200,8 +353,8 @@ struct AlistSourceConfig {
     path: String,
     #[serde(default)]
     password: Option<String>,
-    /// Reference to stored credentials (server-side)
-    credential_ref: super::credential_resolver::CredentialRef,
+    /// Saved Alist credential server identifier.
+    server_id: String,
 }
 
 /// Resolved Alist configuration with credentials ready for API calls.
@@ -210,6 +363,8 @@ struct ResolvedAlistConfig {
     token: String,
     path: String,
     password: Option<String>,
+    credential_owner_id: String,
+    credential_revision: String,
     provider_instance_name: Option<String>,
 }
 
@@ -218,6 +373,7 @@ impl TryFrom<&Value> for AlistSourceConfig {
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         super::reject_source_config_provider_instance_name(value, "Alist")?;
+        super::reject_source_config_credential_ref(value, "Alist")?;
         super::parse_source_config(value, "Alist")
     }
 }
@@ -225,16 +381,31 @@ impl TryFrom<&Value> for AlistSourceConfig {
 // Note: Default implementation removed as it requires RemoteProviderManager
 
 impl AlistProvider {
-    fn playback_cache_key(server_id: &str, path: &str, password: Option<&str>) -> String {
+    fn playback_cache_key(
+        server_id: &str,
+        credential_owner_id: &str,
+        credential_revision: &str,
+        path: &str,
+        password: Option<&str>,
+    ) -> String {
+        let mut owner_hasher = Sha256::new();
+        owner_hasher.update(credential_owner_id.as_bytes());
+        owner_hasher.update(b"\0");
+        owner_hasher.update(credential_revision.as_bytes());
+        let owner_hash: String = hex::encode(owner_hasher.finalize())
+            .chars()
+            .take(16)
+            .collect();
+
         let mut hasher = Sha256::new();
         hasher.update(path.as_bytes());
         hasher.update(b"\0");
         hasher.update(password.unwrap_or("").as_bytes());
         let path_hash: String = hex::encode(hasher.finalize()).chars().take(16).collect();
-        format!("playback:{server_id}:{path_hash}")
+        format!("playback:{server_id}:{owner_hash}:{path_hash}")
     }
 
-    /// Resolve AlistSourceConfig + credential_ref into ResolvedAlistConfig.
+    /// Resolve AlistSourceConfig into credentials owned by the media/playlist creator.
     async fn resolve_config(
         &self,
         ctx: &ProviderContext<'_>,
@@ -245,21 +416,35 @@ impl AlistProvider {
         let repo = ctx.credential_repo.ok_or_else(|| {
             ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
 
-        let credential = super::credential_resolver::resolve_credential(
+        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,
             Self::NAME,
-            &config.credential_ref,
+            credential_owner_id,
+            &config.server_id,
             ctx.request_context(),
         )
         .await?;
 
-        match credential {
+        match resolved_credential.credential {
             crate::models::ProviderCredential::Alist {
                 host,
                 username,
                 password,
+                otp_secret,
             } => {
+                let otp_code = otp_secret.as_deref().map_or_else(
+                    || Ok(String::new()),
+                    |secret| {
+                        crate::models::ProviderCredential::current_alist_otp_code(secret)
+                            .map_err(ProviderError::InvalidConfig)
+                    },
+                )?;
                 // Re-login with stored credentials to get a fresh token
                 let login_req = synctv_media_providers::grpc::alist::LoginReq {
                     host: host.clone(),
@@ -269,6 +454,7 @@ impl AlistProvider {
                             password,
                         ),
                     ),
+                    otp_code,
                 };
                 let instance_name = super::bound_provider_instance_name(ctx);
                 let token = self
@@ -280,6 +466,8 @@ impl AlistProvider {
                     token,
                     path: config.path,
                     password: config.password,
+                    credential_owner_id: credential_owner_id.to_string(),
+                    credential_revision: resolved_credential.revision,
                     provider_instance_name: instance_name.map(std::string::ToString::to_string),
                 })
             }
@@ -298,6 +486,46 @@ impl AlistProvider {
             .get_client_with_context(instance_name, request_context)
             .await?;
         client.login(req).await.map_err(std::convert::Into::into)
+    }
+
+    async fn enrich_related_subtitles(
+        client: &AlistClientArc,
+        config: &ResolvedAlistConfig,
+        file_info: &mut AlistFileInfo,
+    ) {
+        let parent_path =
+            config.path.rsplit_once('/').map_or(
+                "/",
+                |(parent, _)| if parent.is_empty() { "/" } else { parent },
+            );
+
+        for related in file_info
+            .related
+            .iter_mut()
+            .filter(|related| {
+                !related.is_dir
+                    && related.raw_url.trim().is_empty()
+                    && is_subtitle_filename(&related.name)
+            })
+            .take(RELATED_SUBTITLE_FETCH_LIMIT)
+        {
+            let Some(path) = related_file_path(parent_path, &related.name) else {
+                continue;
+            };
+
+            let request = synctv_media_providers::grpc::alist::FsGetReq {
+                host: config.host.clone(),
+                token: config.token.clone(),
+                path,
+                password: config.password.clone().unwrap_or_default(),
+                user_agent: String::new(),
+            };
+
+            if let Ok(subtitle_info) = client.fs_get(request).await {
+                related.raw_url = subtitle_info.raw_url;
+                related.provider = subtitle_info.provider;
+            }
+        }
     }
 
     /// Resolve playback from the Alist API (no caching layer).
@@ -326,7 +554,7 @@ impl AlistProvider {
         // Call client (trait method - implementation handles local/remote)
         let fs_get_data = client.fs_get(request).await?;
 
-        let file_info: AlistFileInfo = fs_get_data.into();
+        let mut file_info: AlistFileInfo = fs_get_data.into();
 
         if file_info.is_dir {
             return Err(ProviderError::UnsupportedFormat(
@@ -334,27 +562,62 @@ impl AlistProvider {
             ));
         }
 
-        let mut playback_infos = HashMap::new();
-        let mut metadata = HashMap::new();
+        Self::enrich_related_subtitles(&client, config, &mut file_info).await;
 
-        // Add basic metadata
-        metadata.insert("name".to_string(), json!(file_info.name));
-        metadata.insert("size".to_string(), json!(file_info.size));
-        metadata.insert("provider".to_string(), json!(file_info.provider));
-        if !file_info.thumb.is_empty() {
-            metadata.insert("thumbnail".to_string(), json!(file_info.thumb));
-        }
-
-        // Try to get video preview info for transcoded URLs (optional)
-        let has_video_preview = if let Some(preview) = client
+        // Try to get video preview info for transcoded URLs (optional).
+        let (video_preview, video_preview_error) = match client
             .get_video_preview(
                 &config.host,
                 &config.token,
                 &config.path,
                 config.password.as_deref(),
             )
-            .await?
+            .await
         {
+            Ok(preview) => (preview, None),
+            Err(err) => (None, Some(err.to_string())),
+        };
+
+        Ok(Self::build_playback_result(
+            &file_info,
+            video_preview.as_ref(),
+            video_preview_error.as_deref(),
+        ))
+    }
+
+    fn build_playback_result(
+        file_info: &AlistFileInfo,
+        video_preview: Option<&AlistVideoPreview>,
+        video_preview_error: Option<&str>,
+    ) -> PlaybackResult {
+        let mut playback_infos = HashMap::new();
+        let mut metadata = HashMap::new();
+
+        // Add basic metadata
+        metadata.insert("name".to_string(), json!(&file_info.name));
+        metadata.insert("size".to_string(), json!(file_info.size));
+        metadata.insert("provider".to_string(), json!(&file_info.provider));
+        if !file_info.thumb.is_empty() {
+            metadata.insert("thumbnail".to_string(), json!(&file_info.thumb));
+        }
+        let related_subtitles = subtitles_from_related_files(&file_info.related);
+        if !related_subtitles.is_empty() {
+            metadata.insert(
+                "external_subtitle_count".to_string(),
+                json!(related_subtitles.len()),
+            );
+        }
+
+        if let Some(error) = video_preview_error {
+            metadata.insert("video_preview_error".to_string(), json!(error));
+        }
+
+        let preview_subtitles = subtitles_from_video_preview(video_preview);
+        let combined_subtitles = merge_subtitles(preview_subtitles, related_subtitles);
+
+        let mut first_transcoded_mode = None;
+
+        if let Some(preview) = video_preview {
             // Add transcoding quality options
             for (idx, task) in preview.transcoding_tasks.iter().enumerate() {
                 if !task.url.is_empty() {
@@ -363,48 +626,79 @@ impl AlistProvider {
                     } else {
                         task.template_name.clone()
                     };
+                    let mode_name = format!("transcoded_{quality_name}");
+                    if first_transcoded_mode.is_none() {
+                        first_transcoded_mode = Some(mode_name.clone());
+                    }
 
-                    // Alist transcoded URLs typically valid for ~15 minutes
-                    let task_expires_at = Some(Utc::now().timestamp() + 15 * 60);
+                    // AliyunDrive live transcoding URLs are requested from AList/OpenList
+                    // with url_expire_sec=14400.
+                    let task_expires_at = Some(Utc::now().timestamp() + 4 * 60 * 60);
+                    let task_metadata = json!({
+                        "template_id": task.template_id,
+                        "template_name": task.template_name,
+                        "template_width": task.template_width,
+                        "template_height": task.template_height,
+                        "stage": task.stage,
+                        "status": task.status,
+                    });
 
                     playback_infos.insert(
-                        format!("transcoded_{quality_name}"),
+                        mode_name.clone(),
                         PlaybackInfo {
                             urls: vec![task.url.clone()],
                             format: "hls".to_string(),
                             headers: HashMap::new(),
-                            subtitles: preview
-                                .subtitle_tasks
-                                .iter()
-                                .map(|sub| SubtitleTrack {
-                                    language: sub.language.clone(),
-                                    name: sub.language.clone(),
-                                    url: sub.url.clone(),
-                                    headers: HashMap::new(),
-                                    format: "srt".to_string(),
-                                })
-                                .collect(),
+                            subtitles: combined_subtitles.clone(),
                             expires_at: task_expires_at,
                             cors_proxy_required: false,
                         },
                     );
+                    metadata.insert(mode_name, task_metadata);
                 }
             }
 
             // Add video metadata
+            if !preview.drive_id.is_empty() {
+                metadata.insert(
+                    "video_preview_drive_id".to_string(),
+                    json!(&preview.drive_id),
+                );
+            }
+            if !preview.file_id.is_empty() {
+                metadata.insert("video_preview_file_id".to_string(), json!(&preview.file_id));
+            }
+            if !preview.provider.is_empty() {
+                metadata.insert(
+                    "video_preview_provider".to_string(),
+                    json!(&preview.provider),
+                );
+            }
+            if !preview.category.is_empty() {
+                metadata.insert(
+                    "video_preview_category".to_string(),
+                    json!(&preview.category),
+                );
+            }
+            metadata.insert(
+                "transcoding_count".to_string(),
+                json!(preview.transcoding_tasks.len()),
+            );
+            metadata.insert(
+                "video_preview_subtitle_count".to_string(),
+                json!(preview.subtitle_tasks.len()),
+            );
             metadata.insert("duration".to_string(), json!(preview.duration));
             metadata.insert("width".to_string(), json!(preview.width));
             metadata.insert("height".to_string(), json!(preview.height));
-
-            true
-        } else {
-            false
-        };
+        }
 
         // Always add direct URL (raw_url) as fallback
         if !file_info.raw_url.is_empty() {
-            // Alist direct URLs typically valid for ~15 minutes
-            let direct_expires_at = Some(Utc::now().timestamp() + 15 * 60);
+            // Alist raw URLs are provider-dependent. Use the same conservative
+            // expiry window as AliyunDrive live transcoding when AList does not
+            // return a per-URL expiry.
+            let direct_expires_at = Some(Utc::now().timestamp() + 4 * 60 * 60);
 
             playback_infos.insert(
                 "direct".to_string(),
@@ -412,7 +706,7 @@ impl AlistProvider {
                     urls: vec![file_info.raw_url.clone()],
                     format: Self::detect_format(&file_info.name),
                     headers: HashMap::new(),
-                    subtitles: Vec::new(),
+                    subtitles: combined_subtitles,
                     expires_at: direct_expires_at,
                     cors_proxy_required: false,
                 },
@@ -420,21 +714,17 @@ impl AlistProvider {
         }
 
         // Determine default mode
-        let default_mode = if has_video_preview && !playback_infos.is_empty() {
-            playback_infos
-                .keys()
-                .find(|k| k.starts_with("transcoded_"))
-                .cloned()
-                .unwrap_or_else(|| "direct".to_string())
+        let default_mode = if let Some(mode) = first_transcoded_mode {
+            mode
         } else {
             "direct".to_string()
         };
 
-        Ok(PlaybackResult {
+        PlaybackResult {
             playback_infos,
             default_mode,
             metadata,
-        })
+        }
     }
 }
 
@@ -466,17 +756,21 @@ impl MediaProvider for AlistProvider {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
-        // Validate credential_ref exists
+        if config.server_id.trim().is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist server_id must not be empty".to_string(),
+            ));
+        }
+
+        // Validate creator-owned credential exists
         if let Some(repo) = _ctx.credential_repo {
-            let credential_owner_id = _ctx
-                .user_id
-                .unwrap_or(&config.credential_ref.credential_owner_id);
-            let cred = repo
-                .get_by_provider_and_server(
-                    credential_owner_id,
-                    Self::NAME,
-                    &config.credential_ref.server_id,
+            let credential_owner_id = _ctx.credential_owner_id().ok_or_else(|| {
+                ProviderError::Internal(
+                    "credential_owner_id not available in ProviderContext".to_string(),
                 )
+            })?;
+            let cred = repo
+                .get_by_provider_and_server(credential_owner_id, Self::NAME, &config.server_id)
                 .await
                 .map_err(|e| {
                     ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
@@ -485,7 +779,7 @@ impl MediaProvider for AlistProvider {
             if cred.is_none() {
                 return Err(ProviderError::CredentialNotFound(format!(
                     "Referenced alist credential not found for server_id '{}'",
-                    config.credential_ref.server_id
+                    config.server_id
                 )));
             }
         }
@@ -493,26 +787,32 @@ impl MediaProvider for AlistProvider {
         Ok(())
     }
 
+    fn credential_dependencies(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
+        let config = AlistSourceConfig::try_from(source_config)?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        Ok(vec![ProviderCredentialDependency::new(
+            Self::NAME,
+            credential_owner_id,
+            config.server_id,
+        )])
+    }
+
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        mut source_config: Value,
+        source_config: Value,
     ) -> Result<Value, ProviderError> {
         super::reject_source_config_provider_instance_name(&source_config, "Alist")?;
-
-        // Server-side: ensure credential_owner_id is set to the current user
-        if let Some(user_id) = _ctx.user_id {
-            if let Some(obj) = source_config.as_object_mut() {
-                if let Some(cred_ref) = obj.get_mut("credential_ref") {
-                    if let Some(cred_obj) = cred_ref.as_object_mut() {
-                        cred_obj.insert(
-                            "credential_owner_id".to_string(),
-                            Value::String(user_id.to_string()),
-                        );
-                    }
-                }
-            }
-        }
+        super::reject_source_config_credential_ref(&source_config, "Alist")?;
 
         Ok(source_config)
     }
@@ -533,7 +833,9 @@ impl MediaProvider for AlistProvider {
         // Build cache key from server_id and path
         let config = AlistSourceConfig::try_from(source_config)?;
         let cache_key = Self::playback_cache_key(
-            &config.credential_ref.server_id,
+            &config.server_id,
+            &resolved.credential_owner_id,
+            &resolved.credential_revision,
             &resolved.path,
             resolved.password.as_deref(),
         );
@@ -602,10 +904,27 @@ impl super::proxy::ProviderProxy for AlistProvider {
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
 
-        if let Some((version, rest)) = sub_path.split_once('/') {
-            let versioned =
-                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+        let (version, rest) = sub_path
+            .split_once('/')
+            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
 
+        if version.is_empty() {
+            return Err(ProviderError::NotFound);
+        }
+
+        let versioned =
+            super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+
+        if let Some(url) = proxy_target_url_from_query(ctx.query_string) {
+            let headers = versioned
+                .result
+                .playback_infos
+                .get(&versioned.result.default_mode)
+                .map_or_else(HashMap::new, |info| info.headers.clone());
+            return Ok(super::proxy::ProxyAction::FetchAndForward { url, headers });
+        }
+
+        if let Some(rest) = rest {
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =
                     if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
@@ -676,6 +995,29 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 });
             }
 
+            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
+                let (mode_name, index_str) =
+                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
+                let playback_info = versioned
+                    .result
+                    .playback_infos
+                    .get(mode_name)
+                    .ok_or(ProviderError::NotFound)?;
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|_| ProviderError::NotFound)?;
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::M3u8Rewrite {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
+                    proxy_base: signed_m3u8_segment_proxy_base(ctx, version),
+                });
+            }
+
             let default_info = versioned
                 .result
                 .playback_infos
@@ -691,17 +1033,10 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     });
                 }
                 "m3u8" => {
-                    // Propagate HMAC signature into M3U8 segment URLs
-                    let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
-                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
-                    } else {
-                        format!("{}/{version}", ctx.proxy_base)
-                    };
                     return Ok(super::proxy::ProxyAction::M3u8Rewrite {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        proxy_base,
+                        proxy_base: signed_m3u8_segment_proxy_base(ctx, version),
                     });
                 }
                 _ => {}
@@ -843,10 +1178,7 @@ impl DynamicFolder for AlistProvider {
             json!({
                 "path": full_path,
                 "password": base_config.password,
-                "credential_ref": {
-                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
-                    "server_id": base_config.credential_ref.server_id,
-                },
+                "server_id": base_config.server_id,
             })
         };
 
@@ -933,10 +1265,7 @@ impl DynamicFolder for AlistProvider {
             json!({
                 "path": full_path,
                 "password": base_config.password,
-                "credential_ref": {
-                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
-                    "server_id": base_config.credential_ref.server_id,
-                },
+                "server_id": base_config.server_id,
             })
         };
 
@@ -1146,8 +1475,79 @@ impl DynamicFolder for AlistProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::provider_client::AlistTranscodingTask;
     use crate::repository::ProviderInstanceRepository;
+    use async_trait::async_trait;
     use std::sync::Arc;
+    use std::sync::Mutex;
+    use synctv_media_providers::alist::{AlistError, AlistInterface};
+    use synctv_media_providers::grpc::alist::{
+        FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp, FsSearchReq,
+        FsSearchResp, LoginReq, MeReq, MeResp,
+    };
+
+    struct FakeAlistSubtitleClient {
+        requested_paths: Mutex<Vec<String>>,
+    }
+
+    impl FakeAlistSubtitleClient {
+        fn new() -> Self {
+            Self {
+                requested_paths: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AlistInterface for FakeAlistSubtitleClient {
+        async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
+            self.requested_paths
+                .lock()
+                .expect("requested_paths mutex should not be poisoned")
+                .push(request.path.clone());
+
+            Ok(FsGetResp {
+                name: request
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+                size: 128,
+                is_dir: false,
+                modified: 0,
+                created: 0,
+                sign: String::new(),
+                thumb: String::new(),
+                r#type: 4,
+                hashinfo: String::new(),
+                raw_url: format!("https://alist.example.com/d{}", request.path),
+                readme: String::new(),
+                provider: "AliyundriveOpen".to_string(),
+                related: vec![],
+            })
+        }
+
+        async fn fs_list(&self, _request: FsListReq) -> Result<FsListResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+    }
 
     fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
@@ -1165,8 +1565,8 @@ mod tests {
         assert_eq!(AlistProvider::detect_format("video.unknown"), "video");
     }
 
-    /// Validate Alist source config: checks path and credential_ref fields.
-    /// Host/token are no longer in source_config (resolved from credential_ref at runtime).
+    /// Validate Alist source config: checks path and server_id fields.
+    /// Host/token are resolved from the media or playlist creator at runtime.
     fn validate_alist(config: &Value) -> Result<(), ProviderError> {
         let config = AlistSourceConfig::try_from(config)?;
 
@@ -1179,14 +1579,9 @@ mod tests {
         validate_path_for_traversal(&config.path).map_err(|e| {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
-        if config.credential_ref.credential_owner_id.is_empty() {
+        if config.server_id.trim().is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "credential_ref.credential_owner_id must not be empty".to_string(),
-            ));
-        }
-        if config.credential_ref.server_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "credential_ref.server_id must not be empty".to_string(),
+                "Alist server_id must not be empty".to_string(),
             ));
         }
         Ok(())
@@ -1196,10 +1591,7 @@ mod tests {
     fn test_valid_alist_config() {
         let config = json!({
             "path": "/media/movies/test.mp4",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_alist(&config).is_ok());
     }
@@ -1209,12 +1601,55 @@ mod tests {
         let config = json!({
             "path": "/media/movies/test.mp4",
             "provider_instance_name": "remote-alist-1",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_alist(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_alist_credential_dependencies_use_creator_credential() {
+        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test")
+            .with_user_id("viewer-1")
+            .with_credential_owner_id("creator-1");
+        let dependencies = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "path": "/media/movies/test.mp4",
+                    "server_id": "alist-main"
+                }),
+            )
+            .expect("Alist dependency extraction should succeed");
+
+        assert_eq!(
+            dependencies,
+            vec![ProviderCredentialDependency::new(
+                AlistProvider::NAME,
+                "creator-1",
+                "alist-main"
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
+        let provider = AlistProvider::new(fake_provider_instance_manager());
+        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let err = provider
+            .credential_dependencies(
+                &ctx,
+                &json!({
+                    "path": "/media/movies/test.mp4",
+                    "server_id": "alist-main"
+                }),
+            )
+            .expect_err("Alist must not silently fall back to viewer credentials");
+
+        assert!(
+            err.to_string().contains("credential_owner_id"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1223,10 +1658,7 @@ mod tests {
         let config = json!({
             "path": "/media/movies/test.mp4",
             "provider_instance_name": "remote-alist-1",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
 
         let result = provider
@@ -1240,10 +1672,7 @@ mod tests {
     fn test_alist_config_path_traversal() {
         let config = json!({
             "path": "/media/../../../etc/passwd",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_alist(&config).is_err());
     }
@@ -1252,16 +1681,13 @@ mod tests {
     fn test_alist_config_empty_path() {
         let config = json!({
             "path": "",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         assert!(validate_alist(&config).is_err());
     }
 
     #[test]
-    fn test_alist_config_missing_credential_ref() {
+    fn test_alist_config_missing_server_id() {
         let config = json!({
             "path": "/media/movies/test.mp4"
         });
@@ -1269,17 +1695,13 @@ mod tests {
     }
 
     #[test]
-    fn test_alist_credential_ref_parsing() {
+    fn test_alist_server_id_parsing() {
         let config = json!({
             "path": "/media/movies",
-            "credential_ref": {
-                "credential_owner_id": "owner-abc",
-                "server_id": "srv-xyz"
-            }
+            "server_id": "srv-xyz"
         });
         let parsed = AlistSourceConfig::try_from(&config).unwrap();
-        assert_eq!(parsed.credential_ref.credential_owner_id, "owner-abc");
-        assert_eq!(parsed.credential_ref.server_id, "srv-xyz");
+        assert_eq!(parsed.server_id, "srv-xyz");
         assert_eq!(parsed.path, "/media/movies");
     }
 
@@ -1393,10 +1815,7 @@ mod tests {
         let config = json!({
             "path": "/media/movies/test.mp4",
             "password": "dir-password",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
         let parsed = AlistSourceConfig::try_from(&config).unwrap();
         assert_eq!(parsed.password, Some("dir-password".to_string()));
@@ -1404,11 +1823,28 @@ mod tests {
 
     #[test]
     fn test_alist_playback_cache_key_includes_directory_password() {
-        let no_password = AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", None);
-        let password_a =
-            AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", Some("folder-a"));
-        let password_b =
-            AlistProvider::playback_cache_key("server-1", "/media/movie.mkv", Some("folder-b"));
+        let revision = "credential-1:1000";
+        let no_password = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-1",
+            revision,
+            "/media/movie.mkv",
+            None,
+        );
+        let password_a = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-1",
+            revision,
+            "/media/movie.mkv",
+            Some("folder-a"),
+        );
+        let password_b = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-1",
+            revision,
+            "/media/movie.mkv",
+            Some("folder-b"),
+        );
 
         assert_ne!(
             no_password, password_a,
@@ -1417,6 +1853,256 @@ mod tests {
         assert_ne!(
             password_a, password_b,
             "Different directory passwords must not reuse the same playback cache entry"
+        );
+    }
+
+    #[test]
+    fn test_alist_playback_cache_key_includes_credential_owner() {
+        let revision = "credential-1:1000";
+        let owner_a = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            revision,
+            "/media/movie.mkv",
+            None,
+        );
+        let owner_b = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-b",
+            revision,
+            "/media/movie.mkv",
+            None,
+        );
+
+        assert_ne!(
+            owner_a, owner_b,
+            "Alist playback cache must be isolated by credential owner"
+        );
+    }
+
+    #[test]
+    fn test_alist_playback_cache_key_includes_credential_update_time() {
+        let first = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:1000",
+            "/media/movie.mkv",
+            None,
+        );
+        let second = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:2000",
+            "/media/movie.mkv",
+            None,
+        );
+
+        assert_ne!(
+            first, second,
+            "Credential changes must invalidate Alist playback cache entries"
+        );
+    }
+
+    #[test]
+    fn test_alist_playback_result_combines_transcoded_and_external_subtitles() {
+        let file_info = AlistFileInfo {
+            name: "movie.mkv".to_string(),
+            size: 42,
+            is_dir: false,
+            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
+            provider: "AliyundriveOpen".to_string(),
+            thumb: "https://alist.example.com/thumb.jpg".to_string(),
+            related: vec![
+                AlistRelatedFile {
+                    name: "movie.zh-CN.srt".to_string(),
+                    is_dir: false,
+                    raw_url: "https://alist.example.com/d/movie.zh-CN.srt".to_string(),
+                    provider: "AliyundriveOpen".to_string(),
+                },
+                AlistRelatedFile {
+                    name: "movie.ass".to_string(),
+                    is_dir: false,
+                    raw_url: "https://alist.example.com/d/movie.ass".to_string(),
+                    provider: "AliyundriveOpen".to_string(),
+                },
+                AlistRelatedFile {
+                    name: "movie.jpg".to_string(),
+                    is_dir: false,
+                    raw_url: "https://alist.example.com/d/movie.jpg".to_string(),
+                    provider: "AliyundriveOpen".to_string(),
+                },
+            ],
+        };
+        let video_preview = AlistVideoPreview {
+            transcoding_tasks: vec![
+                AlistTranscodingTask {
+                    template_name: "HD".to_string(),
+                    template_id: "FHD".to_string(),
+                    template_width: 1920,
+                    template_height: 1080,
+                    stage: "finished".to_string(),
+                    status: "finished".to_string(),
+                    url: "https://cdn.example.com/movie-hd.m3u8".to_string(),
+                },
+                AlistTranscodingTask {
+                    template_name: "SD".to_string(),
+                    template_id: "SD".to_string(),
+                    template_width: 640,
+                    template_height: 360,
+                    stage: "finished".to_string(),
+                    status: "finished".to_string(),
+                    url: "https://cdn.example.com/movie-sd.m3u8".to_string(),
+                },
+            ],
+            subtitle_tasks: vec![AlistSubtitleTask {
+                language: "en".to_string(),
+                status: "finished".to_string(),
+                url: "https://cdn.example.com/movie-en.srt".to_string(),
+            }],
+            drive_id: "drive-1".to_string(),
+            file_id: "file-1".to_string(),
+            provider: "AliyundriveOpen".to_string(),
+            category: "live_transcoding".to_string(),
+            duration: 120.5,
+            width: 1920,
+            height: 1080,
+        };
+
+        let result = AlistProvider::build_playback_result(&file_info, Some(&video_preview), None);
+
+        assert_eq!(result.default_mode, "transcoded_HD");
+        let transcoded = result
+            .playback_infos
+            .get("transcoded_HD")
+            .expect("transcoded HD mode should exist");
+        assert_eq!(transcoded.format, "hls");
+        assert_eq!(transcoded.subtitles.len(), 3);
+        assert!(transcoded
+            .subtitles
+            .iter()
+            .any(|sub| sub.language == "zh-CN" && sub.format == "srt"));
+        assert!(transcoded
+            .subtitles
+            .iter()
+            .any(|sub| sub.language == "und" && sub.format == "ass"));
+
+        let direct = result
+            .playback_infos
+            .get("direct")
+            .expect("direct fallback should exist");
+        assert_eq!(direct.format, "mkv");
+        assert_eq!(direct.subtitles.len(), 3);
+        assert_eq!(result.metadata["transcoding_count"], json!(2));
+        assert_eq!(result.metadata["video_preview_subtitle_count"], json!(1));
+        assert_eq!(result.metadata["external_subtitle_count"], json!(2));
+        assert_eq!(result.metadata["duration"], json!(120.5));
+        assert_eq!(result.metadata["width"], json!(1920));
+        assert_eq!(result.metadata["height"], json!(1080));
+        assert_eq!(result.metadata["video_preview_drive_id"], json!("drive-1"));
+        assert_eq!(result.metadata["video_preview_file_id"], json!("file-1"));
+        assert_eq!(
+            result.metadata["video_preview_category"],
+            json!("live_transcoding")
+        );
+        assert_eq!(
+            result.metadata["transcoded_HD"]["template_id"],
+            json!("FHD")
+        );
+    }
+
+    #[test]
+    fn test_alist_playback_result_degrades_when_video_preview_fails() {
+        let file_info = AlistFileInfo {
+            name: "movie.mp4".to_string(),
+            size: 42,
+            is_dir: false,
+            raw_url: "https://alist.example.com/d/movie.mp4".to_string(),
+            provider: "Local".to_string(),
+            thumb: String::new(),
+            related: vec![],
+        };
+
+        let result = AlistProvider::build_playback_result(&file_info, None, Some("not support"));
+
+        assert_eq!(result.default_mode, "direct");
+        assert!(result.playback_infos.contains_key("direct"));
+        assert_eq!(result.metadata["video_preview_error"], json!("not support"));
+        assert!(!result.metadata.contains_key("transcoding_count"));
+    }
+
+    #[test]
+    fn test_alist_related_file_path_rejects_unsafe_names() {
+        assert_eq!(
+            related_file_path("/movies", "movie.zh-CN.srt"),
+            Some("/movies/movie.zh-CN.srt".to_string())
+        );
+        assert_eq!(
+            related_file_path("/", "movie.zh-CN.srt"),
+            Some("/movie.zh-CN.srt".to_string())
+        );
+        assert!(related_file_path("/movies", "../secret.srt").is_none());
+        assert!(related_file_path("/movies", "nested/subtitle.srt").is_none());
+        assert!(related_file_path("/movies", "nested\\subtitle.srt").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_alist_enrich_related_subtitles_resolves_urls_with_fs_get() {
+        let fake_client = Arc::new(FakeAlistSubtitleClient::new());
+        let client: AlistClientArc = fake_client.clone();
+        let config = ResolvedAlistConfig {
+            host: "https://alist.example.com".to_string(),
+            token: "token".to_string(),
+            path: "/movies/movie.mkv".to_string(),
+            password: Some("folder-password".to_string()),
+            credential_owner_id: "owner-1".to_string(),
+            credential_revision: "credential-1:1000".to_string(),
+            provider_instance_name: None,
+        };
+        let mut file_info = AlistFileInfo {
+            name: "movie.mkv".to_string(),
+            size: 42,
+            is_dir: false,
+            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
+            provider: "AliyundriveOpen".to_string(),
+            thumb: String::new(),
+            related: vec![
+                AlistRelatedFile {
+                    name: "movie.zh-CN.srt".to_string(),
+                    is_dir: false,
+                    raw_url: String::new(),
+                    provider: String::new(),
+                },
+                AlistRelatedFile {
+                    name: "movie.jpg".to_string(),
+                    is_dir: false,
+                    raw_url: String::new(),
+                    provider: String::new(),
+                },
+                AlistRelatedFile {
+                    name: "../secret.srt".to_string(),
+                    is_dir: false,
+                    raw_url: String::new(),
+                    provider: String::new(),
+                },
+            ],
+        };
+
+        AlistProvider::enrich_related_subtitles(&client, &config, &mut file_info).await;
+
+        assert_eq!(
+            file_info.related[0].raw_url,
+            "https://alist.example.com/d/movies/movie.zh-CN.srt"
+        );
+        assert_eq!(file_info.related[0].provider, "AliyundriveOpen");
+        assert!(file_info.related[1].raw_url.is_empty());
+        assert!(file_info.related[2].raw_url.is_empty());
+        assert_eq!(
+            fake_client
+                .requested_paths
+                .lock()
+                .expect("requested_paths mutex should not be poisoned")
+                .as_slice(),
+            ["/movies/movie.zh-CN.srt"]
         );
     }
 
@@ -1454,10 +2140,7 @@ mod tests {
         // This config uses URL-encoded traversal: %2e%2e/etc/passwd
         let config = json!({
             "path": "/media/%2e%2e/etc/passwd",
-            "credential_ref": {
-                "credential_owner_id": "user123",
-                "server_id": "test-server"
-            }
+            "server_id": "test-server"
         });
 
         // After the fix, the config should be rejected

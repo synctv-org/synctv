@@ -1479,6 +1479,14 @@ impl StreamMessageHandler {
                                 }
                             }
                         }
+                        Ok(ClusterEvent::ProviderCredentialChanged { ref user_id, ref provider, ref server_id, .. }) => {
+                            self.handle_provider_credential_changed_admin_event(
+                                user_id,
+                                provider,
+                                server_id,
+                            )
+                            .await;
+                        }
                         Ok(_) => {
                             // Other admin events (KickPublisher, etc.) not relevant to this connection
                         }
@@ -2363,6 +2371,7 @@ impl StreamMessageHandler {
             let event_service = Arc::clone(&self.event_service);
             let connection_service = self.connection_service.clone();
             let admin_sender = self.sender.clone();
+            let admin_handler = self.clone();
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
 
             spawn_monitored("messaging_disconnect_monitor", async move {
@@ -2429,7 +2438,7 @@ impl StreamMessageHandler {
                         admin_event = admin_rx.recv() => {
                             // RT-1: Push UserNotification to this user's WebSocket.
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
-                            if let Ok(ClusterEvent::UserNotification { user_id: ref uid, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) = admin_event {
+                            if let Ok(ClusterEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
                                 if *uid == user_id {
                                     let data = serde_json::json!({
                                         "type": "user_notification",
@@ -2456,6 +2465,16 @@ impl StreamMessageHandler {
                                         break;
                                     }
                                 }
+                                continue;
+                            }
+                            if let Ok(ClusterEvent::ProviderCredentialChanged { user_id: changed_user_id, provider, server_id, .. }) = &admin_event {
+                                admin_handler
+                                    .handle_provider_credential_changed_admin_event(
+                                        changed_user_id,
+                                        provider,
+                                        server_id,
+                                    )
+                                    .await;
                                 continue;
                             }
                             let should_disconnect = match &admin_event {
@@ -2842,6 +2861,16 @@ impl StreamMessageHandler {
         &self,
         state: &RoomPlaybackState,
     ) -> Result<String, String> {
+        if let Some(service) = &self.playback_snapshot_service {
+            if let Some(version) = service
+                .playback_snapshot_version_for_state(&self.user_id, &self.room_id, state)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(version);
+            }
+        }
+
         if let Some(media_id) = &state.playing_media_id {
             let media = self
                 .room_service
@@ -2903,6 +2932,85 @@ impl StreamMessageHandler {
             .await
     }
 
+    async fn watched_playback_depends_on_provider_credential(
+        &self,
+        changed_user_id: &synctv_core::models::UserId,
+        provider: &str,
+        server_id: &str,
+    ) -> Result<bool, String> {
+        let Some(service) = &self.playback_snapshot_service else {
+            return Ok(false);
+        };
+        {
+            let watch_state = self.playback_watch_state.lock().await;
+            if !watch_state.snapshot.enabled {
+                return Ok(false);
+            }
+        }
+
+        let state = self
+            .room_service
+            .get_playback_state(&self.room_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let dependencies = service
+            .playback_credential_dependencies(&self.user_id, &self.room_id, &state)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(dependencies
+            .iter()
+            .any(|dependency| dependency.matches(provider, changed_user_id.as_str(), server_id)))
+    }
+
+    async fn maybe_force_refresh_watched_playback_snapshot_for_provider_credential(
+        &self,
+        changed_user_id: &synctv_core::models::UserId,
+        provider: &str,
+        server_id: &str,
+    ) -> Result<(), String> {
+        if !self
+            .watched_playback_depends_on_provider_credential(changed_user_id, provider, server_id)
+            .await?
+        {
+            return Ok(());
+        }
+
+        let state = self
+            .room_service
+            .get_playback_state(&self.room_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.maybe_send_watched_playback_snapshot_for_state_inner(&state, true)
+            .await
+    }
+
+    async fn handle_provider_credential_changed_admin_event(
+        &self,
+        changed_user_id: &synctv_core::models::UserId,
+        provider: &str,
+        server_id: &str,
+    ) {
+        if let Err(error) = self
+            .maybe_force_refresh_watched_playback_snapshot_for_provider_credential(
+                changed_user_id,
+                provider,
+                server_id,
+            )
+            .await
+        {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                changed_user_id = %changed_user_id.as_str(),
+                provider,
+                server_id,
+                error = %error,
+                "Failed to refresh watched playback snapshot after provider credential change"
+            );
+        }
+    }
+
     async fn maybe_send_watched_playback_snapshot_for_event(
         &self,
         event: &ClusterEvent,
@@ -2944,6 +3052,15 @@ impl StreamMessageHandler {
         &self,
         state: &RoomPlaybackState,
     ) -> Result<(), String> {
+        self.maybe_send_watched_playback_snapshot_for_state_inner(state, false)
+            .await
+    }
+
+    async fn maybe_send_watched_playback_snapshot_for_state_inner(
+        &self,
+        state: &RoomPlaybackState,
+        force_refresh: bool,
+    ) -> Result<(), String> {
         let Some(service) = &self.playback_snapshot_service else {
             return Ok(());
         };
@@ -2965,18 +3082,20 @@ impl StreamMessageHandler {
         let playback_client_profile =
             playback_client_profile_from_proto(request.playback_client_profile.as_ref());
 
-        if let Some(snapshot) = &last_snapshot {
-            let current_version = self.current_playback_snapshot_version(state).await?;
-            let current_source =
-                PlaybackSnapshotSource::from_state(state, playback_client_profile.clone());
-            let is_expired = snapshot
-                .expires_at
-                .is_some_and(|expires_at| chrono::Utc::now().timestamp() >= expires_at);
-            if last_source.as_ref() == Some(&current_source)
-                && snapshot.version == current_version
-                && !is_expired
-            {
-                return Ok(());
+        if !force_refresh {
+            if let Some(snapshot) = &last_snapshot {
+                let current_version = self.current_playback_snapshot_version(state).await?;
+                let current_source =
+                    PlaybackSnapshotSource::from_state(state, playback_client_profile.clone());
+                let is_expired = snapshot
+                    .expires_at
+                    .is_some_and(|expires_at| chrono::Utc::now().timestamp() >= expires_at);
+                if last_source.as_ref() == Some(&current_source)
+                    && snapshot.version == current_version
+                    && !is_expired
+                {
+                    return Ok(());
+                }
             }
         }
 
@@ -3003,7 +3122,7 @@ impl StreamMessageHandler {
         };
 
         let mut watch_state = self.playback_watch_state.lock().await;
-        if watch_state.snapshot.last_snapshot.as_ref() == Some(&snapshot) {
+        if !force_refresh && watch_state.snapshot.last_snapshot.as_ref() == Some(&snapshot) {
             return Ok(());
         }
         watch_state.snapshot.last_snapshot = Some(snapshot.clone());
@@ -4273,6 +4392,7 @@ fn cluster_event_to_server_messages(
         | ClusterEvent::KickUserFromRoom { .. }
         | ClusterEvent::RoomCreated { .. }
         | ClusterEvent::CacheInvalidate { .. }
+        | ClusterEvent::ProviderCredentialChanged { .. }
         | ClusterEvent::UserNotification { .. } => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients via the room event path

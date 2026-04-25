@@ -133,7 +133,7 @@ impl LiveProxyProvider {
             .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
 
         match rest {
-            "stream" => {
+            stream if stream == "stream" || stream.starts_with("stream/") => {
                 let claims = verified_claims.ok_or_else(|| {
                     ProviderError::ApiError("Missing verified proxy claims".into())
                 })?;
@@ -343,7 +343,13 @@ mod tests {
         assert!(hls.starts_with("/api/providers/proxy/live_proxy/"));
         assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
-        assert!(flv.contains("/stream?"));
+        let flv_url = url::Url::parse(&format!("http://synctv.local{flv}")).unwrap();
+        assert!(flv_url
+            .path_segments()
+            .unwrap()
+            .nth(5)
+            .is_some_and(|action| action == "stream" || action.starts_with("stream%2F")));
+        assert!(flv_url.query_pairs().any(|(key, _)| key == "sig"));
     }
 
     #[tokio::test]

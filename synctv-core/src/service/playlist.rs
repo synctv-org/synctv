@@ -190,6 +190,25 @@ impl PlaylistService {
         }
     }
 
+    /// Create a playlist service with provider credential dependencies already wired.
+    #[must_use]
+    pub fn new_with_provider_credentials(
+        playlist_repo: PlaylistRepository,
+        permission_service: PermissionService,
+        providers_manager: Arc<ProvidersManager>,
+        credential_encryption: Option<crate::service::CredentialEncryption>,
+        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    ) -> Self {
+        Self {
+            playlist_repo,
+            permission_service,
+            providers_manager,
+            credential_encryption,
+            credential_repo,
+            cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+        }
+    }
+
     /// Set the cluster broadcaster for cross-replica playlist sync
     pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
         *self.cluster_broadcaster.write() = Some(broadcaster);
@@ -204,16 +223,6 @@ impl PlaylistService {
     #[must_use]
     pub const fn providers_manager(&self) -> &Arc<ProvidersManager> {
         &self.providers_manager
-    }
-
-    /// Inject credential encryption into provider validation/preparation.
-    pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
-        self.credential_encryption = Some(encryption);
-    }
-
-    /// Inject credential repository into provider validation/preparation.
-    pub fn set_credential_repo(&mut self, repo: Arc<UserProviderCredentialRepository>) {
-        self.credential_repo = Some(repo);
     }
 
     async fn validate_dynamic_playlist_source(
@@ -765,7 +774,8 @@ mod tests {
     use super::*;
     use crate::models::PlaylistId;
     use crate::provider::{
-        DirectoryItem, DynamicFolder, MediaProvider, NextPlayItem, PlaybackResult, ProviderError,
+        DirectoryItem, DynamicFolder, DynamicListQuery, MediaProvider, NextPlayItem,
+        PlaybackResult, ProviderError,
     };
     use crate::repository::{
         PlaylistRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
@@ -826,8 +836,7 @@ mod tests {
             _ctx: &ProviderContext<'_>,
             _playlist: &Playlist,
             _target: Option<&[u8]>,
-            _page: usize,
-            _page_size: usize,
+            _query: DynamicListQuery,
         ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
             Ok(Vec::new())
         }
@@ -1166,13 +1175,13 @@ mod tests {
             .await
             .expect("builtin providers should initialize");
 
-        let mut service = PlaylistService::new(
+        PlaylistService::new_with_provider_credentials(
             PlaylistRepository::new(pool.clone()),
             test_permission_service(&pool),
             providers_manager,
-        );
-        service.set_credential_repo(Arc::new(UserProviderCredentialRepository::new(pool)));
-        service
+            None,
+            Some(Arc::new(UserProviderCredentialRepository::new(pool))),
+        )
     }
 
     async fn test_playlist_service_with_credential_check_provider() -> PlaylistService {

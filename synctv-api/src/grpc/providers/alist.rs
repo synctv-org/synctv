@@ -13,7 +13,7 @@ use synctv_core::Config;
 use crate::proto::providers::alist::alist_provider_service_server::AlistProviderService;
 use crate::proto::providers::alist::{
     GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchRequest, SearchResponse,
 };
 
 use crate::grpc::map_api_error;
@@ -101,6 +101,45 @@ impl AlistProviderService for AlistProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_with_context(
+                        authenticated.user_id.as_str(),
+                        req,
+                        instance_name.as_deref(),
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(crate::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let metadata = crate::grpc::request_metadata(
+            &request,
+            &self.config,
+            Some(crate::grpc::grpc_unary_request_timeout()),
+        );
+        let req = request.into_inner();
+        tracing::info!(
+            "gRPC Alist search request: server_id={}, parent={}, keywords={}",
+            req.server_id,
+            req.parent,
+            req.keywords
+        );
+        let instance_name = extract_instance_name(&req.instance_name);
+        let api = self.api.clone();
+
+        self.request_executor
+            .execute_user_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |request_control, authenticated| async move {
+                    api.search_with_context(
                         authenticated.user_id.as_str(),
                         req,
                         instance_name.as_deref(),

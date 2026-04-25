@@ -96,6 +96,7 @@ pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
         ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
         ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
         ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
+        ErrorKind::Conflict => tonic::Status::aborted(msg),
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
         ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
         ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),

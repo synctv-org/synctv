@@ -138,6 +138,45 @@ impl PermissionService {
         }
     }
 
+    /// Create a permission service with all optional runtime collaborators wired
+    /// at construction time.
+    #[must_use]
+    pub fn new_with_runtime(
+        member_repo: RoomMemberRepository,
+        settings_registry: Option<Arc<SettingsRegistry>>,
+        cache_size: u64,
+        cache_ttl_secs: u64,
+        room_settings_repo: Option<RoomSettingsRepository>,
+        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    ) -> Self {
+        Self {
+            member_repo,
+            room_settings_repo,
+            cache: Arc::new(
+                moka::future::CacheBuilder::new(cache_size)
+                    .time_to_live(Duration::from_secs(cache_ttl_secs))
+                    .build(),
+            ),
+            degraded_cache: Arc::new(
+                moka::future::CacheBuilder::new(cache_size)
+                    .time_to_live(Duration::from_secs(Self::DEGRADED_CACHE_TTL_SECS))
+                    .build(),
+            ),
+            settings_registry,
+            invalidation_service: Arc::new(SharedInvalidationService {
+                service: parking_lot::RwLock::new(invalidation_service),
+            }),
+            cache_degraded: Arc::new(AtomicBool::new(false)),
+            last_flush_time: Arc::new(parking_lot::Mutex::new(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(Self::FLUSH_RATE_LIMIT_SECS))
+                    .unwrap_or(Instant::now()),
+            )),
+            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
+            invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
+        }
+    }
+
     /// Create a new permission service with cache invalidation support
     ///
     /// This enables cross-replica cache invalidation via Redis Pub/Sub.
@@ -149,21 +188,20 @@ impl PermissionService {
     #[must_use]
     pub fn with_invalidation(
         member_repo: RoomMemberRepository,
-        room_repo: RoomRepository,
+        _room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
         invalidation_service: Arc<dyn CacheInvalidationRuntime>,
     ) -> Self {
-        let mut service = Self::new(
+        Self::new_with_runtime(
             member_repo,
-            room_repo,
             settings_registry,
             cache_size,
             cache_ttl_secs,
-        );
-        service.set_invalidation_service(invalidation_service);
-        service
+            None,
+            Some(invalidation_service),
+        )
     }
 
     /// Create a permission service without caching

@@ -103,6 +103,24 @@ pub struct UserService {
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
 }
 
+#[derive(Default)]
+pub struct UserServiceRuntimeOptions {
+    pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub refresh_rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
+    pub email_verification_required: bool,
+    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+}
+
+pub struct UserServiceDependencies {
+    pub jwt_service: JwtService,
+    pub username_cache: UsernameCache,
+    pub password_complexity: PasswordComplexityConfig,
+    pub token_blacklist: Arc<dyn TokenBlacklistStore>,
+    pub key_builder: KeyBuilder,
+    pub brute_force: Arc<dyn BruteForceProtectionService>,
+}
+
 impl std::fmt::Debug for UserService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserService")
@@ -687,36 +705,58 @@ impl UserService {
         key_builder: KeyBuilder,
         brute_force: Arc<dyn BruteForceProtectionService>,
     ) -> Self {
+        Self::new_with_brute_force_service_and_runtime(
+            pool,
+            UserServiceDependencies {
+                jwt_service,
+                username_cache,
+                password_complexity,
+                token_blacklist,
+                key_builder,
+                brute_force,
+            },
+            UserServiceRuntimeOptions::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_brute_force_service_and_runtime(
+        pool: PgPool,
+        dependencies: UserServiceDependencies,
+        runtime: UserServiceRuntimeOptions,
+    ) -> Self {
+        let UserServiceDependencies {
+            jwt_service,
+            username_cache,
+            password_complexity,
+            token_blacklist,
+            key_builder,
+            brute_force,
+        } = dependencies;
+
         // Default to a local limiter; composition roots can inject any
-        // distributed or local implementation via set_refresh_rate_limiter().
-        let refresh_rate_limiter: Arc<dyn RequestRateLimiterService> =
-            Arc::new(RateLimiter::local_only("synctv:".to_string()));
+        // distributed or local implementation through runtime options.
+        let refresh_rate_limiter: Arc<dyn RequestRateLimiterService> = runtime
+            .refresh_rate_limiter
+            .unwrap_or_else(|| Arc::new(RateLimiter::local_only("synctv:".to_string())));
 
         Self {
             repository: UserRepository::new(pool),
             jwt_service,
             username_cache,
-            cache_invalidation: None,
+            cache_invalidation: runtime.cache_invalidation,
             password_complexity,
             brute_force,
-            email_verification_required: false,
+            email_verification_required: runtime.email_verification_required,
             token_blacklist,
             key_builder,
             refresh_rate_limiter,
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
-            settings_registry: None,
-            password_hasher: Arc::new(crate::service::auth::ProdPasswordHasher::default()),
+            settings_registry: runtime.settings_registry,
+            password_hasher: runtime
+                .password_hasher
+                .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
         }
-    }
-
-    /// Inject the settings registry for reading signup_need_review and email_whitelist settings.
-    pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
-        self.settings_registry = Some(registry);
-    }
-
-    /// Set the cache invalidation service for cross-replica user cache sync
-    pub fn set_cache_invalidation(&mut self, service: Arc<dyn CacheInvalidationRuntime>) {
-        self.cache_invalidation = Some(service);
     }
 
     /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
@@ -730,13 +770,6 @@ impl UserService {
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
-    }
-
-    pub fn set_refresh_rate_limiter<T>(&mut self, limiter: T)
-    where
-        T: RequestRateLimiterService + 'static,
-    {
-        self.refresh_rate_limiter = Arc::new(limiter);
     }
 
     pub fn set_refresh_rate_limiter_for_tests<T>(&mut self, limiter: T)

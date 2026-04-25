@@ -159,8 +159,10 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = room_members.added_permissions,
-                removed_permissions = room_members.removed_permissions,
+                added_permissions = EXCLUDED.added_permissions,
+                removed_permissions = EXCLUDED.removed_permissions,
+                admin_added_permissions = 0,
+                admin_removed_permissions = 0,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
@@ -217,8 +219,10 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = room_members.added_permissions,
-                removed_permissions = room_members.removed_permissions,
+                added_permissions = EXCLUDED.added_permissions,
+                removed_permissions = EXCLUDED.removed_permissions,
+                admin_added_permissions = 0,
+                admin_removed_permissions = 0,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
@@ -386,8 +390,10 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = room_members.added_permissions,
-                removed_permissions = room_members.removed_permissions,
+                added_permissions = EXCLUDED.added_permissions,
+                removed_permissions = EXCLUDED.removed_permissions,
+                admin_added_permissions = 0,
+                admin_removed_permissions = 0,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1

@@ -41,6 +41,7 @@ subtle.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 uuid.workspace = true
+moka.workspace = true
 
 # SSRF Protection
 synctv-common = { workspace = true, default-features = false }

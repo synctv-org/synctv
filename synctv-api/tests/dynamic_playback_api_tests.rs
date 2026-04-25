@@ -15,8 +15,8 @@ use synctv_core::{
         UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider,
-        NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
+        MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
@@ -180,8 +180,7 @@ impl DynamicFolder for FakeDynamicProvider {
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
         target: Option<&[u8]>,
-        _page: usize,
-        _page_size: usize,
+        _query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         Ok(
             match target
@@ -525,6 +524,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
             },
         )
         .await
@@ -1019,6 +1019,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
             },
         )
         .await
@@ -1117,6 +1118,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
             },
         )
         .await

@@ -138,6 +138,89 @@ async fn test_stream_proxy() {
 }
 
 #[tokio::test]
+async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
+    let store = new_store();
+    let mut vp = make_versioned(
+        "thumb1",
+        "https://alist.example.com/d/movie.mp4",
+        HashMap::from([("Authorization".to_string(), "Bearer tok".to_string())]),
+        vec![],
+        3600,
+    );
+    vp.result.metadata.insert(
+        "thumbnail".to_string(),
+        serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
+    );
+    store_versioned(&store, &vp).await;
+
+    let p = provider();
+    let fake_services = fake_proxy_services();
+    let ctx = ProxyRequestContext {
+        sub_path: "thumb1/thumbnail",
+        store: Some(&store),
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
+        request_context: None,
+    };
+    let action = p.resolve_proxy(&ctx).await.unwrap();
+    match action {
+        ProxyAction::FetchAndForward { url, headers } => {
+            assert_eq!(url, "https://alist.example.com/thumb/movie.jpg");
+            assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
+        }
+        other => panic!("Expected FetchAndForward, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
+    let signing_key =
+        synctv_core::service::ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
+    let mut result = PlaybackResult {
+        playback_infos: HashMap::from([(
+            "direct".to_string(),
+            PlaybackInfo {
+                urls: vec!["https://alist.example.com/d/movie.mp4".to_string()],
+                format: "mp4".to_string(),
+                headers: HashMap::new(),
+                subtitles: vec![],
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        )]),
+        default_mode: "direct".to_string(),
+        metadata: HashMap::from([(
+            "thumbnail".to_string(),
+            serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
+        )]),
+    };
+
+    sign_playback_urls(
+        &mut result,
+        "alist",
+        "thumb2",
+        &signing_key,
+        "room-1",
+        "user-1",
+        chrono::Utc::now().timestamp() + 3600,
+    );
+
+    let thumbnail = result.metadata["thumbnail"]
+        .as_str()
+        .expect("thumbnail metadata should remain a string");
+    assert!(
+        thumbnail.starts_with("/api/providers/proxy/alist/"),
+        "signed Alist thumbnail should use provider proxy: {thumbnail}"
+    );
+    assert!(
+        thumbnail.contains("thumbnail?"),
+        "signed Alist thumbnail should use thumbnail proxy action: {thumbnail}"
+    );
+}
+
+#[tokio::test]
 async fn test_m3u8_proxy() {
     let store = new_store();
     let vp = make_versioned(

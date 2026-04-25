@@ -251,6 +251,27 @@ impl PlaybackService {
         media_service: MediaService,
         user_service: UserService,
     ) -> Self {
+        Self::new_with_runtime(
+            playback_repo,
+            permission_service,
+            media_service,
+            user_service,
+            None,
+            None,
+        )
+    }
+
+    /// Create a playback service with optional cache runtime dependencies wired
+    /// at construction time.
+    #[must_use]
+    pub fn new_with_runtime(
+        playback_repo: RoomPlaybackStateRepository,
+        permission_service: PermissionService,
+        media_service: MediaService,
+        user_service: UserService,
+        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+        l2_cache: Option<PlaybackStateCache>,
+    ) -> Self {
         Self {
             playback_repo,
             permission_service,
@@ -262,8 +283,8 @@ impl PlaybackService {
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
                     .build(),
             ),
-            l2_cache: Arc::new(parking_lot::RwLock::new(None)),
-            invalidation_service: None,
+            l2_cache: Arc::new(parking_lot::RwLock::new(l2_cache)),
+            invalidation_service,
             invalidation_runtime: Arc::new(PlaybackInvalidationRuntime::new()),
             single_flight: SingleFlight::new(),
         }
@@ -1586,6 +1607,53 @@ impl PlaybackService {
         speed: Option<f64>,
         expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
+        self.update_multiple_internal(
+            room_id,
+            user_id,
+            playing,
+            current_time,
+            speed,
+            expected_version,
+            false,
+        )
+        .await
+    }
+
+    /// Management-only multi-field playback update that bypasses room membership
+    /// permissions. Callers must validate global admin/root identity before use.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admin_update_multiple_with_version(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        playing: Option<bool>,
+        current_time: Option<f64>,
+        speed: Option<f64>,
+        expected_version: Option<i64>,
+    ) -> Result<RoomPlaybackState> {
+        self.update_multiple_internal(
+            room_id,
+            actor_user_id,
+            playing,
+            current_time,
+            speed,
+            expected_version,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_multiple_internal(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playing: Option<bool>,
+        current_time: Option<f64>,
+        speed: Option<f64>,
+        expected_version: Option<i64>,
+        bypass_permission: bool,
+    ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
         if playing.is_some() {
@@ -1597,7 +1665,7 @@ impl PlaybackService {
         if speed.is_some() {
             required_perms |= PermissionBits::CHANGE_PLAYBACK_RATE;
         }
-        if required_perms != PermissionBits::NONE {
+        if required_perms != PermissionBits::NONE && !bypass_permission {
             self.permission_service
                 .check_permission(&room_id, &user_id, required_perms)
                 .await?;

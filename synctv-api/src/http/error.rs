@@ -373,7 +373,7 @@ impl From<crate::impls::ApiError> for AppError {
             ErrorKind::NotFound => Self::not_found(msg),
             ErrorKind::Unauthenticated => Self::unauthorized(msg),
             ErrorKind::PermissionDenied => Self::forbidden(msg),
-            ErrorKind::AlreadyExists => Self::conflict(msg),
+            ErrorKind::AlreadyExists | ErrorKind::Conflict => Self::conflict(msg),
             ErrorKind::InvalidArgument => Self::bad_request(msg),
             ErrorKind::RateLimited => {
                 if let Some(retry_after_seconds) = err.retry_after_seconds() {

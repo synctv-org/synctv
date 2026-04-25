@@ -18,12 +18,15 @@ pub use auth::LogoutOutcome;
 pub(crate) mod media;
 mod member;
 mod playback;
+mod playback_lifecycle;
 pub(crate) mod playlist;
 mod room;
 pub(crate) mod stream;
 mod user;
 mod webrtc;
-pub(crate) use playback::build_start_playback_request;
+pub(crate) use playback::{
+    build_start_playback_request, build_update_playback_request, PlaybackUpdateCommand,
+};
 pub(crate) use room::build_create_websocket_ticket_request;
 
 // Proto conversion helpers used across impls modules within this crate.

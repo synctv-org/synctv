@@ -14,6 +14,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
+    provider::DynamicListQuery,
     repository::UserRepository,
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
@@ -436,8 +437,11 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
             creator.id.clone(),
             &playlist.id,
             None,
-            0,
-            20,
+            DynamicListQuery {
+                page: 1,
+                page_size: 20,
+                ..DynamicListQuery::default()
+            },
         )
         .await
         .expect_err("credential-backed dynamic listing should fail closed without repo wiring");

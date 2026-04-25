@@ -1523,6 +1523,10 @@ pub struct ListPlaylistItemsRequest {
     #[prost(enumeration = "ResourceAvailabilityFilter", tag = "10")]
     #[serde(default)]
     pub availability: i32,
+    /// For dynamic provider playlists, force upstream directory cache refresh when supported.
+    #[prost(bool, tag = "11")]
+    #[serde(default)]
+    pub refresh: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.ListPlaylistItemsResponse")]

@@ -110,6 +110,79 @@ pub struct ListResponse {
     #[prost(uint64, tag = "2")]
     pub total: u64,
 }
+/// Search files and directories under a stored Alist credential.
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.provider.alist.SearchRequest")]
+#[prost_reflect(descriptor_pool = "crate::PROVIDERS_DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_SearchRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SearchRequest {
+    /// Stored credential identifier
+    #[prost(string, tag = "1")]
+    pub server_id: ::prost::alloc::string::String,
+    /// Directory path to search under
+    #[prost(string, tag = "2")]
+    #[serde(default)]
+    pub parent: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    #[serde(default)]
+    pub keywords: ::prost::alloc::string::String,
+    /// 0: all, 1: directories, 2: files
+    #[prost(uint64, tag = "4")]
+    #[serde(default)]
+    pub scope: u64,
+    #[prost(uint64, tag = "5")]
+    #[serde(default)]
+    pub page: u64,
+    #[prost(uint64, tag = "6")]
+    #[serde(default)]
+    pub per_page: u64,
+    /// Directory password (optional)
+    #[prost(string, tag = "7")]
+    #[serde(default)]
+    pub password: ::prost::alloc::string::String,
+    /// Optional provider instance name
+    #[prost(string, tag = "8")]
+    #[serde(default)]
+    pub instance_name: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.provider.alist.SearchResponse")]
+#[prost_reflect(descriptor_pool = "crate::PROVIDERS_DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_SearchResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SearchResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub content: ::prost::alloc::vec::Vec<SearchItem>,
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.provider.alist.SearchItem")]
+#[prost_reflect(descriptor_pool = "crate::PROVIDERS_DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_provider_alist_SearchItem))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SearchItem {
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub is_dir: bool,
+    #[prost(uint64, tag = "4")]
+    pub size: u64,
+    #[prost(uint64, tag = "5")]
+    pub r#type: u64,
+}
 /// File/directory item
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.provider.alist.FileItem")]
@@ -240,11 +313,13 @@ pub struct BindInfo {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub host: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
     pub username: ::prost::alloc::string::String,
     /// Unix epoch timestamp
-    #[prost(int64, tag = "4")]
+    #[prost(int64, tag = "5")]
     pub created_at: i64,
 }
 /// Generated client implementations.
@@ -392,6 +467,33 @@ pub mod alist_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Search files and directories (uses stored credential via server_id)
+        pub async fn search(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SearchRequest>,
+        ) -> std::result::Result<tonic::Response<super::SearchResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.provider.alist.AlistProviderService/Search",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.provider.alist.AlistProviderService",
+                        "Search",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Get current user info (uses stored credential via server_id)
         pub async fn get_me(
             &mut self,
@@ -501,6 +603,11 @@ pub mod alist_provider_service_server {
             &self,
             request: tonic::Request<super::ListRequest>,
         ) -> std::result::Result<tonic::Response<super::ListResponse>, tonic::Status>;
+        /// Search files and directories (uses stored credential via server_id)
+        async fn search(
+            &self,
+            request: tonic::Request<super::SearchRequest>,
+        ) -> std::result::Result<tonic::Response<super::SearchResponse>, tonic::Status>;
         /// Get current user info (uses stored credential via server_id)
         async fn get_me(
             &self,
@@ -673,6 +780,51 @@ pub mod alist_provider_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.provider.alist.AlistProviderService/Search" => {
+                    #[allow(non_camel_case_types)]
+                    struct SearchSvc<T: AlistProviderService>(pub Arc<T>);
+                    impl<
+                        T: AlistProviderService,
+                    > tonic::server::UnaryService<super::SearchRequest>
+                    for SearchSvc<T> {
+                        type Response = super::SearchResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SearchRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AlistProviderService>::search(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SearchSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

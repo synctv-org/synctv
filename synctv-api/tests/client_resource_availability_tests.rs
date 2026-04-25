@@ -245,6 +245,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
                 sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
             },
         )
         .await
@@ -356,6 +357,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::Unavailable
                     as i32,
+                refresh: false,
             },
         )
         .await
@@ -384,6 +386,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
                 availability: synctv_api::proto::client::ResourceAvailabilityFilter::Unavailable
                     as i32,
+                refresh: false,
             },
         )
         .await
@@ -427,6 +430,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
         availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     };
 
     let first = client_api

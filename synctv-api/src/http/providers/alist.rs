@@ -31,6 +31,7 @@ pub fn alist_auth_routes() -> Router<AppState> {
 pub fn alist_read_routes() -> Router<AppState> {
     Router::new()
         .route("/list", post(list))
+        .route("/search", post(search))
         .route("/me", post(me))
         .route("/binds", get(binds))
 }
@@ -145,6 +146,60 @@ pub(crate) async fn list(
         .map_err(map_api_error)
         .map_err(|e| {
             tracing::error!("Alist list failed: {}", e);
+            e
+        })?;
+    Ok(Json(resp))
+}
+
+/// Search Alist files and directories (uses stored credential)
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/alist/search",
+        tag = "Provider",
+        params(ProviderInstanceQuery),
+        request_body = crate::proto::providers::alist::SearchRequest,
+        responses(
+            (status = 200, description = "Alist search results", body = crate::proto::providers::alist::SearchResponse),
+            (status = 400, description = "Invalid search request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub(crate) async fn search(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    Json(req): Json<crate::proto::providers::alist::SearchRequest>,
+) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
+    tracing::info!("Alist search request");
+
+    let instance_name = provider_instance_name(&query)?;
+    let api = state.alist_api.clone();
+    let request_meta = request_metadata(request_meta);
+    let resp = state
+        .client_api
+        .execute_user_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            move |control, authenticated| async move {
+                api.search_with_context(
+                    authenticated.user_id.as_str(),
+                    req,
+                    instance_name,
+                    Some(&control),
+                )
+                .await
+            },
+        )
+        .await
+        .map_err(map_api_error)
+        .map_err(|e| {
+            tracing::error!("Alist search failed: {}", e);
             e
         })?;
     Ok(Json(resp))

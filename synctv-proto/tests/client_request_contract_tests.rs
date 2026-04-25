@@ -72,6 +72,7 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     };
 
     let json = serde_json::to_value(&request).expect("serialize list request");
@@ -517,6 +518,7 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -558,6 +560,7 @@ fn test_list_playlist_items_request_rejects_too_long_search() {
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

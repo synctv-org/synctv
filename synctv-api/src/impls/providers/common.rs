@@ -12,6 +12,7 @@ use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, Request
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProviderBind {
     pub id: String,
+    pub server_id: String,
     pub host: String,
     pub label_key: String,
     pub label_value: String,
@@ -45,6 +46,7 @@ fn filter_provider_binds(
 
             ProviderBind {
                 id: credential.id,
+                server_id: credential.server_id,
                 host,
                 label_key: user_field_key.to_string(),
                 label_value,

@@ -10,6 +10,24 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // validate_item_id is a private function tested indirectly through get_item which calls it.
 // The inline tests in client.rs already cover it, but we verify through the public API here.
 
+async fn mock_public_info(server: &MockServer, prefix: &str) {
+    let public_info_path = if prefix.is_empty() {
+        "/System/Info/Public".to_string()
+    } else {
+        format!("{prefix}/System/Info/Public")
+    };
+
+    Mock::given(method("GET"))
+        .and(path(public_info_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "server-1",
+            "ServerName": "Mock Emby Compatible Server",
+            "Version": "4.8.0"
+        })))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn test_validate_item_id_normal() {
     // Valid IDs should pass validation (but will fail on missing user_id since we don't set it)
@@ -54,30 +72,26 @@ async fn test_validate_item_id_empty_rejected() {
 #[test]
 fn test_get_api_prefix_jellyfin_hostname() {
     let client = EmbyClient::new("https://jellyfin.example.com").unwrap();
-    // We can't call get_api_prefix directly since it's private,
-    // but we verify behavior by checking the host
     assert_eq!(client.host(), "https://jellyfin.example.com");
-    // The inline tests in client.rs verify get_api_prefix returns "/jellyfin"
 }
 
 #[test]
 fn test_get_api_prefix_emby_hostname() {
     let client = EmbyClient::new("https://emby.example.com").unwrap();
     assert_eq!(client.host(), "https://emby.example.com");
-    // The inline tests verify get_api_prefix returns "/emby"
 }
 
 #[test]
 fn test_get_api_prefix_invalid_url_fallback() {
-    // A non-standard URL should default to "/emby" (no jellyfin in hostname)
+    // Hostnames are not used to infer Emby/Jellyfin deployment paths.
     let client = EmbyClient::new("https://media.example.com").unwrap();
     assert_eq!(client.host(), "https://media.example.com");
-    // The inline tests verify this defaults to "/emby"
 }
 
 #[tokio::test]
 async fn test_emby_client_login_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // Emby login endpoint: POST /emby/Users/authenticatebyname
     Mock::given(method("POST"))
@@ -102,6 +116,7 @@ async fn test_emby_client_login_success() {
 #[tokio::test]
 async fn test_emby_client_get_items_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // Emby items endpoint: GET /emby/Users/<user_id>/Items
     Mock::given(method("GET"))
@@ -139,6 +154,7 @@ async fn test_emby_client_get_items_success() {
 #[tokio::test]
 async fn test_emby_client_me_uses_current_user_endpoint_when_user_id_is_empty() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("GET"))
         .and(path("/emby/Users/Me"))
@@ -160,6 +176,7 @@ async fn test_emby_client_me_uses_current_user_endpoint_when_user_id_is_empty() 
 #[tokio::test]
 async fn test_emby_client_list_users_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("GET"))
         .and(path("/emby/Users"))
@@ -192,9 +209,9 @@ async fn test_emby_client_list_users_success() {
 async fn test_emby_client_jellyfin_detection() {
     let server = MockServer::start().await;
     let server_uri = server.uri();
+    mock_public_info(&server, "/jellyfin").await;
 
-    // Jellyfin uses /jellyfin prefix when hostname contains "jellyfin"
-    // Since wiremock uses 127.0.0.1, we test with explicit prefix instead
+    // SyncTV detects Jellyfin-compatible deployments by probing public system endpoints.
     Mock::given(method("POST"))
         .and(path("/jellyfin/Users/authenticatebyname"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -207,17 +224,62 @@ async fn test_emby_client_jellyfin_detection() {
         .mount(&server)
         .await;
 
-    // Set custom API prefix to simulate Jellyfin detection
     let mut client = EmbyClient::new(&server_uri).unwrap();
-    client.set_api_prefix("/jellyfin");
     let (token, user_id) = client.login("admin", "password").await.unwrap();
     assert_eq!(token, "jellyfin-token");
     assert_eq!(user_id, "jf-user-1");
 }
 
 #[tokio::test]
+async fn test_emby_client_reuses_detected_api_base_path_within_client() {
+    let server = MockServer::start().await;
+    let public_info_path = "/emby/System/Info/Public";
+
+    Mock::given(method("GET"))
+        .and(path(public_info_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "server-cache",
+            "ServerName": "Cached Emby Compatible Server",
+            "Version": "4.8.0"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Users/authenticatebyname"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "AccessToken": "cached-token",
+            "User": {
+                "Id": "cached-user",
+                "Name": "admin"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/emby/Users/cached-user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "cached-user",
+            "Name": "admin",
+            "ServerId": "server-cache"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = EmbyClient::new(server.uri()).unwrap();
+    client.login("admin", "password").await.unwrap();
+    let current_user = client.me().await.unwrap();
+    assert_eq!(current_user.id, "cached-user");
+}
+
+#[tokio::test]
 async fn test_emby_client_respects_host_path_prefix() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/proxy/emby").await;
 
     Mock::given(method("GET"))
         .and(path("/proxy/emby/System/Info"))
@@ -241,6 +303,7 @@ async fn test_emby_client_respects_host_path_prefix() {
 #[tokio::test]
 async fn test_emby_report_playback_start_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing"))
@@ -259,6 +322,7 @@ async fn test_emby_report_playback_start_success() {
 #[tokio::test]
 async fn test_emby_report_playback_stop_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Stopped"))
@@ -277,6 +341,7 @@ async fn test_emby_report_playback_stop_success() {
 #[tokio::test]
 async fn test_emby_report_playback_progress_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Progress"))
@@ -298,6 +363,7 @@ async fn test_emby_report_playback_progress_success() {
 #[tokio::test]
 async fn test_emby_report_playback_progress_paused() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Progress"))
@@ -319,6 +385,7 @@ async fn test_emby_report_playback_progress_paused() {
 #[tokio::test]
 async fn test_emby_delete_active_encodings_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("DELETE"))
         .respond_with(ResponseTemplate::new(204))
@@ -368,6 +435,7 @@ async fn test_emby_report_playback_start_rejects_traversal() {
 #[tokio::test]
 async fn test_emby_get_playback_info_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -421,6 +489,7 @@ async fn test_emby_get_playback_info_success() {
 #[tokio::test]
 async fn test_emby_get_playback_info_sends_playback_request_controls() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Items/item-1/PlaybackInfo"))
@@ -494,6 +563,7 @@ async fn test_emby_get_playback_info_sends_playback_request_controls() {
 #[tokio::test]
 async fn test_emby_get_playback_info_preserves_explicit_empty_subtitle_profiles() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Items/item-1/PlaybackInfo"))
@@ -536,6 +606,7 @@ async fn test_emby_get_playback_info_preserves_explicit_empty_subtitle_profiles(
 #[tokio::test]
 async fn test_emby_logout_success() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Logout"))
@@ -555,6 +626,7 @@ async fn test_emby_logout_success() {
 #[tokio::test]
 async fn emby_thumbnail_extract_from_primary_tag() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -590,6 +662,7 @@ async fn emby_thumbnail_extract_from_primary_tag() {
 #[tokio::test]
 async fn emby_thumbnail_extract_from_thumb_tag() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -626,6 +699,7 @@ async fn emby_thumbnail_extract_from_thumb_tag() {
 #[tokio::test]
 async fn emby_thumbnail_no_image_tags_returns_none() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -703,6 +777,7 @@ fn emby_thumbnail_url_construction() {
 #[tokio::test]
 async fn test_emby_report_playback_start_retries_on_5xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 500, second returns 204
     Mock::given(method("POST"))
@@ -733,6 +808,7 @@ async fn test_emby_report_playback_start_retries_on_5xx() {
 #[tokio::test]
 async fn test_emby_report_playback_stop_retries_on_5xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 502, second returns 204
     Mock::given(method("POST"))
@@ -763,6 +839,7 @@ async fn test_emby_report_playback_stop_retries_on_5xx() {
 #[tokio::test]
 async fn test_emby_report_playback_progress_retries_on_5xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 503, second returns 204
     Mock::given(method("POST"))
@@ -793,6 +870,7 @@ async fn test_emby_report_playback_progress_retries_on_5xx() {
 #[tokio::test]
 async fn test_emby_logout_retries_on_5xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 500, second returns 204
     Mock::given(method("POST"))
@@ -821,6 +899,7 @@ async fn test_emby_logout_retries_on_5xx() {
 #[tokio::test]
 async fn test_emby_delete_active_encodings_retries_on_5xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 500, second returns 204
     Mock::given(method("DELETE"))
@@ -847,6 +926,7 @@ async fn test_emby_delete_active_encodings_retries_on_5xx() {
 #[tokio::test]
 async fn test_emby_report_playback_start_no_retry_on_4xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // 401 should NOT be retried
     Mock::given(method("POST"))
@@ -874,6 +954,7 @@ async fn test_emby_report_playback_start_no_retry_on_4xx() {
 #[tokio::test]
 async fn test_emby_logout_no_retry_on_4xx() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // 403 should NOT be retried
     Mock::given(method("POST"))
@@ -898,6 +979,7 @@ async fn test_emby_logout_no_retry_on_4xx() {
 #[tokio::test]
 async fn test_emby_report_playback_start_retries_on_429() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // First request returns 429, second returns 204
     Mock::given(method("POST"))
@@ -928,6 +1010,7 @@ async fn test_emby_report_playback_start_retries_on_429() {
 #[tokio::test]
 async fn test_emby_report_playback_stop_multiple_retries_exhausted() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     // All requests return 500 (more than max retries)
     Mock::given(method("POST"))

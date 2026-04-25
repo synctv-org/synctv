@@ -1,13 +1,17 @@
 //! Emby/Jellyfin HTTP Client
 
+use std::collections::HashSet;
 use std::fmt::Write;
+use std::net::IpAddr;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     Client,
 };
 use serde_json::{json, Value};
+use tokio::sync::OnceCell;
 
 use super::error::{check_response, json_with_limit, EmbyError};
 use super::types::{
@@ -24,7 +28,7 @@ fn url_encode(s: &str) -> String {
 fn normalize_api_prefix(prefix: &str) -> String {
     let trimmed = prefix.trim();
     if trimmed.is_empty() || trimmed == "/" {
-        return "/".to_string();
+        return String::new();
     }
 
     let trimmed = trimmed.trim_end_matches('/');
@@ -61,6 +65,13 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
     LazyLock::new(synctv_common::http::build_provider_client);
 
+static API_PREFIX_CACHE: LazyLock<moka::future::Cache<String, String>> = LazyLock::new(|| {
+    moka::future::Cache::builder()
+        .max_capacity(1024)
+        .time_to_live(Duration::from_hours(1))
+        .build()
+});
+
 fn shared_client() -> Result<Client, EmbyError> {
     SHARED_CLIENT
         .as_ref()
@@ -76,7 +87,7 @@ pub struct EmbyClient {
     token: Option<String>,
     user_id: Option<String>,
     client: Client,
-    api_prefix: Option<String>,
+    detected_api_prefix: OnceCell<String>,
     device_id: String,
 }
 
@@ -107,7 +118,7 @@ impl EmbyClient {
             token: None,
             user_id: None,
             client,
-            api_prefix: None,
+            detected_api_prefix: OnceCell::new(),
             device_id: uuid::Uuid::new_v4().to_string(),
         })
     }
@@ -133,20 +144,42 @@ impl EmbyClient {
             token: Some(token.into()),
             user_id: Some(user_id.into()),
             client,
-            api_prefix: None,
+            detected_api_prefix: OnceCell::new(),
             device_id: uuid::Uuid::new_v4().to_string(),
         })
-    }
-
-    /// Set a custom API prefix (e.g., "/emby" or "/jellyfin").
-    /// When set, overrides the auto-detection based on hostname.
-    pub fn set_api_prefix(&mut self, prefix: impl Into<String>) {
-        self.api_prefix = Some(prefix.into());
     }
 
     fn parsed_host_url(&self) -> Result<url::Url, EmbyError> {
         url::Url::parse(&self.host)
             .map_err(|e| EmbyError::InvalidConfig(format!("Invalid host URL: {e}")))
+    }
+
+    fn api_prefix_cache_key(&self) -> Result<String, EmbyError> {
+        let parsed = self.parsed_host_url()?;
+        let origin = parsed.origin().unicode_serialization();
+        let host_path = parsed.path().trim_end_matches('/');
+        if host_path.is_empty() || host_path == "/" {
+            Ok(origin)
+        } else {
+            Ok(format!("{}{}", origin.trim_end_matches('/'), host_path))
+        }
+    }
+
+    fn should_use_shared_api_prefix_cache(&self) -> Result<bool, EmbyError> {
+        let parsed = self.parsed_host_url()?;
+        let Some(host) = parsed.host_str() else {
+            return Ok(false);
+        };
+        if host.eq_ignore_ascii_case("localhost") {
+            return Ok(false);
+        }
+        if host
+            .parse::<IpAddr>()
+            .is_ok_and(|ip_addr| ip_addr.is_loopback())
+        {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Set authentication token and user ID
@@ -155,42 +188,114 @@ impl EmbyClient {
         self.user_id = Some(user_id.into());
     }
 
-    /// Get API prefix (/emby or /jellyfin).
-    /// Uses the explicitly set prefix if available, otherwise auto-detects
-    /// based on whether the host URL's hostname contains "jellyfin".
-    fn get_api_prefix(&self) -> Result<String, EmbyError> {
-        if let Some(ref prefix) = self.api_prefix {
-            return Ok(normalize_api_prefix(prefix));
-        }
-
+    fn configured_api_prefix(&self) -> Result<String, EmbyError> {
         let parsed = self.parsed_host_url()?;
         let host_path = parsed.path().trim_end_matches('/');
-        if !host_path.is_empty() {
+        if !host_path.is_empty() && host_path != "/" {
             return Ok(host_path.to_string());
         }
 
-        // Parse the host URL and check only the hostname component to avoid
-        // false matches from "jellyfin" appearing in paths or query strings.
-        let is_jellyfin = parsed
-            .host_str()
-            .is_some_and(|host| host.contains("jellyfin"));
-        if is_jellyfin {
-            Ok("/jellyfin".to_string())
+        Ok(String::new())
+    }
+
+    fn endpoint_url_with_prefix(
+        &self,
+        endpoint_path: &str,
+        prefix: &str,
+    ) -> Result<String, EmbyError> {
+        let parsed = self.parsed_host_url()?;
+        let origin = parsed.origin().unicode_serialization();
+        let prefix = normalize_api_prefix(prefix);
+        let endpoint_path = endpoint_path.trim_start_matches('/');
+        if prefix.is_empty() {
+            Ok(format!("{}/{endpoint_path}", origin.trim_end_matches('/')))
         } else {
-            Ok("/emby".to_string())
+            Ok(format!(
+                "{}{prefix}/{endpoint_path}",
+                origin.trim_end_matches('/')
+            ))
         }
     }
 
-    fn endpoint_url(&self, endpoint_path: &str) -> Result<String, EmbyError> {
-        let parsed = self.parsed_host_url()?;
-        let origin = parsed.origin().unicode_serialization();
-        let prefix = self.get_api_prefix()?;
-        Ok(format!(
-            "{}{}/{}",
-            origin.trim_end_matches('/'),
-            prefix,
-            endpoint_path.trim_start_matches('/')
-        ))
+    fn detection_candidates(&self) -> Result<Vec<String>, EmbyError> {
+        let configured = self.configured_api_prefix()?;
+        let mut candidates = vec![
+            configured,
+            String::new(),
+            "/emby".to_string(),
+            "/jellyfin".to_string(),
+        ];
+        let mut seen = HashSet::new();
+        candidates.retain(|candidate| seen.insert(candidate.clone()));
+        Ok(candidates)
+    }
+
+    async fn probe_api_prefix(&self, prefix: &str) -> Result<bool, EmbyError> {
+        let url = self.endpoint_url_with_prefix("System/Info/Public", prefix)?;
+        let response = self.client.get(url).send().await?;
+        if response.status().is_client_error() || response.status().is_server_error() {
+            return Ok(false);
+        }
+        let value: Value = json_with_limit(response).await?;
+        Ok(value.as_object().is_some_and(|object| {
+            object.contains_key("Id")
+                || object.contains_key("ServerName")
+                || object.contains_key("Version")
+        }))
+    }
+
+    async fn detect_api_prefix(&self) -> Result<String, EmbyError> {
+        let candidates = self.detection_candidates()?;
+        let mut last_error = None;
+
+        for prefix in &candidates {
+            match self.probe_api_prefix(prefix).await {
+                Ok(true) => return Ok(prefix.clone()),
+                Ok(false) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            EmbyError::InvalidConfig(format!(
+                "Unable to auto-detect Emby/Jellyfin API base path for '{}'. Tried: {}",
+                self.host,
+                candidates
+                    .iter()
+                    .map(|value| if value.is_empty() {
+                        "/"
+                    } else {
+                        value.as_str()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }))
+    }
+
+    async fn api_prefix(&self) -> Result<String, EmbyError> {
+        self.detected_api_prefix
+            .get_or_try_init(|| async {
+                if !self.should_use_shared_api_prefix_cache()? {
+                    return self.detect_api_prefix().await;
+                }
+
+                let cache_key = self.api_prefix_cache_key()?;
+                if let Some(prefix) = API_PREFIX_CACHE.get(&cache_key).await {
+                    return Ok(prefix);
+                }
+
+                let prefix = self.detect_api_prefix().await?;
+                API_PREFIX_CACHE.insert(cache_key, prefix.clone()).await;
+                Ok(prefix)
+            })
+            .await
+            .cloned()
+    }
+
+    async fn endpoint_url(&self, endpoint_path: &str) -> Result<String, EmbyError> {
+        let prefix = self.api_prefix().await?;
+        self.endpoint_url_with_prefix(endpoint_path, &prefix)
     }
 
     /// Build request headers
@@ -219,7 +324,7 @@ impl EmbyClient {
         username: &str,
         password: &str,
     ) -> Result<(String, String), EmbyError> {
-        let url = self.endpoint_url("Users/authenticatebyname")?;
+        let url = self.endpoint_url("Users/authenticatebyname").await?;
 
         let body = json!({
             "Username": username,
@@ -264,7 +369,9 @@ impl EmbyClient {
             .user_id
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
-        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        let mut url = self
+            .endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))
+            .await?;
         let _ = write!(
             url,
             "?Ids={}&Fields=MediaSources%2CParentId%2CContainer",
@@ -304,9 +411,10 @@ impl EmbyClient {
     pub async fn me(&self) -> Result<UserInfo, EmbyError> {
         let url = match self.user_id.as_deref() {
             Some(user_id) if !user_id.trim().is_empty() => {
-                self.endpoint_url(&format!("Users/{}", url_encode(user_id)))?
+                self.endpoint_url(&format!("Users/{}", url_encode(user_id)))
+                    .await?
             }
-            _ => self.endpoint_url("Users/Me")?,
+            _ => self.endpoint_url("Users/Me").await?,
         };
         let headers = self.build_headers()?;
         let client = self.client.clone();
@@ -328,7 +436,7 @@ impl EmbyClient {
 
     /// List users visible to the authenticated token.
     pub async fn list_users(&self) -> Result<Vec<UserInfo>, EmbyError> {
-        let url = self.endpoint_url("Users")?;
+        let url = self.endpoint_url("Users").await?;
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
@@ -362,7 +470,9 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        let mut url = self
+            .endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))
+            .await?;
         url.push_str(
             "?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer",
         );
@@ -397,7 +507,7 @@ impl EmbyClient {
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
-        let url = self.endpoint_url("System/Info")?;
+        let url = self.endpoint_url("System/Info").await?;
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
@@ -435,7 +545,9 @@ impl EmbyClient {
 
         // Get user views (libraries) if no path specified
         if path.is_none() && search_term.is_none() {
-            let url = self.endpoint_url(&format!("Users/{}/Views", url_encode(user_id)))?;
+            let url = self
+                .endpoint_url(&format!("Users/{}/Views", url_encode(user_id)))
+                .await?;
             let headers = self.build_headers()?;
             let client = self.client.clone();
 
@@ -464,7 +576,9 @@ impl EmbyClient {
         }
 
         // Query items with filters
-        let mut url = self.endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))?;
+        let mut url = self
+            .endpoint_url(&format!("Users/{}/Items", url_encode(user_id)))
+            .await?;
         let _ = write!(url, "?StartIndex={start_index}&Limit={limit}");
 
         if let Some(p) = path {
@@ -516,7 +630,7 @@ impl EmbyClient {
 
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
-        let url = self.endpoint_url("Sessions/Logout")?;
+        let url = self.endpoint_url("Sessions/Logout").await?;
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
@@ -546,10 +660,12 @@ impl EmbyClient {
             .as_ref()
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
-        let url = self.endpoint_url(&format!(
-            "Items/{}/PlaybackInfo",
-            url_encode(request.item_id)
-        ))?;
+        let url = self
+            .endpoint_url(&format!(
+                "Items/{}/PlaybackInfo",
+                url_encode(request.item_id)
+            ))
+            .await?;
 
         let mut body = json!({
             "UserId": user_id,
@@ -609,7 +725,7 @@ impl EmbyClient {
     pub async fn delete_active_encodings(&self, play_session_id: &str) -> Result<(), EmbyError> {
         validate_item_id(play_session_id)?;
 
-        let mut url = self.endpoint_url("Videos/ActiveEncodings")?;
+        let mut url = self.endpoint_url("Videos/ActiveEncodings").await?;
         let _ = write!(url, "?PlaySessionId={}", url_encode(play_session_id));
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
@@ -638,7 +754,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let url = self.endpoint_url("Sessions/Playing")?;
+        let url = self.endpoint_url("Sessions/Playing").await?;
 
         let mut body = json!({
             "ItemId": item_id,
@@ -681,7 +797,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let url = self.endpoint_url("Sessions/Playing/Stopped")?;
+        let url = self.endpoint_url("Sessions/Playing/Stopped").await?;
 
         let body = json!({
             "ItemId": item_id,
@@ -722,7 +838,7 @@ impl EmbyClient {
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
 
-        let url = self.endpoint_url("Sessions/Playing/Progress")?;
+        let url = self.endpoint_url("Sessions/Playing/Progress").await?;
 
         let mut body = json!({
             "ItemId": item_id,
@@ -787,27 +903,18 @@ mod tests {
     }
 
     #[test]
-    fn test_api_prefix_detection() {
+    fn test_detection_candidates_do_not_use_hostname_heuristics() {
         let emby_client = EmbyClient::new("https://emby.example.com").unwrap();
-        assert_eq!(emby_client.get_api_prefix().unwrap(), "/emby");
+        assert_eq!(
+            emby_client.detection_candidates().unwrap(),
+            vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
+        );
 
         let jellyfin_client = EmbyClient::new("https://jellyfin.example.com").unwrap();
-        assert_eq!(jellyfin_client.get_api_prefix().unwrap(), "/jellyfin");
-    }
-
-    #[test]
-    fn test_api_prefix_custom() {
-        let mut client = EmbyClient::new("https://media.example.com").unwrap();
-        client.set_api_prefix("/custom");
-        assert_eq!(client.get_api_prefix().unwrap(), "/custom");
-    }
-
-    #[test]
-    fn test_api_prefix_custom_overrides_auto() {
-        let mut client = EmbyClient::new("https://jellyfin.example.com").unwrap();
-        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
-        client.set_api_prefix("/emby");
-        assert_eq!(client.get_api_prefix().unwrap(), "/emby");
+        assert_eq!(
+            jellyfin_client.detection_candidates().unwrap(),
+            vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
+        );
     }
 
     #[test]
@@ -1038,23 +1145,50 @@ mod tests {
     }
 
     #[test]
-    fn test_api_prefix_no_false_positive_on_path() {
+    fn test_detection_candidates_preserve_host_path_first() {
         // When host includes a deployment path, preserve it exactly.
         let client = EmbyClient::new("https://media.example.com/jellyfin").unwrap();
-        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
+        assert_eq!(
+            client.detection_candidates().unwrap(),
+            vec!["/jellyfin".to_string(), String::new(), "/emby".to_string()]
+        );
     }
 
     #[test]
-    fn test_api_prefix_hostname_detection() {
+    fn test_api_prefix_hostname_does_not_affect_candidates() {
         let client = EmbyClient::new("https://jellyfin.home.local:8096").unwrap();
-        assert_eq!(client.get_api_prefix().unwrap(), "/jellyfin");
+        assert_eq!(
+            client.detection_candidates().unwrap(),
+            vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_endpoint_url_uses_root_for_emby_and_jellyfin_root_deployments() {
+        let emby_client = EmbyClient::new("https://emby.example.com").unwrap();
+        assert_eq!(
+            emby_client
+                .endpoint_url_with_prefix("System/Info", "")
+                .unwrap(),
+            "https://emby.example.com/System/Info"
+        );
+
+        let jellyfin_client = EmbyClient::new("https://jellyfin.example.com").unwrap();
+        assert_eq!(
+            jellyfin_client
+                .endpoint_url_with_prefix("System/Info", "")
+                .unwrap(),
+            "https://jellyfin.example.com/System/Info"
+        );
     }
 
     #[test]
     fn test_endpoint_url_uses_host_path_prefix() {
         let client = EmbyClient::new("https://media.example.com/custom-prefix").unwrap();
         assert_eq!(
-            client.endpoint_url("System/Info").unwrap(),
+            client
+                .endpoint_url_with_prefix("System/Info", "/custom-prefix")
+                .unwrap(),
             "https://media.example.com/custom-prefix/System/Info"
         );
     }

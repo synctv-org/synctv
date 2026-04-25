@@ -1038,6 +1038,7 @@ message ListPlaylistItemsRequest {
     MediaListSortBy sort_by = 8 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 9 [(buf.validate.field).enum.defined_only = true];
     ResourceAvailabilityFilter availability = 10 [(buf.validate.field).enum.defined_only = true];
+    bool refresh = 11; // For dynamic provider playlists, force upstream directory cache refresh when supported.
 }
 
 message ListPlaylistItemsResponse {

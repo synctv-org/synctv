@@ -14,6 +14,9 @@ service AlistProviderService {
   // List directory contents (uses stored credential via server_id)
   rpc List(ListRequest) returns (ListResponse);
 
+  // Search files and directories (uses stored credential via server_id)
+  rpc Search(SearchRequest) returns (SearchResponse);
+
   // Get current user info (uses stored credential via server_id)
   rpc GetMe(GetMeRequest) returns (GetMeResponse);
 

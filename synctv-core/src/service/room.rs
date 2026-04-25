@@ -80,7 +80,7 @@ use crate::{
     repository::{
         media::MediaListItem, playlist::PlaylistListItem, ChatRepository, MediaRepository,
         PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository,
-        RoomSettingsRepository,
+        RoomSettingsRepository, UserProviderCredentialRepository,
     },
     service::{
         audit::{AuditAction, AuditService, AuditTargetType},
@@ -132,6 +132,23 @@ impl AuthorizedAdminActor {
     pub fn username(&self) -> &str {
         &self.username
     }
+}
+
+/// Room service for business logic
+///
+/// This is the main service that coordinates between domain services.
+#[derive(Clone, Default)]
+pub struct RoomServiceOptions {
+    pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
+    pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
+    pub credential_encryption: Option<crate::service::CredentialEncryption>,
+    pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    pub audit_service: Option<Arc<AuditService>>,
+    pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
+    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
+    pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
 }
 
 /// Room service for business logic
@@ -651,6 +668,15 @@ impl RoomService {
 
     #[must_use]
     pub fn new(pool: PgPool, user_service: UserService) -> Self {
+        Self::new_with_options(pool, user_service, RoomServiceOptions::default())
+    }
+
+    #[must_use]
+    pub fn new_with_options(
+        pool: PgPool,
+        user_service: UserService,
+        options: RoomServiceOptions,
+    ) -> Self {
         let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
             pool.clone(),
         ));
@@ -658,7 +684,7 @@ impl RoomService {
             provider_instance_repo,
         ));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
-        Self::new_with_providers(pool, user_service, providers_manager)
+        Self::new_with_providers_and_options(pool, user_service, providers_manager, options)
     }
 
     #[must_use]
@@ -667,18 +693,35 @@ impl RoomService {
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
     ) -> Self {
-        let permission_service = PermissionService::new(
+        Self::new_with_providers_and_options(
+            pool,
+            user_service,
+            providers_manager,
+            RoomServiceOptions::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_providers_and_options(
+        pool: PgPool,
+        user_service: UserService,
+        providers_manager: Arc<ProvidersManager>,
+        options: RoomServiceOptions,
+    ) -> Self {
+        let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
-            RoomRepository::new(pool.clone()),
             None,
             PermissionService::DEFAULT_CACHE_SIZE,
             PermissionService::DEFAULT_CACHE_TTL_SECS,
+            Some(RoomSettingsRepository::new(pool.clone())),
+            options.cache_invalidation.clone(),
         );
-        Self::new_with_providers_and_permission_service(
+        Self::new_with_providers_permission_service_and_options(
             pool,
             user_service,
             providers_manager,
             permission_service,
+            options,
         )
     }
 
@@ -689,6 +732,23 @@ impl RoomService {
         providers_manager: Arc<ProvidersManager>,
         permission_service: PermissionService,
     ) -> Self {
+        Self::new_with_providers_permission_service_and_options(
+            pool,
+            user_service,
+            providers_manager,
+            permission_service,
+            RoomServiceOptions::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_providers_permission_service_and_options(
+        pool: PgPool,
+        user_service: UserService,
+        providers_manager: Arc<ProvidersManager>,
+        permission_service: PermissionService,
+        options: RoomServiceOptions,
+    ) -> Self {
         // Initialize repositories
         let room_repo = RoomRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -698,41 +758,46 @@ impl RoomService {
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
         let chat_repo = ChatRepository::new(pool.clone());
 
-        // Initialize permission service with caching
-        let mut permission_service = permission_service;
-        permission_service.set_room_settings_repo(room_settings_repo.clone());
-
         let notification_service = NotificationService::default();
 
         // Initialize domain services
-        let mut member_service = MemberService::new(
+        let member_service = MemberService::new_with_runtime(
             member_repo.clone(),
             room_repo.clone(),
+            Some(room_settings_repo.clone()),
             permission_service.clone(),
+            options.audit_service.clone(),
+            options.cache_invalidation.clone(),
             notification_service.clone(),
         );
-        member_service.set_room_settings_repo(room_settings_repo.clone());
-        let playlist_service = PlaylistService::new(
+
+        let playlist_service = PlaylistService::new_with_provider_credentials(
             playlist_repo.clone(),
             permission_service.clone(),
             providers_manager.clone(),
+            options.credential_encryption.clone(),
+            options.credential_repo.clone(),
         );
-        let media_service = MediaService::new(
+        let media_service = MediaService::new_with_provider_credentials(
             media_repo.clone(),
             playlist_repo.clone(),
             permission_service.clone(),
             providers_manager,
             notification_service.clone(),
+            options.credential_encryption.clone(),
+            options.credential_repo.clone(),
         );
-        let playback_service = PlaybackService::new(
+        let playback_service = PlaybackService::new_with_runtime(
             playback_repo.clone(),
             permission_service.clone(),
             media_service.clone(),
             user_service.clone(),
+            options.cache_invalidation.clone(),
+            options.playback_l2_cache.clone(),
         );
         let room_settings_service = RoomSettingsService::new(
             room_settings_repo.clone(),
-            None,
+            options.cache_invalidation.clone(),
             Arc::new(notification_service.clone()),
             None,
             None,
@@ -740,7 +805,7 @@ impl RoomService {
 
         Self {
             pool,
-            distributed_lock: None,
+            distributed_lock: options.distributed_lock,
             room_repo,
             room_settings_repo,
             member_repo,
@@ -756,21 +821,15 @@ impl RoomService {
             room_settings_service,
             notification_service,
             user_service,
-            cache_invalidation: None,
-            audit_service: None,
-            brute_force_service: None,
-            settings_registry: None,
-            user_notification_service: None,
-            password_hasher: Arc::new(crate::service::auth::ProdPasswordHasher::default()),
+            cache_invalidation: options.cache_invalidation,
+            audit_service: options.audit_service,
+            brute_force_service: options.brute_force_service,
+            settings_registry: options.settings_registry,
+            user_notification_service: options.user_notification_service,
+            password_hasher: options
+                .password_hasher
+                .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
         }
-    }
-
-    /// Inject the audit service for logging security-sensitive operations.
-    ///
-    /// Also propagates the audit service to the inner `MemberService`.
-    pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
-        self.member_service.set_audit_service(Arc::clone(&audit));
-        self.audit_service = Some(audit);
     }
 
     /// Inject the brute-force protection service for room password rate limiting.
@@ -787,28 +846,6 @@ impl RoomService {
         service: Arc<dyn crate::service::auth::BruteForceProtectionService>,
     ) {
         self.brute_force_service = Some(service);
-    }
-
-    /// Inject credential encryption into the inner media service so provider
-    /// source_config preparation and validation use the same encryption stack
-    /// as the repositories.
-    pub fn set_media_credential_encryption(
-        &mut self,
-        encryption: crate::service::CredentialEncryption,
-    ) {
-        self.media_service
-            .set_credential_encryption(encryption.clone());
-        self.playlist_service.set_credential_encryption(encryption);
-    }
-
-    /// Inject credential repository into the media service so dynamic provider
-    /// playlists can resolve stored credentials.
-    pub fn set_media_credential_repo(
-        &mut self,
-        repo: std::sync::Arc<crate::repository::UserProviderCredentialRepository>,
-    ) {
-        self.media_service.set_credential_repo(repo.clone());
-        self.playlist_service.set_credential_repo(repo);
     }
 
     #[cfg(test)]
@@ -849,15 +886,6 @@ impl RoomService {
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
     pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
         self.settings_registry = Some(registry);
-    }
-
-    /// Inject the user notification service for sending admin notifications
-    /// (e.g., when a room is created with Pending status and needs review).
-    pub fn set_user_notification_service(
-        &mut self,
-        service: Arc<crate::service::UserNotificationService>,
-    ) {
-        self.user_notification_service = Some(service);
     }
 
     /// Override the password hasher (e.g. inject `TestPasswordHasher` in tests).
@@ -4317,6 +4345,30 @@ impl RoomService {
     ) -> Result<RoomPlaybackState> {
         self.playback_service
             .admin_reset(room_id, actor.user_id().clone())
+            .await
+    }
+
+    /// Patch playback from the management plane, bypassing room membership permissions.
+    ///
+    /// Only global admin/root identities may use this path.
+    pub async fn admin_update_playback_as(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        playing: Option<bool>,
+        current_time: Option<f64>,
+        speed: Option<f64>,
+        expected_version: Option<i64>,
+    ) -> Result<RoomPlaybackState> {
+        self.playback_service
+            .admin_update_multiple_with_version(
+                room_id,
+                actor.user_id().clone(),
+                playing,
+                current_time,
+                speed,
+                expected_version,
+            )
             .await
     }
 

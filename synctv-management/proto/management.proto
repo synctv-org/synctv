@@ -17,7 +17,6 @@ service ManagementService {
     // =========================
     rpc ListUsers(ListUsersRequest) returns (synctv.admin.ListUsersResponse);
     rpc GetUser(GetUserRequest) returns (synctv.admin.GetUserResponse);
-    rpc GetUserByUsername(GetUserByUsernameRequest) returns (synctv.admin.GetUserResponse);
     rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AddAdminResponse);
     rpc RemoveAdmin(RemoveAdminRequest) returns (synctv.admin.RemoveAdminResponse);
     rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
@@ -37,6 +36,9 @@ service ManagementService {
     rpc ListRooms(ListRoomsRequest) returns (synctv.admin.ListRoomsResponse);
     rpc GetRoom(GetRoomRequest) returns (synctv.admin.GetRoomResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
+    rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
+    rpc ApproveMember(ApproveMemberRequest) returns (synctv.client.ApproveMemberResponse);
+    rpc RejectMember(RejectMemberRequest) returns (synctv.client.RejectMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc BanMember(BanMemberRequest) returns (synctv.client.BanMemberResponse);
@@ -55,11 +57,13 @@ service ManagementService {
     rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
     rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
+    rpc UpdatePlayback(UpdatePlaybackRequest) returns (synctv.client.GetPlaybackResponse);
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
     rpc AlistLogin(AlistLoginRequest) returns (synctv.provider.alist.LoginResponse);
     rpc AlistList(AlistListRequest) returns (synctv.provider.alist.ListResponse);
+    rpc AlistSearch(AlistSearchRequest) returns (synctv.provider.alist.SearchResponse);
     rpc AlistGetMe(AlistGetMeRequest) returns (synctv.provider.alist.GetMeResponse);
     rpc AlistLogout(AlistLogoutRequest) returns (synctv.provider.alist.LogoutResponse);
     rpc AlistGetBinds(AlistGetBindsRequest) returns (synctv.provider.alist.GetBindsResponse);
@@ -240,20 +244,23 @@ message ListUsersRequest {
     SortDirection sort_direction = 7;
 }
 
-message GetUserRequest {
-    string user_id = 1;
+message UserRef {
+    oneof value {
+        string user_id = 1;
+        string username = 2;
+    }
 }
 
-message GetUserByUsernameRequest {
-    string username = 1;
+message GetUserRequest {
+    UserRef user = 1;
 }
 
 message AddAdminRequest {
-    string user_id = 1;
+    UserRef user = 1;
 }
 
 message RemoveAdminRequest {
-    string user_id = 1;
+    UserRef user = 1;
 }
 
 message ListAdminsRequest {
@@ -273,40 +280,40 @@ message CreateUserRequest {
 }
 
 message DeleteUserRequest {
-    string user_id = 1;
+    UserRef user = 1;
 }
 
 message BanUserRequest {
-    string user_id = 1;
+    UserRef user = 1;
     string reason = 2;
 }
 
 message UnbanUserRequest {
-    string user_id = 1;
+    UserRef user = 1;
 }
 
 message ApproveUserRequest {
-    string user_id = 1;
+    UserRef user = 1;
 }
 
 message UpdateUserRoleRequest {
-    string user_id = 1;
+    UserRef user = 1;
     UserRole role = 2;
 }
 
 message UpdateUserPasswordRequest {
-    string user_id = 1;
+    UserRef user = 1;
     string new_password = 2;
     string reason = 3;
 }
 
 message UpdateUserUsernameRequest {
-    string user_id = 1;
+    UserRef user = 1;
     string new_username = 2;
 }
 
 message GetUserRoomsRequest {
-    string user_id = 1;
+    UserRef user = 1;
     int32 page = 2;
     int32 page_size = 3;
     RoomStatus status = 4;
@@ -317,16 +324,16 @@ message GetUserRoomsRequest {
 }
 
 message BatchBanUsersRequest {
-    repeated string user_ids = 1;
+    repeated UserRef users = 1;
     string reason = 2;
 }
 
 message BatchDeleteUsersRequest {
-    repeated string user_ids = 1;
+    repeated UserRef users = 1;
 }
 
 message CreateRoomRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     string name = 2;
     string password = 3;
     bytes settings_json = 4;
@@ -338,7 +345,7 @@ message ListRoomsRequest {
     int32 page_size = 2;
     RoomStatus status = 3;
     string search = 4;
-    string creator_id = 5;
+    UserRef creator = 5;
     optional bool is_banned = 6;
     RoomListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
@@ -361,13 +368,31 @@ message GetRoomMembersRequest {
 
 message TransferRoomOwnershipRequest {
     string room_id = 1;
-    string actor_user_id = 2;
-    string new_owner_user_id = 3;
+    UserRef actor = 2;
+    UserRef new_owner = 3;
+}
+
+message AddMemberRequest {
+    string room_id = 1;
+    UserRef user = 2;
+    synctv.common.RoomMemberRole role = 3;
+    bool notify = 4;
+}
+
+message ApproveMemberRequest {
+    string room_id = 1;
+    UserRef user = 2;
+}
+
+message RejectMemberRequest {
+    string room_id = 1;
+    UserRef user = 2;
+    string reason = 3;
 }
 
 message UpdateMemberPermissionsRequest {
     string room_id = 1;
-    string user_id = 2;
+    UserRef user = 2;
     synctv.common.RoomMemberRole role = 3;
     uint64 added_permissions = 4;
     uint64 removed_permissions = 5;
@@ -377,18 +402,18 @@ message UpdateMemberPermissionsRequest {
 
 message KickMemberRequest {
     string room_id = 1;
-    string user_id = 2;
+    UserRef user = 2;
 }
 
 message BanMemberRequest {
     string room_id = 1;
-    string user_id = 2;
+    UserRef user = 2;
     string reason = 3;
 }
 
 message UnbanMemberRequest {
     string room_id = 1;
-    string user_id = 2;
+    UserRef user = 2;
 }
 
 message GetRoomSettingsRequest {
@@ -452,8 +477,16 @@ message GetPlaybackRequest {
     synctv.client.PlaybackClientProfile playback_client_profile = 2;
 }
 
+message UpdatePlaybackRequest {
+    string room_id = 1;
+    synctv.client.PlaybackPatchState state = 2;
+    optional double position = 3;
+    optional double speed = 4;
+    optional int64 version = 5;
+}
+
 message CreatePublishKeyRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     string room_id = 2;
     string media_id = 3;
 }
@@ -491,7 +524,7 @@ message GetPlaylistRequest {
 }
 
 message CreatePlaylistRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     string room_id = 2;
     string name = 3;
     string parent_id = 4;
@@ -532,10 +565,11 @@ message ListMediaRequest {
     string provider_instance_name = 8;
     MediaListSortBy sort_by = 9;
     SortDirection sort_direction = 10;
+    bool refresh = 11;
 }
 
 message AddMediaRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     string room_id = 2;
     string playlist_id = 3;
     string provider = 4;
@@ -545,7 +579,7 @@ message AddMediaRequest {
 }
 
 message AddDirectUrlMediaRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     string room_id = 2;
     string url = 3;
     string playlist_id = 4;
@@ -577,97 +611,102 @@ message DeleteMediaRequest {
 }
 
 message AlistLoginRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.alist.LoginRequest request = 2;
 }
 
 message AlistListRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.alist.ListRequest request = 2;
 }
 
+message AlistSearchRequest {
+    UserRef actor = 1;
+    synctv.provider.alist.SearchRequest request = 2;
+}
+
 message AlistGetMeRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.alist.GetMeRequest request = 2;
 }
 
 message AlistLogoutRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.alist.LogoutRequest request = 2;
 }
 
 message AlistGetBindsRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.alist.GetBindsRequest request = 2;
 }
 
 message EmbyLoginRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.emby.LoginRequest request = 2;
 }
 
 message EmbyListRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.emby.ListRequest request = 2;
 }
 
 message EmbyGetMeRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.emby.GetMeRequest request = 2;
 }
 
 message EmbyLogoutRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.emby.LogoutRequest request = 2;
 }
 
 message EmbyGetBindsRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.emby.GetBindsRequest request = 2;
 }
 
 message BilibiliParseRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.ParseRequest request = 2;
 }
 
 message BilibiliLoginQrRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.LoginQRRequest request = 2;
 }
 
 message BilibiliCheckQrRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.CheckQRRequest request = 2;
 }
 
 message BilibiliGetCaptchaRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.GetCaptchaRequest request = 2;
 }
 
 message BilibiliSendSmsRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.SendSMSRequest request = 2;
 }
 
 message BilibiliLoginSmsRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.LoginSMSRequest request = 2;
 }
 
 message BilibiliGetUserInfoRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.UserInfoRequest request = 2;
 }
 
 message BilibiliLogoutRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.LogoutRequest request = 2;
 }
 
 message BilibiliGetBindsRequest {
-    string actor_user_id = 1;
+    UserRef actor = 1;
     synctv.provider.bilibili.GetBindsRequest request = 2;
 }
 
@@ -692,7 +731,7 @@ message ListActiveStreamsRequest {
     int32 page = 1;
     int32 page_size = 2;
     string room_id = 3;
-    string user_id = 4;
+    UserRef user = 4;
     string node_id = 5;
     string search = 6;
     ActiveStreamListSortBy sort_by = 7;

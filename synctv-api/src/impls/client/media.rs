@@ -10,6 +10,7 @@ use synctv_core::models::{
     PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
     UserId,
 };
+use synctv_core::provider::DynamicListQuery;
 use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
 use synctv_core::service::room::DeleteEntriesRequest as CoreDeleteEntriesRequest;
@@ -314,7 +315,7 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn normalize_non_empty_filter(value: &str) -> Option<String> {
+pub(crate) fn normalize_non_empty_filter(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
@@ -377,12 +378,6 @@ pub(crate) fn validate_dynamic_playlist_query_support(
         if playlist.provider_instance_name.as_deref() != Some(provider_instance_name.as_str()) {
             return Ok(false);
         }
-    }
-
-    if normalize_non_empty_filter(&req.search).is_some() {
-        return Err(ApiError::InvalidInput(
-            "dynamic playlist browsing does not support search yet".to_string(),
-        ));
     }
 
     let sort_by = crate::proto::client::MediaListSortBy::try_from(req.sort_by)
@@ -1172,8 +1167,12 @@ impl ClientApiImpl {
                     uid.clone(),
                     &playlist_id,
                     (!req.target.is_empty()).then_some(req.target.as_slice()),
-                    page,
-                    page_size,
+                    DynamicListQuery {
+                        page,
+                        page_size,
+                        search: normalize_non_empty_filter(&req.search),
+                        refresh: req.refresh,
+                    },
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -1688,9 +1687,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_dynamic_playlist_query_support_rejects_search() {
+    fn test_validate_dynamic_playlist_query_support_allows_search() {
         let playlist = make_playlist("Dynamic Folder", Some("alist"), Some("alist-main"));
-        let err = validate_dynamic_playlist_query_support(
+        let supported = validate_dynamic_playlist_query_support(
             &playlist,
             &crate::proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist.id.as_str().to_string(),
@@ -1703,11 +1702,12 @@ mod tests {
                 sort_by: crate::proto::client::MediaListSortBy::Position as i32,
                 sort_direction: crate::proto::client::SortDirection::Asc as i32,
                 availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
             },
         )
-        .unwrap_err();
+        .expect("dynamic playlist search should be supported");
 
-        assert!(err.to_string().contains("does not support search"));
+        assert!(supported);
     }
 
     #[test]

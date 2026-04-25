@@ -316,8 +316,10 @@ pub struct GetBindsResponse {
 pub struct BindInfo {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub server_id: ::prost::alloc::string::String,
     /// Unix epoch timestamp
-    #[prost(int64, tag = "2")]
+    #[prost(int64, tag = "3")]
     pub created_at: i64,
 }
 /// QR login status enum

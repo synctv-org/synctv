@@ -139,5 +139,6 @@ message GetBindsResponse {
 // Saved credential information
 message BindInfo {
   string id = 1;
-  int64 created_at = 2; // Unix epoch timestamp
+  string server_id = 2;
+  int64 created_at = 3; // Unix epoch timestamp
 }

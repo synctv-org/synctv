@@ -46,6 +46,31 @@ message ListResponse {
   uint64 total = 2;
 }
 
+// Search files and directories under a stored Alist credential.
+message SearchRequest {
+  string server_id = 1; // Stored credential identifier
+  string parent = 2; // Directory path to search under
+  string keywords = 3;
+  uint64 scope = 4; // 0: all, 1: directories, 2: files
+  uint64 page = 5;
+  uint64 per_page = 6;
+  string password = 7; // Directory password (optional)
+  string instance_name = 8; // Optional provider instance name
+}
+
+message SearchResponse {
+  repeated SearchItem content = 1;
+  uint64 total = 2;
+}
+
+message SearchItem {
+  string parent = 1;
+  string name = 2;
+  bool is_dir = 3;
+  uint64 size = 4;
+  uint64 type = 5;
+}
+
 // File/directory item
 message FileItem {
   string name = 1;
@@ -93,7 +118,8 @@ message GetBindsResponse {
 // Saved credential information
 message BindInfo {
   string id = 1;
-  string host = 2;
-  string username = 3;
-  int64 created_at = 4; // Unix epoch timestamp
+  string server_id = 2;
+  string host = 3;
+  string username = 4;
+  int64 created_at = 5; // Unix epoch timestamp
 }

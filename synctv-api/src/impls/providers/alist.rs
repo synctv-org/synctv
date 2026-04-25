@@ -5,7 +5,8 @@
 
 use crate::proto::providers::alist::{
     BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchItem, SearchRequest,
+    SearchResponse,
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserProviderCredential};
@@ -343,6 +344,76 @@ impl AlistApiImpl {
         })
     }
 
+    /// Search Alist files and directories using stored credential.
+    pub async fn search(
+        &self,
+        caller_user_id: &str,
+        req: SearchRequest,
+        requested_instance_name: Option<&str>,
+    ) -> Result<SearchResponse, synctv_core::provider::ProviderError> {
+        self.search_with_context(caller_user_id, req, requested_instance_name, None)
+            .await
+    }
+
+    pub async fn search_with_context(
+        &self,
+        caller_user_id: &str,
+        req: SearchRequest,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<SearchResponse, synctv_core::provider::ProviderError> {
+        if req.keywords.trim().is_empty() {
+            return Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Alist search keywords must not be empty".to_string(),
+            ));
+        }
+
+        let (host, token, credential_instance_name) = self
+            .resolve_credentials(caller_user_id, &req.server_id, request_context)
+            .await?;
+        let effective_instance_name = resolve_bound_instance_name(
+            requested_instance_name,
+            credential_instance_name.as_deref(),
+        )?;
+
+        let search_req = synctv_media_providers::grpc::alist::FsSearchReq {
+            host,
+            token,
+            parent: req.parent,
+            keywords: req.keywords,
+            scope: req.scope,
+            page: req.page.max(1),
+            per_page: req.per_page.max(1),
+            password: req.password,
+        };
+
+        let resp = self
+            .provider
+            .fs_search_with_context(
+                search_req,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+
+        let content = resp
+            .content
+            .into_iter()
+            .map(|item| SearchItem {
+                parent: item.parent,
+                name: item.name,
+                is_dir: item.is_dir,
+                size: item.size,
+                r#type: item.r#type,
+            })
+            .collect();
+
+        Ok(SearchResponse {
+            content,
+            total: resp.total,
+        })
+    }
+
     /// Get Alist user info using stored credential
     pub async fn get_me(
         &self,
@@ -445,6 +516,7 @@ impl AlistApiImpl {
         .into_iter()
         .map(|bind| BindInfo {
             id: bind.id,
+            server_id: bind.server_id,
             host: bind.host,
             username: bind.label_value,
             created_at: bind.created_at,

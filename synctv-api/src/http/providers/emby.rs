@@ -80,7 +80,7 @@ fn build_thumbnail_proxy_action(
     api_key: &str,
     max_height: u32,
     max_width: u32,
-) -> ProxyAction {
+) -> Result<ProxyAction, AppError> {
     let thumbnail_path = if max_width > 0 {
         format!(
             "/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90"
@@ -89,13 +89,16 @@ fn build_thumbnail_proxy_action(
         format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90")
     };
 
-    ProxyAction::FetchAndForward {
-        url: format!("{}{}", host.trim_end_matches('/'), thumbnail_path),
+    let url = synctv_core::provider::emby::emby_server_url(host, &thumbnail_path)
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    Ok(ProxyAction::FetchAndForward {
+        url,
         headers: std::collections::HashMap::from([(
             "X-Emby-Token".to_string(),
             api_key.to_string(),
         )]),
-    }
+    })
 }
 
 fn build_thumbnail_proxy_action_from_credential(
@@ -109,13 +112,9 @@ fn build_thumbnail_proxy_action_from_credential(
     }
 
     match credential {
-        ProviderCredential::Emby { host, api_key, .. } => Ok(build_thumbnail_proxy_action(
-            item_id.trim(),
-            host,
-            api_key,
-            max_height,
-            max_width,
-        )),
+        ProviderCredential::Emby { host, api_key, .. } => {
+            build_thumbnail_proxy_action(item_id.trim(), host, api_key, max_height, max_width)
+        }
         _ => Err(AppError::internal(
             "Stored credential is not an Emby credential".to_string(),
         )),

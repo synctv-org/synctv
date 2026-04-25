@@ -282,6 +282,7 @@ pub mod error_codes {
     pub const ALREADY_EXISTS: i32 = 2001;
     /// System resource exhausted (backpressure/overload protection)
     pub const RESOURCE_EXHAUSTED: i32 = 2002;
+    pub const CONFLICT: i32 = 2003;
 
     // Validation errors (3xxx)
     pub const INVALID_ARGUMENT: i32 = 3000;
@@ -312,6 +313,7 @@ pub enum ErrorKind {
     Unauthenticated,
     PermissionDenied,
     AlreadyExists,
+    Conflict,
     InvalidArgument,
     RateLimited,
     ServiceUnavailable,
@@ -328,6 +330,7 @@ impl ErrorKind {
             Self::Unauthenticated => error_codes::UNAUTHENTICATED,
             Self::PermissionDenied => error_codes::PERMISSION_DENIED,
             Self::AlreadyExists => error_codes::ALREADY_EXISTS,
+            Self::Conflict => error_codes::CONFLICT,
             Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
             Self::RateLimited => error_codes::RESOURCE_EXHAUSTED,
             Self::ServiceUnavailable => error_codes::SERVICE_UNAVAILABLE,
@@ -349,6 +352,7 @@ pub enum ApiError {
     Authentication(String),
     Authorization(String),
     AlreadyExists(String),
+    Conflict(String),
     InvalidInput(String),
     RateLimited(String),
     RateLimitedWithRetry {
@@ -370,6 +374,10 @@ impl From<synctv_core::Error> for ApiError {
             ),
             synctv_core::Error::Authorization(msg) => Self::Authorization(msg),
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
+            synctv_core::Error::OptimisticLockConflict => {
+                Self::Conflict("Resource modified concurrently".to_string())
+            }
+            synctv_core::Error::LockConflict(msg) => Self::Conflict(msg),
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
             synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),
@@ -462,6 +470,7 @@ impl ApiError {
             Self::Authentication(_) => ErrorKind::Unauthenticated,
             Self::Authorization(_) => ErrorKind::PermissionDenied,
             Self::AlreadyExists(_) => ErrorKind::AlreadyExists,
+            Self::Conflict(_) => ErrorKind::Conflict,
             Self::InvalidInput(_) => ErrorKind::InvalidArgument,
             Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
             Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
@@ -478,6 +487,7 @@ impl ApiError {
             | Self::Authentication(msg)
             | Self::Authorization(msg)
             | Self::AlreadyExists(msg)
+            | Self::Conflict(msg)
             | Self::InvalidInput(msg)
             | Self::RateLimited(msg)
             | Self::ServiceUnavailable(msg)
@@ -585,6 +595,7 @@ impl From<String> for ApiError {
             ErrorKind::Unauthenticated => Self::Authentication(msg),
             ErrorKind::PermissionDenied => Self::Authorization(msg),
             ErrorKind::AlreadyExists => Self::AlreadyExists(msg),
+            ErrorKind::Conflict => Self::Conflict(msg),
             ErrorKind::InvalidArgument => Self::InvalidInput(msg),
             ErrorKind::RateLimited => Self::RateLimited(msg),
             ErrorKind::ServiceUnavailable => Self::ServiceUnavailable(msg),
@@ -662,6 +673,11 @@ pub fn classify_error(err: &str) -> ErrorKind {
         || lower.contains("already registered")
     {
         ErrorKind::AlreadyExists
+    } else if lower.contains("optimistic lock conflict")
+        || lower.contains("modified concurrently")
+        || lower.contains("lock conflict")
+    {
+        ErrorKind::Conflict
     } else if lower.contains("room at capacity")
         || lower.contains("user at capacity")
         || lower.contains("server at capacity")
@@ -707,6 +723,10 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::PermissionDenied)
     } else if err.starts_with("Already exists: ") {
         Some(ErrorKind::AlreadyExists)
+    } else if err.starts_with("Optimistic lock conflict")
+        || err.starts_with("Distributed lock conflict: ")
+    {
+        Some(ErrorKind::Conflict)
     } else if err.starts_with("Invalid input: ") {
         Some(ErrorKind::InvalidArgument)
     } else if err.starts_with("Rate limited: ") {

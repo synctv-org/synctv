@@ -3,7 +3,7 @@
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use synctv_core::models::{PlaylistId, UserId};
+use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
 
 use super::convert::{
@@ -20,11 +20,13 @@ use crate::impls::playback_snapshot::{
 use crate::impls::ApiError;
 use synctv_core::models::MediaId;
 
-fn providers_manager_unavailable_error() -> ApiError {
+pub(super) fn providers_manager_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Playback providers are not available on this server.".to_string())
 }
 
-fn static_media_source_provider(media: &synctv_core::models::Media) -> Result<&str, ApiError> {
+pub(super) fn static_media_source_provider(
+    media: &synctv_core::models::Media,
+) -> Result<&str, ApiError> {
     let source_provider = media.source_provider.trim();
     if source_provider.is_empty() {
         return Err(ApiError::Internal(format!(
@@ -56,6 +58,16 @@ pub(crate) enum PlaybackUpdateCommand {
         speed: Option<f64>,
         version: Option<i64>,
     },
+}
+
+struct DynamicPlaylistPlaybackRequest<'a> {
+    room_id: &'a synctv_core::models::RoomId,
+    user_id: &'a UserId,
+    playlist_id: &'a PlaylistId,
+    target: &'a [u8],
+    state: Option<&'a RoomPlaybackState>,
+    playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
+    request_control: Option<&'a ExecutionControl>,
 }
 
 pub(crate) fn build_start_playback_request(
@@ -141,7 +153,7 @@ pub(crate) fn build_update_playback_request(
 }
 
 impl ClientApiImpl {
-    fn build_provider_context<'a>(
+    pub(super) fn build_provider_context<'a>(
         &'a self,
         user_id: &'a str,
         credential_owner_id: Option<&'a str>,
@@ -176,7 +188,7 @@ impl ClientApiImpl {
         ctx
     }
 
-    fn attach_provider_store<'a>(
+    pub(super) fn attach_provider_store<'a>(
         &self,
         ctx: ProviderContext<'a>,
         provider: &dyn synctv_core::provider::MediaProvider,
@@ -235,6 +247,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         media: synctv_core::models::Media,
+        state: Option<&RoomPlaybackState>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
@@ -283,6 +296,23 @@ impl ClientApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
+        if let Some(state) = state {
+            self.register_provider_playback_session(
+                super::playback_lifecycle::ProviderPlaybackRegistration {
+                    state,
+                    provider: provider.as_ref(),
+                    provider_name: media.source_provider.as_str(),
+                    provider_instance_name: media.provider_instance_name.as_deref(),
+                    credential_owner_id: media
+                        .creator_id
+                        .as_ref()
+                        .map(synctv_core::models::UserId::as_str),
+                    source_config: &media.source_config,
+                    result: &provider_result,
+                },
+            )
+            .await;
+        }
         let default_mode_expires_at = provider_result
             .playback_infos
             .get(&provider_result.default_mode)
@@ -331,13 +361,17 @@ impl ClientApiImpl {
 
     async fn build_dynamic_playlist_playback_result(
         &self,
-        room_id_model: &synctv_core::models::RoomId,
-        user_id_model: &UserId,
-        playlist_id: &PlaylistId,
-        target: &[u8],
-        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-        request_control: Option<&ExecutionControl>,
+        request: DynamicPlaylistPlaybackRequest<'_>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        let DynamicPlaylistPlaybackRequest {
+            room_id,
+            user_id,
+            playlist_id,
+            target,
+            state,
+            playback_client_profile,
+            request_control,
+        } = request;
         let playlist = self
             .room_service
             .playlist_service()
@@ -353,12 +387,7 @@ impl ClientApiImpl {
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(
-                room_id_model.clone(),
-                user_id_model.clone(),
-                playlist_id,
-                target,
-            )
+            .resolve_dynamic_playlist_item(room_id.clone(), user_id.clone(), playlist_id, target)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -386,12 +415,12 @@ impl ClientApiImpl {
 
         let ctx = self.attach_provider_store(
             self.build_provider_context(
-                user_id_model.as_str(),
+                user_id.as_str(),
                 playlist
                     .creator_id
                     .as_ref()
                     .map(synctv_core::models::UserId::as_str),
-                room_id_model.as_str(),
+                room_id.as_str(),
                 playlist.provider_instance_name.as_deref(),
                 playback_client_profile,
                 request_control,
@@ -402,10 +431,27 @@ impl ClientApiImpl {
             .generate_playback(&ctx, &item.source_config)
             .await
             .map_err(ApiError::from)?;
+        if let Some(state) = state {
+            self.register_provider_playback_session(
+                super::playback_lifecycle::ProviderPlaybackRegistration {
+                    state,
+                    provider: provider.as_ref(),
+                    provider_name,
+                    provider_instance_name: playlist.provider_instance_name.as_deref(),
+                    credential_owner_id: playlist
+                        .creator_id
+                        .as_ref()
+                        .map(synctv_core::models::UserId::as_str),
+                    source_config: &item.source_config,
+                    result: &provider_result,
+                },
+            )
+            .await;
+        }
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             Some(playlist_id.clone()),
-            room_id_model.clone(),
+            room_id.clone(),
             item.name.clone(),
             0.0,
         )
@@ -453,6 +499,7 @@ impl ClientApiImpl {
                     user_id.as_str(),
                     room_id.as_str(),
                     media,
+                    Some(state),
                     playback_client_profile,
                     request_control,
                 )
@@ -461,14 +508,15 @@ impl ClientApiImpl {
 
         if let Some(ref playlist_id) = state.playing_playlist_id {
             return self
-                .build_dynamic_playlist_playback_result(
+                .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
                     room_id,
                     user_id,
                     playlist_id,
-                    &state.target,
+                    target: &state.target,
+                    state: Some(state),
                     playback_client_profile,
                     request_control,
-                )
+                })
                 .await;
         }
 
@@ -591,8 +639,10 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let target = build_start_playback_request(req)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
             .switch(
                 rid.clone(),
@@ -603,6 +653,8 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         // Touch room activity to prevent TTL expiry on active rooms
         self.room_service.touch_room_activity(rid).await;
@@ -620,13 +672,17 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
             .reset(rid.clone(), uid.clone())
             .await
             .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         // Broadcast PlaybackStateChanged via WebSocket
         // (handled by room_service internally)
@@ -720,39 +776,40 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
         let command = build_update_playback_request(req)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
-        match command {
+        let state = match command {
             PlaybackUpdateCommand::Switch {
                 media_id,
                 playlist_id,
                 target,
-            } => {
-                self.room_service
-                    .playback_service()
-                    .switch(rid.clone(), uid.clone(), media_id, playlist_id, target)
-                    .await
-                    .map_err(ApiError::from)?;
-            }
+            } => self
+                .room_service
+                .playback_service()
+                .switch(rid.clone(), uid.clone(), media_id, playlist_id, target)
+                .await
+                .map_err(ApiError::from)?,
             PlaybackUpdateCommand::Patch {
                 playing,
                 position,
                 speed,
                 version,
-            } => {
-                self.room_service
-                    .playback_service()
-                    .update_multiple_with_version(
-                        rid.clone(),
-                        uid.clone(),
-                        playing,
-                        position,
-                        speed,
-                        version,
-                    )
-                    .await
-                    .map_err(ApiError::from)?;
-            }
-        }
+            } => self
+                .room_service
+                .playback_service()
+                .update_multiple_with_version(
+                    rid.clone(),
+                    uid.clone(),
+                    playing,
+                    position,
+                    speed,
+                    version,
+                )
+                .await
+                .map_err(ApiError::from)?,
+        };
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         self.get_playback(
             user_id,
@@ -770,13 +827,17 @@ impl ClientApiImpl {
     pub async fn handle_play_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
-            .set_playing(rid, uid, true)
+            .set_playing(rid.clone(), uid, true)
             .await
             .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -786,13 +847,17 @@ impl ClientApiImpl {
     pub async fn handle_pause_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
-            .set_playing(rid, uid, false)
+            .set_playing(rid.clone(), uid, false)
             .await
             .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -827,6 +892,13 @@ impl ClientApiImpl {
                 "Seek command returned degraded response"
             );
         }
+        self.report_provider_progress_for_state(
+            &response.state,
+            response.state.current_time,
+            !response.state.is_playing,
+            true,
+        )
+        .await;
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -841,13 +913,17 @@ impl ClientApiImpl {
     ) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
+        let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
-            .change_speed(rid, uid, speed)
+            .change_speed(rid.clone(), uid, speed)
             .await
             .map_err(ApiError::from)?;
+        self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+            .await;
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -897,6 +973,25 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
         self.playback_snapshot_version_from_state(user_id, room_id, state)
             .await
             .map(Some)
+    }
+
+    async fn handle_provider_lifecycle_transition(
+        &self,
+        previous: Option<&synctv_core::models::RoomPlaybackState>,
+        current: &synctv_core::models::RoomPlaybackState,
+    ) {
+        ClientApiImpl::handle_provider_lifecycle_transition(self, previous, current).await;
+    }
+
+    async fn report_provider_playback_progress(
+        &self,
+        state: &synctv_core::models::RoomPlaybackState,
+        position: f64,
+        is_paused: bool,
+        force: bool,
+    ) {
+        self.report_provider_progress_for_state(state, position, is_paused, force)
+            .await;
     }
 }
 

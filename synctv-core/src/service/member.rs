@@ -196,14 +196,32 @@ impl MemberService {
         }
     }
 
+    /// Create a member service with optional collaborators wired at construction time.
+    #[must_use]
+    pub fn new_with_runtime(
+        member_repo: RoomMemberRepository,
+        room_repo: RoomRepository,
+        room_settings_repo: Option<RoomSettingsRepository>,
+        permission_service: PermissionService,
+        audit_service: Option<Arc<AuditService>>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+        notification_service: NotificationService,
+    ) -> Self {
+        Self {
+            member_repo,
+            room_repo,
+            room_settings_repo,
+            permission_service,
+            audit_service,
+            cache_invalidation,
+            notification_service,
+            event_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+        }
+    }
+
     /// Set the room settings repository
     pub fn set_room_settings_repo(&mut self, repo: RoomSettingsRepository) {
         self.room_settings_repo = Some(repo);
-    }
-
-    /// Inject the audit service for security-sensitive operation logging
-    pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
-        self.audit_service = Some(audit);
     }
 
     /// Set the cache invalidation service for cross-replica permission cache sync

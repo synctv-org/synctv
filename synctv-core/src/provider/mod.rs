@@ -245,6 +245,27 @@ pub fn sign_playback_urls(
     user_id: &str,
     expires_at: i64,
 ) {
+    if provider_name == "alist"
+        && result
+            .metadata
+            .get("thumbnail")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|thumbnail| !thumbnail.trim().is_empty())
+    {
+        result.metadata.insert(
+            "thumbnail".to_string(),
+            serde_json::json!(crate::service::proxy_signature::build_signed_proxy_url(
+                provider_name,
+                version,
+                "thumbnail",
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            )),
+        );
+    }
+
     let default_mode = result.default_mode.clone();
     for (mode_name, info) in &mut result.playback_infos {
         if info.urls.is_empty() {

@@ -533,6 +533,7 @@ impl BilibiliApiImpl {
         .filter(|credential| credential.server_id == server_id)
         .map(|credential| BindInfo {
             id: credential.id,
+            server_id: credential.server_id,
             created_at: credential.created_at.timestamp(),
         })
         .collect();

@@ -19,27 +19,38 @@ pub struct ListUsersRequest {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetUserRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+pub struct UserRef {
+    #[prost(oneof = "user_ref::Value", tags = "1, 2")]
+    pub value: ::core::option::Option<user_ref::Value>,
+}
+/// Nested message and enum types in `UserRef`.
+pub mod user_ref {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(string, tag = "1")]
+        UserId(::prost::alloc::string::String),
+        #[prost(string, tag = "2")]
+        Username(::prost::alloc::string::String),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetUserByUsernameRequest {
-    #[prost(string, tag = "1")]
-    pub username: ::prost::alloc::string::String,
+pub struct GetUserRequest {
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddAdminRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveAdminRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -72,42 +83,42 @@ pub struct CreateUserRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteUserRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanUserRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnbanUserRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApproveUserRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserRoleRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(enumeration = "UserRole", tag = "2")]
     pub role: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -116,16 +127,16 @@ pub struct UpdateUserPasswordRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserUsernameRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub new_username: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetUserRoomsRequest {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(int32, tag = "2")]
     pub page: i32,
     #[prost(int32, tag = "3")]
@@ -142,24 +153,24 @@ pub struct GetUserRoomsRequest {
     pub sort_direction: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchBanUsersRequest {
-    #[prost(string, repeated, tag = "1")]
-    pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "1")]
+    pub users: ::prost::alloc::vec::Vec<UserRef>,
     #[prost(string, tag = "2")]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchDeleteUsersRequest {
-    #[prost(string, repeated, tag = "1")]
-    pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "1")]
+    pub users: ::prost::alloc::vec::Vec<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateRoomRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -180,8 +191,8 @@ pub struct ListRoomsRequest {
     pub status: i32,
     #[prost(string, tag = "4")]
     pub search: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub creator_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub creator: ::core::option::Option<UserRef>,
     #[prost(bool, optional, tag = "6")]
     pub is_banned: ::core::option::Option<bool>,
     #[prost(enumeration = "RoomListSortBy", tag = "7")]
@@ -220,18 +231,48 @@ pub struct GetRoomMembersRequest {
 pub struct TransferRoomOwnershipRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub actor: ::core::option::Option<UserRef>,
+    #[prost(message, optional, tag = "3")]
+    pub new_owner: ::core::option::Option<UserRef>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AddMemberRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
+    #[prost(enumeration = "::synctv_proto::common::RoomMemberRole", tag = "3")]
+    pub role: i32,
+    #[prost(bool, tag = "4")]
+    pub notify: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveMemberRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectMemberRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "3")]
-    pub new_owner_user_id: ::prost::alloc::string::String,
+    pub reason: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateMemberPermissionsRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(enumeration = "::synctv_proto::common::RoomMemberRole", tag = "3")]
     pub role: i32,
     #[prost(uint64, tag = "4")]
@@ -248,16 +289,16 @@ pub struct UpdateMemberPermissionsRequest {
 pub struct KickMemberRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BanMemberRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "3")]
     pub reason: ::prost::alloc::string::String,
 }
@@ -266,8 +307,8 @@ pub struct BanMemberRequest {
 pub struct UnbanMemberRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<UserRef>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -368,10 +409,24 @@ pub struct GetPlaybackRequest {
     >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdatePlaybackRequest {
+    #[prost(string, tag = "1")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "::synctv_proto::client::PlaybackPatchState", tag = "2")]
+    pub state: i32,
+    #[prost(double, optional, tag = "3")]
+    pub position: ::core::option::Option<f64>,
+    #[prost(double, optional, tag = "4")]
+    pub speed: ::core::option::Option<f64>,
+    #[prost(int64, optional, tag = "5")]
+    pub version: ::core::option::Option<i64>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePublishKeyRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -436,8 +491,8 @@ pub struct GetPlaylistRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreatePlaylistRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -515,12 +570,14 @@ pub struct ListMediaRequest {
     pub sort_by: i32,
     #[prost(enumeration = "SortDirection", tag = "10")]
     pub sort_direction: i32,
+    #[prost(bool, tag = "11")]
+    pub refresh: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddMediaRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -537,8 +594,8 @@ pub struct AddMediaRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddDirectUrlMediaRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(string, tag = "2")]
     pub room_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -598,40 +655,48 @@ pub struct DeleteMediaRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AlistLoginRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::alist::LoginRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AlistListRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::alist::ListRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AlistSearchRequest {
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
+    #[prost(message, optional, tag = "2")]
+    pub request: ::core::option::Option<::synctv_proto::providers::alist::SearchRequest>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AlistGetMeRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::alist::GetMeRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AlistLogoutRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::alist::LogoutRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AlistGetBindsRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::alist::GetBindsRequest,
@@ -640,40 +705,40 @@ pub struct AlistGetBindsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EmbyLoginRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::emby::LoginRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EmbyListRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::emby::ListRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EmbyGetMeRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::emby::GetMeRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EmbyLogoutRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<::synctv_proto::providers::emby::LogoutRequest>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EmbyGetBindsRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::emby::GetBindsRequest,
@@ -682,8 +747,8 @@ pub struct EmbyGetBindsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliParseRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::ParseRequest,
@@ -692,8 +757,8 @@ pub struct BilibiliParseRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliLoginQrRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::LoginQrRequest,
@@ -702,8 +767,8 @@ pub struct BilibiliLoginQrRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliCheckQrRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::CheckQrRequest,
@@ -712,8 +777,8 @@ pub struct BilibiliCheckQrRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliGetCaptchaRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::GetCaptchaRequest,
@@ -722,8 +787,8 @@ pub struct BilibiliGetCaptchaRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliSendSmsRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::SendSmsRequest,
@@ -732,8 +797,8 @@ pub struct BilibiliSendSmsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliLoginSmsRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::LoginSmsRequest,
@@ -742,8 +807,8 @@ pub struct BilibiliLoginSmsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliGetUserInfoRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::UserInfoRequest,
@@ -752,8 +817,8 @@ pub struct BilibiliGetUserInfoRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliLogoutRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::LogoutRequest,
@@ -762,8 +827,8 @@ pub struct BilibiliLogoutRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BilibiliGetBindsRequest {
-    #[prost(string, tag = "1")]
-    pub actor_user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "1")]
+    pub actor: ::core::option::Option<UserRef>,
     #[prost(message, optional, tag = "2")]
     pub request: ::core::option::Option<
         ::synctv_proto::providers::bilibili::GetBindsRequest,
@@ -807,8 +872,8 @@ pub struct ListActiveStreamsRequest {
     pub page_size: i32,
     #[prost(string, tag = "3")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub user: ::core::option::Option<UserRef>,
     #[prost(string, tag = "5")]
     pub node_id: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
@@ -1509,35 +1574,6 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn get_user_by_username(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetUserByUsernameRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::GetUserResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.management.ManagementService/GetUserByUsername",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "synctv.management.ManagementService",
-                        "GetUserByUsername",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn add_admin(
             &mut self,
             request: impl tonic::IntoRequest<super::AddAdminRequest>,
@@ -2023,6 +2059,90 @@ pub mod management_service_client {
                     GrpcMethod::new(
                         "synctv.management.ManagementService",
                         "GetRoomMembers",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn add_member(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AddMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::AddMemberResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AddMember",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AddMember"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_member(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApproveMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::ApproveMemberResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/ApproveMember",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "ApproveMember",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_member(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RejectMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RejectMemberResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/RejectMember",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "RejectMember",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -2525,6 +2645,35 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn update_playback(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdatePlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::GetPlaybackResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/UpdatePlayback",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "UpdatePlayback",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn create_publish_key(
             &mut self,
             request: impl tonic::IntoRequest<super::CreatePublishKeyRequest>,
@@ -2661,6 +2810,32 @@ pub mod management_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("synctv.management.ManagementService", "AlistList"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn alist_search(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AlistSearchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::SearchResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/AlistSearch",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.management.ManagementService", "AlistSearch"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -4020,13 +4195,6 @@ pub mod management_service_server {
             tonic::Response<::synctv_proto::admin::GetUserResponse>,
             tonic::Status,
         >;
-        async fn get_user_by_username(
-            &self,
-            request: tonic::Request<super::GetUserByUsernameRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::GetUserResponse>,
-            tonic::Status,
-        >;
         async fn add_admin(
             &self,
             request: tonic::Request<super::AddAdminRequest>,
@@ -4151,6 +4319,27 @@ pub mod management_service_server {
             request: tonic::Request<super::GetRoomMembersRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::admin::GetRoomMembersResponse>,
+            tonic::Status,
+        >;
+        async fn add_member(
+            &self,
+            request: tonic::Request<super::AddMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::AddMemberResponse>,
+            tonic::Status,
+        >;
+        async fn approve_member(
+            &self,
+            request: tonic::Request<super::ApproveMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::ApproveMemberResponse>,
+            tonic::Status,
+        >;
+        async fn reject_member(
+            &self,
+            request: tonic::Request<super::RejectMemberRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RejectMemberResponse>,
             tonic::Status,
         >;
         async fn update_member_permissions(
@@ -4279,6 +4468,13 @@ pub mod management_service_server {
             tonic::Response<::synctv_proto::client::GetPlaybackResponse>,
             tonic::Status,
         >;
+        async fn update_playback(
+            &self,
+            request: tonic::Request<super::UpdatePlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::GetPlaybackResponse>,
+            tonic::Status,
+        >;
         async fn create_publish_key(
             &self,
             request: tonic::Request<super::CreatePublishKeyRequest>,
@@ -4312,6 +4508,13 @@ pub mod management_service_server {
             request: tonic::Request<super::AlistListRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::providers::alist::ListResponse>,
+            tonic::Status,
+        >;
+        async fn alist_search(
+            &self,
+            request: tonic::Request<super::AlistSearchRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::providers::alist::SearchResponse>,
             tonic::Status,
         >;
         async fn alist_get_me(
@@ -4827,55 +5030,6 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetUserSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.management.ManagementService/GetUserByUsername" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetUserByUsernameSvc<T: ManagementService>(pub Arc<T>);
-                    impl<
-                        T: ManagementService,
-                    > tonic::server::UnaryService<super::GetUserByUsernameRequest>
-                    for GetUserByUsernameSvc<T> {
-                        type Response = ::synctv_proto::admin::GetUserResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetUserByUsernameRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ManagementService>::get_user_by_username(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetUserByUsernameSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -5704,6 +5858,143 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetRoomMembersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AddMember" => {
+                    #[allow(non_camel_case_types)]
+                    struct AddMemberSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AddMemberRequest>
+                    for AddMemberSvc<T> {
+                        type Response = ::synctv_proto::client::AddMemberResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AddMemberRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::add_member(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AddMemberSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/ApproveMember" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveMemberSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::ApproveMemberRequest>
+                    for ApproveMemberSvc<T> {
+                        type Response = ::synctv_proto::client::ApproveMemberResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ApproveMemberRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::approve_member(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveMemberSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/RejectMember" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectMemberSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::RejectMemberRequest>
+                    for RejectMemberSvc<T> {
+                        type Response = ::synctv_proto::client::RejectMemberResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RejectMemberRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::reject_member(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectMemberSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6562,6 +6853,52 @@ pub mod management_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.management.ManagementService/UpdatePlayback" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdatePlaybackSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::UpdatePlaybackRequest>
+                    for UpdatePlaybackSvc<T> {
+                        type Response = ::synctv_proto::client::GetPlaybackResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdatePlaybackRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::update_playback(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdatePlaybackSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.management.ManagementService/CreatePublishKey" => {
                     #[allow(non_camel_case_types)]
                     struct CreatePublishKeySvc<T: ManagementService>(pub Arc<T>);
@@ -6778,6 +7115,52 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AlistListSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/AlistSearch" => {
+                    #[allow(non_camel_case_types)]
+                    struct AlistSearchSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::AlistSearchRequest>
+                    for AlistSearchSvc<T> {
+                        type Response = ::synctv_proto::providers::alist::SearchResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AlistSearchRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::alist_search(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AlistSearchSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

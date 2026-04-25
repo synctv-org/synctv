@@ -1315,6 +1315,7 @@ mod tests {
             sort_by: 99,
             sort_direction: 99,
             availability: 99,
+            refresh: false,
         };
 
         for error in [
@@ -1353,6 +1354,7 @@ mod tests {
             sort_by: crate::client::MediaListSortBy::Unspecified as i32,
             sort_direction: crate::client::SortDirection::Unspecified as i32,
             availability: crate::client::ResourceAvailabilityFilter::All as i32,
+            refresh: false,
         })
         .unwrap();
     }

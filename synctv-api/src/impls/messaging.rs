@@ -2760,6 +2760,7 @@ impl StreamMessageHandler {
             sort_by: watch.sort_by,
             sort_direction: watch.sort_direction,
             availability: watch.availability,
+            refresh: false,
         };
         let snapshot = service
             .get_playlist_items_snapshot(&self.user_id, &self.room_id, &request)
@@ -3880,10 +3881,20 @@ impl StreamMessageHandler {
                             room_id: self.room_id.clone(),
                             user_id: self.user_id.clone(),
                             username: self.username.clone(),
-                            state: updated_state,
+                            state: updated_state.clone(),
                             timestamp: chrono::Utc::now(),
                         };
                         self.event_service.broadcast_local(&self.room_id, &event);
+                        if let Some(service) = &self.playback_snapshot_service {
+                            service
+                                .report_provider_playback_progress(
+                                    &updated_state,
+                                    report.current_time,
+                                    !report.is_playing,
+                                    false,
+                                )
+                                .await;
+                        }
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -3901,12 +3912,24 @@ impl StreamMessageHandler {
 
     /// Handle Play command from WebSocket
     async fn handle_play_command(&self) -> Result<(), String> {
+        let previous_state = self
+            .room_service
+            .playback_service()
+            .get_state(&self.room_id)
+            .await
+            .ok();
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
             .set_playing(self.room_id.clone(), self.user_id.clone(), true)
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(service) = &self.playback_snapshot_service {
+            service
+                .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+                .await;
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -3914,12 +3937,24 @@ impl StreamMessageHandler {
 
     /// Handle Pause command from WebSocket
     async fn handle_pause_command(&self) -> Result<(), String> {
+        let previous_state = self
+            .room_service
+            .playback_service()
+            .get_state(&self.room_id)
+            .await
+            .ok();
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
             .set_playing(self.room_id.clone(), self.user_id.clone(), false)
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(service) = &self.playback_snapshot_service {
+            service
+                .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+                .await;
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -3950,6 +3985,16 @@ impl StreamMessageHandler {
                 "Seek command returned degraded response"
             );
         }
+        if let Some(service) = &self.playback_snapshot_service {
+            service
+                .report_provider_playback_progress(
+                    &response.state,
+                    response.state.current_time,
+                    !response.state.is_playing,
+                    true,
+                )
+                .await;
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -3959,13 +4004,25 @@ impl StreamMessageHandler {
     async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
         // R-1: No WS-layer speed validation; PlaybackService::change_speed() is
         // the single authority for speed range enforcement.
+        let previous_state = self
+            .room_service
+            .playback_service()
+            .get_state(&self.room_id)
+            .await
+            .ok();
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
-        self.room_service
+        let state = self
+            .room_service
             .playback_service()
             .change_speed(self.room_id.clone(), self.user_id.clone(), speed)
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(service) = &self.playback_snapshot_service {
+            service
+                .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
+                .await;
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())

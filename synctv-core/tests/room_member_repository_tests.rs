@@ -1180,6 +1180,20 @@ async fn test_diagnose_add_conflict_left_user() {
         ))
         .await
         .unwrap();
+    member_repo
+        .grant_permission_atomic(&room.id, &user.id, 0x01)
+        .await
+        .unwrap();
+    member_repo
+        .revoke_permission_atomic(&room.id, &user.id, 0x02)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE room_members SET admin_added_permissions = 4, admin_removed_permissions = 8 WHERE room_id = $1 AND user_id = $2")
+        .bind(room.id.as_str())
+        .bind(user.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // User leaves
     member_repo.remove(&room.id, &user.id).await.unwrap();
@@ -1195,6 +1209,10 @@ async fn test_diagnose_add_conflict_left_user() {
     let rejoined = result.unwrap();
     assert_eq!(rejoined.status, MemberStatus::Active);
     assert!(rejoined.left_at.is_none());
+    assert_eq!(rejoined.added_permissions, 0);
+    assert_eq!(rejoined.removed_permissions, 0);
+    assert_eq!(rejoined.admin_added_permissions, 0);
+    assert_eq!(rejoined.admin_removed_permissions, 0);
 }
 
 #[tokio::test]

@@ -143,6 +143,19 @@ pub struct DirectoryItem {
     pub modified_at: Option<i64>,
 }
 
+/// Query options for browsing provider-backed dynamic playlists.
+#[derive(Debug, Clone, Default)]
+pub struct DynamicListQuery {
+    /// Page number, 1-indexed at the provider boundary.
+    pub page: usize,
+    /// Maximum items per page.
+    pub page_size: usize,
+    /// Optional provider-side search term.
+    pub search: Option<String>,
+    /// Force the upstream provider to refresh its directory cache when supported.
+    pub refresh: bool,
+}
+
 /// Media provider trait
 ///
 /// Core interface that all providers must implement.
@@ -302,8 +315,18 @@ pub trait MediaProvider: Send + Sync {
         _session_id: &str,
         _source_config: &Value,
         _position: f64,
+        _is_paused: bool,
     ) -> Result<(), ProviderError> {
         Ok(()) // Default: no-op
+    }
+
+    /// Return the provider-owned playback session id from a generated playback result.
+    ///
+    /// Providers that allocate server-side playback/transcoding sessions should
+    /// expose the opaque provider session id here so the API layer can report
+    /// progress and release provider resources when room playback changes.
+    fn playback_lifecycle_session_id(&self, _result: &PlaybackResult) -> Option<String> {
+        None
     }
 }
 
@@ -325,9 +348,8 @@ pub trait DynamicFolder: MediaProvider {
     /// - `ctx`: Provider context (includes `user_id`, `room_id`, etc.)
     /// - `playlist`: The dynamic folder (playlist object)
     /// - `target`: Provider-facing target payload within the dynamic folder
-    /// - `page`: Page number (0-indexed)
-    /// - `page_size`: Items per page
-    ///
+    /// - `query`: Provider-side list/search options. Page numbers are 1-indexed at this
+    ///   boundary; callers must pass `1` for the first page.
     /// # Returns
     /// List of items (videos, folders) in the dynamic folder
     async fn list_playlist(
@@ -335,8 +357,7 @@ pub trait DynamicFolder: MediaProvider {
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         target: Option<&[u8]>,
-        page: usize,
-        page_size: usize,
+        query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError>;
 
     /// Resolve a single playable media item inside a dynamic playlist.

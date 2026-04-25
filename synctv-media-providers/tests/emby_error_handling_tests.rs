@@ -8,6 +8,24 @@ use synctv_media_providers::EmbyClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+async fn mock_public_info(server: &MockServer, prefix: &str) {
+    let public_info_path = if prefix.is_empty() {
+        "/System/Info/Public".to_string()
+    } else {
+        format!("{prefix}/System/Info/Public")
+    };
+
+    Mock::given(method("GET"))
+        .and(path(public_info_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "server-1",
+            "ServerName": "Mock Emby Compatible Server",
+            "Version": "4.8.0"
+        })))
+        .mount(server)
+        .await;
+}
+
 /// Test that logout returns an error variant (not a silent success) when
 /// the client has no credentials configured.
 #[test]
@@ -201,11 +219,10 @@ fn test_api_prefix_detection() {
     assert_eq!(jellyfin.host(), "https://jellyfin.example.com");
 }
 
-/// Test that setting API prefix works
+/// Test that API base paths are detected internally, not configured by callers.
 #[test]
-fn test_set_api_prefix() {
-    let mut client = EmbyClient::new("https://media.example.com").unwrap();
-    client.set_api_prefix("/custom");
+fn test_api_base_path_is_not_public_configuration() {
+    let client = EmbyClient::new("https://media.example.com").unwrap();
     assert!(!client.has_credentials());
 }
 
@@ -227,6 +244,7 @@ fn test_client_new_accepts_valid_url() {
 #[tokio::test]
 async fn test_logout_returns_error_on_401() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Logout"))
@@ -255,6 +273,7 @@ async fn test_logout_returns_error_on_401() {
 #[tokio::test]
 async fn test_logout_returns_error_on_500() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Logout"))
@@ -277,6 +296,7 @@ async fn test_logout_returns_error_on_500() {
 #[tokio::test]
 async fn test_delete_active_encodings_returns_error_on_500() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("DELETE"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
@@ -297,6 +317,7 @@ async fn test_delete_active_encodings_returns_error_on_500() {
 #[tokio::test]
 async fn test_delete_active_encodings_returns_error_on_404() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("DELETE"))
         .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
@@ -318,6 +339,7 @@ async fn test_delete_active_encodings_returns_error_on_404() {
 #[tokio::test]
 async fn test_report_playback_start_returns_error_on_500() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing"))
@@ -342,6 +364,7 @@ async fn test_report_playback_start_returns_error_on_500() {
 #[tokio::test]
 async fn test_report_playback_stop_returns_error_on_500() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Stopped"))
@@ -366,6 +389,7 @@ async fn test_report_playback_stop_returns_error_on_500() {
 #[tokio::test]
 async fn test_report_playback_progress_returns_error_on_500() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Progress"))
@@ -389,6 +413,7 @@ async fn test_report_playback_progress_returns_error_on_500() {
 #[tokio::test]
 async fn test_logout_succeeds_on_204() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Logout"))
@@ -407,6 +432,7 @@ async fn test_logout_succeeds_on_204() {
 #[tokio::test]
 async fn test_delete_active_encodings_succeeds_on_204() {
     let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
 
     Mock::given(method("DELETE"))
         .respond_with(ResponseTemplate::new(204))

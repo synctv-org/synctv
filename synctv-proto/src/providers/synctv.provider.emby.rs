@@ -234,11 +234,13 @@ pub struct BindInfo {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub host: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
     pub user_id: ::prost::alloc::string::String,
     /// Unix epoch timestamp
-    #[prost(int64, tag = "4")]
+    #[prost(int64, tag = "5")]
     pub created_at: i64,
 }
 /// Generated client implementations.

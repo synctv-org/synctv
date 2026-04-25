@@ -22,12 +22,13 @@ use synctv_core::{
         PlaylistId, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
-        PlaybackResult, ProviderContext, ProviderError,
+        DirectoryItem, DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem,
+        PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
-    repository::{MediaRepository, UserRepository},
+    repository::{MediaRepository, UserProviderCredentialRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
+        room::RoomServiceOptions,
         CredentialEncryption, InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     service::{ProvidersManager, RemoteProviderManager},
@@ -300,8 +301,7 @@ impl DynamicFolder for FakeDynamicProvider {
         ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
         target: Option<&[u8]>,
-        _page: usize,
-        _page_size: usize,
+        _query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         if self.require_credential_encryption && ctx.credential_encryption.is_none() {
             return Err(ProviderError::EncryptionRequired(self.provider_type));
@@ -1462,9 +1462,21 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let mut room_service = make_room_service_with_providers(pool.clone(), providers_manager);
-    room_service.set_media_credential_encryption(
-        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid"),
+    let room_service = RoomService::new_with_providers_and_options(
+        pool.clone(),
+        make_user_service(pool.clone()),
+        providers_manager,
+        RoomServiceOptions {
+            credential_encryption: Some(
+                CredentialEncryption::new(&[0x42; 32])
+                    .expect("test encryption key should be valid"),
+            ),
+            credential_repo: Some(Arc::new(UserProviderCredentialRepository::new(
+                pool.clone(),
+            ))),
+            password_hasher: Some(Arc::new(TestPasswordHasher::new())),
+            ..RoomServiceOptions::default()
+        },
     );
 
     let owner = user_repo
@@ -1497,7 +1509,17 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
 
     let items = room_service
         .media_service()
-        .list_dynamic_playlist_items(room.id.clone(), owner.id.clone(), &playlist.id, None, 0, 20)
+        .list_dynamic_playlist_items(
+            room.id.clone(),
+            owner.id.clone(),
+            &playlist.id,
+            None,
+            DynamicListQuery {
+                page: 1,
+                page_size: 20,
+                ..DynamicListQuery::default()
+            },
+        )
         .await
         .expect("dynamic playlist listing should receive credential encryption");
 

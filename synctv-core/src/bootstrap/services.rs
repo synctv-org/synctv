@@ -12,7 +12,7 @@ use crate::{
     },
     repository::{
         ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
-        RoomRepository, RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
+        RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
     },
     service::{
@@ -193,29 +193,28 @@ fn build_request_rate_limiter(
         .map_err(anyhow::Error::from)
 }
 
-fn configure_refresh_token_rate_limiter(
-    user_service: &mut UserService,
+fn build_refresh_token_rate_limiter(
     profile: &SharedStateProfile,
-) -> Result<(), anyhow::Error> {
+) -> Result<Arc<dyn RequestRateLimiterService>, anyhow::Error> {
     let rate_limit_prefix = format!("{}refresh_rl:", profile.key_prefix());
     let refresh_profile = SharedStateProfile::new(
         profile.state_mode(),
         profile.shared_runtime(),
         rate_limit_prefix,
     );
-    if !matches!(refresh_profile.state_mode(), SharedStateMode::LocalOnly) {
-        user_service.set_refresh_rate_limiter(build_request_rate_limiter(&refresh_profile)?);
-        match refresh_profile.state_mode() {
-            SharedStateMode::SharedRequired => {
-                info!("Refresh token rate limiter initialized (shared state required)");
-            }
-            SharedStateMode::SharedBestEffort => {
-                info!("Refresh token rate limiter initialized (shared state preferred)");
-            }
-            SharedStateMode::LocalOnly => {}
+    let limiter = build_request_rate_limiter(&refresh_profile)?;
+    match refresh_profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            info!("Refresh token rate limiter initialized (shared state required)");
+        }
+        SharedStateMode::SharedBestEffort => {
+            info!("Refresh token rate limiter initialized (shared state preferred)");
+        }
+        SharedStateMode::LocalOnly => {
+            info!("Refresh token rate limiter initialized (local state)");
         }
     }
-    Ok(())
+    Ok(limiter)
 }
 
 fn build_ws_ticket_service(
@@ -442,25 +441,12 @@ pub async fn init_services_with_options(
         }
     );
 
-    // Initialize UserService
+    // Prepare UserService construction-time dependencies. UserService is
+    // constructed after Settings/Email so its runtime collaborators are
+    // complete before the service is cloned into RoomService.
     let key_builder = crate::cache::KeyBuilder::from_config(config);
-    let mut user_service = UserService::new_with_brute_force_service(
-        pool.clone(),
-        jwt_service.clone(),
-        username_cache.clone(),
-        config.password_complexity.clone(),
-        token_blacklist,
-        key_builder,
-        brute_force.clone(),
-    );
-    user_service.set_cache_invalidation(cache_invalidation.clone());
-    if let Some(password_hasher) = options.password_hasher_override.as_ref() {
-        user_service.set_password_hasher(Arc::clone(password_hasher));
-    }
-
     // Shared-state refresh limiting prevents N * limit bypass across replicas.
-    configure_refresh_token_rate_limiter(&mut user_service, &shared_state_profile)?;
-    info!("UserService initialized");
+    let refresh_rate_limiter = build_refresh_token_rate_limiter(&shared_state_profile)?;
 
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption =
@@ -542,29 +528,15 @@ pub async fn init_services_with_options(
         build_providers_manager(config, provider_instance_manager.clone()).await?;
     info!("ProvidersManager initialized");
 
-    // Initialize RoomService after ProvidersManager so media/playback paths use
-    // the same provider graph and HTTP client configuration as bootstrap.
+    // Prepare RoomService runtime dependencies after ProvidersManager so
+    // media/playback paths use the same provider graph and HTTP client
+    // configuration as bootstrap. The RoomService itself is constructed later,
+    // once all construction-time collaborators are available.
     let room_runtime = build_room_service_runtime(
         &shared_state_profile,
         &config.redis.deployment_mode,
         config.cache.l2_ttl_seconds,
     );
-    let mut room_service = build_room_service(RoomServiceBuildArgs {
-        pool: pool.clone(),
-        user_service: user_service.clone(),
-        credential_repo: user_provider_credential_repo.clone(),
-        providers_manager: providers_manager.clone(),
-        cache_invalidation: cache_invalidation.clone(),
-        brute_force: brute_force.clone(),
-        runtime: room_runtime,
-    });
-    if let Some(ref encryption) = credential_encryption_for_services {
-        room_service.set_media_credential_encryption(encryption.clone());
-    }
-    if let Some(password_hasher) = options.password_hasher_override.as_ref() {
-        room_service.set_password_hasher(Arc::clone(password_hasher));
-    }
-    info!("RoomService initialized");
 
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
@@ -624,9 +596,7 @@ pub async fn init_services_with_options(
         info!("Email service not configured (set SYNCTV_EMAIL_SMTP_HOST)");
     }
 
-    user_service.set_email_verification_required(should_require_email_verification(
-        email_service.is_some(),
-    ));
+    let email_verification_required = should_require_email_verification(email_service.is_some());
 
     // Initialize Email Token service (optional - requires email service)
     let email_token_service =
@@ -659,19 +629,45 @@ pub async fn init_services_with_options(
     let audit_service = Arc::new(audit_service);
     info!("Audit service initialized with async buffering");
 
-    // Wire audit service into RoomService (propagates to MemberService internally)
-    room_service.set_audit_service(Arc::clone(&audit_service));
-    info!("Audit service wired into RoomService and MemberService");
-
-    // Wire user notification service into RoomService for pending room admin notifications
     let notification_service = Arc::new(notification_service);
-    room_service.set_user_notification_service(Arc::clone(&notification_service));
-    info!("User notification service wired into RoomService");
 
-    // Wire settings registry into UserService for signup_need_review and email_whitelist enforcement
     let settings_registry = Arc::new(settings_registry);
-    user_service.set_settings_registry(Arc::clone(&settings_registry));
-    room_service.set_settings_registry(Arc::clone(&settings_registry));
+
+    let user_service = UserService::new_with_brute_force_service_and_runtime(
+        pool.clone(),
+        crate::service::user::UserServiceDependencies {
+            jwt_service: jwt_service.clone(),
+            username_cache: username_cache.clone(),
+            password_complexity: config.password_complexity.clone(),
+            token_blacklist,
+            key_builder,
+            brute_force: brute_force.clone(),
+        },
+        crate::service::user::UserServiceRuntimeOptions {
+            cache_invalidation: Some(cache_invalidation.clone()),
+            refresh_rate_limiter: Some(refresh_rate_limiter),
+            email_verification_required,
+            settings_registry: Some(Arc::clone(&settings_registry)),
+            password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+        },
+    );
+    info!("UserService initialized with construction-time dependencies");
+
+    let room_service = build_room_service(RoomServiceBuildArgs {
+        pool: pool.clone(),
+        user_service: user_service.clone(),
+        credential_repo: user_provider_credential_repo.clone(),
+        credential_encryption: credential_encryption_for_services.clone(),
+        providers_manager: providers_manager.clone(),
+        cache_invalidation: cache_invalidation.clone(),
+        brute_force: brute_force.clone(),
+        audit_service: Some(Arc::clone(&audit_service)),
+        settings_registry: Some(Arc::clone(&settings_registry)),
+        user_notification_service: Some(Arc::clone(&notification_service)),
+        password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+        runtime: room_runtime,
+    });
+    info!("RoomService initialized with construction-time dependencies");
 
     // Store the settings listen task handle so it can be joined on shutdown.
     // The task will be cancelled via settings_cancel.
@@ -894,9 +890,14 @@ struct RoomServiceBuildArgs {
     pool: PgPool,
     user_service: UserService,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    credential_encryption: Option<crate::service::CredentialEncryption>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
+    audit_service: Option<Arc<AuditService>>,
+    settings_registry: Option<Arc<SettingsRegistry>>,
+    user_notification_service: Option<Arc<UserNotificationService>>,
+    password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     runtime: RoomServiceRuntime,
 }
 
@@ -949,36 +950,42 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         pool,
         user_service,
         credential_repo,
+        credential_encryption,
         providers_manager,
         cache_invalidation,
         brute_force,
+        audit_service,
+        settings_registry,
+        user_notification_service,
+        password_hasher,
         runtime,
     } = args;
-    let permission_service = PermissionService::with_invalidation(
+    let permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
-        RoomRepository::new(pool.clone()),
         None,
         PermissionService::DEFAULT_CACHE_SIZE,
         PermissionService::DEFAULT_CACHE_TTL_SECS,
-        cache_invalidation.clone(),
+        Some(RoomSettingsRepo::new(pool.clone())),
+        Some(cache_invalidation.clone()),
     );
-    let mut room_service = RoomService::new_with_providers_and_permission_service(
+    RoomService::new_with_providers_permission_service_and_options(
         pool,
         user_service,
         providers_manager,
         permission_service,
-    );
-    room_service.set_media_credential_repo(credential_repo);
-    if let Some(lock) = runtime.distributed_lock {
-        room_service.set_distributed_lock(lock);
-    }
-    room_service.set_brute_force_service_arc(brute_force);
-    room_service.set_cache_invalidation(cache_invalidation.clone());
-    room_service.set_playback_cache_invalidation(cache_invalidation);
-    if let Some(playback_l2) = runtime.playback_l2_cache {
-        room_service.set_playback_l2_cache(playback_l2);
-    }
-    room_service
+        crate::service::room::RoomServiceOptions {
+            distributed_lock: runtime.distributed_lock,
+            cache_invalidation: Some(cache_invalidation),
+            playback_l2_cache: runtime.playback_l2_cache,
+            credential_encryption,
+            credential_repo: Some(credential_repo),
+            audit_service,
+            brute_force_service: Some(brute_force),
+            settings_registry,
+            user_notification_service,
+            password_hasher,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1191,28 +1198,10 @@ mod tests {
     #[tokio::test]
     async fn test_configure_refresh_token_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode(
     ) {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-        let jwt_service = JwtService::new("test-jwt-secret-key-for-refresh-limit-minimum-32-chars")
-            .expect("jwt service");
-        let username_cache =
-            crate::cache::UsernameCache::local_only("test:username:".to_string(), 64, 60);
-        let mut user_service = UserService::new(
-            pool,
-            jwt_service,
-            username_cache,
-            crate::config::PasswordComplexityConfig::default(),
-            Arc::new(crate::service::InMemoryTokenBlacklistStore::new(
-                128, 3600, 86400,
-            )),
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test".to_string()),
-        );
-
         let profile = SharedStateProfile::from_runtime(None, "test:", true);
-        let error = configure_refresh_token_rate_limiter(&mut user_service, &profile)
-            .expect_err("cluster runtime must reject local refresh-token rate limiting");
+        let Err(error) = build_refresh_token_rate_limiter(&profile) else {
+            panic!("cluster runtime must reject local refresh-token rate limiting");
+        };
 
         assert!(
             error
@@ -1384,11 +1373,16 @@ mod tests {
             pool: pool.clone(),
             user_service,
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: None,
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1471,11 +1465,16 @@ mod tests {
             pool: pool.clone(),
             user_service: user_service.clone(),
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: None,
             providers_manager: test_providers_manager(&pool),
             cache_invalidation: cache_invalidation.clone(),
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1495,11 +1494,16 @@ mod tests {
             pool: pool.clone(),
             user_service,
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: None,
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1537,7 +1541,7 @@ mod tests {
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
-        let mut user_service = UserService::new(
+        let user_service = UserService::new(
             pool.clone(),
             jwt_service,
             username_cache,
@@ -1550,29 +1554,32 @@ mod tests {
             "node-test".to_string(),
             "test:cache:stream".to_string(),
         ));
-        let mut room_service = build_room_service(RoomServiceBuildArgs {
+        let settings_service = Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            PgPool::connect_lazy("postgresql://test").expect("lazy pool should build"),
+        ));
+        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+
+        let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service: user_service.clone(),
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: None,
             providers_manager: test_providers_manager(&pool),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: Some(Arc::clone(&settings_registry)),
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             ),
         });
-        let settings_service = Arc::new(SettingsService::new(
-            SettingsRepository::new(pool),
-            PgPool::connect_lazy("postgresql://test").expect("lazy pool should build"),
-        ));
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
-
-        user_service.set_settings_registry(Arc::clone(&settings_registry));
-        room_service.set_settings_registry(settings_registry);
 
         assert!(room_service.has_settings_registry());
     }
@@ -1611,11 +1618,16 @@ mod tests {
             pool: pool.clone(),
             user_service,
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: None,
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1658,25 +1670,28 @@ mod tests {
             "test:cache:stream".to_string(),
         ));
         let providers_manager = test_providers_manager(&pool);
-        let mut room_service = build_room_service(RoomServiceBuildArgs {
+        let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
+            .expect("credential encryption should construct");
+        let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
             credential_repo: Arc::new(UserProviderCredentialRepository::new(pool.clone())),
+            credential_encryption: Some(encryption),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
                 "test:room".to_string(),
             )),
+            audit_service: None,
+            settings_registry: None,
+            user_notification_service: None,
+            password_hasher: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             ),
         });
-
-        let encryption = crate::service::CredentialEncryption::new(&[7u8; 32])
-            .expect("credential encryption should construct");
-        room_service.set_media_credential_encryption(encryption);
 
         assert!(
             Arc::ptr_eq(

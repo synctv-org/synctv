@@ -1707,6 +1707,12 @@ fn management_request<T>(message: T) -> tonic::Request<T> {
     request
 }
 
+fn management_user_id_ref(user_id: impl Into<String>) -> management_proto::UserRef {
+    management_proto::UserRef {
+        value: Some(management_proto::user_ref::Value::UserId(user_id.into())),
+    }
+}
+
 async fn recv_grpc_server_message(
     stream: &mut tonic::codec::Streaming<synctv_proto::client::ServerMessage>,
 ) -> Option<synctv_proto::client::ServerMessage> {
@@ -2046,6 +2052,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     });
     list_items
         .metadata_mut()
@@ -2139,7 +2146,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("connect management gRPC client");
     let fetched_user = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user_id: created_user_id.clone(),
+            user: Some(management_user_id_ref(created_user_id.clone())),
         }))
         .await
         .expect("management get_user should succeed for CLI-created user")
@@ -2515,7 +2522,7 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
         .expect("connect management gRPC client");
     let fetched_user = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user_id: created_user_id.clone(),
+            user: Some(management_user_id_ref(created_user_id.clone())),
         }))
         .await
         .expect("management get_user should succeed after remove-admin")
@@ -3157,7 +3164,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     for deleted_user_id in [&delete_one_id, &delete_two_id] {
         let deleted_lookup = management_client
             .get_user(management_request(management_proto::GetUserRequest {
-                user_id: deleted_user_id.clone(),
+                user: Some(management_user_id_ref(deleted_user_id.clone())),
             }))
             .await
             .expect_err("deleted user should not be retrievable via management");
@@ -3166,10 +3173,11 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
     let still_banned = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user_id: batch_ban_one_body["user"]["id"]
-                .as_str()
-                .expect("batch ban one should have id")
-                .to_string(),
+            user: Some(management_user_id_ref(
+                batch_ban_one_body["user"]["id"]
+                    .as_str()
+                    .expect("batch ban one should have id"),
+            )),
         }))
         .await
         .expect("management get_user should still work for batch-banned survivor")
@@ -7143,6 +7151,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     });
     initial_list_request
         .metadata_mut()
@@ -8493,6 +8502,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
     });
     initial_list_request
         .metadata_mut()

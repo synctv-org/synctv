@@ -370,6 +370,7 @@ impl EmbyApiImpl {
         .into_iter()
         .map(|bind| BindInfo {
             id: bind.id,
+            server_id: bind.server_id,
             host: bind.host,
             user_id: bind.label_value,
             created_at: bind.created_at,

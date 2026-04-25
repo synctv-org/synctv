@@ -33,6 +33,22 @@ pub trait PlaybackSnapshotService: Send + Sync {
     ) -> Result<Option<String>, ApiError> {
         Ok(None)
     }
+
+    async fn handle_provider_lifecycle_transition(
+        &self,
+        _previous: Option<&RoomPlaybackState>,
+        _current: &RoomPlaybackState,
+    ) {
+    }
+
+    async fn report_provider_playback_progress(
+        &self,
+        _state: &RoomPlaybackState,
+        _position: f64,
+        _is_paused: bool,
+        _force: bool,
+    ) {
+    }
 }
 
 pub(crate) fn static_playback_snapshot_version(media: &synctv_core::models::Media) -> String {

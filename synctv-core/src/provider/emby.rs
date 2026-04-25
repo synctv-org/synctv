@@ -5,9 +5,9 @@
 use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
-    PlaybackClientProfile, PlaybackInfo, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
+    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
@@ -29,6 +29,43 @@ fn seconds_to_emby_ticks(position: f64) -> i64 {
     };
     let ticks = duration.as_nanos() / (1_000_000_000 / EMBY_TICKS_PER_SECOND);
     i64::try_from(ticks).unwrap_or(i64::MAX)
+}
+
+/// Build an absolute Emby/Jellyfin URL from a configured server URL and an API path.
+///
+/// `host` may point at either a root deployment (`https://media.example.com`) or
+/// a reverse-proxy base path (`https://media.example.com/jellyfin`). Provider
+/// responses may include paths with or without that base path, so this helper
+/// preserves the configured base path without duplicating it.
+pub fn emby_server_url(host: &str, path_or_url: &str) -> Result<String, ProviderError> {
+    let path_or_url = path_or_url.trim();
+    if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+        return Ok(path_or_url.to_string());
+    }
+
+    let parsed = url::Url::parse(host)
+        .map_err(|error| ProviderError::InvalidConfig(format!("Invalid Emby host URL: {error}")))?;
+    let origin = parsed.origin().unicode_serialization();
+    let base_path = parsed.path().trim_end_matches('/');
+    let base_path = if base_path == "/" { "" } else { base_path };
+    let path = if path_or_url.starts_with('/') {
+        path_or_url.to_string()
+    } else {
+        format!("/{path_or_url}")
+    };
+
+    let path = if !base_path.is_empty()
+        && path != base_path
+        && !path
+            .strip_prefix(base_path)
+            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('?'))
+    {
+        format!("{base_path}{path}")
+    } else {
+        path
+    };
+
+    Ok(format!("{}{}", origin.trim_end_matches('/'), path))
 }
 
 struct GrpcPlaybackRequestHints {
@@ -549,17 +586,9 @@ impl EmbyProvider {
 
             // Get direct stream URL (no transcoding) -- no credentials in URL
             let direct_url = if !source.direct_play_url.is_empty() {
-                format!(
-                    "{}{}",
-                    config.host.trim_end_matches('/'),
-                    source.direct_play_url
-                )
+                emby_server_url(&config.host, &source.direct_play_url)?
             } else if !source.path.is_empty() {
-                format!(
-                    "{}/Items/{}/Download",
-                    config.host.trim_end_matches('/'),
-                    config.item_id
-                )
+                emby_server_url(&config.host, &format!("/Items/{}/Download", config.item_id))?
             } else {
                 continue;
             };
@@ -573,24 +602,26 @@ impl EmbyProvider {
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
-                    let subtitle_url = format!(
-                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
-                        config.host.trim_end_matches('/'),
-                        config.item_id,
-                        source.id,
-                        stream.index,
-                        stream.codec.to_lowercase(),
-                    );
+                    let subtitle_url = emby_server_url(
+                        &config.host,
+                        &format!(
+                            "/Videos/{}/{}/Subtitles/{}/Stream.{}",
+                            config.item_id,
+                            source.id,
+                            stream.index,
+                            stream.codec.to_lowercase(),
+                        ),
+                    )?;
 
-                    SubtitleTrack {
+                    Ok(SubtitleTrack {
                         language: stream.language.clone(),
                         name: stream.display_title.clone(),
                         url: subtitle_url,
                         headers: HashMap::new(),
                         format: stream.codec.to_lowercase(),
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<_, ProviderError>>()?;
 
             // Detect format from container
             let format = source.container.to_lowercase();
@@ -621,11 +652,7 @@ impl EmbyProvider {
 
             // Also add transcode URLs if available
             if !source.transcoding_url.is_empty() {
-                let transcode_url = format!(
-                    "{}{}",
-                    config.host.trim_end_matches('/'),
-                    source.transcoding_url
-                );
+                let transcode_url = emby_server_url(&config.host, &source.transcoding_url)?;
 
                 playback_infos.insert(
                     format!("{mode_name}_transcode"),
@@ -973,6 +1000,7 @@ impl MediaProvider for EmbyProvider {
         session_id: &str,
         source_config: &Value,
         position: f64,
+        is_paused: bool,
     ) -> Result<(), ProviderError> {
         let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
@@ -1004,7 +1032,7 @@ impl MediaProvider for EmbyProvider {
             play_session_id: session_id.to_string(),
             media_source_id: String::new(),
             position_ticks,
-            is_paused: false,
+            is_paused,
         };
 
         if let Err(e) = client.report_playback_progress(req).await {
@@ -1018,6 +1046,16 @@ impl MediaProvider for EmbyProvider {
         }
 
         Ok(())
+    }
+
+    fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
+        result
+            .metadata
+            .get("emby_play_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -1139,8 +1177,7 @@ impl DynamicFolder for EmbyProvider {
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         target: Option<&[u8]>,
-        page: usize,
-        page_size: usize,
+        query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         let config = playlist
             .source_config
@@ -1157,13 +1194,16 @@ impl DynamicFolder for EmbyProvider {
             )
             .await?;
 
+        let page = query.page.max(1);
+        let page_size = query.page_size.max(1);
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
             host: resolved.host.clone(),
             token: resolved.token.clone(),
             path: target_item_id,
-            start_index: (page * page_size) as u64,
-            limit: page_size as u64,
-            search_term: String::new(),
+            start_index: u64::try_from(page.saturating_sub(1).saturating_mul(page_size))
+                .unwrap_or(u64::MAX),
+            limit: u64::try_from(page_size).unwrap_or(u64::MAX),
+            search_term: query.search.unwrap_or_default(),
             user_id: resolved.user_id.clone(),
         };
 
@@ -1264,7 +1304,7 @@ impl DynamicFolder for EmbyProvider {
             PlayMode::Sequential | PlayMode::RepeatAll => {
                 const PAGE_SIZE: usize = 50;
                 let mut found_current = false;
-                let mut current_page = 0;
+                let mut current_page = 1;
 
                 loop {
                     let page_items = self
@@ -1272,8 +1312,11 @@ impl DynamicFolder for EmbyProvider {
                             ctx,
                             playlist,
                             Some(&sibling_target),
-                            current_page,
-                            PAGE_SIZE,
+                            DynamicListQuery {
+                                page: current_page,
+                                page_size: PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
                         )
                         .await?;
 
@@ -1347,7 +1390,16 @@ impl DynamicFolder for EmbyProvider {
 
                 if found_current && play_mode == PlayMode::RepeatAll {
                     let first_page = self
-                        .list_playlist(ctx, playlist, Some(&sibling_target), 0, PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            Some(&sibling_target),
+                            DynamicListQuery {
+                                page: 1,
+                                page_size: PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
+                        )
                         .await?;
 
                     if let Some(first) = first_page
@@ -1383,10 +1435,19 @@ impl DynamicFolder for EmbyProvider {
                 const PAGE_SIZE: usize = 50;
                 const MAX_ITEMS: usize = 200;
                 let mut all_items = Vec::with_capacity(MAX_ITEMS);
-                let mut page = 0;
+                let mut page = 1;
                 loop {
                     let page_items = self
-                        .list_playlist(ctx, playlist, Some(&sibling_target), page, PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            Some(&sibling_target),
+                            DynamicListQuery {
+                                page,
+                                page_size: PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
+                        )
                         .await?;
                     let is_last_page = page_items.len() < PAGE_SIZE;
                     all_items.extend(page_items);
@@ -1767,6 +1828,68 @@ mod tests {
         assert_ne!(
             first, second,
             "Credential changes must invalidate Emby playback cache entries"
+        );
+    }
+
+    #[test]
+    fn test_emby_server_url_supports_emby_and_jellyfin_root_deployments() {
+        assert_eq!(
+            emby_server_url("https://emby.example.com", "/Items/item-1/Download").unwrap(),
+            "https://emby.example.com/Items/item-1/Download"
+        );
+        assert_eq!(
+            emby_server_url("https://jellyfin.example.com", "/Items/item-1/Download").unwrap(),
+            "https://jellyfin.example.com/Items/item-1/Download"
+        );
+    }
+
+    #[test]
+    fn test_emby_server_url_preserves_configured_base_path_without_duplication() {
+        assert_eq!(
+            emby_server_url(
+                "https://media.example.com/jellyfin",
+                "/Items/item-1/Download"
+            )
+            .unwrap(),
+            "https://media.example.com/jellyfin/Items/item-1/Download"
+        );
+        assert_eq!(
+            emby_server_url(
+                "https://media.example.com/jellyfin",
+                "/jellyfin/Videos/item/master.m3u8"
+            )
+            .unwrap(),
+            "https://media.example.com/jellyfin/Videos/item/master.m3u8"
+        );
+    }
+
+    #[test]
+    fn test_emby_server_url_accepts_absolute_provider_urls() {
+        assert_eq!(
+            emby_server_url(
+                "https://media.example.com/jellyfin",
+                "https://cdn.example.com/video.m3u8"
+            )
+            .unwrap(),
+            "https://cdn.example.com/video.m3u8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_emby_playback_lifecycle_session_id_uses_provider_metadata() {
+        let provider = EmbyProvider::new(fake_provider_instance_manager());
+        let result = PlaybackResult {
+            playback_infos: HashMap::new(),
+            default_mode: "direct".to_string(),
+            metadata: HashMap::from([(
+                "emby_play_session_id".to_string(),
+                json!("play-session-123"),
+            )]),
+        };
+
+        assert_eq!(
+            provider.playback_lifecycle_session_id(&result).as_deref(),
+            Some("play-session-123")
         );
     }
 

@@ -9,7 +9,7 @@
 
 use crate::{
     models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
-    provider::{DirectoryItem, ProviderContext},
+    provider::{DirectoryItem, DynamicListQuery, ProviderContext},
     repository::UserProviderCredentialRepository,
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
@@ -215,6 +215,31 @@ impl MediaService {
         }
     }
 
+    /// Create a media service with provider credential dependencies already wired.
+    ///
+    /// Production bootstrap should prefer this constructor so every clone of the
+    /// service observes the same credential runtime from the start.
+    #[must_use]
+    pub fn new_with_provider_credentials(
+        media_repo: MediaRepository,
+        playlist_repo: PlaylistRepository,
+        permission_service: PermissionService,
+        providers_manager: Arc<ProvidersManager>,
+        notification_service: NotificationService,
+        credential_encryption: Option<crate::service::CredentialEncryption>,
+        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    ) -> Self {
+        Self {
+            media_repo,
+            playlist_repo,
+            permission_service,
+            providers_manager,
+            notification_service,
+            credential_encryption,
+            credential_repo,
+        }
+    }
+
     /// Get a reference to the providers manager
     #[must_use]
     pub const fn providers_manager(&self) -> &Arc<ProvidersManager> {
@@ -231,16 +256,6 @@ impl MediaService {
     #[must_use]
     pub const fn credential_repo(&self) -> Option<&Arc<UserProviderCredentialRepository>> {
         self.credential_repo.as_ref()
-    }
-
-    /// Set credential encryption for protecting sensitive data in `source_config`
-    pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
-        self.credential_encryption = Some(encryption);
-    }
-
-    /// Set credential repository for provider-backed source resolution.
-    pub fn set_credential_repo(&mut self, repo: Arc<UserProviderCredentialRepository>) {
-        self.credential_repo = Some(repo);
     }
 
     async fn get_dynamic_playlist_provider(
@@ -1421,8 +1436,7 @@ impl MediaService {
         admin_user_id: UserId,
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
-        page: usize,
-        page_size: usize,
+        query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>> {
         let playlist = self
             .playlist_repo
@@ -1456,7 +1470,7 @@ impl MediaService {
         );
 
         dynamic_folder
-            .list_playlist(&ctx, &playlist, target, page, page_size)
+            .list_playlist(&ctx, &playlist, target, query)
             .await
             .map_err(Error::from)
     }
@@ -1572,8 +1586,7 @@ impl MediaService {
         user_id: UserId,
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
-        page: usize,
-        page_size: usize,
+        query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>> {
         // Check permission
         self.permission_service
@@ -1620,7 +1633,7 @@ impl MediaService {
 
         // List items
         let items = dynamic_folder
-            .list_playlist(&ctx, &playlist, target, page, page_size)
+            .list_playlist(&ctx, &playlist, target, query)
             .await
             .map_err(Error::from)?;
 

@@ -9,9 +9,10 @@ use super::{
         AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview, ProviderClientManager,
     },
     store::{ProviderStoreExt, VersionedPlayback},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SubtitleTrack,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
+    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackDeliveryPreference, PlaybackInfo,
+    PlaybackResult, PlaybackSubtitlePreference, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
@@ -32,6 +33,49 @@ fn alist_modified_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn alist_directory_item_type(name: &str, is_dir: bool) -> Option<ItemType> {
+    if is_dir {
+        return Some(ItemType::Playlist);
+    }
+
+    match name
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some(
+            "mp4" | "mkv" | "avi" | "mov" | "flv" | "webm" | "m4v" | "wmv" | "m3u8" | "mp3"
+            | "flac" | "wav" | "aac" | "m4a" | "ogg",
+        ) => Some(ItemType::Media),
+        _ => None,
+    }
+}
+
+fn join_alist_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
+}
+
+fn alist_relative_path_from_base(base_path: &str, full_path: &str) -> Option<String> {
+    let normalized_base = if base_path == "/" {
+        String::new()
+    } else {
+        base_path.trim_end_matches('/').to_string()
+    };
+    let relative = full_path.strip_prefix(&normalized_base)?;
+    if relative.starts_with('/') {
+        Some(relative.to_string())
+    } else if relative.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{relative}"))
+    }
+}
+
 fn is_subtitle_filename(name: &str) -> bool {
     matches!(
         name.rsplit('.')
@@ -39,6 +83,14 @@ fn is_subtitle_filename(name: &str) -> bool {
             .map(str::to_ascii_lowercase)
             .as_deref(),
         Some("srt" | "vtt" | "ass" | "ssa")
+    )
+}
+
+fn is_alist_search_unavailable(error: &synctv_media_providers::ProviderClientError) -> bool {
+    matches!(
+        error,
+        synctv_media_providers::ProviderClientError::Api { code: 404, message }
+            if message.eq_ignore_ascii_case("search not available")
     )
 }
 
@@ -296,6 +348,69 @@ impl AlistProvider {
         client.fs_list(req).await.map_err(std::convert::Into::into)
     }
 
+    /// Search Alist files and directories.
+    pub async fn fs_search(
+        &self,
+        req: synctv_media_providers::grpc::alist::FsSearchReq,
+        instance_name: Option<&str>,
+    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
+        self.fs_search_with_context(req, instance_name, None).await
+    }
+
+    pub async fn fs_search_with_context(
+        &self,
+        req: synctv_media_providers::grpc::alist::FsSearchReq,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
+        let client = self
+            .get_client_with_context(instance_name, request_context)
+            .await?;
+        match client.fs_search(req.clone()).await {
+            Ok(resp) => Ok(resp),
+            Err(error) if is_alist_search_unavailable(&error) => {
+                Self::fs_search_fallback_to_listing(client, req).await
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn fs_search_fallback_to_listing(
+        client: AlistClientArc,
+        req: synctv_media_providers::grpc::alist::FsSearchReq,
+    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
+        use synctv_media_providers::grpc::alist::fs_search_resp::FsSearchContent;
+        use synctv_media_providers::grpc::alist::{FsListReq, FsSearchResp};
+
+        let list_resp = client
+            .fs_list(FsListReq {
+                host: req.host,
+                token: req.token,
+                path: req.parent.clone(),
+                password: req.password,
+                page: req.page.max(1),
+                per_page: req.per_page.max(1),
+                refresh: false,
+            })
+            .await
+            .map_err(ProviderError::from)?;
+
+        let total = list_resp.total;
+        let content = list_resp
+            .content
+            .into_iter()
+            .map(|item| FsSearchContent {
+                parent: req.parent.clone(),
+                name: item.name,
+                is_dir: item.is_dir,
+                size: item.size,
+                r#type: item.r#type,
+            })
+            .collect();
+
+        Ok(FsSearchResp { content, total })
+    }
+
     /// Get Alist user info
     ///
     /// Takes grpc-generated `MeReq` and returns `MeResp`
@@ -387,6 +502,7 @@ impl AlistProvider {
         credential_revision: &str,
         path: &str,
         password: Option<&str>,
+        playback_profile_cache_key: &str,
     ) -> String {
         let mut owner_hasher = Sha256::new();
         owner_hasher.update(credential_owner_id.as_bytes());
@@ -401,6 +517,8 @@ impl AlistProvider {
         hasher.update(path.as_bytes());
         hasher.update(b"\0");
         hasher.update(password.unwrap_or("").as_bytes());
+        hasher.update(b"\0");
+        hasher.update(playback_profile_cache_key.as_bytes());
         let path_hash: String = hex::encode(hasher.finalize()).chars().take(16).collect();
         format!("playback:{server_id}:{owner_hash}:{path_hash}")
     }
@@ -536,6 +654,7 @@ impl AlistProvider {
         &self,
         config: &ResolvedAlistConfig,
         request_context: Option<&super::ExecutionControl>,
+        playback_client_profile: Option<&PlaybackClientProfile>,
     ) -> Result<PlaybackResult, ProviderError> {
         // Get appropriate client based on instance_name from config
         let client = self
@@ -582,6 +701,7 @@ impl AlistProvider {
             &file_info,
             video_preview.as_ref(),
             video_preview_error.as_deref(),
+            playback_client_profile,
         ))
     }
 
@@ -589,6 +709,7 @@ impl AlistProvider {
         file_info: &AlistFileInfo,
         video_preview: Option<&AlistVideoPreview>,
         video_preview_error: Option<&str>,
+        playback_client_profile: Option<&PlaybackClientProfile>,
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
         let mut metadata = HashMap::new();
@@ -612,10 +733,17 @@ impl AlistProvider {
             metadata.insert("video_preview_error".to_string(), json!(error));
         }
 
-        let preview_subtitles = subtitles_from_video_preview(video_preview);
-        let combined_subtitles = merge_subtitles(preview_subtitles, related_subtitles);
+        let combined_subtitles = if matches!(
+            playback_client_profile.map(|profile| profile.subtitle_preference),
+            Some(PlaybackSubtitlePreference::None)
+        ) {
+            Vec::new()
+        } else {
+            let preview_subtitles = subtitles_from_video_preview(video_preview);
+            merge_subtitles(preview_subtitles, related_subtitles)
+        };
 
-        let mut first_transcoded_mode = None;
+        let mut transcoded_modes = Vec::new();
 
         if let Some(preview) = video_preview {
             // Add transcoding quality options
@@ -627,9 +755,7 @@ impl AlistProvider {
                         task.template_name.clone()
                     };
                     let mode_name = format!("transcoded_{quality_name}");
-                    if first_transcoded_mode.is_none() {
-                        first_transcoded_mode = Some(mode_name.clone());
-                    }
+                    transcoded_modes.push((mode_name.clone(), task.template_height));
 
                     // AliyunDrive live transcoding URLs are requested from AList/OpenList
                     // with url_expire_sec=14400.
@@ -714,17 +840,74 @@ impl AlistProvider {
         }
 
         // Determine default mode
-        let default_mode = if let Some(mode) = first_transcoded_mode {
-            mode
-        } else {
-            "direct".to_string()
-        };
+        let has_direct = playback_infos.contains_key("direct");
+        let default_mode =
+            Self::choose_default_mode(&transcoded_modes, has_direct, playback_client_profile)
+                .unwrap_or_else(|| "direct".to_string());
 
         PlaybackResult {
             playback_infos,
             default_mode,
             metadata,
         }
+    }
+
+    fn choose_default_mode(
+        transcoded_modes: &[(String, u64)],
+        has_direct: bool,
+        playback_client_profile: Option<&PlaybackClientProfile>,
+    ) -> Option<String> {
+        let profile = playback_client_profile.cloned().unwrap_or_default();
+        if profile.delivery_preference == PlaybackDeliveryPreference::DirectPlay && has_direct {
+            return Some("direct".to_string());
+        }
+
+        if transcoded_modes.is_empty() {
+            return has_direct.then(|| "direct".to_string());
+        }
+
+        let max_height = profile
+            .max_streaming_bitrate
+            .and_then(Self::max_height_from_streaming_bitrate);
+
+        let selected_transcode = max_height.map_or_else(
+            || {
+                transcoded_modes
+                    .iter()
+                    .max_by_key(|(_, height)| *height)
+                    .map(|(mode, _)| mode.clone())
+            },
+            |height_limit| {
+                transcoded_modes
+                    .iter()
+                    .filter(|(_, height)| *height == 0 || *height <= height_limit)
+                    .max_by_key(|(_, height)| *height)
+                    .or_else(|| transcoded_modes.iter().min_by_key(|(_, height)| *height))
+                    .map(|(mode, _)| mode.clone())
+            },
+        );
+
+        match profile.delivery_preference {
+            PlaybackDeliveryPreference::DirectPlay if has_direct => Some("direct".to_string()),
+            PlaybackDeliveryPreference::DirectPlay => selected_transcode,
+            PlaybackDeliveryPreference::Transcode | PlaybackDeliveryPreference::Auto => {
+                selected_transcode.or_else(|| has_direct.then(|| "direct".to_string()))
+            }
+        }
+    }
+
+    fn max_height_from_streaming_bitrate(bitrate: i64) -> Option<u64> {
+        if bitrate <= 0 {
+            return None;
+        }
+
+        Some(match bitrate {
+            0..=1_500_000 => 480,
+            1_500_001..=3_500_000 => 720,
+            3_500_001..=8_000_000 => 1080,
+            8_000_001..=16_000_000 => 1440,
+            _ => u64::MAX,
+        })
     }
 }
 
@@ -832,12 +1015,18 @@ impl MediaProvider for AlistProvider {
 
         // Build cache key from server_id and path
         let config = AlistSourceConfig::try_from(source_config)?;
+        let playback_client_profile = _ctx.playback_client_profile();
+        let playback_profile_cache_key = playback_client_profile.map_or_else(
+            || "default".to_string(),
+            PlaybackClientProfile::cache_fingerprint,
+        );
         let cache_key = Self::playback_cache_key(
             &config.server_id,
             &resolved.credential_owner_id,
             &resolved.credential_revision,
             &resolved.path,
             resolved.password.as_deref(),
+            &playback_profile_cache_key,
         );
         let cache_ttl = Duration::from_mins(15);
 
@@ -875,7 +1064,7 @@ impl MediaProvider for AlistProvider {
 
         // Call provider API
         let result = self
-            .resolve_from_api(&resolved, _ctx.request_context())
+            .resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
             .await?;
 
         // Generate version and store result
@@ -925,6 +1114,23 @@ impl super::proxy::ProviderProxy for AlistProvider {
         }
 
         if let Some(rest) = rest {
+            if rest == "thumbnail" {
+                let url = versioned
+                    .result
+                    .metadata
+                    .get("thumbnail")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| !url.trim().is_empty())
+                    .ok_or(ProviderError::NotFound)?
+                    .to_string();
+                let headers = versioned
+                    .result
+                    .playback_infos
+                    .get(&versioned.result.default_mode)
+                    .map_or_else(HashMap::new, |info| info.headers.clone());
+                return Ok(super::proxy::ProxyAction::FetchAndForward { url, headers });
+            }
+
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =
                     if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
@@ -1054,11 +1260,10 @@ impl super::proxy::ProviderProxy for AlistProvider {
 impl DynamicFolder for AlistProvider {
     async fn list_playlist(
         &self,
-        _ctx: &ProviderContext<'_>,
+        ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
         target: Option<&[u8]>,
-        page: usize,
-        page_size: usize,
+        query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         // Parse playlist's source_config to get base path
         let config = playlist
@@ -1066,7 +1271,7 @@ impl DynamicFolder for AlistProvider {
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
 
-        let resolved = self.resolve_config(_ctx, config).await?;
+        let resolved = self.resolve_config(ctx, config).await?;
 
         let relative_path = Self::decode_target(target)?;
 
@@ -1091,68 +1296,91 @@ impl DynamicFolder for AlistProvider {
         let client = self
             .get_client_with_context(
                 resolved.provider_instance_name.as_deref(),
-                _ctx.request_context(),
+                ctx.request_context(),
             )
             .await?;
 
-        // Build list request
-        let list_req = synctv_media_providers::grpc::alist::FsListReq {
-            host: resolved.host.clone(),
-            token: resolved.token.clone(),
-            path: full_path.clone(),
-            password: resolved.password.clone().unwrap_or_default(),
-            page: page as u64,
-            per_page: page_size as u64,
-            refresh: false,
-        };
+        let page = u64::try_from(query.page.max(1)).unwrap_or(u64::MAX);
+        let per_page = u64::try_from(query.page_size.max(1)).unwrap_or(u64::MAX);
+        let password = resolved.password.clone().unwrap_or_default();
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
-        // Call fs_list
-        let list_resp = client.fs_list(list_req).await?;
-
-        // Convert to DirectoryItem list
-        let items: Vec<DirectoryItem> = list_resp
-            .content
-            .into_iter()
-            .filter_map(|file_item| {
-                // Determine item type
-                let item_type = if file_item.is_dir {
-                    ItemType::Playlist
-                } else {
-                    // Check if it's a media file (video or audio)
-                    let ext = file_item
-                        .name
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or("")
-                        .to_lowercase();
-                    match ext.as_str() {
-                        "mp4" | "mkv" | "avi" | "mov" | "flv" | "webm" | "m4v" | "wmv" | "m3u8"
-                        | "mp3" | "flac" | "wav" | "aac" | "m4a" | "ogg" => ItemType::Media,
-                        _ => return None, // Skip non-media files
-                    }
-                };
-
-                // Construct relative path for this item
-                let item_relative_path = if let Some(rel) = relative_path.as_deref() {
-                    format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
-                } else {
-                    format!("/{}", file_item.name)
-                };
-
-                Some(DirectoryItem {
-                    name: file_item.name,
-                    item_type,
-                    target: Self::encode_target(&item_relative_path).ok()?,
-                    size: Some(file_item.size),
-                    thumbnail: if file_item.thumb.is_empty() {
-                        None
-                    } else {
-                        Some(file_item.thumb)
-                    },
-                    modified_at: Some(alist_modified_to_i64(file_item.modified)),
+        let items: Vec<DirectoryItem> = if let Some(keywords) = search {
+            let search_resp = client
+                .fs_search(synctv_media_providers::grpc::alist::FsSearchReq {
+                    host: resolved.host.clone(),
+                    token: resolved.token.clone(),
+                    parent: full_path.clone(),
+                    keywords: keywords.to_string(),
+                    scope: 0,
+                    page,
+                    per_page,
+                    password,
                 })
-            })
-            .collect();
+                .await?;
+
+            search_resp
+                .content
+                .into_iter()
+                .filter_map(|file_item| {
+                    let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                    let full_item_path = join_alist_path(&file_item.parent, &file_item.name);
+                    let item_relative_path =
+                        alist_relative_path_from_base(&resolved.path, &full_item_path)?;
+
+                    Some(DirectoryItem {
+                        name: file_item.name,
+                        item_type,
+                        target: Self::encode_target(&item_relative_path).ok()?,
+                        size: Some(file_item.size),
+                        thumbnail: None,
+                        modified_at: None,
+                    })
+                })
+                .collect()
+        } else {
+            let list_resp = client
+                .fs_list(synctv_media_providers::grpc::alist::FsListReq {
+                    host: resolved.host.clone(),
+                    token: resolved.token.clone(),
+                    path: full_path.clone(),
+                    password,
+                    page,
+                    per_page,
+                    refresh: query.refresh,
+                })
+                .await?;
+
+            list_resp
+                .content
+                .into_iter()
+                .filter_map(|file_item| {
+                    let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                    let item_relative_path = if let Some(rel) = relative_path.as_deref() {
+                        format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
+                    } else {
+                        format!("/{}", file_item.name)
+                    };
+
+                    Some(DirectoryItem {
+                        name: file_item.name,
+                        item_type,
+                        target: Self::encode_target(&item_relative_path).ok()?,
+                        size: Some(file_item.size),
+                        thumbnail: if file_item.thumb.is_empty() {
+                            None
+                        } else {
+                            Some(file_item.thumb)
+                        },
+                        modified_at: Some(alist_modified_to_i64(file_item.modified)),
+                    })
+                })
+                .collect()
+        };
 
         Ok(items)
     }
@@ -1195,15 +1423,18 @@ impl DynamicFolder for AlistProvider {
         });
         let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
-        let mut page = 0;
+        let mut page = 1;
         loop {
             let page_items = self
                 .list_playlist(
                     ctx,
                     playlist,
                     parent_target.as_deref(),
-                    page,
-                    LIST_PAGE_SIZE,
+                    DynamicListQuery {
+                        page,
+                        page_size: LIST_PAGE_SIZE,
+                        ..DynamicListQuery::default()
+                    },
                 )
                 .await?;
             if page_items.is_empty() {
@@ -1286,7 +1517,7 @@ impl DynamicFolder for AlistProvider {
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 let mut found_current = false;
-                let mut current_page = 0;
+                let mut current_page = 1;
 
                 loop {
                     let page_items = self
@@ -1294,8 +1525,11 @@ impl DynamicFolder for AlistProvider {
                             ctx,
                             playlist,
                             parent_target.as_deref(),
-                            current_page,
-                            LIST_PAGE_SIZE,
+                            DynamicListQuery {
+                                page: current_page,
+                                page_size: LIST_PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
                         )
                         .await?;
 
@@ -1359,7 +1593,16 @@ impl DynamicFolder for AlistProvider {
                     });
                     let parent_target = parent_path.map(Self::encode_target).transpose()?;
                     let first_page = self
-                        .list_playlist(ctx, playlist, parent_target.as_deref(), 0, LIST_PAGE_SIZE)
+                        .list_playlist(
+                            ctx,
+                            playlist,
+                            parent_target.as_deref(),
+                            DynamicListQuery {
+                                page: 1,
+                                page_size: LIST_PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
+                        )
                         .await?;
                     if let Some(first) = first_page
                         .iter()
@@ -1392,15 +1635,18 @@ impl DynamicFolder for AlistProvider {
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 let mut all_items = Vec::with_capacity(SHUFFLE_MAX_ITEMS);
-                let mut page = 0;
+                let mut page = 1;
                 loop {
                     let page_items = self
                         .list_playlist(
                             ctx,
                             playlist,
                             parent_target.as_deref(),
-                            page,
-                            LIST_PAGE_SIZE,
+                            DynamicListQuery {
+                                page,
+                                page_size: LIST_PAGE_SIZE,
+                                ..DynamicListQuery::default()
+                            },
                         )
                         .await?;
                     let is_last_page = page_items.len() < LIST_PAGE_SIZE;
@@ -1482,8 +1728,8 @@ mod tests {
     use std::sync::Mutex;
     use synctv_media_providers::alist::{AlistError, AlistInterface};
     use synctv_media_providers::grpc::alist::{
-        FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp, FsSearchReq,
-        FsSearchResp, LoginReq, MeReq, MeResp,
+        fs_list_resp, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
+        FsSearchReq, FsSearchResp, LoginReq, MeReq, MeResp,
     };
 
     struct FakeAlistSubtitleClient {
@@ -1538,6 +1784,66 @@ mod tests {
 
         async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
             Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+    }
+
+    struct FakeAlistSearchUnavailableClient;
+
+    #[async_trait]
+    impl AlistInterface for FakeAlistSearchUnavailableClient {
+        async fn fs_get(&self, _request: FsGetReq) -> Result<FsGetResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, AlistError> {
+            assert_eq!(request.path, "/local");
+            assert_eq!(request.page, 2);
+            assert_eq!(request.per_page, 10);
+            Ok(FsListResp {
+                content: vec![
+                    fs_list_resp::FsListContent {
+                        name: "video.mp4".to_string(),
+                        size: 15,
+                        is_dir: false,
+                        modified: 0,
+                        sign: String::new(),
+                        thumb: String::new(),
+                        r#type: 2,
+                    },
+                    fs_list_resp::FsListContent {
+                        name: "folder".to_string(),
+                        size: 0,
+                        is_dir: true,
+                        modified: 0,
+                        sign: String::new(),
+                        thumb: String::new(),
+                        r#type: 1,
+                    },
+                ],
+                total: 2,
+                readme: String::new(),
+                write: false,
+                provider: "Local".to_string(),
+            })
+        }
+
+        async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
+            Err(AlistError::InvalidConfig("not implemented".to_string()))
+        }
+
+        async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
+            Err(AlistError::Api {
+                code: 404,
+                message: "search not available".to_string(),
+            })
         }
 
         async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
@@ -1650,6 +1956,41 @@ mod tests {
             err.to_string().contains("credential_owner_id"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_fs_search_falls_back_to_unfiltered_list_when_upstream_search_is_unavailable() {
+        let default_clients = ProviderClientManager::new();
+        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
+            Arc::new(FakeAlistSearchUnavailableClient),
+            default_clients.local_bilibili_client(),
+            default_clients.local_emby_client(),
+        ));
+        let provider =
+            AlistProvider::with_client_manager(fake_provider_instance_manager(), client_manager);
+
+        let response = provider
+            .fs_search(
+                synctv_media_providers::grpc::alist::FsSearchReq {
+                    host: "http://alist.example.test".to_string(),
+                    token: "token".to_string(),
+                    parent: "/local".to_string(),
+                    keywords: "does-not-exist".to_string(),
+                    scope: 1,
+                    page: 2,
+                    per_page: 10,
+                    password: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect("search unavailable should fall back to unfiltered list");
+
+        assert_eq!(response.total, 2);
+        assert_eq!(response.content.len(), 2);
+        assert_eq!(response.content[0].parent, "/local");
+        assert_eq!(response.content[0].name, "video.mp4");
+        assert_eq!(response.content[1].name, "folder");
     }
 
     #[tokio::test]
@@ -1830,6 +2171,7 @@ mod tests {
             revision,
             "/media/movie.mkv",
             None,
+            "default",
         );
         let password_a = AlistProvider::playback_cache_key(
             "server-1",
@@ -1837,6 +2179,7 @@ mod tests {
             revision,
             "/media/movie.mkv",
             Some("folder-a"),
+            "default",
         );
         let password_b = AlistProvider::playback_cache_key(
             "server-1",
@@ -1844,6 +2187,7 @@ mod tests {
             revision,
             "/media/movie.mkv",
             Some("folder-b"),
+            "default",
         );
 
         assert_ne!(
@@ -1865,6 +2209,7 @@ mod tests {
             revision,
             "/media/movie.mkv",
             None,
+            "default",
         );
         let owner_b = AlistProvider::playback_cache_key(
             "server-1",
@@ -1872,6 +2217,7 @@ mod tests {
             revision,
             "/media/movie.mkv",
             None,
+            "default",
         );
 
         assert_ne!(
@@ -1888,6 +2234,7 @@ mod tests {
             "credential-1:1000",
             "/media/movie.mkv",
             None,
+            "default",
         );
         let second = AlistProvider::playback_cache_key(
             "server-1",
@@ -1895,11 +2242,37 @@ mod tests {
             "credential-1:2000",
             "/media/movie.mkv",
             None,
+            "default",
         );
 
         assert_ne!(
             first, second,
             "Credential changes must invalidate Alist playback cache entries"
+        );
+    }
+
+    #[test]
+    fn test_alist_playback_cache_key_includes_playback_profile() {
+        let default_profile = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:1000",
+            "/media/movie.mkv",
+            None,
+            "default",
+        );
+        let constrained_profile = AlistProvider::playback_cache_key(
+            "server-1",
+            "owner-a",
+            "credential-1:1000",
+            "/media/movie.mkv",
+            None,
+            "delivery=auto:bitrate=1500000",
+        );
+
+        assert_ne!(
+            default_profile, constrained_profile,
+            "Playback profile changes must not reuse Alist playback cache entries"
         );
     }
 
@@ -1968,7 +2341,8 @@ mod tests {
             height: 1080,
         };
 
-        let result = AlistProvider::build_playback_result(&file_info, Some(&video_preview), None);
+        let result =
+            AlistProvider::build_playback_result(&file_info, Some(&video_preview), None, None);
 
         assert_eq!(result.default_mode, "transcoded_HD");
         let transcoded = result
@@ -2011,6 +2385,118 @@ mod tests {
     }
 
     #[test]
+    fn test_alist_playback_result_uses_profile_for_default_mode_and_subtitles() {
+        let file_info = AlistFileInfo {
+            name: "movie.mkv".to_string(),
+            size: 42,
+            is_dir: false,
+            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
+            provider: "AliyundriveOpen".to_string(),
+            thumb: String::new(),
+            related: vec![AlistRelatedFile {
+                name: "movie.en.srt".to_string(),
+                is_dir: false,
+                raw_url: "https://alist.example.com/d/movie.en.srt".to_string(),
+                provider: "AliyundriveOpen".to_string(),
+            }],
+        };
+        let video_preview = AlistVideoPreview {
+            transcoding_tasks: vec![
+                AlistTranscodingTask {
+                    template_name: "FHD".to_string(),
+                    template_id: "FHD".to_string(),
+                    template_width: 1920,
+                    template_height: 1080,
+                    stage: "finished".to_string(),
+                    status: "finished".to_string(),
+                    url: "https://cdn.example.com/movie-fhd.m3u8".to_string(),
+                },
+                AlistTranscodingTask {
+                    template_name: "SD".to_string(),
+                    template_id: "SD".to_string(),
+                    template_width: 640,
+                    template_height: 360,
+                    stage: "finished".to_string(),
+                    status: "finished".to_string(),
+                    url: "https://cdn.example.com/movie-sd.m3u8".to_string(),
+                },
+            ],
+            subtitle_tasks: Vec::new(),
+            drive_id: String::new(),
+            file_id: String::new(),
+            provider: "AliyundriveOpen".to_string(),
+            category: "live_transcoding".to_string(),
+            duration: 0.0,
+            width: 1920,
+            height: 1080,
+        };
+        let profile = PlaybackClientProfile {
+            delivery_preference: PlaybackDeliveryPreference::Transcode,
+            max_streaming_bitrate: Some(1_500_000),
+            subtitle_preference: PlaybackSubtitlePreference::None,
+            ..PlaybackClientProfile::default()
+        };
+
+        let result = AlistProvider::build_playback_result(
+            &file_info,
+            Some(&video_preview),
+            None,
+            Some(&profile),
+        );
+
+        assert_eq!(result.default_mode, "transcoded_SD");
+        assert!(result
+            .playback_infos
+            .values()
+            .all(|info| info.subtitles.is_empty()));
+    }
+
+    #[test]
+    fn test_alist_playback_result_honors_direct_play_preference() {
+        let file_info = AlistFileInfo {
+            name: "movie.mp4".to_string(),
+            size: 42,
+            is_dir: false,
+            raw_url: "https://alist.example.com/d/movie.mp4".to_string(),
+            provider: "AliyundriveOpen".to_string(),
+            thumb: String::new(),
+            related: Vec::new(),
+        };
+        let video_preview = AlistVideoPreview {
+            transcoding_tasks: vec![AlistTranscodingTask {
+                template_name: "FHD".to_string(),
+                template_id: "FHD".to_string(),
+                template_width: 1920,
+                template_height: 1080,
+                stage: "finished".to_string(),
+                status: "finished".to_string(),
+                url: "https://cdn.example.com/movie-fhd.m3u8".to_string(),
+            }],
+            subtitle_tasks: Vec::new(),
+            drive_id: String::new(),
+            file_id: String::new(),
+            provider: "AliyundriveOpen".to_string(),
+            category: "live_transcoding".to_string(),
+            duration: 0.0,
+            width: 1920,
+            height: 1080,
+        };
+        let profile = PlaybackClientProfile {
+            delivery_preference: PlaybackDeliveryPreference::DirectPlay,
+            ..PlaybackClientProfile::default()
+        };
+
+        let result = AlistProvider::build_playback_result(
+            &file_info,
+            Some(&video_preview),
+            None,
+            Some(&profile),
+        );
+
+        assert_eq!(result.default_mode, "direct");
+    }
+
+    #[test]
     fn test_alist_playback_result_degrades_when_video_preview_fails() {
         let file_info = AlistFileInfo {
             name: "movie.mp4".to_string(),
@@ -2022,7 +2508,8 @@ mod tests {
             related: vec![],
         };
 
-        let result = AlistProvider::build_playback_result(&file_info, None, Some("not support"));
+        let result =
+            AlistProvider::build_playback_result(&file_info, None, Some("not support"), None);
 
         assert_eq!(result.default_mode, "direct");
         assert!(result.playback_infos.contains_key("direct"));

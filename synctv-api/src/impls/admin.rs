@@ -14,7 +14,7 @@ use synctv_core::models::{
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
     RoomId, SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
 };
-use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
     AuditService, AuthorizedAdminActor, EmailService, RemoteProviderManager, RoomService,
     SettingsRegistry, SettingsService, UserService,
@@ -3864,6 +3864,61 @@ impl AdminApiImpl {
         })
     }
 
+    pub async fn update_playback(
+        &self,
+        room_id: &str,
+        req: crate::proto::client::UpdatePlaybackRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        let rid = crate::room_id_validation::parse_room_id(room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let command = crate::impls::client::build_update_playback_request(req)?;
+        let actor = self.require_authorized_admin_actor(admin_user_id).await?;
+
+        match command {
+            crate::impls::client::PlaybackUpdateCommand::Switch {
+                media_id,
+                playlist_id,
+                target,
+            } => {
+                self.room_service
+                    .admin_start_playback_as(rid.clone(), &actor, media_id, playlist_id, target)
+                    .await
+            }
+            crate::impls::client::PlaybackUpdateCommand::Patch {
+                playing,
+                position,
+                speed,
+                version,
+            } => {
+                self.room_service
+                    .admin_update_playback_as(
+                        rid.clone(),
+                        &actor,
+                        playing,
+                        position,
+                        speed,
+                        version,
+                    )
+                    .await
+            }
+        }
+        .map_err(ApiError::from)?;
+
+        self.room_service.touch_room_activity(rid.clone()).await;
+
+        tracing::info!(
+            room_id = %rid.as_str(),
+            admin_user_id = %admin_user_id.as_str(),
+            ip_address = ctx.ip_address.as_deref().unwrap_or(""),
+            user_agent = ctx.user_agent.as_deref().unwrap_or(""),
+            "Admin updated playback"
+        );
+
+        self.get_playback(room_id, admin_user_id, None).await
+    }
+
     pub async fn get_playlist(
         &self,
         room_id: &str,
@@ -4418,8 +4473,14 @@ impl AdminApiImpl {
                     admin_user_id.clone(),
                     &playlist_id,
                     (!req.target.is_empty()).then_some(req.target.as_slice()),
-                    page,
-                    page_size,
+                    DynamicListQuery {
+                        page,
+                        page_size,
+                        search: crate::impls::client::media::normalize_non_empty_filter(
+                            &req.search,
+                        ),
+                        refresh: req.refresh,
+                    },
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -6847,6 +6908,7 @@ mod tests {
                     sort_by: crate::proto::client::MediaListSortBy::Unspecified as i32,
                     sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
                     availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
                 },
                 &admin_user.id,
             )
@@ -10562,6 +10624,7 @@ mod tests {
                     sort_by: crate::proto::client::MediaListSortBy::Position as i32,
                     sort_direction: crate::proto::client::SortDirection::Asc as i32,
                     availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
                 },
                 &global_admin.id,
             )
@@ -11702,6 +11765,7 @@ mod tests {
                     sort_by: crate::proto::client::MediaListSortBy::Name as i32,
                     sort_direction: crate::proto::client::SortDirection::Asc as i32,
                     availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
                 },
                 &global_admin.id,
             )

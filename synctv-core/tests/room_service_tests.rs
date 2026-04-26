@@ -31,8 +31,6 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 
-// Helper functions for room tests
-// TODO: Consider moving to room_test_helpers.rs for reuse
 fn assert_f64_eq(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < f64::EPSILON,
@@ -91,6 +89,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -416,7 +418,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .await
         .unwrap();
 
-    assert_eq!(member.status, MemberStatus::Pending);
+    assert_eq!(member.status, MemberStatus::Active);
     assert!(
         members.is_empty(),
         "pending joins must not broadcast active members"
@@ -426,9 +428,25 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .member_service()
         .get_member(&room.id, &joiner.id)
         .await
-        .unwrap()
-        .expect("pending membership should exist");
-    assert_eq!(stored_member.status, MemberStatus::Pending);
+        .unwrap();
+    assert!(
+        stored_member.is_none(),
+        "pending join requests must not create active membership rows"
+    );
+    let pending_request_exists = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1 FROM room_join_requests
+            WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL
+        )
+        ",
+    )
+    .bind(room.id.as_str())
+    .bind(joiner.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(pending_request_exists);
 }
 
 #[tokio::test]
@@ -513,13 +531,28 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .join_room(room.id.clone(), joiner.id.clone(), None)
         .await
         .unwrap();
-    assert_eq!(pending_member.status, MemberStatus::Pending);
+    assert_eq!(pending_member.status, MemberStatus::Active);
+
+    let request_id = sqlx::query_scalar::<_, String>(
+        r"
+        SELECT id
+        FROM room_join_requests
+        WHERE room_id = $1
+          AND user_id = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(room.id.as_str())
+    .bind(joiner.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     room_service
-        .reject_member(
+        .reject_join_request(
             room.id.clone(),
             creator.id.clone(),
-            joiner.id.clone(),
+            request_id.as_str(),
             Some("not now"),
         )
         .await
@@ -531,22 +564,30 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
             .await
             .unwrap()
             .is_none(),
-        "rejected memberships must not appear as active memberships"
+        "rejected join requests must not create active memberships"
     );
-
-    let rejected = member_repo
-        .get_any(&room.id, &joiner.id)
-        .await
-        .unwrap()
-        .expect("rejected membership should remain auditable");
-    assert_eq!(rejected.status, MemberStatus::Rejected);
-    assert!(rejected.left_at.is_some());
+    let rejected_request_exists = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1 FROM room_join_requests
+            WHERE room_id = $1
+              AND user_id = $2
+              AND reviewed_at IS NOT NULL
+        )
+        ",
+    )
+    .bind(room.id.as_str())
+    .bind(joiner.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(rejected_request_exists);
 
     let (_joined_room, pending_again, _) = room_service
         .join_room(room.id.clone(), joiner.id.clone(), None)
         .await
         .unwrap();
-    assert_eq!(pending_again.status, MemberStatus::Pending);
+    assert_eq!(pending_again.status, MemberStatus::Active);
 }
 
 #[tokio::test]
@@ -889,10 +930,8 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
         .await
         .unwrap();
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(&creator.id, None, Some("room service test".to_string()))
         .await
         .unwrap();
 
@@ -935,10 +974,8 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(&creator.id, None, Some("room service test".to_string()))
         .await
         .unwrap();
 
@@ -1782,11 +1819,8 @@ async fn test_ban_member_invalidates_permission_cache() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        member.status,
-        MemberStatus::Banned,
-        "Member should be banned"
-    );
+    assert!(member.is_banned(), "Member should have an active ban");
+    assert_eq!(member.status, MemberStatus::Left);
 
     // Verify that get_user_permissions returns error for banned user
     let perms_result = perm_service
@@ -1797,13 +1831,14 @@ async fn test_ban_member_invalidates_permission_cache() {
         "Banned user should not have permissions"
     );
 
-    // Verify member status is Banned
+    // Verify member is still auditable as left with an active ban.
     let member = member_repo
         .get_any(&room.id, &target.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert!(member.is_banned());
+    assert_eq!(member.status, MemberStatus::Left);
 }
 
 #[tokio::test]
@@ -1851,7 +1886,8 @@ async fn test_unban_member_restores_permission_access() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert!(member.is_banned());
+    assert_eq!(member.status, MemberStatus::Left);
 
     // Unban
     member_service
@@ -1859,13 +1895,14 @@ async fn test_unban_member_restores_permission_access() {
         .await
         .unwrap();
 
-    // Verify unbanned - status should not be Banned
+    // Verify unbanned; unban clears moderation state but does not implicitly rejoin.
     let member = member_repo
-        .get(&room.id, &target.id)
+        .get_any(&room.id, &target.id)
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(member.status, MemberStatus::Banned);
+    assert!(!member.is_banned());
+    assert_eq!(member.status, MemberStatus::Left);
 
     // User should be able to join again
     let result = room_service
@@ -5237,7 +5274,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
 
     room_service
         .user_service()
-        .set_user_status(&inactive_owner.id, UserStatus::Banned)
+        .ban_user_and_cleanup_memberships(&inactive_owner.id)
         .await
         .unwrap();
 
@@ -5312,7 +5349,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 
     room_service
         .user_service()
-        .set_user_status(&inactive_owner.id, UserStatus::Banned)
+        .ban_user_and_cleanup_memberships(&inactive_owner.id)
         .await
         .unwrap();
 
@@ -6287,10 +6324,12 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
     admin.role = UserRole::Admin;
     let admin = user_repo.update(&admin, 0).await.unwrap();
 
-    // Ban the creator by setting status to Banned (3)
-    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
-        .bind(creator.id.as_str())
-        .execute(&pool)
+    user_repo
+        .ban(
+            &creator.id,
+            Some(&admin.id),
+            Some("creator banned by admin".to_string()),
+        )
         .await
         .unwrap();
 
@@ -6928,5 +6967,6 @@ async fn test_ban_member_completes_quickly() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert!(member.is_banned());
+    assert_eq!(member.status, MemberStatus::Left);
 }

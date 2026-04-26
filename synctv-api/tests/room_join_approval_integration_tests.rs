@@ -29,6 +29,10 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: now,
@@ -125,8 +129,8 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
 
     assert_eq!(
         response.membership_status,
-        MemberStatus::Pending as i32,
-        "join response must expose the pending membership state when approval is required"
+        MemberStatus::Active as i32,
+        "join response returns the synthetic requester member separately from review status"
     );
     assert!(
         response.requires_approval,

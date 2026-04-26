@@ -1,12 +1,12 @@
 use synctv_proto::admin::{
-    AddAdminRequest, ApproveRoomRequest, ApproveUserRequest, BanRoomRequest, BanUserRequest,
+    AddAdminRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest, BanUserRequest,
     BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
     DeleteRoomRequest, DeleteUserRequest, GetRoomMembersRequest, GetRoomRequest,
     GetRoomSettingsRequest, GetSettingsGroupRequest, GetUserRequest, GetUserRoomsRequest,
     KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListRoomsRequest,
-    ListUsersRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomPathRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-    UpdateUserRoleRequest, UserPathRequest,
+    ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
+    ResetRoomSettingsRequest, RoomPathRequest, UnbanRoomRequest, UnbanUserRequest,
+    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateUserRoleRequest, UserPathRequest,
 };
 
 #[test]
@@ -78,14 +78,14 @@ fn test_admin_unban_user_request_rejects_invalid_user_id() {
 }
 
 #[test]
-fn test_admin_approve_user_request_rejects_invalid_user_id() {
-    let request = ApproveUserRequest {
-        user_id: "bad-user".to_string(),
+fn test_admin_approve_user_request_rejects_invalid_request_id() {
+    let request = ApproveUserRegistrationReviewRequest {
+        request_id: "bad-user".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("user_id"), "{message}");
+    assert!(message.contains("request_id"), "{message}");
 }
 
 #[test]
@@ -114,6 +114,7 @@ fn test_admin_list_users_request_rejects_too_long_search() {
         status: 0,
         role: 0,
         search: "a".repeat(101),
+        is_banned: None,
         sort_by: 0,
         sort_direction: 0,
     };
@@ -266,14 +267,15 @@ fn test_admin_unban_room_request_rejects_invalid_room_id() {
 }
 
 #[test]
-fn test_admin_approve_room_request_rejects_invalid_room_id() {
-    let request = ApproveRoomRequest {
-        room_id: "bad-room".to_string(),
+fn test_admin_approve_room_request_rejects_invalid_request_id() {
+    let request = RejectRoomCreationReviewRequest {
+        request_id: "bad-room".to_string(),
+        reason: String::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("room_id"), "{message}");
+    assert!(message.contains("request_id"), "{message}");
 }
 
 #[test]
@@ -321,6 +323,7 @@ fn test_admin_get_room_members_request_rejects_too_long_search() {
         search: "a".repeat(101),
         role: 0,
         status: 0,
+        is_banned: None,
         sort_by: 0,
         sort_direction: 0,
     };

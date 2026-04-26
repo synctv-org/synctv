@@ -1,14 +1,14 @@
 //! Admin error message consistency tests
 //!
 //! These tests verify that admin authentication errors do not leak information
-//! about user existence or status. All authentication failures should return
+//! about user existence or moderation state. All authentication failures should return
 //! the same error message to prevent user enumeration attacks.
 //!
 //! Issue: validate_admin_auth had inconsistent error messages:
 //! - "Failed to verify user" when user lookup fails (line 49)
-//! - "Authentication failed" when user is banned/deleted/pending (line 54)
+//! - "Authentication failed" when user is banned/deleted (line 54)
 //!
-//! Fix: All user existence/status authentication failures should return
+//! Fix: All user existence/moderation authentication failures should return
 //! "Authentication failed" to prevent information disclosure.
 //!
 //! Note: Password change errors ("Token invalidated due to password change...")
@@ -26,7 +26,7 @@ use synctv_api::impls::ApiError;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{UserId, UserStatus},
+    models::UserId,
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, UserService,
@@ -130,9 +130,8 @@ async fn test_banned_user_returns_unified_error_message() {
         .await
         .expect("Failed to create user");
 
-    // Ban the user
     user_service
-        .set_user_status(&user.id, UserStatus::Banned)
+        .ban_user_and_cleanup_memberships(&user.id)
         .await
         .expect("Failed to ban user");
 
@@ -185,44 +184,6 @@ async fn test_deleted_user_returns_unified_error_message() {
     assert_eq!(
         error_message, UNIFIED_AUTH_ERROR_MESSAGE,
         "Deleted user should return unified error message 'Authentication failed', \
-         got '{error_message}' instead"
-    );
-}
-
-/// Integration test: Verify pending user returns unified error message
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_pending_user_returns_unified_error_message() {
-    let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
-
-    let (user, _, _) = user_service
-        .register(
-            "pending_test_user".to_string(),
-            Some("pending@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .expect("Failed to create user");
-
-    // Set status to Pending (registration might auto-approve, so we force it)
-    user_service
-        .set_user_status(&user.id, UserStatus::Pending)
-        .await
-        .expect("Failed to set pending status");
-
-    let token_iat = Utc::now().timestamp();
-
-    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
-
-    assert!(result.is_err(), "Pending user should fail auth");
-
-    let error_message = get_authentication_error_message(result);
-
-    assert_eq!(
-        error_message, UNIFIED_AUTH_ERROR_MESSAGE,
-        "Pending user should return unified error message 'Authentication failed', \
          got '{error_message}' instead"
     );
 }
@@ -284,7 +245,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .await
         .unwrap();
     user_service
-        .set_user_status(&banned_user.id, UserStatus::Banned)
+        .ban_user_and_cleanup_memberships(&banned_user.id)
         .await
         .unwrap();
     let result = validate_admin_auth(&user_service, banned_user.id, 0, token_iat).await;
@@ -302,23 +263,6 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .unwrap();
     user_service.delete_user(&deleted_user.id).await.unwrap();
     let result = validate_admin_auth(&user_service, deleted_user.id, 0, token_iat).await;
-    error_messages.push(get_authentication_error_message(result));
-
-    // Scenario 4: Pending user
-    let (pending_user, _, _) = user_service
-        .register(
-            "pending_for_comparison".to_string(),
-            Some("pending_comp@example.com".to_string()),
-            "StrongPass1".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-    user_service
-        .set_user_status(&pending_user.id, UserStatus::Pending)
-        .await
-        .unwrap();
-    let result = validate_admin_auth(&user_service, pending_user.id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));
 
     // Verify all error messages are identical

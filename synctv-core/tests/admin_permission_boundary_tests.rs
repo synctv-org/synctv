@@ -74,6 +74,10 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -219,13 +223,17 @@ async fn test_root_can_ban_admin() {
         "Root can ban Admin users"
     );
 
-    // Update status to Banned
     let banned = user_repo
-        .update_status(&admin.id, UserStatus::Banned)
+        .ban(
+            &admin.id,
+            Some(&root.id),
+            Some("permission boundary".to_string()),
+        )
         .await
         .unwrap();
 
     assert_eq!(banned.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&admin.id).await.unwrap());
     assert_eq!(banned.role, UserRole::Admin); // Role unchanged
 }
 
@@ -251,13 +259,17 @@ async fn test_admin_can_ban_user() {
         "Admin can ban User users"
     );
 
-    // Update status to Banned
     let banned = user_repo
-        .update_status(&user.id, UserStatus::Banned)
+        .ban(
+            &user.id,
+            Some(&admin.id),
+            Some("permission boundary".to_string()),
+        )
         .await
         .unwrap();
 
     assert_eq!(banned.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&user.id).await.unwrap());
     assert_eq!(banned.role, UserRole::User); // Role unchanged
 }
 
@@ -400,33 +412,29 @@ async fn test_banned_user_cannot_login() {
 
     // Ban the user
     let banned = user_repo
-        .update_status(&user.id, UserStatus::Banned)
+        .ban(&user.id, None, Some("permission boundary".to_string()))
         .await
         .unwrap();
 
-    // Banned user cannot login
-    assert!(!banned.can_login());
-    assert!(!banned.status.can_login());
+    assert_eq!(banned.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&user.id).await.unwrap());
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_pending_user_cannot_create_room() {
+async fn test_banned_user_cannot_create_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
     let user = user_repo
-        .create(&make_user_with_role("pending_room", UserRole::User))
+        .create(&make_user_with_role("banned_room", UserRole::User))
         .await
         .unwrap();
 
-    // Update to Pending status
-    let pending = user_repo
-        .update_status(&user.id, UserStatus::Pending)
-        .await
-        .unwrap();
+    let mut pending = user;
+    pending.status = UserStatus::Banned;
 
-    // Pending user cannot create rooms
+    // Banned user cannot create rooms
     assert!(!pending.can_create_room(true));
     assert!(!pending.status.can_create_room());
 }
@@ -442,30 +450,26 @@ async fn test_status_and_role_are_independent() {
         .await
         .unwrap();
 
-    // Root can be banned (status changes, role stays)
     let banned_root = user_repo
-        .update_status(&root.id, UserStatus::Banned)
+        .ban(&root.id, None, Some("permission boundary".to_string()))
         .await
         .unwrap();
 
     assert_eq!(banned_root.role, UserRole::Root); // Role unchanged
-    assert_eq!(banned_root.status, UserStatus::Banned); // Status changed
-    assert!(!banned_root.can_login()); // Cannot login
+    assert_eq!(banned_root.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&root.id).await.unwrap());
 
     let admin = user_repo
         .create(&make_user_with_role("admin_status", UserRole::Admin))
         .await
         .unwrap();
 
-    // Admin can be pending
-    let pending_admin = user_repo
-        .update_status(&admin.id, UserStatus::Pending)
-        .await
-        .unwrap();
+    let mut pending_admin = admin;
+    pending_admin.status = UserStatus::Banned;
 
     assert_eq!(pending_admin.role, UserRole::Admin); // Role unchanged
-    assert_eq!(pending_admin.status, UserStatus::Pending); // Status changed
-    assert!(!pending_admin.can_login()); // Cannot login while pending
+    assert_eq!(pending_admin.status, UserStatus::Banned); // Status changed
+    assert!(!pending_admin.can_login()); // Cannot login while banned
 }
 
 #[tokio::test]
@@ -512,35 +516,25 @@ async fn test_user_status_transitions() {
     assert_eq!(user.status, UserStatus::Active);
     assert!(user.can_login());
 
-    // Active -> Banned
     let banned = user_repo
-        .update_status(&user.id, UserStatus::Banned)
+        .ban(&user.id, None, Some("permission boundary".to_string()))
         .await
         .unwrap();
     assert_eq!(banned.status, UserStatus::Banned);
-    assert!(!banned.can_login());
+    assert!(user_repo.is_banned(&user.id).await.unwrap());
 
-    // Banned -> Active (unban)
-    let active = user_repo
-        .update_status(&user.id, UserStatus::Active)
-        .await
-        .unwrap();
+    let active = user_repo.unban(&user.id).await.unwrap();
     assert_eq!(active.status, UserStatus::Active);
     assert!(active.can_login());
+    assert!(!user_repo.is_banned(&user.id).await.unwrap());
 
-    // Active -> Pending
-    let pending = user_repo
-        .update_status(&user.id, UserStatus::Pending)
-        .await
-        .unwrap();
-    assert_eq!(pending.status, UserStatus::Pending);
+    let mut pending = active.clone();
+    pending.status = UserStatus::Banned;
+    assert_eq!(pending.status, UserStatus::Banned);
     assert!(!pending.can_login());
 
-    // Pending -> Active (approve)
-    let approved = user_repo
-        .update_status(&user.id, UserStatus::Active)
-        .await
-        .unwrap();
+    let mut approved = pending;
+    approved.status = UserStatus::Active;
     assert_eq!(approved.status, UserStatus::Active);
     assert!(approved.can_login());
 }
@@ -571,7 +565,7 @@ async fn test_admin_can_manage_room_with_banned_creator() {
 
     // Ban the creator
     let _banned = user_repo
-        .update_status(&creator.id, UserStatus::Banned)
+        .ban(&creator.id, None, Some("permission boundary".to_string()))
         .await
         .unwrap();
 

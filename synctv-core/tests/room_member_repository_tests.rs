@@ -40,6 +40,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -52,6 +56,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         created_by: owner.clone(),
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -127,7 +132,7 @@ async fn test_add_with_options_capacity_at_max_members() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_with_options_pending_members_do_not_consume_capacity() {
+async fn test_add_with_options_left_members_do_not_consume_capacity() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -142,18 +147,19 @@ async fn test_add_with_options_pending_members_do_not_consume_capacity() {
         .await
         .unwrap();
 
-    let pending_user = user_repo
-        .create(&make_user("user_pending_capacity"))
+    let left_user = user_repo
+        .create(&make_user("user_left_capacity"))
         .await
         .unwrap();
-    let pending_member = RoomMember {
-        status: MemberStatus::Pending,
-        ..make_member(room.id.clone(), pending_user.id.clone(), RoomRole::Member)
-    };
+    let departed_member = make_member(room.id.clone(), left_user.id.clone(), RoomRole::Member);
     member_repo
-        .add_with_options(&pending_member, &AddMemberOptions::new())
+        .add_with_options(&departed_member, &AddMemberOptions::new())
         .await
         .unwrap();
+    member_repo
+        .remove(&room.id, &left_user.id)
+        .await
+        .expect("fixture member should be marked left");
 
     let active_user = user_repo
         .create(&make_user("user_active_capacity"))
@@ -369,7 +375,8 @@ async fn test_ban_with_role_check_creator_can_ban_admin() {
         .await
         .unwrap();
 
-    assert_eq!(banned.status, MemberStatus::Banned);
+    assert_eq!(banned.status, MemberStatus::Left);
+    assert!(banned.is_banned());
     assert!(banned.banned_at.is_some());
     assert_eq!(banned.banned_reason, Some("test reason".to_string()));
 }
@@ -950,23 +957,21 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
         .create(&make_room("Beta Room", &owner.id))
         .await
         .unwrap();
-    let mut closed_room = room_repo
+    let closed_room = room_repo
         .create(&make_room("Gamma Room", &owner.id))
         .await
         .unwrap();
-    let mut banned_room = room_repo
+    let banned_room = room_repo
         .create(&make_room("Delta Room", &owner.id))
         .await
         .unwrap();
 
-    closed_room.status = RoomStatus::Closed;
     room_repo
-        .update(&closed_room, closed_room.version)
+        .update_status(&closed_room.id, RoomStatus::Closed)
         .await
         .unwrap();
-    banned_room.is_banned = true;
     room_repo
-        .update(&banned_room, banned_room.version)
+        .update_ban_status(&banned_room.id, true)
         .await
         .unwrap();
 
@@ -1062,29 +1067,35 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
         .await
         .unwrap();
 
-    let banned_member = RoomMember {
-        status: MemberStatus::Banned,
-        ..make_member(room.id.clone(), banned.id.clone(), RoomRole::Member)
-    };
-    member_repo.add(&banned_member).await.unwrap();
+    member_repo
+        .add(&make_member(
+            room.id.clone(),
+            banned.id.clone(),
+            RoomRole::Member,
+        ))
+        .await
+        .unwrap();
+    member_repo
+        .ban_member(&room.id, &banned.id, Some(&owner.id), None)
+        .await
+        .unwrap();
 
     let mut rejected_member = RoomMember {
-        status: MemberStatus::Rejected,
+        status: MemberStatus::Left,
         ..make_member(room.id.clone(), rejected.id.clone(), RoomRole::Member)
     };
     rejected_member.left_at = Some(Utc::now());
     sqlx::query(
         "INSERT INTO room_members (
-            room_id, user_id, role, status,
+            room_id, user_id, role,
             added_permissions, removed_permissions,
             admin_added_permissions, admin_removed_permissions,
             joined_at, left_at, version
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(room.id.as_str())
     .bind(rejected_member.user_id.as_str())
     .bind(rejected_member.role)
-    .bind(rejected_member.status)
     .bind(u64_to_i64(rejected_member.added_permissions))
     .bind(u64_to_i64(rejected_member.removed_permissions))
     .bind(u64_to_i64(rejected_member.admin_added_permissions))
@@ -1280,13 +1291,15 @@ async fn test_banned_by_restricts_user_delete() {
         .unwrap();
 
     // Verify banned_by is set
-    let banned_member: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT banned_by FROM room_members WHERE room_id = $1 AND user_id = $2")
-            .bind(room.id.as_str())
-            .bind(banned_user.id.as_str())
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
+    let banned_member: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT banned_by FROM room_member_bans
+             WHERE room_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(room.id.as_str())
+    .bind(banned_user.id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
     assert!(banned_member.is_some());
     assert_eq!(banned_member.unwrap().0, Some(admin.id.to_string()));
 
@@ -1337,12 +1350,11 @@ async fn test_update_permissions_after_member_left_should_fail() {
 
     // Member leaves the room - set left_at directly via SQL
     sqlx::query(
-        "UPDATE room_members SET left_at = CURRENT_TIMESTAMP, status = $3 \
+        "UPDATE room_members SET left_at = CURRENT_TIMESTAMP \
          WHERE room_id = $1 AND user_id = $2",
     )
     .bind(room.id.as_str())
     .bind(member_user.id.as_str())
-    .bind(MemberStatus::Left)
     .execute(&pool)
     .await
     .unwrap();

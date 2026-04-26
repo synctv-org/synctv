@@ -1032,7 +1032,7 @@ mod tests {
         let expected = [
             proto_enum_option(0, "unspecified"),
             proto_enum_option(1, "active"),
-            proto_enum_option(2, "pending"),
+            proto_enum_option(2, "closed"),
         ];
 
         assert_eq!(

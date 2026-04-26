@@ -952,7 +952,7 @@ mod tests {
 
         state
             .user_service
-            .set_user_status(&member.id, UserStatus::Banned)
+            .ban_user_and_cleanup_memberships(&member.id)
             .await
             .expect("ban user");
 

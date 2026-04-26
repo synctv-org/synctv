@@ -8,22 +8,17 @@ use super::permission::PermissionBits;
 use super::query::SortDirection;
 use crate::Error;
 
-/// Room lifecycle status (independent of ban state)
+/// Derived room lifecycle used by API filters and display.
 ///
-/// Status transitions:
-/// - Active ↔ Closed: Room creator or admin can toggle
-/// - Pending → Active: On first activity or explicit activation
-///
-/// Note: Banned state is tracked separately via `is_banned` field
-/// to allow unbanning without losing the previous status.
+/// The canonical database state is `rooms.closed_at`: `NULL` means active,
+/// non-`NULL` means closed. Creation review lives in `room_creation_requests`;
+/// moderation bans live in `room_bans`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum RoomStatus {
     #[default]
     Active,
-    Pending,
-    Rejected,
     Closed,
 }
 
@@ -32,15 +27,8 @@ impl RoomStatus {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Pending => "pending",
-            Self::Rejected => "rejected",
             Self::Closed => "closed",
         }
-    }
-
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
     }
 
     #[must_use]
@@ -49,83 +37,19 @@ impl RoomStatus {
     }
 
     #[must_use]
-    pub const fn is_rejected(&self) -> bool {
-        matches!(self, Self::Rejected)
-    }
-
-    #[must_use]
     pub const fn is_closed(&self) -> bool {
         matches!(self, Self::Closed)
     }
 
-    /// Check if a status transition is valid.
-    ///
-    /// Valid transitions:
-    /// - `Pending -> Active` (review approved)
-    /// - `Pending -> Rejected` (review rejected)
-    /// - `Rejected -> Active` (review reversed / approved later)
-    /// - `Active -> Closed` (room closed)
-    /// - `Closed -> Active` (room reopened)
-    /// - Same status (no change) is always allowed
-    ///
-    /// Invalid transitions:
-    /// - `Closed -> Pending` (cannot return to pending state)
-    /// - `Active -> Pending` (cannot return to pending state)
     #[must_use]
     pub fn can_transition_to(&self, new_status: &Self) -> bool {
-        match (self, new_status) {
-            // Same status (no change) is always allowed
-            (a, b) if *a == *b => true,
-
-            // Pending can transition to Active (approved) or Rejected.
-            // Rejected rooms may be approved later.
-            // Active can transition to Closed (room closed)
-            // Closed can transition to Active (room reopened)
-            (Self::Pending | Self::Rejected | Self::Closed, Self::Active)
-            | (Self::Pending, Self::Rejected)
-            | (Self::Active, Self::Closed) => true,
-
-            // All other transitions are invalid
-            _ => false,
-        }
-    }
-}
-
-// Database mapping: RoomStatus -> SMALLINT
-// Values: 1=active, 2=pending, 3=rejected, 4=closed
-impl sqlx::Type<sqlx::Postgres> for RoomStatus {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for RoomStatus {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let val: i16 = match self {
-            Self::Active => 1,
-            Self::Pending => 2,
-            Self::Rejected => 3,
-            Self::Closed => 4,
-        };
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomStatus {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        match val {
-            1 => Ok(Self::Active),
-            2 => Ok(Self::Pending),
-            3 => Ok(Self::Rejected),
-            4 => Ok(Self::Closed),
-            _ => Err(format!("Invalid RoomStatus value: {val}").into()),
-        }
+        matches!(
+            (self, new_status),
+            (a, b) if *a == *b
+        ) || matches!(
+            (self, new_status),
+            (Self::Active, Self::Closed) | (Self::Closed, Self::Active)
+        )
     }
 }
 
@@ -133,8 +57,6 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomStatus {
 impl From<synctv_proto::common::RoomStatus> for RoomStatus {
     fn from(value: synctv_proto::common::RoomStatus) -> Self {
         match value {
-            synctv_proto::common::RoomStatus::Pending => Self::Pending,
-            synctv_proto::common::RoomStatus::Rejected => Self::Rejected,
             synctv_proto::common::RoomStatus::Closed => Self::Closed,
             synctv_proto::common::RoomStatus::Active
             | synctv_proto::common::RoomStatus::Unspecified => Self::Active,
@@ -147,8 +69,6 @@ impl From<RoomStatus> for synctv_proto::common::RoomStatus {
     fn from(value: RoomStatus) -> Self {
         match value {
             RoomStatus::Active => Self::Active,
-            RoomStatus::Pending => Self::Pending,
-            RoomStatus::Rejected => Self::Rejected,
             RoomStatus::Closed => Self::Closed,
         }
     }
@@ -200,7 +120,7 @@ impl Default for AutoPlaySettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Room {
     pub id: RoomId,
     pub name: String,
@@ -209,12 +129,12 @@ pub struct Room {
     pub description: String,
     /// Creator user ID. ON DELETE RESTRICT prevents deleting users who still own rooms.
     pub created_by: UserId,
-    /// Room lifecycle status (Active/Pending/Closed)
+    #[serde(skip)]
     pub status: RoomStatus,
-    /// Ban flag - independent of status, allows unbanning without losing previous status
-    /// Only global admins can set/clear this flag
-    #[serde(default)]
+    #[serde(skip)]
     pub is_banned: bool,
+    /// Timestamp when the room was closed. `None` means the room is active.
+    pub closed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -229,6 +149,34 @@ pub struct Room {
     pub last_activity_at: DateTime<Utc>,
 }
 
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Room {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let closed_at: Option<DateTime<Utc>> = row.try_get("closed_at")?;
+        let is_banned = row.try_get("is_banned").unwrap_or(false);
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            description: row.try_get("description")?,
+            created_by: row.try_get("created_by")?,
+            status: if closed_at.is_some() {
+                RoomStatus::Closed
+            } else {
+                RoomStatus::Active
+            },
+            is_banned,
+            closed_at,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            deleted_at: row.try_get("deleted_at")?,
+            version: row.try_get("version")?,
+            last_activity_at: row.try_get("last_activity_at")?,
+        })
+    }
+}
+
 impl Room {
     #[must_use]
     pub fn new(name: String, created_by: UserId) -> Self {
@@ -240,6 +188,7 @@ impl Room {
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -259,6 +208,7 @@ impl Room {
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -267,52 +217,58 @@ impl Room {
         }
     }
 
-    /// Create a new room with description and explicit status
-    ///
-    /// Used when `create_room_need_review=true` to create rooms in Pending status
-    /// that require admin approval before becoming active.
     #[must_use]
     pub fn new_with_status(
         name: String,
         description: String,
         created_by: UserId,
-        status: RoomStatus,
+        initial_status: RoomStatus,
     ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: RoomId::new(),
-            name,
-            description,
-            created_by,
-            status,
-            is_banned: false,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-            last_activity_at: now,
+        let mut room = Self::new_with_description(name, description, created_by);
+        room.status = initial_status;
+        if initial_status == RoomStatus::Closed {
+            room.closed_at = Some(room.created_at);
+        }
+        room
+    }
+
+    /// Check if room is open and not soft-deleted.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.closed_at.is_none() && self.deleted_at.is_none()
+    }
+
+    #[must_use]
+    pub const fn status(&self) -> RoomStatus {
+        if self.closed_at.is_some() {
+            RoomStatus::Closed
+        } else {
+            RoomStatus::Active
         }
     }
 
-    /// Check if room is usable (active status, not banned, not deleted)
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.status == RoomStatus::Active && !self.is_banned && self.deleted_at.is_none()
+    pub fn close(&mut self) {
+        self.closed_at = Some(Utc::now());
+        self.status = RoomStatus::Closed;
+        self.updated_at = Utc::now();
     }
 
-    /// Check if room is banned
+    pub fn reopen(&mut self) {
+        self.closed_at = None;
+        self.status = RoomStatus::Active;
+        self.updated_at = Utc::now();
+    }
+
     #[must_use]
     pub const fn is_banned(&self) -> bool {
         self.is_banned
     }
 
-    /// Ban the room (admin only)
     pub fn ban(&mut self) {
         self.is_banned = true;
         self.updated_at = Utc::now();
     }
 
-    /// Unban the room, restoring previous status (admin only)
     pub fn unban(&mut self) {
         self.is_banned = false;
         self.updated_at = Utc::now();
@@ -334,7 +290,7 @@ pub struct UpdateRoomRequest {
     pub name: Option<String>,
     /// Room description (max 500 characters)
     pub description: Option<String>,
-    pub status: Option<RoomStatus>,
+    pub closed: Option<bool>,
     pub settings: Option<JsonValue>,
 }
 
@@ -398,7 +354,7 @@ pub struct RoomListQuery {
     pub pagination: super::pagination::PageParams,
     pub status: Option<RoomStatus>,
     pub search: Option<String>,
-    /// Filter by ban status (None = don't filter, Some(true) = banned only, Some(false) = not banned)
+    /// Filter by derived ban state from `room_bans`.
     #[serde(default)]
     pub is_banned: Option<bool>,
     /// Filter by creator
@@ -415,7 +371,7 @@ impl Default for RoomListQuery {
             pagination: super::pagination::PageParams::default(),
             status: Some(RoomStatus::Active),
             search: None,
-            is_banned: Some(false), // By default, exclude banned rooms
+            is_banned: Some(false),
             creator_id: None,
             sort_by: RoomListSortBy::CreatedAt,
             sort_direction: SortDirection::Desc,
@@ -618,16 +574,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_status_transition_pending_to_active_is_valid() {
-        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Active));
-    }
-
-    #[test]
-    fn test_status_transition_pending_to_closed_is_valid() {
-        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Rejected));
-    }
-
-    #[test]
     fn test_status_transition_active_to_closed_is_valid() {
         assert!(RoomStatus::Active.can_transition_to(&RoomStatus::Closed));
     }
@@ -638,45 +584,19 @@ mod tests {
     }
 
     #[test]
-    fn test_status_transition_rejected_to_active_is_valid() {
-        assert!(RoomStatus::Rejected.can_transition_to(&RoomStatus::Active));
-    }
-
-    #[test]
     fn test_status_transition_same_status_is_valid() {
-        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Pending));
         assert!(RoomStatus::Active.can_transition_to(&RoomStatus::Active));
-        assert!(RoomStatus::Rejected.can_transition_to(&RoomStatus::Rejected));
         assert!(RoomStatus::Closed.can_transition_to(&RoomStatus::Closed));
     }
 
     #[test]
-    fn test_status_transition_closed_to_pending_is_invalid() {
-        assert!(!RoomStatus::Closed.can_transition_to(&RoomStatus::Pending));
-    }
-
-    #[test]
-    fn test_status_transition_active_to_pending_is_invalid() {
-        assert!(!RoomStatus::Active.can_transition_to(&RoomStatus::Pending));
-    }
-
-    #[test]
     fn test_status_transition_matrix_exhaustive() {
-        // Define all valid transitions
         let valid_transitions = [
-            (RoomStatus::Pending, RoomStatus::Active),
-            (RoomStatus::Pending, RoomStatus::Rejected),
-            (RoomStatus::Rejected, RoomStatus::Active),
             (RoomStatus::Active, RoomStatus::Closed),
             (RoomStatus::Closed, RoomStatus::Active),
         ];
 
-        let all_statuses = [
-            RoomStatus::Pending,
-            RoomStatus::Active,
-            RoomStatus::Rejected,
-            RoomStatus::Closed,
-        ];
+        let all_statuses = [RoomStatus::Active, RoomStatus::Closed];
 
         for &from in &all_statuses {
             for &to in &all_statuses {

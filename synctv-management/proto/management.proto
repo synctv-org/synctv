@@ -24,7 +24,6 @@ service ManagementService {
     rpc DeleteUser(DeleteUserRequest) returns (synctv.admin.DeleteUserResponse);
     rpc BanUser(BanUserRequest) returns (synctv.admin.BanUserResponse);
     rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.UnbanUserResponse);
-    rpc ApproveUser(ApproveUserRequest) returns (synctv.admin.ApproveUserResponse);
     rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.UpdateUserRoleResponse);
     rpc UpdateUserPassword(UpdateUserPasswordRequest) returns (synctv.admin.UpdateUserPasswordResponse);
     rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.UpdateUserUsernameResponse);
@@ -37,8 +36,6 @@ service ManagementService {
     rpc GetRoom(GetRoomRequest) returns (synctv.admin.GetRoomResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
     rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
-    rpc ApproveMember(ApproveMemberRequest) returns (synctv.client.ApproveMemberResponse);
-    rpc RejectMember(RejectMemberRequest) returns (synctv.client.RejectMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc BanMember(BanMemberRequest) returns (synctv.client.BanMemberResponse);
@@ -51,7 +48,6 @@ service ManagementService {
     rpc BanRoom(BanRoomRequest) returns (synctv.admin.BanRoomResponse);
     rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.UnbanRoomResponse);
     rpc DeleteRoom(DeleteRoomRequest) returns (synctv.admin.DeleteRoomResponse);
-    rpc ApproveRoom(ApproveRoomRequest) returns (synctv.admin.ApproveRoomResponse);
     rpc BatchBanRooms(BatchBanRoomsRequest) returns (synctv.admin.BatchBanRoomsResponse);
     rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (synctv.admin.BatchDeleteRoomsResponse);
     rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
@@ -85,6 +81,8 @@ service ManagementService {
     rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
     rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
+    rpc CreateAlistPlaylist(CreateAlistPlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
+    rpc CreateEmbyPlaylist(CreateEmbyPlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.UpdatePlaylistResponse);
     rpc MovePlaylist(MovePlaylistRequest) returns (synctv.client.MovePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (synctv.client.DeletePlaylistResponse);
@@ -92,6 +90,11 @@ service ManagementService {
     rpc ListMedia(ListMediaRequest) returns (synctv.client.ListPlaylistItemsResponse);
     rpc AddMedia(AddMediaRequest) returns (synctv.client.AddMediaResponse);
     rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddAlistMedia(AddAlistMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddEmbyMedia(AddEmbyMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddBilibiliVideoMedia(AddBilibiliVideoMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddBilibiliPgcMedia(AddBilibiliPgcMediaRequest) returns (synctv.client.AddMediaResponse);
+    rpc AddBilibiliLiveMedia(AddBilibiliLiveMediaRequest) returns (synctv.client.AddMediaResponse);
     rpc EditMedia(EditMediaRequest) returns (synctv.client.EditMediaResponse);
     rpc MoveMedia(MoveMediaRequest) returns (synctv.client.MoveMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
@@ -113,6 +116,16 @@ service ManagementService {
     rpc GetSystemStats(GetSystemStatsRequest) returns (synctv.admin.GetSystemStatsResponse);
     rpc ListActiveStreams(ListActiveStreamsRequest) returns (synctv.admin.ListActiveStreamsResponse);
     rpc KickStream(KickStreamRequest) returns (synctv.admin.KickStreamResponse);
+    rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (synctv.admin.ListUserRegistrationReviewsResponse);
+    rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (synctv.admin.ApproveUserRegistrationReviewResponse);
+    rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (synctv.admin.RejectUserRegistrationReviewResponse);
+    rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (synctv.admin.ListRoomCreationReviewsResponse);
+    rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (synctv.admin.ApproveRoomCreationReviewResponse);
+    rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (synctv.admin.RejectRoomCreationReviewResponse);
+    rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (synctv.admin.ListRoomJoinReviewsResponse);
+    rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (synctv.admin.ApproveRoomJoinReviewResponse);
+    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (synctv.admin.RejectRoomJoinReviewResponse);
+    rpc ListBanRecords(ListBanRecordsRequest) returns (synctv.admin.ListBanRecordsResponse);
 
     // =========================
     // Lifecycle
@@ -130,17 +143,13 @@ enum UserRole {
 enum UserStatus {
     USER_STATUS_UNSPECIFIED = 0;
     USER_STATUS_ACTIVE = 1;
-    USER_STATUS_PENDING = 2;
-    USER_STATUS_REJECTED = 3;
-    USER_STATUS_BANNED = 4;
+    USER_STATUS_BANNED = 2;
 }
 
 enum RoomStatus {
     ROOM_STATUS_UNSPECIFIED = 0;
     ROOM_STATUS_ACTIVE = 1;
-    ROOM_STATUS_PENDING = 2;
-    ROOM_STATUS_REJECTED = 3;
-    ROOM_STATUS_CLOSED = 4;
+    ROOM_STATUS_CLOSED = 2;
 }
 
 enum ShutdownMode {
@@ -242,6 +251,7 @@ message ListUsersRequest {
     string search = 5;
     UserListSortBy sort_by = 6;
     SortDirection sort_direction = 7;
+    optional bool is_banned = 8;
 }
 
 message UserRef {
@@ -292,10 +302,6 @@ message UnbanUserRequest {
     UserRef user = 1;
 }
 
-message ApproveUserRequest {
-    UserRef user = 1;
-}
-
 message UpdateUserRoleRequest {
     UserRef user = 1;
     UserRole role = 2;
@@ -332,6 +338,65 @@ message BatchDeleteUsersRequest {
     repeated UserRef users = 1;
 }
 
+message ListUserRegistrationReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string search = 4;
+}
+
+message ApproveUserRegistrationReviewRequest {
+    string request_id = 1;
+}
+
+message RejectUserRegistrationReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListRoomCreationReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string requested_by = 4;
+    string search = 5;
+}
+
+message ApproveRoomCreationReviewRequest {
+    string request_id = 1;
+}
+
+message RejectRoomCreationReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListRoomJoinReviewsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3;
+    string room_id = 4;
+    string user_id = 5;
+}
+
+message ApproveRoomJoinReviewRequest {
+    string request_id = 1;
+}
+
+message RejectRoomJoinReviewRequest {
+    string request_id = 1;
+    string reason = 2;
+}
+
+message ListBanRecordsRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.admin.BanTargetType target_type = 3;
+    optional bool active = 4;
+    string user_id = 5;
+    string room_id = 6;
+}
+
 message CreateRoomRequest {
     UserRef actor = 1;
     string name = 2;
@@ -364,6 +429,7 @@ message GetRoomMembersRequest {
     synctv.common.MemberStatus status = 6;
     RoomMemberListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
+    optional bool is_banned = 9;
 }
 
 message TransferRoomOwnershipRequest {
@@ -377,17 +443,6 @@ message AddMemberRequest {
     UserRef user = 2;
     synctv.common.RoomMemberRole role = 3;
     bool notify = 4;
-}
-
-message ApproveMemberRequest {
-    string room_id = 1;
-    UserRef user = 2;
-}
-
-message RejectMemberRequest {
-    string room_id = 1;
-    UserRef user = 2;
-    string reason = 3;
 }
 
 message UpdateMemberPermissionsRequest {
@@ -445,10 +500,6 @@ message UnbanRoomRequest {
 }
 
 message DeleteRoomRequest {
-    string room_id = 1;
-}
-
-message ApproveRoomRequest {
     string room_id = 1;
 }
 
@@ -533,6 +584,27 @@ message CreatePlaylistRequest {
     string provider_instance_name = 7;
 }
 
+message CreateAlistPlaylistRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    string server_id = 5;
+    string path = 6;
+    string password = 7;
+    string provider_instance_name = 8;
+}
+
+message CreateEmbyPlaylistRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string name = 3;
+    string parent_id = 4;
+    string server_id = 5;
+    string item_id = 6;
+    string provider_instance_name = 7;
+}
+
 message UpdatePlaylistRequest {
     string room_id = 1;
     string playlist_id = 2;
@@ -584,6 +656,60 @@ message AddDirectUrlMediaRequest {
     string url = 3;
     string playlist_id = 4;
     string title = 5;
+}
+
+message AddAlistMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string server_id = 4;
+    string path = 5;
+    string password = 6;
+    string provider_instance_name = 7;
+    string title = 8;
+}
+
+message AddEmbyMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string server_id = 4;
+    string item_id = 5;
+    string provider_instance_name = 6;
+    string title = 7;
+}
+
+message AddBilibiliVideoMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    string bvid = 4;
+    optional uint64 aid = 5;
+    uint64 cid = 6;
+    bool shared = 7;
+    string provider_instance_name = 8;
+    string title = 9;
+}
+
+message AddBilibiliPgcMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    uint64 epid = 4;
+    uint64 cid = 5;
+    bool shared = 6;
+    string provider_instance_name = 7;
+    string title = 8;
+}
+
+message AddBilibiliLiveMediaRequest {
+    UserRef actor = 1;
+    string room_id = 2;
+    string playlist_id = 3;
+    uint64 room_live_id = 4;
+    bool shared = 5;
+    string provider_instance_name = 6;
+    string title = 7;
 }
 
 message EditMediaRequest {

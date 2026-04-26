@@ -42,7 +42,7 @@ pub struct CachedRoom {
     name: String,
     owner_id: String,
     is_public: bool,
-    /// Room lifecycle status (Active/Pending/Closed)
+    /// Room lifecycle status.
     status: RoomStatus,
     /// Ban flag - independent of status
     is_banned: bool,
@@ -423,14 +423,14 @@ mod tests {
         )
         .unwrap();
 
-        let room_id = create_test_room_id("room_pending");
+        let room_id = create_test_room_id("room_closed");
         let now = chrono::Utc::now();
         let room = CachedRoom::with_all_fields(
-            "room_pending".to_string(),
-            "Pending Room".to_string(),
+            "room_closed".to_string(),
+            "Closed Room".to_string(),
             "owner1".to_string(),
             true,
-            RoomStatus::Pending,
+            RoomStatus::Closed,
             false,
             None,
             now,
@@ -439,8 +439,8 @@ mod tests {
 
         cache.set(&room_id, room).await.unwrap();
         let retrieved = cache.get(&room_id).await.unwrap().unwrap();
-        assert_eq!(retrieved.status(), RoomStatus::Pending);
-        assert_eq!(retrieved.name(), "Pending Room");
+        assert_eq!(retrieved.status(), RoomStatus::Closed);
+        assert_eq!(retrieved.name(), "Closed Room");
     }
 
     /// CachedRoom must include is_banned field from the Room model
@@ -535,6 +535,7 @@ mod tests {
             created_by: UserId::from_string("creator1".to_string()),
             status: RoomStatus::Closed,
             is_banned: true,
+            closed_at: Some(now),
             created_at: now,
             updated_at: now,
             deleted_at: Some(now),

@@ -12,13 +12,11 @@ enum UserRole {
     USER_ROLE_ROOT = 3;
 }
 
-// Account status
+// Effective account availability. Registration review is represented by ReviewStatus on request APIs.
 enum UserStatus {
     USER_STATUS_UNSPECIFIED = 0;
     USER_STATUS_ACTIVE = 1;
-    USER_STATUS_PENDING = 2;
-    USER_STATUS_REJECTED = 3;
-    USER_STATUS_BANNED = 4;
+    USER_STATUS_BANNED = 2;
 }
 
 // Room member role
@@ -33,20 +31,22 @@ enum RoomMemberRole {
 enum MemberStatus {
     MEMBER_STATUS_UNSPECIFIED = 0;
     MEMBER_STATUS_ACTIVE = 1;
-    MEMBER_STATUS_PENDING = 2;
-    MEMBER_STATUS_REJECTED = 3;
-    MEMBER_STATUS_BANNED = 4;
-    MEMBER_STATUS_LEFT = 5;
+    MEMBER_STATUS_LEFT = 2;
 }
 
-// Room lifecycle status (independent of ban state)
-// Banned state is tracked via is_banned field on Room message
+// Room lifecycle status. Banned state is tracked via is_banned.
 enum RoomStatus {
     ROOM_STATUS_UNSPECIFIED = 0;
     ROOM_STATUS_ACTIVE = 1;
-    ROOM_STATUS_PENDING = 2;
-    ROOM_STATUS_REJECTED = 3;
-    ROOM_STATUS_CLOSED = 4;
+    ROOM_STATUS_CLOSED = 2;
+}
+
+// Human review workflow status for request resources.
+enum ReviewStatus {
+    REVIEW_STATUS_UNSPECIFIED = 0;
+    REVIEW_STATUS_PENDING = 1;
+    REVIEW_STATUS_APPROVED = 2;
+    REVIEW_STATUS_REJECTED = 3;
 }
 
 enum ListSortDirection {
@@ -91,4 +91,7 @@ message RoomMember {
 
     int64 joined_at = 10;
     bool is_online = 11;
+    bool is_banned = 13;
+    int64 banned_at = 14;
+    string banned_reason = 15;
 }

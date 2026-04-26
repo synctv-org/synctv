@@ -451,30 +451,6 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "GetUserRooms"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn approve_user(
-            &mut self,
-            request: impl tonic::IntoRequest<::synctv_proto::admin::ApproveUserRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveUserResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveUser",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveUser"));
-            self.inner.unary(req, path, codec).await
-        }
         /// # =========================
         /// Batch Operations
         pub async fn batch_ban_users(
@@ -813,30 +789,6 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "UnbanRoom"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn approve_room(
-            &mut self,
-            request: impl tonic::IntoRequest<::synctv_proto::admin::ApproveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveRoom"));
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn get_room_members(
             &mut self,
             request: impl tonic::IntoRequest<
@@ -885,54 +837,6 @@ pub mod admin_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "AddMember"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn approve_member(
-            &mut self,
-            request: impl tonic::IntoRequest<::synctv_proto::admin::ApproveMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveMemberResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveMember",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveMember"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn reject_member(
-            &mut self,
-            request: impl tonic::IntoRequest<::synctv_proto::admin::RejectMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::RejectMemberResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/RejectMember",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "RejectMember"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn update_member_permissions(
@@ -1194,6 +1098,308 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "KickStream"));
             self.inner.unary(req, path, codec).await
         }
+        /// # =========================
+        /// Review Workflow
+        pub async fn list_user_registration_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ListUserRegistrationReviewsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListUserRegistrationReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListUserRegistrationReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ListUserRegistrationReviews",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_user_registration_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ApproveUserRegistrationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<
+                ::synctv_proto::admin::ApproveUserRegistrationReviewResponse,
+            >,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveUserRegistrationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ApproveUserRegistrationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_user_registration_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::RejectUserRegistrationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectUserRegistrationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectUserRegistrationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "RejectUserRegistrationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_room_creation_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ListRoomCreationReviewsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListRoomCreationReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListRoomCreationReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ListRoomCreationReviews",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_room_creation_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ApproveRoomCreationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ApproveRoomCreationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveRoomCreationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ApproveRoomCreationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_room_creation_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::RejectRoomCreationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectRoomCreationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectRoomCreationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "RejectRoomCreationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_room_join_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ListRoomJoinReviewsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListRoomJoinReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListRoomJoinReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "ListRoomJoinReviews"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_room_join_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ApproveRoomJoinReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ApproveRoomJoinReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveRoomJoinReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "ApproveRoomJoinReview"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_room_join_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::RejectRoomJoinReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectRoomJoinReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectRoomJoinReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "RejectRoomJoinReview"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// # =========================
+        /// Moderation Bans
+        pub async fn list_ban_records(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::admin::ListBanRecordsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListBanRecordsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListBanRecords",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.admin.AdminService", "ListBanRecords"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1311,13 +1517,6 @@ pub mod admin_service_server {
             tonic::Response<::synctv_proto::admin::GetUserRoomsResponse>,
             tonic::Status,
         >;
-        async fn approve_user(
-            &self,
-            request: tonic::Request<::synctv_proto::admin::ApproveUserRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveUserResponse>,
-            tonic::Status,
-        >;
         /// # =========================
         /// Batch Operations
         async fn batch_ban_users(
@@ -1413,13 +1612,6 @@ pub mod admin_service_server {
             tonic::Response<::synctv_proto::admin::UnbanRoomResponse>,
             tonic::Status,
         >;
-        async fn approve_room(
-            &self,
-            request: tonic::Request<::synctv_proto::admin::ApproveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveRoomResponse>,
-            tonic::Status,
-        >;
         async fn get_room_members(
             &self,
             request: tonic::Request<::synctv_proto::admin::GetRoomMembersRequest>,
@@ -1432,20 +1624,6 @@ pub mod admin_service_server {
             request: tonic::Request<::synctv_proto::admin::AddMemberRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::admin::AddMemberResponse>,
-            tonic::Status,
-        >;
-        async fn approve_member(
-            &self,
-            request: tonic::Request<::synctv_proto::admin::ApproveMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::ApproveMemberResponse>,
-            tonic::Status,
-        >;
-        async fn reject_member(
-            &self,
-            request: tonic::Request<::synctv_proto::admin::RejectMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<::synctv_proto::admin::RejectMemberResponse>,
             tonic::Status,
         >;
         async fn update_member_permissions(
@@ -1524,6 +1702,94 @@ pub mod admin_service_server {
             request: tonic::Request<::synctv_proto::admin::KickStreamRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::admin::KickStreamResponse>,
+            tonic::Status,
+        >;
+        /// # =========================
+        /// Review Workflow
+        async fn list_user_registration_reviews(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::ListUserRegistrationReviewsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListUserRegistrationReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_user_registration_review(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::ApproveUserRegistrationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<
+                ::synctv_proto::admin::ApproveUserRegistrationReviewResponse,
+            >,
+            tonic::Status,
+        >;
+        async fn reject_user_registration_review(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::RejectUserRegistrationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectUserRegistrationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_creation_reviews(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::ListRoomCreationReviewsRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListRoomCreationReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_room_creation_review(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::ApproveRoomCreationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ApproveRoomCreationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_room_creation_review(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::admin::RejectRoomCreationReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectRoomCreationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_join_reviews(
+            &self,
+            request: tonic::Request<::synctv_proto::admin::ListRoomJoinReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListRoomJoinReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_room_join_review(
+            &self,
+            request: tonic::Request<::synctv_proto::admin::ApproveRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ApproveRoomJoinReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_room_join_review(
+            &self,
+            request: tonic::Request<::synctv_proto::admin::RejectRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::RejectRoomJoinReviewResponse>,
+            tonic::Status,
+        >;
+        /// # =========================
+        /// Moderation Bans
+        async fn list_ban_records(
+            &self,
+            request: tonic::Request<::synctv_proto::admin::ListBanRecordsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::admin::ListBanRecordsResponse>,
             tonic::Status,
         >;
     }
@@ -2281,54 +2547,6 @@ pub mod admin_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.admin.AdminService/ApproveUser" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveUserSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<
-                        ::synctv_proto::admin::ApproveUserRequest,
-                    > for ApproveUserSvc<T> {
-                        type Response = ::synctv_proto::admin::ApproveUserResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                ::synctv_proto::admin::ApproveUserRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_user(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveUserSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.admin.AdminService/BatchBanUsers" => {
                     #[allow(non_camel_case_types)]
                     struct BatchBanUsersSvc<T: AdminService>(pub Arc<T>);
@@ -2957,54 +3175,6 @@ pub mod admin_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.admin.AdminService/ApproveRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveRoomSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<
-                        ::synctv_proto::admin::ApproveRoomRequest,
-                    > for ApproveRoomSvc<T> {
-                        type Response = ::synctv_proto::admin::ApproveRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                ::synctv_proto::admin::ApproveRoomRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.admin.AdminService/GetRoomMembers" => {
                     #[allow(non_camel_case_types)]
                     struct GetRoomMembersSvc<T: AdminService>(pub Arc<T>);
@@ -3086,102 +3256,6 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AddMemberSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.admin.AdminService/ApproveMember" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveMemberSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<
-                        ::synctv_proto::admin::ApproveMemberRequest,
-                    > for ApproveMemberSvc<T> {
-                        type Response = ::synctv_proto::admin::ApproveMemberResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                ::synctv_proto::admin::ApproveMemberRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_member(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveMemberSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.admin.AdminService/RejectMember" => {
-                    #[allow(non_camel_case_types)]
-                    struct RejectMemberSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<
-                        ::synctv_proto::admin::RejectMemberRequest,
-                    > for RejectMemberSvc<T> {
-                        type Response = ::synctv_proto::admin::RejectMemberResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                ::synctv_proto::admin::RejectMemberRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::reject_member(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = RejectMemberSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -3666,6 +3740,519 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = KickStreamSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListUserRegistrationReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListUserRegistrationReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ListUserRegistrationReviewsRequest,
+                    > for ListUserRegistrationReviewsSvc<T> {
+                        type Response = ::synctv_proto::admin::ListUserRegistrationReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ListUserRegistrationReviewsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_user_registration_reviews(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListUserRegistrationReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveUserRegistrationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveUserRegistrationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ApproveUserRegistrationReviewRequest,
+                    > for ApproveUserRegistrationReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::ApproveUserRegistrationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ApproveUserRegistrationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_user_registration_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveUserRegistrationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectUserRegistrationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectUserRegistrationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::RejectUserRegistrationReviewRequest,
+                    > for RejectUserRegistrationReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::RejectUserRegistrationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::RejectUserRegistrationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_user_registration_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectUserRegistrationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListRoomCreationReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListRoomCreationReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ListRoomCreationReviewsRequest,
+                    > for ListRoomCreationReviewsSvc<T> {
+                        type Response = ::synctv_proto::admin::ListRoomCreationReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ListRoomCreationReviewsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_room_creation_reviews(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListRoomCreationReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveRoomCreationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveRoomCreationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ApproveRoomCreationReviewRequest,
+                    > for ApproveRoomCreationReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::ApproveRoomCreationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ApproveRoomCreationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_room_creation_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveRoomCreationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectRoomCreationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectRoomCreationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::RejectRoomCreationReviewRequest,
+                    > for RejectRoomCreationReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::RejectRoomCreationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::RejectRoomCreationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_room_creation_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectRoomCreationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListRoomJoinReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListRoomJoinReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ListRoomJoinReviewsRequest,
+                    > for ListRoomJoinReviewsSvc<T> {
+                        type Response = ::synctv_proto::admin::ListRoomJoinReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ListRoomJoinReviewsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_room_join_reviews(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListRoomJoinReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveRoomJoinReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveRoomJoinReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ApproveRoomJoinReviewRequest,
+                    > for ApproveRoomJoinReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::ApproveRoomJoinReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ApproveRoomJoinReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_room_join_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveRoomJoinReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectRoomJoinReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectRoomJoinReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::RejectRoomJoinReviewRequest,
+                    > for RejectRoomJoinReviewSvc<T> {
+                        type Response = ::synctv_proto::admin::RejectRoomJoinReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::RejectRoomJoinReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_room_join_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectRoomJoinReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListBanRecords" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListBanRecordsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::admin::ListBanRecordsRequest,
+                    > for ListBanRecordsSvc<T> {
+                        type Response = ::synctv_proto::admin::ListBanRecordsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::admin::ListBanRecordsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_ban_records(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListBanRecordsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

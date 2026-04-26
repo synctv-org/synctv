@@ -71,6 +71,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -393,10 +397,12 @@ async fn test_switch_media_rejects_inactive_creator() {
     };
     media_repo.create(&media).await.unwrap();
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(media_creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(
+            &media_creator.id,
+            None,
+            Some("playback service test".to_string()),
+        )
         .await
         .unwrap();
 

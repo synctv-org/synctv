@@ -3,7 +3,7 @@
 //! Tests the `validate_play_request` method which validates:
 //! - Room exists
 //! - Room is not banned
-//! - Room status is not Pending, Rejected, or Closed
+//! - Room status is not Closed
 //! - Room has rtmp_player enabled in settings
 //!
 //! Run with: cargo test -p synctv --test rtmp_auth_play_tests -- --nocapture
@@ -76,6 +76,10 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -292,111 +296,6 @@ async fn test_on_play_rejects_banned_room() {
     assert!(
         err.contains("banned"),
         "Expected error to mention 'banned', got: {err}"
-    );
-    pool.close().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_on_play_rejects_pending_room() {
-    let (_container, pool) = create_test_pool().await;
-    let room_service = Arc::new(make_room_service(pool.clone()));
-    let user_service = Arc::new(make_user_service(pool.clone()));
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
-
-    let owner = user_repo.create(&make_user("pending_owner")).await.unwrap();
-    let (room, _member) = room_service
-        .create_room(
-            "Pending Room".to_string(),
-            "A pending room".to_string(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Enable rtmp_player (should still be rejected due to pending status)
-    let mut settings = settings_repo.get(&room.id).await.unwrap();
-    settings.rtmp_player.0 = true;
-    settings_repo
-        .set_settings(&room.id, &settings)
-        .await
-        .unwrap();
-
-    // Set room to pending status
-    room_repo
-        .update_status(&room.id, RoomStatus::Pending)
-        .await
-        .unwrap();
-
-    let publish_key_service = Arc::new(make_publish_key_service());
-    let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
-
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
-    assert!(
-        result.is_err(),
-        "Expected play to be rejected for pending room"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("pending"),
-        "Expected error to mention 'pending', got: {err}"
-    );
-    pool.close().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_on_play_rejects_rejected_room() {
-    let (_container, pool) = create_test_pool().await;
-    let room_service = Arc::new(make_room_service(pool.clone()));
-    let user_service = Arc::new(make_user_service(pool.clone()));
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("rejected_owner"))
-        .await
-        .unwrap();
-    let (room, _member) = room_service
-        .create_room(
-            "Rejected Room".to_string(),
-            "A rejected room".to_string(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let mut settings = settings_repo.get(&room.id).await.unwrap();
-    settings.rtmp_player.0 = true;
-    settings_repo
-        .set_settings(&room.id, &settings)
-        .await
-        .unwrap();
-
-    room_repo
-        .update_status(&room.id, RoomStatus::Rejected)
-        .await
-        .unwrap();
-
-    let publish_key_service = Arc::new(make_publish_key_service());
-    let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
-
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
-    assert!(
-        result.is_err(),
-        "Expected play to be rejected for rejected room"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("rejected"),
-        "Expected error to mention 'rejected', got: {err}"
     );
     pool.close().await;
 }

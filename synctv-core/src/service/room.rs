@@ -66,7 +66,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -74,8 +74,9 @@ use crate::{
     cache::CacheInvalidationRuntime,
     models::{
         ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
-        PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
-        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
+        PlaylistId, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState,
+        RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole,
+        UserStatus,
     },
     repository::{
         media::MediaListItem, playlist::PlaylistListItem, ChatRepository, MediaRepository,
@@ -97,6 +98,16 @@ use crate::{
     },
     Error, InternalExt, Result,
 };
+
+#[derive(Debug)]
+struct PendingRoomCreationRequest {
+    id: RoomId,
+    requested_by: UserId,
+    name: String,
+    description: String,
+    password_hash: Option<String>,
+    settings: RoomSettings,
+}
 use std::{future::Future, sync::Arc};
 use synctv_common::ExecutionControl;
 
@@ -105,6 +116,9 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
 }
 
 const MAX_DELETE_TARGETS: usize = 100;
+const ROOM_JOIN_REQUEST_PENDING: i16 = ReviewStatus::Pending.as_i16();
+const ROOM_JOIN_REQUEST_APPROVED: i16 = ReviewStatus::Approved.as_i16();
+const ROOM_JOIN_REQUEST_REJECTED: i16 = ReviewStatus::Rejected.as_i16();
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedAdminActor {
@@ -278,6 +292,81 @@ impl RoomService {
         AuthorizedAdminActor::new(admin_user_id.clone(), admin_user.username, admin_user.role)
     }
 
+    async fn create_room_creation_request(
+        &self,
+        requested_by: &UserId,
+        name: &str,
+        description: &str,
+        password_hash: Option<&str>,
+        settings: &RoomSettings,
+    ) -> Result<Room> {
+        let request_id = RoomId::new();
+        let settings_payload = serde_json::to_value(settings)
+            .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
+
+        sqlx::query(
+            r"
+            INSERT INTO room_creation_requests (
+                id, requested_by, name, description, password_hash, settings_payload, status, requested_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(requested_by.as_str())
+        .bind(name)
+        .bind(description)
+        .bind(password_hash)
+        .bind(settings_payload)
+        .bind(ReviewStatus::Pending.as_i16())
+        .execute(&self.pool)
+        .await?;
+
+        let mut room = Room::new_with_description(
+            name.to_string(),
+            description.to_string(),
+            requested_by.clone(),
+        );
+        room.id = request_id;
+        Ok(room)
+    }
+
+    async fn load_pending_room_creation_request_for_update(
+        request_id: &RoomId,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Option<PendingRoomCreationRequest>> {
+        let row = sqlx::query(
+            r"
+            SELECT id, requested_by, name, description, password_hash, settings_payload
+            FROM room_creation_requests
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $2
+            FOR UPDATE
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(ReviewStatus::Pending.as_i16())
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        row.map(|row| {
+            let settings_payload = row
+                .try_get::<Option<serde_json::Value>, _>("settings_payload")?
+                .unwrap_or_else(|| serde_json::json!({}));
+            let settings = serde_json::from_value::<RoomSettings>(settings_payload)
+                .map_err(|e| sqlx::Error::Decode(e.into()))?;
+            Ok(PendingRoomCreationRequest {
+                id: row.try_get("id")?,
+                requested_by: row.try_get("requested_by")?,
+                name: row.try_get("name")?,
+                description: row.try_get("description")?,
+                password_hash: row.try_get("password_hash")?,
+                settings,
+            })
+        })
+        .transpose()
+        .map_err(Error::Database)
+    }
+
     async fn enforce_room_ownership_limit(
         &self,
         owner_id: &UserId,
@@ -376,7 +465,7 @@ impl RoomService {
             .get_users_by_ids(&unique_ids)
             .await?
             .into_iter()
-            .filter(|user| user.status.is_active())
+            .filter(|user| user.status.is_active() && !user.is_banned)
             .map(|user| user.id)
             .collect())
     }
@@ -391,7 +480,7 @@ impl RoomService {
         };
 
         match self.user_service.get_user(creator_id).await {
-            Ok(user) if user.status.is_active() => Ok(()),
+            Ok(user) if user.status.is_active() && !user.is_banned => Ok(()),
             Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(format!(
                 "{resource_kind} is unavailable because its creator is not active"
             ))),
@@ -411,7 +500,7 @@ impl RoomService {
 
         let creator = self.user_service.get_user(&room.created_by).await;
         match creator {
-            Ok(user) if user.status.is_active() => Ok(()),
+            Ok(user) if user.status.is_active() && !user.is_banned => Ok(()),
             Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(
                 "Room is unavailable because its creator is not active".to_string(),
             )),
@@ -1074,31 +1163,85 @@ impl RoomService {
 
         self.enforce_room_ownership_limit(&created_by, None).await?;
 
-        // Determine initial room status based on create_room_need_review setting
         let need_review = self
             .settings_registry
             .as_ref()
             .is_some_and(|r| r.create_room_need_review.get().unwrap_or(false));
-        let initial_status = if need_review {
-            RoomStatus::Pending
-        } else {
-            RoomStatus::Active
-        };
 
         if need_review {
             tracing::info!(
                 user_id = %created_by,
                 room_name = %name,
-                "Room requires review, creating in Pending status"
+                "Room requires review, creating room creation request"
             );
+
+            let pending_room = self
+                .create_room_creation_request(
+                    &created_by,
+                    &name,
+                    &description,
+                    pwd_hash.as_deref(),
+                    &room_settings,
+                )
+                .await?;
+            let pending_member = RoomMember::new(
+                pending_room.id.clone(),
+                created_by.clone(),
+                RoomRole::Creator,
+            );
+
+            if let Some(ref notif_service) = self.user_notification_service {
+                let mut all_admins = Vec::new();
+                for role in [UserRole::Root, UserRole::Admin] {
+                    let query = UserListQuery {
+                        pagination: PageParams::new(Some(1), Some(100)),
+                        search: None,
+                        status: Some(UserStatus::Active),
+                        role: Some(role),
+                        is_banned: Some(false),
+                        sort_by: crate::models::UserListSortBy::CreatedAt,
+                        sort_direction: crate::models::SortDirection::Desc,
+                    };
+                    if let Ok((users, _)) = self.user_service.list_users(&query).await {
+                        all_admins.extend(users);
+                    }
+                }
+
+                for admin in all_admins {
+                    if let Err(e) = notif_service
+                        .create_system_announcement(
+                            admin.id.clone(),
+                            format!("Room Pending Review: {name}"),
+                            format!(
+                                "User {} requested room \"{name}\" which requires admin review.",
+                                created_by.as_str()
+                            ),
+                            Some(serde_json::json!({
+                                "room_request_id": pending_room.id.as_str(),
+                                "room_name": &name,
+                                "creator_id": created_by.as_str(),
+                            })),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            admin_id = %admin.id,
+                            error = %e,
+                            "Failed to notify admin about pending room"
+                        );
+                    }
+                }
+            }
+
+            return Ok((pending_room, pending_member));
         }
 
         // Transaction: Create room with all related data atomically.
         // On error, the transaction will be automatically rolled back.
         let mut tx = self.pool.begin().await?;
 
-        // 1. Create room with appropriate status
-        let room = Room::new_with_status(name, description, created_by.clone(), initial_status);
+        // 1. Create room
+        let room = Room::new_with_description(name, description, created_by.clone());
         let created_room = self.room_repo.create_with_executor(&room, &mut *tx).await?;
 
         // 2. Set password if provided
@@ -1143,54 +1286,6 @@ impl RoomService {
         self.permission_service
             .invalidate_cache(&created_room.id, &created_by)
             .await;
-
-        // Notify admin/root users about pending rooms so they can review them.
-        // This is best-effort: notification failures do not affect room creation.
-        if need_review {
-            if let Some(ref notif_service) = self.user_notification_service {
-                // Notify both Root and Admin users about pending rooms
-                let mut all_admins = Vec::new();
-                for role in [UserRole::Root, UserRole::Admin] {
-                    let query = UserListQuery {
-                        pagination: PageParams::new(Some(1), Some(100)),
-                        search: None,
-                        status: Some(UserStatus::Active),
-                        role: Some(role),
-                        sort_by: crate::models::UserListSortBy::CreatedAt,
-                        sort_direction: crate::models::SortDirection::Desc,
-                    };
-                    if let Ok((users, _)) = self.user_service.list_users(&query).await {
-                        all_admins.extend(users);
-                    }
-                }
-
-                let room_name = created_room.name.clone();
-                for admin in all_admins {
-                    if let Err(e) = notif_service
-                        .create_system_announcement(
-                            admin.id.clone(),
-                            format!("Room Pending Review: {room_name}"),
-                            format!(
-                                "User {} created room \"{room_name}\" which requires admin review.",
-                                created_by.as_str()
-                            ),
-                            Some(serde_json::json!({
-                                "room_id": created_room.id.as_str(),
-                                "room_name": &room_name,
-                                "creator_id": created_by.as_str(),
-                            })),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            admin_id = %admin.id,
-                            error = %e,
-                            "Failed to notify admin about pending room"
-                        );
-                    }
-                }
-            }
-        }
 
         Ok((created_room, created_member))
     }
@@ -1499,15 +1594,6 @@ impl RoomService {
         user_id: UserId,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
         if let Some(existing_member) = self.member_repo.get(&room_id, &user_id).await? {
-            if existing_member.status.is_pending() {
-                tracing::info!(
-                    room_id = %room_id,
-                    user_id = %user_id,
-                    "Join request is already pending approval"
-                );
-                return Ok((room, existing_member, Vec::new()));
-            }
-
             tracing::debug!(
                 room_id = %room_id,
                 user_id = %user_id,
@@ -1525,11 +1611,17 @@ impl RoomService {
             ));
         }
 
-        let initial_status = if settings.require_approval.0 {
-            MemberStatus::Pending
-        } else {
-            MemberStatus::Active
-        };
+        if settings.require_approval.0 {
+            let pending_member = self
+                .create_or_get_pending_join_request(&room_id, &user_id, RoomRole::Member)
+                .await?;
+            tracing::info!(
+                room_id = %room_id,
+                user_id = %user_id,
+                "Join request created and is awaiting approval"
+            );
+            return Ok((room, pending_member, Vec::new()));
+        }
 
         // R-P2-1: Enforce room capacity limits by enabling max_members check.
         // AddMemberOptions::new() defaults to check_max_members=false; explicitly
@@ -1537,7 +1629,7 @@ impl RoomService {
         // rejects the join if the room is at capacity.
         let options = AddMemberOptions::new()
             .with_max_members(0)
-            .with_initial_status(initial_status); // 0 = read from RoomSettings
+            .with_initial_status(MemberStatus::Active); // 0 = read from RoomSettings
         let created_member = match self
             .member_service
             .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
@@ -1562,15 +1654,6 @@ impl RoomService {
             }
             Err(e) => return Err(e),
         };
-
-        if created_member.status.is_pending() {
-            tracing::info!(
-                room_id = %room_id,
-                user_id = %user_id,
-                "Join request created and is awaiting approval"
-            );
-            return Ok((room, created_member, Vec::new()));
-        }
 
         // Get all members
         let members = self.member_service.list_members(&room_id).await?;
@@ -1597,6 +1680,208 @@ impl RoomService {
         self.touch_room_activity(room_id).await;
 
         Ok((room, created_member, members))
+    }
+
+    async fn create_or_get_pending_join_request(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        role: RoomRole,
+    ) -> Result<RoomMember> {
+        let existing_request_id = sqlx::query_scalar::<_, String>(
+            r"
+            SELECT id
+            FROM room_join_requests
+            WHERE room_id = $1
+              AND user_id = $2
+              AND reviewed_at IS NULL
+            LIMIT 1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if existing_request_id.is_none() {
+            let insert_result = sqlx::query(
+                r"
+                INSERT INTO room_join_requests (
+                    id, room_id, user_id, requested_role, status, requested_at
+                )
+                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                ",
+            )
+            .bind(crate::models::generate_id())
+            .bind(room_id.as_str())
+            .bind(user_id.as_str())
+            .bind(role)
+            .bind(ROOM_JOIN_REQUEST_PENDING)
+            .execute(&self.pool)
+            .await;
+
+            if let Err(error) = insert_result {
+                if !matches!(
+                    &error,
+                    sqlx::Error::Database(db_error)
+                        if db_error.constraint()
+                            == Some("idx_room_join_requests_pending_unique")
+                ) {
+                    return Err(Error::Database(error));
+                }
+            }
+        }
+
+        let pending = RoomMember::new(room_id.clone(), user_id.clone(), role);
+        Ok(pending)
+    }
+
+    async fn load_pending_join_request_by_id_for_update(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        request_id: &str,
+    ) -> Result<(UserId, RoomRole)> {
+        let row = sqlx::query(
+            r"
+            SELECT user_id, COALESCE(requested_role, $3) AS requested_role
+            FROM room_join_requests
+            WHERE id = $1
+              AND room_id = $2
+              AND reviewed_at IS NULL
+              AND status = $4
+            FOR UPDATE
+            ",
+        )
+        .bind(request_id)
+        .bind(room_id.as_str())
+        .bind(RoomRole::Member)
+        .bind(ROOM_JOIN_REQUEST_PENDING)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+        let user_id: String = row.try_get("user_id")?;
+        let requested_role: RoomRole = row.try_get("requested_role")?;
+        Ok((UserId::from_string(user_id), requested_role))
+    }
+
+    async fn load_pending_join_request_by_id(
+        &self,
+        room_id: &RoomId,
+        request_id: &str,
+    ) -> Result<(UserId, RoomRole)> {
+        let row = sqlx::query(
+            r"
+            SELECT user_id, COALESCE(requested_role, $3) AS requested_role
+            FROM room_join_requests
+            WHERE id = $1
+              AND room_id = $2
+              AND reviewed_at IS NULL
+              AND status = $4
+            ",
+        )
+        .bind(request_id)
+        .bind(room_id.as_str())
+        .bind(RoomRole::Member)
+        .bind(ROOM_JOIN_REQUEST_PENDING)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+
+        let user_id: String = row.try_get("user_id")?;
+        let requested_role: RoomRole = row.try_get("requested_role")?;
+        Ok((UserId::from_string(user_id), requested_role))
+    }
+
+    async fn resolve_pending_join_request_as_approved_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        reviewed_by: Option<&UserId>,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $3,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $4
+            WHERE room_id = $1
+              AND user_id = $2
+              AND reviewed_at IS NULL
+              AND status = $5
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(ROOM_JOIN_REQUEST_APPROVED)
+        .bind(reviewed_by.map(UserId::as_str))
+        .bind(ROOM_JOIN_REQUEST_PENDING)
+        .execute(&mut **tx)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn active_member_add_options(&self, room_id: &RoomId) -> Result<AddMemberOptions> {
+        let room_settings = self.room_settings_repo.get(room_id).await?;
+        Ok(AddMemberOptions::new()
+            .with_max_members(room_settings.max_members.0)
+            .with_initial_status(MemberStatus::Active))
+    }
+
+    async fn add_active_member_and_resolve_join_review_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        target_user_id: &UserId,
+        role: RoomRole,
+        reviewed_by: Option<&UserId>,
+        require_pending_review: bool,
+    ) -> Result<RoomMember> {
+        let mut member = RoomMember::new(room_id.clone(), target_user_id.clone(), role);
+        member.status = MemberStatus::Active;
+        let options = self.active_member_add_options(room_id).await?;
+        let created = self
+            .member_repo
+            .add_with_options_tx(&member, &options, tx)
+            .await?;
+        let resolved = Self::resolve_pending_join_request_as_approved_tx(
+            tx,
+            room_id,
+            target_user_id,
+            reviewed_by,
+        )
+        .await?;
+        if require_pending_review && resolved == 0 {
+            return Err(Error::NotFound(
+                "Pending join request not found".to_string(),
+            ));
+        }
+        Ok(created)
+    }
+
+    async fn ensure_target_user_can_join(&self, target_user_id: &UserId) -> Result<()> {
+        let target_user = self.user_service.get_user(target_user_id).await?;
+        if target_user.is_banned {
+            return Err(Error::Authorization(
+                "Target user cannot be added while banned".to_string(),
+            ));
+        }
+        if !target_user.status.can_join_room() {
+            return Err(Error::Authorization(format!(
+                "Target user cannot be added while account status is {}",
+                target_user.status
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_join_request_role(role: RoomRole) -> Result<RoomRole> {
+        match role {
+            RoomRole::Guest | RoomRole::Member => Ok(role),
+            RoomRole::Admin | RoomRole::Creator => Err(Error::InvalidInput(
+                "Join requests cannot grant elevated room roles".to_string(),
+            )),
+        }
     }
 
     async fn notify_membership_event_best_effort(
@@ -1678,25 +1963,23 @@ impl RoomService {
             .check_permission_no_cache(&room_id, &actor_id, PermissionBits::ADD_MEMBER)
             .await?;
 
-        let target_user = self.user_service.get_user(&target_user_id).await?;
-        if !target_user.status.can_join_room() {
-            return Err(Error::Authorization(format!(
-                "Target user cannot be added while account status is {}",
-                target_user.status
-            )));
-        }
+        self.ensure_target_user_can_join(&target_user_id).await?;
 
+        let mut tx = self.pool.begin().await?;
         let created = self
-            .member_service
-            .add_member_with_options(
-                room_id.clone(),
-                target_user_id.clone(),
+            .add_active_member_and_resolve_join_review_tx(
+                &mut tx,
+                &room_id,
+                &target_user_id,
                 role,
-                crate::service::member::AddMemberOptions::new()
-                    .with_max_members(0)
-                    .with_initial_status(MemberStatus::Active),
+                Some(&actor_id),
+                false,
             )
             .await?;
+        tx.commit().await?;
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
 
         let actor_username = self
             .user_service
@@ -1727,12 +2010,12 @@ impl RoomService {
         Ok(created)
     }
 
-    /// Approve a pending join request and promote it to an active membership.
-    pub async fn approve_member(
+    /// Approve a specific pending join request and promote it to an active membership.
+    pub async fn approve_join_request(
         &self,
         room_id: RoomId,
         actor_id: UserId,
-        target_user_id: UserId,
+        request_id: &str,
     ) -> Result<RoomMember> {
         let room = self
             .room_repo
@@ -1743,27 +2026,31 @@ impl RoomService {
         self.ensure_room_creator_is_active_for_access(&room, &actor_id)
             .await?;
 
-        let member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
+            .await?;
 
-        if !member.status.is_pending() {
-            return Err(Error::InvalidInput(
-                "Only pending join requests can be approved".to_string(),
-            ));
-        }
-
+        let (target_user_id, requested_role) = self
+            .load_pending_join_request_by_id(&room_id, request_id)
+            .await?;
+        self.ensure_target_user_can_join(&target_user_id).await?;
+        let role = Self::validate_join_request_role(requested_role)?;
+        let mut tx = self.pool.begin().await?;
         let updated = self
-            .member_service
-            .set_member_status(
-                room_id.clone(),
-                actor_id.clone(),
-                target_user_id.clone(),
-                MemberStatus::Active,
+            .add_active_member_and_resolve_join_review_tx(
+                &mut tx,
+                &room_id,
+                &target_user_id,
+                role,
+                Some(&actor_id),
+                true,
             )
             .await?;
+        tx.commit().await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
 
         self.notify_membership_event_best_effort(
             &target_user_id,
@@ -1775,14 +2062,14 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// Reject a pending join request without banning the user from the room.
-    pub async fn reject_member(
+    /// Reject a specific pending join request without banning the user from the room.
+    pub async fn reject_join_request(
         &self,
         room_id: RoomId,
         actor_id: UserId,
-        target_user_id: UserId,
+        request_id: &str,
         reason: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<UserId> {
         let room = self
             .room_repo
             .get_by_id(&room_id)
@@ -1795,41 +2082,26 @@ impl RoomService {
             .check_permission_no_cache(&room_id, &actor_id, PermissionBits::APPROVE_MEMBER)
             .await?;
 
-        let member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
-
-        if !member.status.is_pending() {
-            return Err(Error::InvalidInput(
-                "Only pending join requests can be rejected".to_string(),
-            ));
-        }
-
-        let _rejected = super::optimistic_retry::retry_with_optimistic_lock(
-            3,
-            5,
-            "Reject member failed after maximum retry attempts",
-            || async {
-                let fresh_member = self
-                    .member_repo
-                    .get(&room_id, &target_user_id)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
-
-                if !fresh_member.status.is_pending() {
-                    return Err(Error::InvalidInput(
-                        "Only pending join requests can be rejected".to_string(),
-                    ));
-                }
-
-                self.member_repo
-                    .reject_member(&room_id, &target_user_id, fresh_member.version)
-                    .await
-            },
+        let mut tx = self.pool.begin().await?;
+        let (target_user_id, _) =
+            Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
+        sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $2,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $3,
+                rejection_reason = $4
+            WHERE id = $1
+            ",
         )
+        .bind(request_id)
+        .bind(ROOM_JOIN_REQUEST_REJECTED)
+        .bind(actor_id.as_str())
+        .bind(reason)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
@@ -1849,8 +2121,9 @@ impl RoomService {
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({
                 "room_id": room_id.as_str(),
-                "old_status": "pending",
-                "new_status": "rejected",
+                "request_id": request_id,
+                "previous_review_status": "pending",
+                "new_review_status": "rejected",
                 "source": "reject_join_request",
                 "reason": reason.unwrap_or_default(),
             }),
@@ -1865,7 +2138,7 @@ impl RoomService {
         self.notify_membership_event_best_effort(&target_user_id, &room, event)
             .await;
 
-        Ok(())
+        Ok(target_user_id)
     }
 
     /// Administrative override: add a room member without requiring room-local membership.
@@ -1884,25 +2157,23 @@ impl RoomService {
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let target_user = self.user_service.get_user(&target_user_id).await?;
-        if !target_user.status.can_join_room() {
-            return Err(Error::Authorization(format!(
-                "Target user cannot be added while account status is {}",
-                target_user.status
-            )));
-        }
+        self.ensure_target_user_can_join(&target_user_id).await?;
 
+        let mut tx = self.pool.begin().await?;
         let created = self
-            .member_service
-            .add_member_with_options(
-                room_id.clone(),
-                target_user_id.clone(),
+            .add_active_member_and_resolve_join_review_tx(
+                &mut tx,
+                &room_id,
+                &target_user_id,
                 role,
-                crate::service::member::AddMemberOptions::new()
-                    .with_max_members(0)
-                    .with_initial_status(MemberStatus::Active),
+                Some(&actor_id),
+                false,
             )
             .await?;
+        tx.commit().await?;
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
 
         self.audit_log(
             &actor_id,
@@ -1927,13 +2198,14 @@ impl RoomService {
         Ok(created)
     }
 
-    /// Administrative override: approve a pending member without room-local permission checks.
-    pub async fn admin_approve_member(
+    /// Administrative override: approve a specific pending join request.
+    pub async fn admin_approve_join_request(
         &self,
         room_id: RoomId,
         actor_id: UserId,
+        reviewed_by: Option<&UserId>,
         actor_username: &str,
-        target_user_id: UserId,
+        request_id: &str,
     ) -> Result<RoomMember> {
         let room = self
             .room_repo
@@ -1941,34 +2213,23 @@ impl RoomService {
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let updated = super::optimistic_retry::retry_with_optimistic_lock(
-            3,
-            5,
-            "Approve member failed after maximum retry attempts",
-            || async {
-                let member = self
-                    .member_repo
-                    .get(&room_id, &target_user_id)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
-
-                if !member.status.is_pending() {
-                    return Err(Error::InvalidInput(
-                        "Only pending join requests can be approved".to_string(),
-                    ));
-                }
-
-                self.member_repo
-                    .update_status(
-                        &room_id,
-                        &target_user_id,
-                        MemberStatus::Active,
-                        member.version,
-                    )
-                    .await
-            },
-        )
-        .await?;
+        let (target_user_id, requested_role) = self
+            .load_pending_join_request_by_id(&room_id, request_id)
+            .await?;
+        self.ensure_target_user_can_join(&target_user_id).await?;
+        let role = Self::validate_join_request_role(requested_role)?;
+        let mut tx = self.pool.begin().await?;
+        let updated = self
+            .add_active_member_and_resolve_join_review_tx(
+                &mut tx,
+                &room_id,
+                &target_user_id,
+                role,
+                reviewed_by,
+                true,
+            )
+            .await?;
+        tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
@@ -1982,9 +2243,10 @@ impl RoomService {
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({
                 "room_id": room_id.as_str(),
-                "old_status": "pending",
-                "new_status": "active",
-                "source": "admin_approve_member",
+                "request_id": request_id,
+                "previous_review_status": "pending",
+                "new_review_status": "approved",
+                "source": "admin_approve_join_request",
             }),
         )
         .await;
@@ -1999,44 +2261,42 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// Administrative override: reject a pending member without banning them.
-    pub async fn admin_reject_member(
+    /// Administrative override: reject a specific pending join request without banning the user.
+    pub async fn admin_reject_join_request(
         &self,
         room_id: RoomId,
         actor_id: UserId,
+        reviewed_by: Option<&UserId>,
         actor_username: &str,
-        target_user_id: UserId,
+        request_id: &str,
         reason: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<UserId> {
         let room = self
             .room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let _rejected = super::optimistic_retry::retry_with_optimistic_lock(
-            3,
-            5,
-            "Reject member failed after maximum retry attempts",
-            || async {
-                let member = self
-                    .member_repo
-                    .get(&room_id, &target_user_id)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
-
-                if !member.status.is_pending() {
-                    return Err(Error::InvalidInput(
-                        "Only pending join requests can be rejected".to_string(),
-                    ));
-                }
-
-                self.member_repo
-                    .reject_member(&room_id, &target_user_id, member.version)
-                    .await
-            },
+        let mut tx = self.pool.begin().await?;
+        let (target_user_id, _) =
+            Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
+        sqlx::query(
+            r"
+            UPDATE room_join_requests
+            SET status = $2,
+                reviewed_at = CURRENT_TIMESTAMP,
+                reviewed_by = $3,
+                rejection_reason = $4
+            WHERE id = $1
+            ",
         )
+        .bind(request_id)
+        .bind(ROOM_JOIN_REQUEST_REJECTED)
+        .bind(reviewed_by.map(UserId::as_str))
+        .bind(reason)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
@@ -2050,9 +2310,10 @@ impl RoomService {
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({
                 "room_id": room_id.as_str(),
-                "old_status": "pending",
-                "new_status": "rejected",
-                "source": "admin_reject_member",
+                "request_id": request_id,
+                "previous_review_status": "pending",
+                "new_review_status": "rejected",
+                "source": "admin_reject_join_request",
                 "reason": reason.unwrap_or_default(),
             }),
         )
@@ -2066,7 +2327,7 @@ impl RoomService {
         self.notify_membership_event_best_effort(&target_user_id, &room, event)
             .await;
 
-        Ok(())
+        Ok(target_user_id)
     }
 
     /// Leave a room.
@@ -2282,147 +2543,190 @@ impl RoomService {
         Ok(())
     }
 
-    /// Approve a pending room (review workflow), changing its status to Active.
+    /// Approve a pending room creation request and create the room.
     ///
     /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
     /// After approval, the room becomes visible and usable by its creator.
     ///
     /// # Errors
-    /// - `Error::NotFound` if room doesn't exist
-    /// - `Error::InvalidInput` if room is not in Pending status
+    /// - `Error::NotFound` if the pending request does not exist
     /// - `Error::Authorization` if caller is not a global admin
-    pub async fn approve_pending_room(&self, room_id: RoomId, admin_id: UserId) -> Result<Room> {
-        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Approving pending room");
+    pub async fn approve_pending_room(
+        &self,
+        request_id: RoomId,
+        admin_id: Option<&UserId>,
+    ) -> Result<Room> {
+        tracing::info!(request_id = %request_id, ?admin_id, "Approving room creation request");
 
-        // Verify admin permission (global admin required)
-        let admin = self.user_service.get_user(&admin_id).await?;
-
-        if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Only admins can approve rooms".to_string(),
-            ));
+        if let Some(admin_id) = admin_id {
+            let admin = self.user_service.get_user(admin_id).await?;
+            if !admin.role.is_admin_or_above() {
+                return Err(Error::Authorization(
+                    "Only admins can approve rooms".to_string(),
+                ));
+            }
         }
 
-        // Get current room to check status
-        let room = self
-            .room_repo
-            .get_by_id(&room_id)
+        let mut tx = self.pool.begin().await?;
+        let request = Self::load_pending_room_creation_request_for_update(&request_id, &mut tx)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "Pending room creation request {} not found",
+                    request_id.as_str()
+                ))
+            })?;
 
-        if room.status != RoomStatus::Pending {
-            return Err(Error::InvalidInput(format!(
-                "Room is not pending (current status: {:?})",
-                room.status
-            )));
-        }
-
-        // Update status to Active
-        let updated = self
-            .room_repo
-            .update_status(&room_id, RoomStatus::Active)
+        self.enforce_room_ownership_limit(&request.requested_by, None)
             .await?;
 
-        // Invalidate cache
-        self.notify_room_invalidation(&room_id).await;
+        let mut room = Room::new_with_description(
+            request.name.clone(),
+            request.description.clone(),
+            request.requested_by.clone(),
+        );
+        room.id = request.id.clone();
+        let updated = self.room_repo.create_with_executor(&room, &mut *tx).await?;
+
+        if let Some(password_hash) = request.password_hash.as_deref() {
+            self.room_settings_repo
+                .set_with_executor(&updated.id, "password", password_hash, &mut *tx)
+                .await?;
+        }
+        self.room_settings_repo
+            .set_settings_with_executor(&updated.id, &request.settings, &mut *tx)
+            .await?;
+
+        let member = RoomMember::new(
+            updated.id.clone(),
+            request.requested_by.clone(),
+            RoomRole::Creator,
+        );
+        self.member_repo.add_with_executor(&member, &mut tx).await?;
+        self.playback_repo
+            .create_or_get_with_executor(&updated.id, &mut tx)
+            .await?;
+
+        sqlx::query(
+            r"
+            UPDATE room_creation_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
+            WHERE id = $1
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(ReviewStatus::Approved.as_i16())
+        .bind(admin_id.map(UserId::as_str))
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        crate::metrics::http::ROOMS_ACTIVE.inc();
+
+        self.notify_room_invalidation(&updated.id).await;
         self.permission_service
-            .invalidate_room_cache(&room_id)
+            .invalidate_room_cache(&updated.id)
             .await;
 
         // Audit log
         self.audit_log(
-            &admin_id,
+            admin_id.unwrap_or(&request.requested_by),
             "",
             AuditAction::RoomApproved,
             AuditTargetType::Room,
-            Some(room_id.as_str().to_string()),
+            Some(updated.id.as_str().to_string()),
             serde_json::json!({
-                "previous_status": "pending",
-                "new_status": "active",
+                "request_id": request_id.as_str(),
+                "previous_review_status": "pending",
+                "new_review_status": "approved",
             }),
         )
         .await;
 
-        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room approved and activated");
+        tracing::info!(request_id = %request_id, room_id = %updated.id, ?admin_id, "Room approved and activated");
 
         Ok(updated)
     }
 
-    /// Reject a pending room, changing its status to Rejected.
+    /// Reject a pending room creation request.
     ///
     /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
-    /// Rejected rooms are preserved for review/audit but remain inaccessible.
+    /// Rejected requests are preserved for review/audit; no room row is created.
     ///
     /// # Errors
     /// - `Error::NotFound` if room doesn't exist
-    /// - `Error::InvalidInput` if room is not in Pending status
+    /// - `Error::NotFound` if the pending request does not exist
     /// - Permission error if caller is not a global admin
     pub async fn reject_room(
         &self,
         room_id: RoomId,
-        admin_id: UserId,
+        admin_id: Option<&UserId>,
         reason: Option<String>,
     ) -> Result<Room> {
-        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Rejecting pending room");
+        tracing::info!(room_id = %room_id, ?admin_id, "Rejecting pending room");
 
-        // Verify admin permission (global admin required)
-        let admin = self.user_service.get_user(&admin_id).await?;
-
-        if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Only admins can reject rooms".to_string(),
-            ));
+        if let Some(admin_id) = admin_id {
+            let admin = self.user_service.get_user(admin_id).await?;
+            if !admin.role.is_admin_or_above() {
+                return Err(Error::Authorization(
+                    "Only admins can reject rooms".to_string(),
+                ));
+            }
         }
 
-        // Get current room to check status
-        let room = self
-            .room_repo
-            .get_by_id(&room_id)
+        let mut tx = self.pool.begin().await?;
+        let request = Self::load_pending_room_creation_request_for_update(&room_id, &mut tx)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "Pending room creation request {} not found",
+                    room_id.as_str()
+                ))
+            })?;
 
-        if room.status != RoomStatus::Pending {
-            return Err(Error::InvalidInput(format!(
-                "Room is not pending (current status: {:?})",
-                room.status
-            )));
-        }
+        sqlx::query(
+            r"
+            UPDATE room_creation_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
+            WHERE id = $1
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(ReviewStatus::Rejected.as_i16())
+        .bind(admin_id.map(UserId::as_str))
+        .bind(reason.as_deref())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
 
-        // Update status to Rejected
-        let updated = self
-            .room_repo
-            .update_status(&room_id, RoomStatus::Rejected)
-            .await?;
-
-        // Invalidate cache
-        self.notify_room_invalidation(&room_id).await;
-        self.permission_service
-            .invalidate_room_cache(&room_id)
-            .await;
+        let mut updated =
+            Room::new_with_description(request.name, request.description, request.requested_by);
+        updated.id = request.id;
 
         // Audit log
         self.audit_log(
-            &admin_id,
+            admin_id.unwrap_or(&updated.created_by),
             "",
             AuditAction::RoomRejected,
             AuditTargetType::Room,
             Some(room_id.as_str().to_string()),
             serde_json::json!({
-                "previous_status": "pending",
-                "new_status": "rejected",
+                "previous_review_status": "pending",
+                "new_review_status": "rejected",
                 "reason": reason,
             }),
         )
         .await;
 
-        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room rejected");
+        tracing::info!(room_id = %room_id, ?admin_id, "Room rejected");
 
         Ok(updated)
     }
 
-    /// List pending rooms (admin only).
+    /// List pending room creation requests (admin only).
     ///
-    /// Returns all rooms with `RoomStatus::Pending` for admin review.
+    /// Returns room-shaped DTOs synthesized from pending request records.
     pub async fn list_pending_rooms(
         &self,
         admin_id: UserId,
@@ -2439,17 +2743,54 @@ impl RoomService {
             ));
         }
 
-        let query = RoomListQuery {
-            pagination,
-            status: Some(RoomStatus::Pending),
-            search: None,
-            is_banned: None,
-            creator_id: None,
-            sort_by: crate::models::RoomListSortBy::CreatedAt,
-            sort_direction: crate::models::SortDirection::Desc,
-        };
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM room_creation_requests
+            WHERE reviewed_at IS NULL AND status = $1
+            ",
+        )
+        .bind(ReviewStatus::Pending.as_i16())
+        .fetch_one(&self.pool)
+        .await?;
 
-        self.room_repo.list(&query).await
+        let rows = sqlx::query(
+            r"
+            SELECT id, requested_by, name, description, requested_at
+            FROM room_creation_requests
+            WHERE reviewed_at IS NULL AND status = $1
+            ORDER BY requested_at DESC, id DESC
+            LIMIT $2 OFFSET $3
+            ",
+        )
+        .bind(ReviewStatus::Pending.as_i16())
+        .bind(i64::try_from(pagination.limit()).unwrap_or(i64::MAX))
+        .bind(i64::try_from(pagination.offset()).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let rooms = rows
+            .into_iter()
+            .map(|row| {
+                let requested_at = row.try_get("requested_at")?;
+                Ok(Room {
+                    id: row.try_get("id")?,
+                    name: row.try_get("name")?,
+                    description: row.try_get("description")?,
+                    created_by: row.try_get("requested_by")?,
+                    status: RoomStatus::Active,
+                    is_banned: false,
+                    closed_at: None,
+                    created_at: requested_at,
+                    updated_at: requested_at,
+                    deleted_at: None,
+                    version: 0,
+                    last_activity_at: requested_at,
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+
+        Ok((rooms, total))
     }
 
     /// Set room settings with optimistic locking (CAS).
@@ -4060,12 +4401,8 @@ impl RoomService {
 
     /// Update room status (admin use, bypasses permission checks)
     ///
-    /// Validates the status transition before applying it. Valid transitions are:
-    /// - `Pending -> Active` (review approved)
-    /// - `Pending -> Closed` (review rejected)
-    /// - `Active -> Closed` (room closed)
-    /// - `Closed -> Active` (room reopened)
-    /// - Same status (no change) is always allowed
+    /// Validates the status transition before applying it. Rooms only support
+    /// `Active` and `Closed`; review workflows use dedicated request tables.
     ///
     /// # Errors
     /// - `Error::NotFound` if room doesn't exist
@@ -4186,7 +4523,7 @@ impl RoomService {
     /// 2. The creator's user record either:
     /// - Does not exist (hard-deleted), OR
     /// - Has `deleted_at` set (soft-deleted), OR
-    /// - Has `status = 'Banned'`
+    /// - Has an active global ban
     ///
     /// # Arguments
     ///
@@ -4228,10 +4565,16 @@ impl RoomService {
         // Check if the creator is deleted or banned
         let creator_orphaned = sqlx::query_scalar::<_, bool>(
             "SELECT NOT EXISTS (
-                SELECT 1 FROM users
-                WHERE id = $1
-                AND deleted_at IS NULL
-                AND status != 3
+                SELECT 1
+                FROM users u
+                WHERE u.id = $1
+                  AND u.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM user_bans ub
+                      WHERE ub.user_id = u.id
+                        AND ub.revoked_at IS NULL
+                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                  )
             )",
         )
         .bind(room.created_by.as_str())
@@ -4519,31 +4862,6 @@ impl RoomService {
     #[must_use]
     pub const fn media_service(&self) -> &MediaService {
         &self.media_service
-    }
-
-    /// Approve a pending room
-    ///
-    /// Changes room status from pending to active.
-    /// Only admins can approve rooms.
-    pub async fn approve_room(&self, room_id: &RoomId) -> Result<Room> {
-        let room = self
-            .room_repo
-            .get_by_id(room_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-
-        if !room.status.is_pending() {
-            return Err(Error::InvalidInput(
-                "Room is not pending approval".to_string(),
-            ));
-        }
-
-        let updated_room = self
-            .room_repo
-            .update_status(room_id, RoomStatus::Active)
-            .await?;
-
-        Ok(updated_room)
     }
 
     /// Ban a room (admin only)
@@ -5689,13 +6007,13 @@ mod tests {
     }
 
     #[test]
-    fn test_room_is_active_considers_ban_status_and_deleted() {
+    fn test_room_is_active_considers_lifecycle_and_deleted() {
         let mut room = RoomFixture::new().build();
         assert!(room.is_active());
 
-        // Banned room is not active
+        // Ban is independent moderation state, not lifecycle state.
         room.ban();
-        assert!(!room.is_active());
+        assert!(room.is_active());
         room.unban();
         assert!(room.is_active());
 
@@ -5705,20 +6023,15 @@ mod tests {
     }
 
     #[test]
-    fn test_room_is_active_requires_active_status() {
+    fn test_room_is_active_requires_open_lifecycle() {
         use crate::models::Room;
 
         let room = Room::new("test".to_string(), crate::models::UserId::new());
         assert!(room.is_active());
 
-        // Pending status
-        let mut pending_room = room.clone();
-        pending_room.status = RoomStatus::Pending;
-        assert!(!pending_room.is_active());
-
-        // Closed status
+        // Closed rooms have closed_at set.
         let mut closed_room = room;
-        closed_room.status = RoomStatus::Closed;
+        closed_room.close();
         assert!(!closed_room.is_active());
     }
 
@@ -5736,7 +6049,7 @@ mod tests {
         let banner = UserId("admin1".to_string());
         member.ban(banner.clone(), Some("spamming".to_string()));
 
-        assert_eq!(member.status, MemberStatus::Banned);
+        assert_eq!(member.status, MemberStatus::Left);
         assert!(member.banned_at.is_some());
         assert_eq!(member.banned_by, Some(banner));
         assert_eq!(member.banned_reason, Some("spamming".to_string()));
@@ -5755,11 +6068,11 @@ mod tests {
         member.ban(UserId("admin1".to_string()), Some("reason".to_string()));
 
         member.unban();
-        assert_eq!(member.status, MemberStatus::Active);
+        assert_eq!(member.status, MemberStatus::Left);
         assert!(member.banned_at.is_none());
         assert!(member.banned_by.is_none());
         assert!(member.banned_reason.is_none());
-        assert!(member.is_active());
+        assert!(!member.is_active());
     }
 
     #[test]

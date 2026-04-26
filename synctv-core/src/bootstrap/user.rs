@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::BootstrapConfig,
-    models::{SignupMethod, User, UserRole, UserStatus},
+    models::{SignupMethod, User, UserRole},
     repository::UserRepository,
     service::auth::hash_password,
     Error, Result,
@@ -66,7 +66,6 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     );
 
     user.role = UserRole::Root;
-    user.status = UserStatus::Active;
 
     let created_user = repository.create(&user).await?;
 
@@ -74,7 +73,6 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     info!("  ID: {}", created_user.id.as_str());
     info!("  Username: {}", created_user.username);
     info!("  Role: {:?}", created_user.role);
-    info!("  Status: {:?}", created_user.status);
 
     if config.root_password == "root" {
         warn!("WARNING: Root password is set to default value 'root'");
@@ -107,12 +105,10 @@ pub async fn has_any_admin_users(pool: &PgPool) -> bool {
             SELECT 1
             FROM users
             WHERE deleted_at IS NULL
-              AND status = $1
-              AND (role = $2 OR role = $3)
+              AND (role = $1 OR role = $2)
             LIMIT 1
         )",
     )
-    .bind(UserStatus::Active)
     .bind(UserRole::Root)
     .bind(UserRole::Admin)
     .fetch_one(pool)

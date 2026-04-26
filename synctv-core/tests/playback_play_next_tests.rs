@@ -90,6 +90,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -1081,10 +1085,8 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(next_creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(&next_creator.id, None, Some("play next test".to_string()))
         .await
         .unwrap();
 
@@ -1212,10 +1214,12 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     )
     .await;
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(playlist_creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(
+            &playlist_creator.id,
+            None,
+            Some("play next test".to_string()),
+        )
         .await
         .unwrap();
 
@@ -1300,10 +1304,12 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(playlist_creator.id.as_str())
-        .bind(UserStatus::Banned)
-        .execute(&pool)
+    user_repo
+        .ban(
+            &playlist_creator.id,
+            None,
+            Some("play next test".to_string()),
+        )
         .await
         .unwrap();
 

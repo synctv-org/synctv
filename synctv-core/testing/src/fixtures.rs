@@ -114,6 +114,10 @@ impl TestUser {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         }
     }
 
@@ -149,6 +153,10 @@ impl TestUser {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         }
     }
 }
@@ -227,6 +235,7 @@ impl TestRoom {
             created_by: self.created_by,
             status: self.status,
             description: self.description,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             version: 0,

@@ -1,0 +1,24 @@
+CREATE TABLE IF NOT EXISTS room_bans (
+    id CHAR(12) PRIMARY KEY,
+    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
+    banned_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
+    reason TEXT,
+    starts_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ends_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    revoked_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_room_bans_active_unique
+    ON room_bans(room_id)
+    WHERE revoked_at IS NULL
+      AND ends_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_room_bans_room
+    ON room_bans(room_id, starts_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_room_bans_banned_by
+    ON room_bans(banned_by, starts_at DESC)
+    WHERE banned_by IS NOT NULL;
+
+COMMENT ON TABLE room_bans IS 'Room ban records';

@@ -52,6 +52,17 @@ async fn insert_user(pool: &PgPool, user: &User) -> User {
     repo.create(user).await.expect("Failed to create user")
 }
 
+async fn insert_banned_user(pool: &PgPool, password_version: i32) -> User {
+    let repo = UserRepository::new(pool.clone());
+    let user = repo
+        .create(&make_user(UserStatus::Active, password_version))
+        .await
+        .expect("Failed to create user");
+    repo.ban(&user.id, None, Some("security pipeline test".to_string()))
+        .await
+        .expect("Failed to ban user")
+}
+
 fn make_user(status: UserStatus, password_version: i32) -> User {
     User {
         id: UserId::new(),
@@ -68,6 +79,10 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
         password_version,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -154,7 +169,7 @@ async fn test_db_error_propagates_not_swallowed() {
 #[ignore = "Requires Docker"]
 async fn test_banned_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
+    let user = insert_banned_user(&pool, 0).await;
     let user_service = Arc::new(create_user_service(pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
@@ -167,9 +182,9 @@ async fn test_banned_user_rejected_via_db() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_rejected_user_rejected_via_db() {
+async fn test_banned_user_rejected_via_db_second_path() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Rejected, 0)).await;
+    let user = insert_banned_user(&pool, 0).await;
     let user_service = Arc::new(create_user_service(pool));
 
     let pipeline = SecurityPipeline::new(user_service)
@@ -177,7 +192,7 @@ async fn test_rejected_user_rejected_via_db() {
     let claims = make_claims(&user.id, 0);
 
     let result = pipeline.check(&claims).await;
-    assert!(result.is_err(), "Rejected user should be rejected via DB");
+    assert!(result.is_err(), "Banned user should be rejected via DB");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
@@ -274,9 +289,9 @@ async fn test_cache_hit_outdated_password_version_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_hit_banned_user_rejected() {
+async fn test_cache_hit_banned_user_rejected_from_status_cache() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
+    let user = insert_banned_user(&pool, 0).await;
     let user_service = Arc::new(create_user_service(pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
@@ -303,20 +318,20 @@ async fn test_cache_hit_banned_user_rejected() {
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
-// SEC4: Pending user rejected (DB and cache paths)
+// SEC4: Banned user rejected (DB and cache paths)
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_pending_user_rejected_via_db() {
+async fn test_banned_user_rejected_via_db_again() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
+    let user = insert_banned_user(&pool, 0).await;
     let user_service = Arc::new(create_user_service(pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     let claims = make_claims(&user.id, 0);
     let result = pipeline.check(&claims).await;
-    assert!(result.is_err(), "Pending user should be rejected via DB");
+    assert!(result.is_err(), "Banned user should be rejected via DB");
     assert!(
         matches!(result.unwrap_err(), Error::Authentication(_)),
         "Should be an Authentication error"
@@ -325,19 +340,19 @@ async fn test_pending_user_rejected_via_db() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_cache_hit_pending_user_rejected() {
+async fn test_cache_hit_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
+    let user = insert_banned_user(&pool, 0).await;
     let user_service = Arc::new(create_user_service(pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
-    // Pre-populate cache with Pending status
+    // Pre-populate cache with Banned status
     let cached = CachedUser::with_updated_at(
         user.id.as_str().to_string(),
         user.username.clone(),
         user.role,
-        UserStatus::Pending,
+        UserStatus::Banned,
         user.created_at,
         user.updated_at,
         0,
@@ -379,10 +394,8 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    sqlx::query("UPDATE users SET status = $1, version = version + 1 WHERE id = $2")
-        .bind(UserStatus::Banned)
-        .bind(user.id.as_str())
-        .execute(&pool)
+    UserRepository::new(pool.clone())
+        .ban(&user.id, None, Some("security pipeline test".to_string()))
         .await
         .expect("Failed to ban user in DB");
 

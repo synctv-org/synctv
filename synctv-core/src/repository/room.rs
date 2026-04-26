@@ -3,11 +3,40 @@ use sqlx::{FromRow, PgPool, Row};
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
     models::{
-        MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomListSortBy, RoomSettings,
-        RoomStatus, UserId,
+        PageParams, Room, RoomId, RoomListQuery, RoomListSortBy, RoomSettings, RoomStatus, UserId,
     },
     Result,
 };
+
+const ROOM_SELECT_COLUMNS: &str = "r.id, r.name, r.description, r.created_by, r.closed_at,
+    r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+    EXISTS (
+        SELECT 1 FROM room_bans rb
+        WHERE rb.room_id = r.id
+          AND rb.revoked_at IS NULL
+          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+    ) AS is_banned";
+const ROOM_RETURNING_COLUMNS: &str = "id, name, description, created_by, closed_at,
+    created_at, updated_at, deleted_at, version, last_activity_at";
+const ACTIVE_ROOM_BAN_EXISTS_SQL: &str = "EXISTS (
+    SELECT 1 FROM room_bans rb
+    WHERE rb.room_id = r.id
+      AND rb.revoked_at IS NULL
+      AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+)";
+const ACTIVE_ROOM_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
+    SELECT 1 FROM room_bans rb
+    WHERE rb.room_id = r.id
+      AND rb.revoked_at IS NULL
+      AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+)";
+const ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
+    SELECT 1 FROM room_member_bans rmb
+    WHERE rmb.room_id = rm.room_id
+      AND rmb.user_id = rm.user_id
+      AND rmb.revoked_at IS NULL
+      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+)";
 
 /// Pre-fetched context for the join-room flow, retrieved in a single DB round-trip.
 #[derive(Debug)]
@@ -25,7 +54,13 @@ pub struct RoomRepository {
 }
 
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
-    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL AND u.status = 1)";
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM user_bans ub
+            WHERE ub.user_id = u.id
+              AND ub.revoked_at IS NULL
+              AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ))";
 
 fn pagination_u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -63,52 +98,53 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let created = sqlx::query_as::<_, Room>(
-            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version, last_activity_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
-        )
-        .bind(room.id.as_str())
-        .bind(&room.name)
-        .bind(&room.description)
-        .bind(room.created_by.as_str())
-        .bind(room.status)
-        .bind(room.is_banned)
-        .bind(room.created_at)
-        .bind(room.updated_at)
-        .bind(room.version)
-        .bind(room.last_activity_at)
-        .fetch_one(executor)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
-                let constraint = db_err.constraint().unwrap_or("");
-                if constraint.contains("idx_rooms_created_by_name")
-                    || constraint.contains("rooms_created_by_name")
-                {
-                    crate::Error::AlreadyExists(
-                        "You already have a room with this name".to_string(),
-                    )
-                } else {
-                    crate::Error::Database(e)
+        let sql = format!(
+            "INSERT INTO rooms (id, name, description, created_by, closed_at, created_at, updated_at, version, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING {ROOM_RETURNING_COLUMNS}"
+        );
+        let created = sqlx::query_as::<_, Room>(&sql)
+            .bind(room.id.as_str())
+            .bind(&room.name)
+            .bind(&room.description)
+            .bind(room.created_by.as_str())
+            .bind(room.closed_at)
+            .bind(room.created_at)
+            .bind(room.updated_at)
+            .bind(room.version)
+            .bind(room.last_activity_at)
+            .fetch_one(executor)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                    let constraint = db_err.constraint().unwrap_or("");
+                    if constraint.contains("idx_rooms_created_by_name")
+                        || constraint.contains("rooms_created_by_name")
+                    {
+                        crate::Error::AlreadyExists(
+                            "You already have a room with this name".to_string(),
+                        )
+                    } else {
+                        crate::Error::Database(e)
+                    }
                 }
-            }
-            _ => crate::Error::Database(e),
-        })?;
+                _ => crate::Error::Database(e),
+            })?;
 
         Ok(created)
     }
 
     /// Get room by ID
     pub async fn get_by_id(&self, room_id: &RoomId) -> Result<Option<Room>> {
-        let room = sqlx::query_as::<_, Room>(
-            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-             FROM rooms
-             WHERE id = $1 AND deleted_at IS NULL"
-        )
-        .bind(room_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
+        let sql = format!(
+            "SELECT {ROOM_SELECT_COLUMNS}
+             FROM rooms r
+             WHERE r.id = $1 AND r.deleted_at IS NULL"
+        );
+        let room = sqlx::query_as::<_, Room>(&sql)
+            .bind(room_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(room)
     }
@@ -130,20 +166,20 @@ impl RoomRepository {
     /// Note: `updated_at` is set automatically by the `update_rooms_updated_at`
     /// BEFORE UPDATE trigger, so we omit it from the SET clause.
     pub async fn update(&self, room: &Room, old_version: i32) -> Result<Room> {
-        let updated = sqlx::query_as::<_, Room>(
+        let sql = format!(
             "UPDATE rooms
-             SET name = $2, description = $3, status = $4, is_banned = $5, version = version + 1
-             WHERE id = $1 AND deleted_at IS NULL AND version = $6
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
-        )
-        .bind(room.id.as_str())
-        .bind(&room.name)
-        .bind(&room.description)
-        .bind(room.status)
-        .bind(room.is_banned)
-        .bind(old_version)
-        .fetch_optional(&self.pool)
-        .await?;
+             SET name = $2, description = $3, closed_at = $4, version = version + 1
+             WHERE id = $1 AND deleted_at IS NULL AND version = $5
+             RETURNING {ROOM_RETURNING_COLUMNS}"
+        );
+        let updated = sqlx::query_as::<_, Room>(&sql)
+            .bind(room.id.as_str())
+            .bind(&room.name)
+            .bind(&room.description)
+            .bind(room.closed_at)
+            .bind(old_version)
+            .fetch_optional(&self.pool)
+            .await?;
 
         if let Some(updated) = updated {
             Ok(updated)
@@ -192,16 +228,14 @@ impl RoomRepository {
         wb.push_literal("r.deleted_at IS NULL");
 
         match &query.status {
-            Some(RoomStatus::Active) => wb.push_literal("r.status = 1"),
-            Some(RoomStatus::Pending) => wb.push_literal("r.status = 2"),
-            Some(RoomStatus::Rejected) => wb.push_literal("r.status = 3"),
-            Some(RoomStatus::Closed) => wb.push_literal("r.status = 4"),
+            Some(RoomStatus::Active) => wb.push_literal("r.closed_at IS NULL"),
+            Some(RoomStatus::Closed) => wb.push_literal("r.closed_at IS NOT NULL"),
             None => {}
         }
 
         match query.is_banned {
-            Some(true) => wb.push_literal("r.is_banned = TRUE"),
-            Some(false) => wb.push_literal("r.is_banned = FALSE"),
+            Some(true) => wb.push_literal(ACTIVE_ROOM_BAN_EXISTS_SQL),
+            Some(false) => wb.push_literal(ACTIVE_ROOM_BAN_NOT_EXISTS_SQL),
             None => {}
         }
 
@@ -289,7 +323,7 @@ impl RoomRepository {
         let (list_where, _) = wb.build(3);
         let order_by = Self::build_order_by(query);
         let list_sql = format!(
-            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            "SELECT {ROOM_SELECT_COLUMNS}
              FROM rooms r
              WHERE {list_where}
              ORDER BY {order_by}
@@ -327,7 +361,7 @@ impl RoomRepository {
         let (list_where, _) = wb.build(3);
         let order_by = Self::build_order_by(query);
         let list_sql = format!(
-            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            "SELECT {ROOM_SELECT_COLUMNS}
              FROM rooms r
              WHERE {list_where} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
              ORDER BY {order_by}
@@ -378,7 +412,7 @@ impl RoomRepository {
         let (list_where, _) = wb.build(4);
         let order_by = Self::build_order_by(query);
         let list_sql = format!(
-            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            "SELECT {ROOM_SELECT_COLUMNS}
              FROM rooms r
              WHERE {relation_sql} AND {list_where}
              ORDER BY {order_by}
@@ -425,13 +459,14 @@ impl RoomRepository {
         let list_sql = format!(
             r"
             SELECT
-                r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status = 1), 0)::int as member_count
+                {ROOM_SELECT_COLUMNS},
+                COALESCE(COUNT(rm.user_id) FILTER (
+                    WHERE rm.left_at IS NULL AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}
+                ), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
-            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY {order_by}
             LIMIT $1 OFFSET $2
             "
@@ -481,7 +516,13 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
-             WHERE id = $1 AND deleted_at IS NULL AND status = 1 AND is_banned = FALSE",
+             WHERE id = $1 AND deleted_at IS NULL AND closed_at IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM room_bans rb
+                   WHERE rb.room_id = rooms.id
+                     AND rb.revoked_at IS NULL
+                     AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+               )",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
@@ -492,15 +533,17 @@ impl RoomRepository {
 
     /// Get room member count (excludes banned members)
     pub async fn get_member_count(&self, room_id: &RoomId) -> Result<i32> {
-        let count: i64 = sqlx::query_scalar(
+        let count_sql = format!(
             "SELECT COUNT(*) as count
-             FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL AND status = $2",
-        )
-        .bind(room_id.as_str())
-        .bind(crate::models::MemberStatus::Active)
-        .fetch_one(&self.pool)
-        .await?;
+             FROM room_members rm
+             WHERE rm.room_id = $1
+               AND rm.left_at IS NULL
+               AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}"
+        );
+        let count: i64 = sqlx::query_scalar(&count_sql)
+            .bind(room_id.as_str())
+            .fetch_one(&self.pool)
+            .await?;
 
         count_i64_to_i32(count)
     }
@@ -525,18 +568,19 @@ impl RoomRepository {
         .await?;
 
         // Get rooms
-        let rooms = sqlx::query_as::<_, Room>(
-            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-             FROM rooms
-             WHERE created_by = $1 AND deleted_at IS NULL
+        let sql = format!(
+            "SELECT {ROOM_SELECT_COLUMNS}
+             FROM rooms r
+             WHERE r.created_by = $1 AND r.deleted_at IS NULL
              ORDER BY created_at DESC
              LIMIT $2 OFFSET $3"
-        )
-        .bind(creator_id.as_str())
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rooms = sqlx::query_as::<_, Room>(&sql)
+            .bind(creator_id.as_str())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok((rooms, count))
     }
@@ -561,25 +605,27 @@ impl RoomRepository {
         .await?;
 
         // Get rooms with member count using LEFT JOIN
-        let rows = sqlx::query(
+        let sql = format!(
             r"
             SELECT
-                r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status = 1), 0)::int as member_count
+                {ROOM_SELECT_COLUMNS},
+                COALESCE(COUNT(rm.user_id) FILTER (
+                    WHERE rm.left_at IS NULL AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}
+                ), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
-            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
+            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3
             "
-        )
-        .bind(creator_id.as_str())
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows = sqlx::query(&sql)
+            .bind(creator_id.as_str())
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
 
         let rooms_with_count: Result<Vec<crate::models::RoomWithCount>> = rows
             .into_iter()
@@ -593,69 +639,101 @@ impl RoomRepository {
         Ok((rooms_with_count?, count))
     }
 
-    /// Update room status.
+    /// Update derived room status by closing or reopening the room.
     ///
     /// This intentionally does NOT use optimistic locking (CAS) because status
     /// updates are idempotent flag-sets: setting a room to `Active` twice produces
     /// the same result. The `version` column is still incremented to propagate
     /// cache invalidation, but no `WHERE version = ?` guard is needed.
     pub async fn update_status(&self, room_id: &RoomId, status: RoomStatus) -> Result<Room> {
-        let room = sqlx::query_as::<_, Room>(
+        let sql = format!(
             r"
             UPDATE rooms
-            SET status = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
+            SET closed_at = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-            ",
-        )
-        .bind(status)
-        .bind(room_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+            RETURNING {ROOM_RETURNING_COLUMNS}
+            "
+        );
+        let closed_at = match status {
+            RoomStatus::Active => None,
+            RoomStatus::Closed => Some(chrono::Utc::now()),
+        };
+        let room = sqlx::query_as::<_, Room>(&sql)
+            .bind(closed_at)
+            .bind(room_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
+            })?;
 
         Ok(room)
     }
 
-    /// Update room ban status (admin only).
-    ///
-    /// This intentionally does NOT use optimistic locking (CAS) because ban/unban
-    /// is an idempotent flag-set: banning an already-banned room is a no-op.
-    /// The `version` column is still incremented to propagate cache invalidation,
-    /// but no `WHERE version = ?` guard is needed.
+    /// Update room ban policy using `room_bans`.
     pub async fn update_ban_status(&self, room_id: &RoomId, is_banned: bool) -> Result<Room> {
-        let room = sqlx::query_as::<_, Room>(
-            r"
-            UPDATE rooms
-            SET is_banned = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-            ",
-        )
-        .bind(is_banned)
-        .bind(room_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+        if is_banned {
+            sqlx::query(
+                r"
+                INSERT INTO room_bans (id, room_id, starts_at)
+                SELECT $1, r.id, CURRENT_TIMESTAMP
+                FROM rooms r
+                WHERE r.id = $2 AND r.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM room_bans rb
+                      WHERE rb.room_id = r.id
+                        AND rb.revoked_at IS NULL
+                        AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                  )
+                ",
+            )
+            .bind(crate::models::generate_id())
+            .bind(room_id.as_str())
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                r"
+                UPDATE room_bans rb
+                SET revoked_at = CURRENT_TIMESTAMP
+                FROM rooms r
+                WHERE rb.room_id = r.id
+                  AND r.id = $1
+                  AND r.deleted_at IS NULL
+                  AND rb.revoked_at IS NULL
+                  AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                ",
+            )
+            .bind(room_id.as_str())
+            .execute(&self.pool)
+            .await?;
+        }
+
+        let room = self.get_by_id(room_id).await?.ok_or_else(|| {
+            crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
+        })?;
 
         Ok(room)
     }
 
     /// Update room description
     pub async fn update_description(&self, room_id: &RoomId, description: &str) -> Result<Room> {
-        let room = sqlx::query_as::<_, Room>(
+        let sql = format!(
             r"
             UPDATE rooms
             SET description = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-            ",
-        )
-        .bind(description)
-        .bind(room_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+            RETURNING {ROOM_RETURNING_COLUMNS}
+            "
+        );
+        let room = sqlx::query_as::<_, Room>(&sql)
+            .bind(description)
+            .bind(room_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
+            })?;
 
         Ok(room)
     }
@@ -667,19 +745,22 @@ impl RoomRepository {
         new_owner_id: &UserId,
         executor: impl sqlx::PgExecutor<'_>,
     ) -> Result<Room> {
-        let room = sqlx::query_as::<_, Room>(
+        let sql = format!(
             r"
             UPDATE rooms
             SET created_by = $2, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
-            ",
-        )
-        .bind(room_id.as_str())
-        .bind(new_owner_id.as_str())
-        .fetch_optional(executor)
-        .await?
-        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+            RETURNING {ROOM_RETURNING_COLUMNS}
+            "
+        );
+        let room = sqlx::query_as::<_, Room>(&sql)
+            .bind(room_id.as_str())
+            .bind(new_owner_id.as_str())
+            .fetch_optional(executor)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
+            })?;
 
         Ok(room)
     }
@@ -702,7 +783,7 @@ impl RoomRepository {
     ///
     /// Combines three lookups that were previously sequential:
     ///   1. `rooms` row (by id, not soft-deleted)
-    ///   2. Ban check (`room_members` where status = Banned)
+    ///   2. Ban check (`room_members` where banned_at IS NOT NULL)
     ///   3. Room settings + password hash (`room_settings`)
     ///
     /// Returns `None` if the room does not exist or is soft-deleted.
@@ -711,14 +792,16 @@ impl RoomRepository {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<Option<JoinRoomContext>> {
-        let row = sqlx::query(
+        let sql = format!(
             r"
             SELECT
-                r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                {ROOM_SELECT_COLUMNS},
                 EXISTS(
-                    SELECT 1 FROM room_members rm
-                    WHERE rm.room_id = r.id AND rm.user_id = $2 AND rm.status = $3
+                    SELECT 1 FROM room_member_bans rmb
+                    WHERE rmb.room_id = r.id
+                      AND rmb.user_id = $2
+                      AND rmb.revoked_at IS NULL
+                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
                 ) AS user_is_banned,
                 rs_settings.value  AS settings_json,
                 rs_password.value  AS password_hash
@@ -728,13 +811,13 @@ impl RoomRepository {
             LEFT JOIN room_settings rs_password
                 ON rs_password.room_id = r.id AND rs_password.key = 'password'
             WHERE r.id = $1 AND r.deleted_at IS NULL
-            ",
-        )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
-        .bind(MemberStatus::Banned)
-        .fetch_optional(&self.pool)
-        .await?;
+            "
+        );
+        let row = sqlx::query(&sql)
+            .bind(room_id.as_str())
+            .bind(user_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
 
         let Some(row) = row else { return Ok(None) };
 
@@ -799,14 +882,14 @@ mod tests {
 
         let (sql, _) = wb.build(1);
         assert!(sql.contains("r.deleted_at IS NULL"));
-        assert!(sql.contains("r.status = 1"));
+        assert!(sql.contains("r.closed_at IS NULL"));
         assert_eq!(wb.param_count(), 0); // status is a literal, not a param
     }
 
     #[test]
-    fn test_build_room_list_conditions_with_status_pending() {
+    fn test_build_room_list_conditions_with_status_closed_contains_closed_at_filter() {
         let query = RoomListQuery {
-            status: Some(RoomStatus::Pending),
+            status: Some(RoomStatus::Closed),
             is_banned: None,
             search: None,
             pagination: PageParams::default(),
@@ -817,7 +900,7 @@ mod tests {
         let wb = RoomRepository::build_room_list_conditions(&query);
 
         let (sql, _) = wb.build(1);
-        assert!(sql.contains("r.status = 2"));
+        assert_eq!(sql, "r.deleted_at IS NULL AND r.closed_at IS NOT NULL");
     }
 
     #[test]
@@ -834,7 +917,7 @@ mod tests {
         let wb = RoomRepository::build_room_list_conditions(&query);
 
         let (sql, _) = wb.build(1);
-        assert!(sql.contains("r.status = 4"));
+        assert!(sql.contains("r.closed_at IS NOT NULL"));
     }
 
     #[test]
@@ -851,7 +934,9 @@ mod tests {
         let wb = RoomRepository::build_room_list_conditions(&query);
 
         let (sql, _) = wb.build(1);
-        assert!(sql.contains("r.is_banned = TRUE"));
+        assert!(sql.contains("room_bans rb"));
+        assert!(sql.contains("rb.room_id = r.id"));
+        assert!(sql.contains("rb.revoked_at IS NULL"));
     }
 
     #[test]
@@ -868,7 +953,9 @@ mod tests {
         let wb = RoomRepository::build_room_list_conditions(&query);
 
         let (sql, _) = wb.build(1);
-        assert!(sql.contains("r.is_banned = FALSE"));
+        assert!(sql.contains("NOT EXISTS"));
+        assert!(sql.contains("room_bans rb"));
+        assert!(sql.contains("rb.room_id = r.id"));
     }
 
     #[test]
@@ -906,8 +993,9 @@ mod tests {
 
         let (sql, _) = wb.build(1);
         assert!(sql.contains("r.deleted_at IS NULL"));
-        assert!(sql.contains("r.status = 1"));
-        assert!(sql.contains("r.is_banned = FALSE"));
+        assert!(sql.contains("r.closed_at IS NULL"));
+        assert!(sql.contains("NOT EXISTS"));
+        assert!(sql.contains("room_bans rb"));
         assert!(sql.contains("r.name ILIKE"));
     }
 
@@ -1097,7 +1185,7 @@ mod tests {
 
         room.ban();
         assert!(room.is_banned());
-        assert!(!room.is_active()); // Banned rooms are not active
+        assert!(room.is_active()); // Ban is independent from lifecycle state.
 
         room.unban();
         assert!(!room.is_banned());
@@ -1108,11 +1196,9 @@ mod tests {
     #[test]
     fn test_room_status() {
         assert_eq!(RoomStatus::Active.as_str(), "active");
-        assert_eq!(RoomStatus::Pending.as_str(), "pending");
         assert_eq!(RoomStatus::Closed.as_str(), "closed");
 
         assert!(RoomStatus::Active.is_active());
-        assert!(RoomStatus::Pending.is_pending());
         assert!(RoomStatus::Closed.is_closed());
     }
 
@@ -1125,17 +1211,17 @@ mod tests {
         let mut room = Room::new("Test".to_string(), creator_id);
         assert!(room.is_active());
 
-        // Banned
+        // Ban does not change lifecycle state.
         room.is_banned = true;
-        assert!(!room.is_active());
+        assert!(room.is_active());
 
-        // Not banned but closed status
+        // Not banned but closed
         room.is_banned = false;
-        room.status = RoomStatus::Closed;
+        room.close();
         assert!(!room.is_active());
 
         // Deleted
-        room.status = RoomStatus::Active;
+        room.reopen();
         room.deleted_at = Some(chrono::Utc::now());
         assert!(!room.is_active());
     }
@@ -1271,13 +1357,6 @@ mod tests {
             .build();
         let created = room_repo.create(&room).await.unwrap();
         assert_eq!(created.status, RoomStatus::Active);
-
-        // Update to Pending
-        let updated = room_repo
-            .update_status(&created.id, RoomStatus::Pending)
-            .await
-            .unwrap();
-        assert_eq!(updated.status, RoomStatus::Pending);
 
         // Update to Closed
         let updated = room_repo
@@ -1429,14 +1508,6 @@ mod tests {
             .build();
         room_repo.create(&room).await.unwrap();
 
-        // Create pending room
-        let mut pending_room = RoomFixture::new()
-            .with_name("Pending Room")
-            .with_owner(owner.id.clone())
-            .build();
-        pending_room.status = RoomStatus::Pending;
-        room_repo.create(&pending_room).await.unwrap();
-
         // Create and ban a room
         let mut banned_room = RoomFixture::new()
             .with_name("Banned Room")
@@ -1485,11 +1556,11 @@ mod tests {
         assert!(rooms.iter().all(|r| r.name.contains("Active")));
     }
 
-    /// Integration test: room member_count excludes banned and rejected members.
+    /// Integration test: room member_count excludes banned and departed members.
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_list_with_count_excludes_banned_and_rejected_members() {
-        use crate::models::{MemberStatus, RoomMember, RoomRole, User};
+    async fn test_list_with_count_excludes_banned_and_departed_members() {
+        use crate::models::{RoomMember, RoomRole, User};
         use crate::repository::{RoomMemberRepository, UserRepository};
         use crate::test_helpers::{RoomFixture, UserFixture};
         use chrono::Utc;
@@ -1540,24 +1611,31 @@ mod tests {
 
         member_repo
             .add(&RoomMember {
-                status: MemberStatus::Banned,
                 ..RoomMember::new(room.id.clone(), banned.id.clone(), RoomRole::Member)
             })
+            .await
+            .unwrap();
+        member_repo
+            .ban_member(
+                &room.id,
+                &banned.id,
+                Some(&owner.id),
+                Some("count test".to_string()),
+            )
             .await
             .unwrap();
 
         sqlx::query(
             "INSERT INTO room_members (
-                room_id, user_id, role, status,
+                room_id, user_id, role,
                 added_permissions, removed_permissions,
                 admin_added_permissions, admin_removed_permissions,
                 joined_at, left_at, version
-             ) VALUES ($1, $2, $3, $4, 0, 0, 0, 0, $5, $6, 0)",
+             ) VALUES ($1, $2, $3, 0, 0, 0, 0, $4, $5, 0)",
         )
         .bind(room.id.as_str())
         .bind(rejected.id.as_str())
         .bind(RoomRole::Member)
-        .bind(MemberStatus::Rejected)
         .bind(Utc::now())
         .bind(Some(Utc::now()))
         .execute(&pool)
@@ -1580,7 +1658,7 @@ mod tests {
         assert_eq!(rows[0].room.id, room.id);
         assert_eq!(
             rows[0].member_count, 1,
-            "room member_count should exclude banned/rejected rows"
+            "room member_count should exclude banned/departed rows"
         );
         assert_eq!(room_repo.get_member_count(&room.id).await.unwrap(), 1);
     }

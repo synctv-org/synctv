@@ -4,7 +4,7 @@
 
 use super::query_builder::escape_ilike;
 use crate::{
-    models::{Playlist, PlaylistId, PlaylistListQuery, RoomId, UserStatus},
+    models::{Playlist, PlaylistId, PlaylistListQuery, RoomId},
     Result,
 };
 use sqlx::{FromRow, PgPool, Row};
@@ -70,8 +70,6 @@ impl PlaylistRepository {
         parent_id: Option<&PlaylistId>,
         query: &PlaylistListQuery,
     ) {
-        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
-
         builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
         builder.push_bind(room_id.as_str().to_owned());
         match parent_id {
@@ -112,14 +110,24 @@ impl PlaylistRepository {
         }
         match query.availability {
             Some(true) => {
-                builder.push(" AND (p.creator_id IS NULL OR (u.id IS NOT NULL AND u.status = ");
-                builder.push_bind(ACTIVE_STATUS_SQL);
-                builder.push("))");
+                builder.push(
+                    " AND (p.creator_id IS NULL OR (u.id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM user_bans ub
+                    WHERE ub.user_id = u.id
+                      AND ub.revoked_at IS NULL
+                      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                )))",
+                );
             }
             Some(false) => {
-                builder.push(" AND p.creator_id IS NOT NULL AND (u.id IS NULL OR u.status <> ");
-                builder.push_bind(ACTIVE_STATUS_SQL);
-                builder.push(")");
+                builder.push(
+                    " AND p.creator_id IS NOT NULL AND (u.id IS NULL OR EXISTS (
+                    SELECT 1 FROM user_bans ub
+                    WHERE ub.user_id = u.id
+                      AND ub.revoked_at IS NULL
+                      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ))",
+                );
             }
             None => {}
         }
@@ -148,19 +156,18 @@ impl PlaylistRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<PlaylistListItem>> {
-        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
-
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
                     p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                     p.created_at, p.updated_at, p.version,
                     CASE
                       WHEN p.creator_id IS NULL THEN TRUE
-                      WHEN u.id IS NOT NULL AND u.status = ",
-        );
-        builder.push_bind(ACTIVE_STATUS_SQL);
-        builder.push(
-            " THEN TRUE
+                      WHEN u.id IS NOT NULL AND NOT EXISTS (
+                          SELECT 1 FROM user_bans ub
+                          WHERE ub.user_id = u.id
+                            AND ub.revoked_at IS NULL
+                            AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                      ) THEN TRUE
                       ELSE FALSE
                     END AS is_available",
         );

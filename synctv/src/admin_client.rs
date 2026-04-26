@@ -292,33 +292,39 @@ mod tests {
     use futures_util::stream;
     #[cfg(unix)]
     use std::sync::Arc;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use synctv_management::proto::{
         management_service_server::{ManagementService, ManagementServiceServer},
-        AddAdminRequest, AddDirectUrlMediaRequest, AddMediaRequest, AddMemberRequest,
-        AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
-        AlistLogoutRequest, AlistSearchRequest, ApproveMemberRequest, ApproveRoomRequest,
-        ApproveUserRequest, BanMemberRequest, BanRoomRequest, BanUserRequest, BatchBanRoomsRequest,
-        BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
-        BilibiliCheckQrRequest, BilibiliGetBindsRequest, BilibiliGetCaptchaRequest,
-        BilibiliGetUserInfoRequest, BilibiliLoginQrRequest, BilibiliLoginSmsRequest,
-        BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest, CreatePlaylistRequest,
-        CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
-        DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
-        EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
+        AddAdminRequest, AddAlistMediaRequest, AddBilibiliLiveMediaRequest,
+        AddBilibiliPgcMediaRequest, AddBilibiliVideoMediaRequest, AddDirectUrlMediaRequest,
+        AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest, AlistGetBindsRequest,
+        AlistGetMeRequest, AlistListRequest, AlistLoginRequest, AlistLogoutRequest,
+        AlistSearchRequest, ApproveRoomCreationReviewRequest, ApproveRoomJoinReviewRequest,
+        ApproveUserRegistrationReviewRequest, BanMemberRequest, BanRoomRequest, BanUserRequest,
+        BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
+        BatchDeleteUsersRequest, BilibiliCheckQrRequest, BilibiliGetBindsRequest,
+        BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest, BilibiliLoginQrRequest,
+        BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest,
+        BilibiliSendSmsRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
+        CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
+        DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
+        EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
         EmbyLogoutRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
         GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
         GetStreamInfoRequest, GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest,
         KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-        ListMediaRequest, ListPlaylistsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-        ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, RejectMemberRequest,
-        RemoveAdminRequest, ResetRoomSettingsRequest, SendTestEmailRequest, StartPlaybackRequest,
-        StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-        UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
-        UpdatePlaybackRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
-        UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
-        UpdateUserRoleRequest, UpdateUserUsernameRequest,
+        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+        MovePlaylistRequest, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+        RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
+        SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+        StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
+        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
+        UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
+        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
+        UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_management::provider::common as provider_common_proto;
@@ -389,12 +395,9 @@ mod tests {
         }
     }
 
-    fn acquire_process_env_test_lock() -> MutexGuard<'static, ()> {
-        static PROCESS_ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        PROCESS_ENV_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn process_env_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static PROCESS_ENV_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        PROCESS_ENV_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     #[cfg(unix)]
@@ -482,10 +485,73 @@ mod tests {
         ) -> std::result::Result<Response<admin_proto::UnbanUserResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
-        async fn approve_user(
+        async fn list_user_registration_reviews(
             &self,
-            _: Request<ApproveUserRequest>,
-        ) -> std::result::Result<Response<admin_proto::ApproveUserResponse>, Status> {
+            _: Request<ListUserRegistrationReviewsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListUserRegistrationReviewsResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn approve_user_registration_review(
+            &self,
+            _: Request<ApproveUserRegistrationReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::ApproveUserRegistrationReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn reject_user_registration_review(
+            &self,
+            _: Request<RejectUserRegistrationReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::RejectUserRegistrationReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn list_room_creation_reviews(
+            &self,
+            _: Request<ListRoomCreationReviewsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListRoomCreationReviewsResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn approve_room_creation_review(
+            &self,
+            _: Request<ApproveRoomCreationReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::ApproveRoomCreationReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn reject_room_creation_review(
+            &self,
+            _: Request<RejectRoomCreationReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::RejectRoomCreationReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn list_room_join_reviews(
+            &self,
+            _: Request<ListRoomJoinReviewsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListRoomJoinReviewsResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn approve_room_join_review(
+            &self,
+            _: Request<ApproveRoomJoinReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::ApproveRoomJoinReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn reject_room_join_review(
+            &self,
+            _: Request<RejectRoomJoinReviewRequest>,
+        ) -> std::result::Result<Response<admin_proto::RejectRoomJoinReviewResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn list_ban_records(
+            &self,
+            _: Request<ListBanRecordsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListBanRecordsResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn update_user_role(
@@ -554,18 +620,6 @@ mod tests {
             &self,
             _: Request<AddMemberRequest>,
         ) -> std::result::Result<Response<client_proto::AddMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
-        async fn approve_member(
-            &self,
-            _: Request<ApproveMemberRequest>,
-        ) -> std::result::Result<Response<client_proto::ApproveMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
-        async fn reject_member(
-            &self,
-            _: Request<RejectMemberRequest>,
-        ) -> std::result::Result<Response<client_proto::RejectMemberResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
         async fn update_member_permissions(
@@ -644,12 +698,6 @@ mod tests {
         ) -> std::result::Result<Response<admin_proto::DeleteRoomResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
-        async fn approve_room(
-            &self,
-            _: Request<ApproveRoomRequest>,
-        ) -> std::result::Result<Response<admin_proto::ApproveRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
-        }
         async fn batch_ban_rooms(
             &self,
             _: Request<BatchBanRoomsRequest>,
@@ -722,6 +770,18 @@ mod tests {
         ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
+        async fn create_alist_playlist(
+            &self,
+            _: Request<CreateAlistPlaylistRequest>,
+        ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn create_emby_playlist(
+            &self,
+            _: Request<CreateEmbyPlaylistRequest>,
+        ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
         async fn update_playlist(
             &self,
             _: Request<UpdatePlaylistRequest>,
@@ -756,6 +816,36 @@ mod tests {
         async fn add_direct_url_media(
             &self,
             _: Request<AddDirectUrlMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn add_alist_media(
+            &self,
+            _: Request<AddAlistMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn add_emby_media(
+            &self,
+            _: Request<AddEmbyMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn add_bilibili_video_media(
+            &self,
+            _: Request<AddBilibiliVideoMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn add_bilibili_pgc_media(
+            &self,
+            _: Request<AddBilibiliPgcMediaRequest>,
+        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn add_bilibili_live_media(
+            &self,
+            _: Request<AddBilibiliLiveMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
@@ -1040,7 +1130,7 @@ mod tests {
 
     #[test]
     fn resolve_candidate_endpoints_prefers_default_unix_then_tcp() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().blocking_lock();
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
@@ -1124,7 +1214,7 @@ management:
 
     #[test]
     fn resolve_candidate_endpoints_errors_for_missing_explicit_config_file() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().blocking_lock();
         let dir = tempdir().expect("temp dir should be created");
         let missing_path = dir.path().join("missing-synctv.yaml");
 
@@ -1191,7 +1281,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_injects_management_bearer_token_from_config() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let socket_path = temp_dir.path().join("management.sock");
@@ -1259,7 +1349,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_does_not_inherit_config_token_for_explicit_endpoint() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let socket_path = temp_dir.path().join("management.sock");
@@ -1328,7 +1418,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_can_opt_in_to_config_token_for_explicit_endpoint() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let socket_path = temp_dir.path().join("management.sock");
@@ -1397,7 +1487,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_uses_env_token_for_explicit_endpoint() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let _env_guard =
             EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN", "explicit-endpoint-token");
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
@@ -1494,7 +1584,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_with_explicit_endpoint_does_not_require_auto_discovered_config() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         std::fs::write(temp_dir.path().join("synctv.yaml"), "not: [valid")
             .expect("invalid config should be written");
@@ -1540,7 +1630,7 @@ management:
     #[cfg(unix)]
     #[tokio::test]
     async fn remote_admin_session_with_explicit_endpoint_does_not_use_auto_discovered_auth_token() {
-        let _env_lock = acquire_process_env_test_lock();
+        let _env_lock = process_env_test_lock().lock().await;
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         std::fs::write(
             temp_dir.path().join("synctv.yaml"),

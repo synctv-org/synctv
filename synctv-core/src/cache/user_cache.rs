@@ -42,6 +42,8 @@ pub struct CachedUser {
     updated_at: chrono::DateTime<chrono::Utc>,
     /// Password version counter for JWT invalidation
     password_version: i32,
+    /// Independent global moderation ban flag.
+    is_banned: bool,
     /// Whether the user has been soft-deleted (`deleted_at` IS NOT NULL)
     is_deleted: bool,
 }
@@ -65,6 +67,7 @@ impl CachedUser {
             created_at,
             updated_at: chrono::Utc::now(),
             password_version,
+            is_banned: false,
             is_deleted: false,
         }
     }
@@ -90,6 +93,34 @@ impl CachedUser {
             created_at,
             updated_at,
             password_version,
+            is_banned: false,
+            is_deleted,
+        }
+    }
+
+    /// Create a new `CachedUser` with explicit security flags.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn with_security_state(
+        id: String,
+        username: String,
+        role: UserRole,
+        status: UserStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        password_version: i32,
+        is_banned: bool,
+        is_deleted: bool,
+    ) -> Self {
+        Self {
+            id,
+            username,
+            role,
+            status,
+            created_at,
+            updated_at,
+            password_version,
+            is_banned,
             is_deleted,
         }
     }
@@ -122,6 +153,12 @@ impl CachedUser {
     #[must_use]
     pub const fn is_deleted(&self) -> bool {
         self.is_deleted
+    }
+
+    /// Check if the user is globally banned.
+    #[must_use]
+    pub const fn is_banned(&self) -> bool {
+        self.is_banned
     }
 }
 
@@ -265,6 +302,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             password_version: 0,
             is_deleted: false,
+            is_banned: false,
         }
     }
 

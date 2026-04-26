@@ -85,6 +85,10 @@ pub fn make_test_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -120,6 +124,10 @@ pub fn make_test_user_with_role(username: &str, role: UserRole) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -135,7 +143,7 @@ pub fn make_test_user_inactive(username: &str) -> User {
         email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
-        status: UserStatus::Banned,
+        status: UserStatus::Active,
         email_verified: true,
         signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
@@ -144,5 +152,9 @@ pub fn make_test_user_inactive(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: true,
+        banned_at: Some(now),
+        banned_by: None,
+        banned_reason: Some("inactive test user".to_string()),
     }
 }

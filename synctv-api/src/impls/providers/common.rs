@@ -520,6 +520,22 @@ impl ProviderCommonApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::providers::common::UpdateProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        if req.endpoint.is_none()
+            && req.comment.is_none()
+            && !req.clear_comment.unwrap_or(false)
+            && req.timeout_seconds.is_none()
+            && req.tls.is_none()
+            && req.insecure_tls.is_none()
+            && req.providers.is_empty()
+            && req.jwt_secret.is_none()
+            && !req.clear_jwt_secret.unwrap_or(false)
+            && req.custom_ca.is_none()
+            && !req.clear_custom_ca.unwrap_or(false)
+        {
+            return Err(ApiError::InvalidInput(
+                "provider update requires at least one changed field".to_string(),
+            ));
+        }
         if req.comment.is_some() && req.clear_comment.unwrap_or(false) {
             return Err(ApiError::InvalidInput(
                 "comment and clear_comment cannot both be set".to_string(),

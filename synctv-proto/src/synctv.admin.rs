@@ -24,6 +24,14 @@ pub struct AdminUser {
     pub created_at: i64,
     #[prost(int64, tag = "7")]
     pub updated_at: i64,
+    #[prost(bool, tag = "8")]
+    pub is_banned: bool,
+    #[prost(int64, tag = "9")]
+    pub banned_at: i64,
+    #[prost(string, tag = "10")]
+    pub banned_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "11")]
+    pub banned_reason: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.AdminRoom")]
@@ -42,7 +50,7 @@ pub struct AdminRoom {
     pub creator_id: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub creator_username: ::prost::alloc::string::String,
-    /// Room lifecycle status (Active/Pending/Closed)
+    /// Room lifecycle status
     #[prost(enumeration = "super::common::RoomStatus", tag = "5")]
     pub status: i32,
     #[prost(bytes = "vec", tag = "6")]
@@ -81,6 +89,134 @@ pub struct SettingsGroup {
     #[prost(bytes = "vec", tag = "2")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.UserRegistrationReview")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_UserRegistrationReview))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserRegistrationReview {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub email: ::prost::alloc::string::String,
+    #[prost(int32, tag = "4")]
+    pub signup_method: i32,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "5")]
+    pub status: i32,
+    #[prost(int64, tag = "6")]
+    pub requested_at: i64,
+    #[prost(int64, tag = "7")]
+    pub reviewed_at: i64,
+    #[prost(string, tag = "8")]
+    pub reviewed_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub rejection_reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RoomCreationReview")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RoomCreationReview))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RoomCreationReview {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub requested_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub requested_by_username: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub description: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "6")]
+    pub status: i32,
+    #[prost(int64, tag = "7")]
+    pub requested_at: i64,
+    #[prost(int64, tag = "8")]
+    pub reviewed_at: i64,
+    #[prost(string, tag = "9")]
+    pub reviewed_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "10")]
+    pub rejection_reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RoomJoinReview")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RoomJoinReview))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RoomJoinReview {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub room_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub username: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomMemberRole", tag = "6")]
+    pub requested_role: i32,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "7")]
+    pub status: i32,
+    #[prost(int64, tag = "8")]
+    pub requested_at: i64,
+    #[prost(int64, tag = "9")]
+    pub reviewed_at: i64,
+    #[prost(string, tag = "10")]
+    pub reviewed_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "11")]
+    pub rejection_reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.BanRecord")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_BanRecord))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BanRecord {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(enumeration = "BanTargetType", tag = "2")]
+    pub target_type: i32,
+    #[prost(string, tag = "3")]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub room_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub banned_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub banned_by_username: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub reason: ::prost::alloc::string::String,
+    #[prost(int64, tag = "10")]
+    pub starts_at: i64,
+    #[prost(int64, tag = "11")]
+    pub ends_at: i64,
+    #[prost(int64, tag = "12")]
+    pub revoked_at: i64,
+    #[prost(string, tag = "13")]
+    pub revoked_by: ::prost::alloc::string::String,
+    #[prost(bool, tag = "14")]
+    pub is_active: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.GetSettingsRequest")]
@@ -145,7 +281,6 @@ pub struct UpdateSettingsRequest {
         ::prost::alloc::string::String,
     >,
 }
-/// Empty response - success is indicated by no error
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.UpdateSettingsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -153,8 +288,11 @@ pub struct UpdateSettingsRequest {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateSettingsResponse))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UpdateSettingsResponse {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateSettingsResponse {
+    #[prost(message, optional, tag = "1")]
+    pub group: ::core::option::Option<SettingsGroup>,
+}
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.SendTestEmailRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -270,6 +408,9 @@ pub struct ListUsersRequest {
     #[prost(enumeration = "SortDirection", tag = "7")]
     #[serde(default)]
     pub sort_direction: i32,
+    #[prost(bool, optional, tag = "8")]
+    #[serde(default)]
+    pub is_banned: ::core::option::Option<bool>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.ListUsersResponse")]
@@ -512,28 +653,319 @@ pub struct GetUserRoomsResponse {
     pub total: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveUserRequest")]
+#[prost_reflect(message_name = "synctv.admin.ListUserRegistrationReviewsRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveUserRequest))]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ListUserRegistrationReviewsRequest)
+)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveUserRequest {
+pub struct ListUserRegistrationReviewsRequest {
+    #[prost(int32, tag = "1")]
+    #[serde(default)]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    #[serde(default)]
+    pub page_size: i32,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "3")]
+    #[serde(default)]
+    pub status: i32,
+    #[prost(string, tag = "4")]
+    #[serde(default)]
+    pub search: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListUserRegistrationReviewsResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ListUserRegistrationReviewsResponse)
+)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListUserRegistrationReviewsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub reviews: ::prost::alloc::vec::Vec<UserRegistrationReview>,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveUserRegistrationReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ApproveUserRegistrationReviewRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveUserRegistrationReviewRequest {
     #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveUserRegistrationReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ApproveUserRegistrationReviewResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveUserRegistrationReviewResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<UserRegistrationReview>,
+    #[prost(message, optional, tag = "2")]
+    pub user: ::core::option::Option<AdminUser>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectUserRegistrationReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_RejectUserRegistrationReviewRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectUserRegistrationReviewRequest {
+    #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectUserRegistrationReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_RejectUserRegistrationReviewResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectUserRegistrationReviewResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<UserRegistrationReview>,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListRoomCreationReviewsRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ListRoomCreationReviewsRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListRoomCreationReviewsRequest {
+    #[prost(int32, tag = "1")]
+    #[serde(default)]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    #[serde(default)]
+    pub page_size: i32,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "3")]
+    #[serde(default)]
+    pub status: i32,
+    #[prost(string, tag = "4")]
+    #[serde(default)]
+    pub requested_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    #[serde(default)]
+    pub search: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListRoomCreationReviewsResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ListRoomCreationReviewsResponse)
+)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListRoomCreationReviewsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub reviews: ::prost::alloc::vec::Vec<RoomCreationReview>,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveRoomCreationReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ApproveRoomCreationReviewRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveRoomCreationReviewRequest {
+    #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveRoomCreationReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_ApproveRoomCreationReviewResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveRoomCreationReviewResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<RoomCreationReview>,
+    #[prost(message, optional, tag = "2")]
+    pub room: ::core::option::Option<AdminRoom>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectRoomCreationReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_RejectRoomCreationReviewRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectRoomCreationReviewRequest {
+    #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectRoomCreationReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_admin_RejectRoomCreationReviewResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectRoomCreationReviewResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<RoomCreationReview>,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListRoomJoinReviewsRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListRoomJoinReviewsRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListRoomJoinReviewsRequest {
+    #[prost(int32, tag = "1")]
+    #[serde(default)]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    #[serde(default)]
+    pub page_size: i32,
+    #[prost(enumeration = "super::common::ReviewStatus", tag = "3")]
+    #[serde(default)]
+    pub status: i32,
+    #[prost(string, tag = "4")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    #[serde(default)]
     pub user_id: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveUserResponse")]
+#[prost_reflect(message_name = "synctv.admin.ListRoomJoinReviewsResponse")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveUserResponse))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListRoomJoinReviewsResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListRoomJoinReviewsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub reviews: ::prost::alloc::vec::Vec<RoomJoinReview>,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveRoomJoinReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveRoomJoinReviewRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveUserResponse {
+pub struct ApproveRoomJoinReviewRequest {
+    #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ApproveRoomJoinReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveRoomJoinReviewResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApproveRoomJoinReviewResponse {
     #[prost(message, optional, tag = "1")]
-    pub user: ::core::option::Option<AdminUser>,
+    pub review: ::core::option::Option<RoomJoinReview>,
+    #[prost(message, optional, tag = "2")]
+    pub member: ::core::option::Option<super::common::RoomMember>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectRoomJoinReviewRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RejectRoomJoinReviewRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectRoomJoinReviewRequest {
+    #[prost(string, tag = "1")]
+    pub request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.RejectRoomJoinReviewResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RejectRoomJoinReviewResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RejectRoomJoinReviewResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<RoomJoinReview>,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.ListRoomsRequest")]
@@ -813,30 +1245,6 @@ pub struct UnbanRoomResponse {
     pub room: ::core::option::Option<AdminRoom>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveRoomRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveRoomRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveRoomRequest {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveRoomResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveRoomResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveRoomResponse {
-    #[prost(message, optional, tag = "1")]
-    pub room: ::core::option::Option<AdminRoom>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.GetRoomMembersRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -870,6 +1278,9 @@ pub struct GetRoomMembersRequest {
     #[prost(enumeration = "SortDirection", tag = "8")]
     #[serde(default)]
     pub sort_direction: i32,
+    #[prost(bool, optional, tag = "9")]
+    #[serde(default)]
+    pub is_banned: ::core::option::Option<bool>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.GetRoomMembersResponse")]
@@ -914,60 +1325,6 @@ pub struct AddMemberRequest {
 pub struct AddMemberResponse {
     #[prost(message, optional, tag = "1")]
     pub member: ::core::option::Option<super::common::RoomMember>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveMemberRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveMemberRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveMemberRequest {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.ApproveMemberResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ApproveMemberResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ApproveMemberResponse {
-    #[prost(message, optional, tag = "1")]
-    pub member: ::core::option::Option<super::common::RoomMember>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.RejectMemberRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RejectMemberRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RejectMemberRequest {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub user_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub reason: ::prost::alloc::string::String,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.admin.RejectMemberResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_admin_RejectMemberResponse))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RejectMemberResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.UpdateMemberPermissionsRequest")]
@@ -1439,6 +1796,49 @@ pub struct BatchBanRoomsResponse {
     #[prost(int32, tag = "3")]
     pub failed: i32,
 }
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListBanRecordsRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListBanRecordsRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListBanRecordsRequest {
+    #[prost(int32, tag = "1")]
+    #[serde(default)]
+    pub page: i32,
+    #[prost(int32, tag = "2")]
+    #[serde(default)]
+    pub page_size: i32,
+    #[prost(enumeration = "BanTargetType", tag = "3")]
+    #[serde(default)]
+    pub target_type: i32,
+    #[prost(bool, optional, tag = "4")]
+    #[serde(default)]
+    pub active: ::core::option::Option<bool>,
+    #[prost(string, tag = "5")]
+    #[serde(default)]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    #[serde(default)]
+    pub room_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.ListBanRecordsResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_ListBanRecordsResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListBanRecordsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub bans: ::prost::alloc::vec::Vec<BanRecord>,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+}
 /// Batch delete rooms request
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.BatchDeleteRoomsRequest")]
@@ -1471,6 +1871,42 @@ pub struct BatchDeleteRoomsResponse {
     /// Count of failed operations
     #[prost(int32, tag = "3")]
     pub failed: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_BanTargetType))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BanTargetType {
+    Unspecified = 0,
+    User = 1,
+    Room = 2,
+    RoomMember = 3,
+}
+impl BanTargetType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "BAN_TARGET_TYPE_UNSPECIFIED",
+            Self::User => "BAN_TARGET_TYPE_USER",
+            Self::Room => "BAN_TARGET_TYPE_ROOM",
+            Self::RoomMember => "BAN_TARGET_TYPE_ROOM_MEMBER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "BAN_TARGET_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "BAN_TARGET_TYPE_USER" => Some(Self::User),
+            "BAN_TARGET_TYPE_ROOM" => Some(Self::Room),
+            "BAN_TARGET_TYPE_ROOM_MEMBER" => Some(Self::RoomMember),
+            _ => None,
+        }
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -2112,30 +2548,6 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "GetUserRooms"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn approve_user(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ApproveUserRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveUserResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveUser",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveUser"));
-            self.inner.unary(req, path, codec).await
-        }
         /// # =========================
         /// Batch Operations
         pub async fn batch_ban_users(
@@ -2462,30 +2874,6 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "UnbanRoom"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn approve_room(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ApproveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveRoomResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveRoom",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveRoom"));
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn get_room_members(
             &mut self,
             request: impl tonic::IntoRequest<super::GetRoomMembersRequest>,
@@ -2532,54 +2920,6 @@ pub mod admin_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "AddMember"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn approve_member(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ApproveMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveMemberResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/ApproveMember",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "ApproveMember"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn reject_member(
-            &mut self,
-            request: impl tonic::IntoRequest<super::RejectMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RejectMemberResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.admin.AdminService/RejectMember",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.admin.AdminService", "RejectMember"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn update_member_permissions(
@@ -2835,6 +3175,286 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "KickStream"));
             self.inner.unary(req, path, codec).await
         }
+        /// # =========================
+        /// Review Workflow
+        pub async fn list_user_registration_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListUserRegistrationReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListUserRegistrationReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListUserRegistrationReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ListUserRegistrationReviews",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_user_registration_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApproveUserRegistrationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveUserRegistrationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveUserRegistrationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ApproveUserRegistrationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_user_registration_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RejectUserRegistrationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectUserRegistrationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectUserRegistrationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "RejectUserRegistrationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_room_creation_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRoomCreationReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomCreationReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListRoomCreationReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ListRoomCreationReviews",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_room_creation_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApproveRoomCreationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveRoomCreationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveRoomCreationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "ApproveRoomCreationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_room_creation_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RejectRoomCreationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectRoomCreationReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectRoomCreationReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.admin.AdminService",
+                        "RejectRoomCreationReview",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_room_join_reviews(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRoomJoinReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomJoinReviewsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListRoomJoinReviews",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "ListRoomJoinReviews"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn approve_room_join_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApproveRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveRoomJoinReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ApproveRoomJoinReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "ApproveRoomJoinReview"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_room_join_review(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RejectRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectRoomJoinReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/RejectRoomJoinReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "RejectRoomJoinReview"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// # =========================
+        /// Moderation Bans
+        pub async fn list_ban_records(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListBanRecordsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBanRecordsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/ListBanRecords",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.admin.AdminService", "ListBanRecords"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2946,13 +3566,6 @@ pub mod admin_service_server {
             tonic::Response<super::GetUserRoomsResponse>,
             tonic::Status,
         >;
-        async fn approve_user(
-            &self,
-            request: tonic::Request<super::ApproveUserRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveUserResponse>,
-            tonic::Status,
-        >;
         /// # =========================
         /// Batch Operations
         async fn batch_ban_users(
@@ -3042,13 +3655,6 @@ pub mod admin_service_server {
             tonic::Response<super::UnbanRoomResponse>,
             tonic::Status,
         >;
-        async fn approve_room(
-            &self,
-            request: tonic::Request<super::ApproveRoomRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveRoomResponse>,
-            tonic::Status,
-        >;
         async fn get_room_members(
             &self,
             request: tonic::Request<super::GetRoomMembersRequest>,
@@ -3061,20 +3667,6 @@ pub mod admin_service_server {
             request: tonic::Request<super::AddMemberRequest>,
         ) -> std::result::Result<
             tonic::Response<super::AddMemberResponse>,
-            tonic::Status,
-        >;
-        async fn approve_member(
-            &self,
-            request: tonic::Request<super::ApproveMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ApproveMemberResponse>,
-            tonic::Status,
-        >;
-        async fn reject_member(
-            &self,
-            request: tonic::Request<super::RejectMemberRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RejectMemberResponse>,
             tonic::Status,
         >;
         async fn update_member_permissions(
@@ -3151,6 +3743,80 @@ pub mod admin_service_server {
             request: tonic::Request<super::KickStreamRequest>,
         ) -> std::result::Result<
             tonic::Response<super::KickStreamResponse>,
+            tonic::Status,
+        >;
+        /// # =========================
+        /// Review Workflow
+        async fn list_user_registration_reviews(
+            &self,
+            request: tonic::Request<super::ListUserRegistrationReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListUserRegistrationReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_user_registration_review(
+            &self,
+            request: tonic::Request<super::ApproveUserRegistrationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveUserRegistrationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_user_registration_review(
+            &self,
+            request: tonic::Request<super::RejectUserRegistrationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectUserRegistrationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_creation_reviews(
+            &self,
+            request: tonic::Request<super::ListRoomCreationReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomCreationReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_room_creation_review(
+            &self,
+            request: tonic::Request<super::ApproveRoomCreationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveRoomCreationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_room_creation_review(
+            &self,
+            request: tonic::Request<super::RejectRoomCreationReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectRoomCreationReviewResponse>,
+            tonic::Status,
+        >;
+        async fn list_room_join_reviews(
+            &self,
+            request: tonic::Request<super::ListRoomJoinReviewsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoomJoinReviewsResponse>,
+            tonic::Status,
+        >;
+        async fn approve_room_join_review(
+            &self,
+            request: tonic::Request<super::ApproveRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApproveRoomJoinReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_room_join_review(
+            &self,
+            request: tonic::Request<super::RejectRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RejectRoomJoinReviewResponse>,
+            tonic::Status,
+        >;
+        /// # =========================
+        /// Moderation Bans
+        async fn list_ban_records(
+            &self,
+            request: tonic::Request<super::ListBanRecordsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBanRecordsResponse>,
             tonic::Status,
         >;
     }
@@ -3868,51 +4534,6 @@ pub mod admin_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.admin.AdminService/ApproveUser" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveUserSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<super::ApproveUserRequest>
-                    for ApproveUserSvc<T> {
-                        type Response = super::ApproveUserResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ApproveUserRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_user(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveUserSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.admin.AdminService/BatchBanUsers" => {
                     #[allow(non_camel_case_types)]
                     struct BatchBanUsersSvc<T: AdminService>(pub Arc<T>);
@@ -4504,51 +5125,6 @@ pub mod admin_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.admin.AdminService/ApproveRoom" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveRoomSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<super::ApproveRoomRequest>
-                    for ApproveRoomSvc<T> {
-                        type Response = super::ApproveRoomResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ApproveRoomRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_room(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveRoomSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.admin.AdminService/GetRoomMembers" => {
                     #[allow(non_camel_case_types)]
                     struct GetRoomMembersSvc<T: AdminService>(pub Arc<T>);
@@ -4624,96 +5200,6 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AddMemberSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.admin.AdminService/ApproveMember" => {
-                    #[allow(non_camel_case_types)]
-                    struct ApproveMemberSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<super::ApproveMemberRequest>
-                    for ApproveMemberSvc<T> {
-                        type Response = super::ApproveMemberResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ApproveMemberRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::approve_member(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ApproveMemberSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.admin.AdminService/RejectMember" => {
-                    #[allow(non_camel_case_types)]
-                    struct RejectMemberSvc<T: AdminService>(pub Arc<T>);
-                    impl<
-                        T: AdminService,
-                    > tonic::server::UnaryService<super::RejectMemberRequest>
-                    for RejectMemberSvc<T> {
-                        type Response = super::RejectMemberResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::RejectMemberRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as AdminService>::reject_member(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = RejectMemberSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -5171,6 +5657,505 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = KickStreamSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListUserRegistrationReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListUserRegistrationReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        super::ListUserRegistrationReviewsRequest,
+                    > for ListUserRegistrationReviewsSvc<T> {
+                        type Response = super::ListUserRegistrationReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListUserRegistrationReviewsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_user_registration_reviews(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListUserRegistrationReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveUserRegistrationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveUserRegistrationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        super::ApproveUserRegistrationReviewRequest,
+                    > for ApproveUserRegistrationReviewSvc<T> {
+                        type Response = super::ApproveUserRegistrationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ApproveUserRegistrationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_user_registration_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveUserRegistrationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectUserRegistrationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectUserRegistrationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        super::RejectUserRegistrationReviewRequest,
+                    > for RejectUserRegistrationReviewSvc<T> {
+                        type Response = super::RejectUserRegistrationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::RejectUserRegistrationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_user_registration_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectUserRegistrationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListRoomCreationReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListRoomCreationReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::ListRoomCreationReviewsRequest>
+                    for ListRoomCreationReviewsSvc<T> {
+                        type Response = super::ListRoomCreationReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListRoomCreationReviewsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_room_creation_reviews(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListRoomCreationReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveRoomCreationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveRoomCreationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<
+                        super::ApproveRoomCreationReviewRequest,
+                    > for ApproveRoomCreationReviewSvc<T> {
+                        type Response = super::ApproveRoomCreationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ApproveRoomCreationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_room_creation_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveRoomCreationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectRoomCreationReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectRoomCreationReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::RejectRoomCreationReviewRequest>
+                    for RejectRoomCreationReviewSvc<T> {
+                        type Response = super::RejectRoomCreationReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::RejectRoomCreationReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_room_creation_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectRoomCreationReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListRoomJoinReviews" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListRoomJoinReviewsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::ListRoomJoinReviewsRequest>
+                    for ListRoomJoinReviewsSvc<T> {
+                        type Response = super::ListRoomJoinReviewsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListRoomJoinReviewsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_room_join_reviews(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListRoomJoinReviewsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ApproveRoomJoinReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApproveRoomJoinReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::ApproveRoomJoinReviewRequest>
+                    for ApproveRoomJoinReviewSvc<T> {
+                        type Response = super::ApproveRoomJoinReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ApproveRoomJoinReviewRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::approve_room_join_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApproveRoomJoinReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/RejectRoomJoinReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectRoomJoinReviewSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::RejectRoomJoinReviewRequest>
+                    for RejectRoomJoinReviewSvc<T> {
+                        type Response = super::RejectRoomJoinReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RejectRoomJoinReviewRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::reject_room_join_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectRoomJoinReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/ListBanRecords" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListBanRecordsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::ListBanRecordsRequest>
+                    for ListBanRecordsSvc<T> {
+                        type Response = super::ListBanRecordsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListBanRecordsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::list_ban_records(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListBanRecordsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -7,12 +7,12 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_settings_group ON settings(group_name);
+CREATE INDEX IF NOT EXISTS idx_settings_group ON settings(group_name);
 
 CREATE TRIGGER trigger_update_settings_updated_at
-BEFORE UPDATE ON settings
-FOR EACH ROW
-EXECUTE FUNCTION update_updated_at_column();
+    BEFORE UPDATE ON settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 CREATE OR REPLACE FUNCTION notify_settings_change()
 RETURNS TRIGGER AS $$
@@ -32,8 +32,8 @@ CREATE TRIGGER settings_change_trigger
     FOR EACH ROW
     EXECUTE FUNCTION notify_settings_change();
 
-COMMENT ON TABLE settings IS 'Runtime system settings organized by groups with JSON values';
-COMMENT ON COLUMN settings.key IS 'Unique settings key (e.g., server, email, oauth)';
-COMMENT ON COLUMN settings.group_name IS 'Settings group name (e.g., server, email, oauth)';
-COMMENT ON FUNCTION notify_settings_change() IS 'Notifies all replicas via PostgreSQL LISTEN/NOTIFY when settings change';
-COMMENT ON TRIGGER settings_change_trigger ON settings IS 'Triggers settings_changed notification for hot reload across replicas';
+COMMENT ON TABLE settings IS 'Runtime system settings';
+COMMENT ON COLUMN settings.key IS 'Unique settings key';
+COMMENT ON COLUMN settings.group_name IS 'Settings group name';
+COMMENT ON FUNCTION notify_settings_change() IS 'Emit a PostgreSQL notification when settings change';
+COMMENT ON TRIGGER settings_change_trigger ON settings IS 'Emit settings_changed notifications after settings mutations';

@@ -454,7 +454,7 @@ impl AuthCallback for SyncTvRtmpAuth {
     ///
     /// This method also validates:
     /// - Room is not banned
-    /// - Room status is not Pending or Closed
+    /// - Room status is not Closed
     async fn on_play(
         &self,
         app_name: &str,
@@ -635,8 +635,6 @@ struct ValidatedPublish {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoomAccessRejection {
     Banned,
-    Pending,
-    Rejected,
     Closed,
 }
 
@@ -644,8 +642,6 @@ impl RoomAccessRejection {
     fn into_error(self, app_name: &str) -> Box<dyn std::error::Error + Send + Sync> {
         match self {
             Self::Banned => format!("Room {app_name} is banned").into(),
-            Self::Pending => format!("Room {app_name} is pending, need admin approval").into(),
-            Self::Rejected => format!("Room {app_name} was rejected by admin").into(),
             Self::Closed => format!("Room {app_name} is closed").into(),
         }
     }
@@ -653,8 +649,6 @@ impl RoomAccessRejection {
     const fn log_message(self) -> &'static str {
         match self {
             Self::Banned => "RTMP play rejected: room is banned",
-            Self::Pending => "RTMP play rejected: room is pending approval",
-            Self::Rejected => "RTMP play rejected: room was rejected",
             Self::Closed => "RTMP play rejected: room is closed",
         }
     }
@@ -663,12 +657,6 @@ impl RoomAccessRejection {
 fn validate_rtmp_room_state(room: &Room) -> Result<(), RoomAccessRejection> {
     if room.is_banned {
         return Err(RoomAccessRejection::Banned);
-    }
-    if room.status == RoomStatus::Pending {
-        return Err(RoomAccessRejection::Pending);
-    }
-    if room.status == RoomStatus::Rejected {
-        return Err(RoomAccessRejection::Rejected);
     }
     if room.status == RoomStatus::Closed {
         return Err(RoomAccessRejection::Closed);
@@ -721,7 +709,7 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|e| format!("Failed to load user: {e}"))?;
 
-        if user.status == UserStatus::Banned || user.status == UserStatus::Rejected {
+        if user.status == UserStatus::Banned {
             return Err(format!(
                 "User {} is not allowed to publish while account status is {}",
                 claims.user_id, user.status
@@ -750,7 +738,7 @@ impl SyncTvRtmpAuth {
     /// Checks:
     /// - Room exists
     /// - Room is not banned
-    /// - Room status is not Pending or Closed
+    /// - Room status is not Closed
     /// - Room has rtmp_player enabled in settings
     pub async fn validate_play_request(
         &self,
@@ -1779,21 +1767,6 @@ mod tests {
         assert_eq!(
             err.into_error("closed-room").to_string(),
             "Room closed-room is closed"
-        );
-    }
-
-    #[test]
-    fn test_validate_rtmp_room_state_rejects_pending_room() {
-        let room = Room::new_with_status(
-            "Pending room".to_string(),
-            String::new(),
-            UserId::from_string("user-1".to_string()),
-            RoomStatus::Pending,
-        );
-
-        assert_eq!(
-            validate_rtmp_room_state(&room),
-            Err(RoomAccessRejection::Pending)
         );
     }
 

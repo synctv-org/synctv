@@ -1509,7 +1509,7 @@ mod tests {
             "type": "video",
             "bvid": "BV1GJ411x7gL",
             "cid": 12345,
-            "server_id": "legacy-client-value"
+            "server_id": "client-provided-value"
         });
         assert!(validate_bilibili(&config).is_err());
     }

@@ -7,6 +7,58 @@ use crate::{
     Error, Result,
 };
 
+const USER_SELECT_COLUMNS: &str = "
+    u.id, u.username, u.email, u.password_hash, u.signup_method, u.role,
+    u.created_at, u.updated_at, u.password_changed_at, u.password_version,
+    u.version, u.deleted_at, u.email_verified,
+    EXISTS (
+        SELECT 1 FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+    ) AS is_banned,
+    (
+        SELECT ub.starts_at FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_at,
+    (
+        SELECT ub.banned_by FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_by,
+    (
+        SELECT ub.reason FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_reason";
+
+const USER_RETURNING_COLUMNS: &str = "
+    id, username, email, password_hash, signup_method, role, created_at, updated_at,
+    password_changed_at, password_version, version, deleted_at, email_verified";
+
+const ACTIVE_USER_BAN_EXISTS_SQL: &str = "EXISTS (
+    SELECT 1 FROM user_bans ub
+    WHERE ub.user_id = u.id
+      AND ub.revoked_at IS NULL
+      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+)";
+const ACTIVE_USER_BAN_NOT_EXISTS_SQL: &str = "NOT EXISTS (
+    SELECT 1 FROM user_bans ub
+    WHERE ub.user_id = u.id
+      AND ub.revoked_at IS NULL
+      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+)";
+
 /// User repository for database operations
 #[derive(Clone)]
 pub struct UserRepository {
@@ -41,56 +93,57 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            INSERT INTO users (id, username, email, password_hash, signup_method, role, status, email_verified, created_at, updated_at, password_changed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            ",
-        )
-        .bind(user.id.as_str())
-        .bind(&user.username)
-        .bind(user.email.as_ref())
-        .bind(&user.password_hash)
-        .bind(user.signup_method)
-        .bind(user.role)
-        .bind(user.status)
-        .bind(user.email_verified)
-        .bind(user.created_at)
-        .bind(user.updated_at)
-        .fetch_one(executor)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
-                let constraint = db_err.constraint().unwrap_or("");
-                if constraint.contains("username") {
-                    Error::AlreadyExists("Username already taken".to_string())
-                } else if constraint.contains("email") {
-                    Error::AlreadyExists("Email already taken".to_string())
-                } else {
-                    Error::AlreadyExists(
-                        synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                    )
+            INSERT INTO users (id, username, email, password_hash, signup_method, role, email_verified, created_at, updated_at, password_changed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+            RETURNING {USER_RETURNING_COLUMNS}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user.id.as_str())
+            .bind(&user.username)
+            .bind(user.email.as_ref())
+            .bind(&user.password_hash)
+            .bind(user.signup_method)
+            .bind(user.role)
+            .bind(user.email_verified)
+            .bind(user.created_at)
+            .bind(user.updated_at)
+            .fetch_one(executor)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                    let constraint = db_err.constraint().unwrap_or("");
+                    if constraint.contains("username") {
+                        Error::AlreadyExists("Username already taken".to_string())
+                    } else if constraint.contains("email") {
+                        Error::AlreadyExists("Email already taken".to_string())
+                    } else {
+                        Error::AlreadyExists(
+                            synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                        )
+                    }
                 }
-            }
-            _ => Error::Database(e),
-        })?;
+                _ => Error::Database(e),
+            })?;
 
         Ok(u)
     }
 
     /// Get user by ID
     pub async fn get_by_id(&self, user_id: &UserId) -> Result<Option<User>> {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
-            WHERE id = $1 AND deleted_at IS NULL
-            ",
-        )
-        .bind(user_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
+            WHERE u.id = $1 AND u.deleted_at IS NULL
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(u)
     }
@@ -104,17 +157,18 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
-            WHERE id = $1 AND deleted_at IS NULL
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
+            WHERE u.id = $1 AND u.deleted_at IS NULL
             FOR UPDATE
-            ",
-        )
-        .bind(user_id.as_str())
-        .fetch_optional(executor)
-        .await?;
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id.as_str())
+            .fetch_optional(executor)
+            .await?;
 
         Ok(u)
     }
@@ -129,48 +183,51 @@ impl UserRepository {
             .iter()
             .map(super::super::models::id::UserId::as_str)
             .collect();
-        let users = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
-            WHERE id = ANY($1) AND deleted_at IS NULL
-            ",
-        )
-        .bind(&ids)
-        .fetch_all(&self.pool)
-        .await?;
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
+            WHERE u.id = ANY($1) AND u.deleted_at IS NULL
+            "
+        );
+        let users = sqlx::query_as::<_, User>(&sql)
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(users)
     }
 
     /// Get user by username
     pub async fn get_by_username(&self, username: &str) -> Result<Option<User>> {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
-            WHERE username = $1 AND deleted_at IS NULL
-            ",
-        )
-        .bind(username)
-        .fetch_optional(&self.pool)
-        .await?;
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
+            WHERE u.username = $1 AND u.deleted_at IS NULL
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(u)
     }
 
     /// Get user by email
     pub async fn get_by_email(&self, email: &str) -> Result<Option<User>> {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
-            WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL
-            ",
-        )
-        .bind(email)
-        .fetch_optional(&self.pool)
-        .await?;
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
+            WHERE LOWER(u.email) = LOWER($1) AND u.deleted_at IS NULL
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(u)
     }
@@ -203,26 +260,26 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
             UPDATE users
-            SET username = $2, email = $3, password_hash = $4, role = $5, status = $6,
-                email_verified = $7, updated_at = $8, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL AND version = $9
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            ",
-        )
-        .bind(user.id.as_str())
-        .bind(&user.username)
-        .bind(user.email.as_ref())
-        .bind(&user.password_hash)
-        .bind(user.role)
-        .bind(user.status)
-        .bind(user.email_verified)
-        .bind(Utc::now())
-        .bind(old_version)
-        .fetch_optional(executor)
-        .await?;
+            SET username = $2, email = $3, password_hash = $4, role = $5,
+                email_verified = $6, updated_at = $7, version = version + 1
+            WHERE id = $1 AND deleted_at IS NULL AND version = $8
+            RETURNING {USER_RETURNING_COLUMNS}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user.id.as_str())
+            .bind(&user.username)
+            .bind(user.email.as_ref())
+            .bind(&user.password_hash)
+            .bind(user.role)
+            .bind(user.email_verified)
+            .bind(Utc::now())
+            .bind(old_version)
+            .fetch_optional(executor)
+            .await?;
 
         if let Some(updated) = u {
             Ok(updated)
@@ -258,7 +315,7 @@ impl UserRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
             UPDATE users
             SET username = $2,
@@ -274,16 +331,17 @@ impl UserRepository {
                 END,
                 version = version + 1
             WHERE id = $1 AND deleted_at IS NULL AND version = $5
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            ",
-        )
-        .bind(user_id.as_str())
-        .bind(username)
-        .bind(password_hash)
-        .bind(now)
-        .bind(old_version)
-        .fetch_optional(executor)
-        .await?;
+            RETURNING {USER_RETURNING_COLUMNS}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id.as_str())
+            .bind(username)
+            .bind(password_hash)
+            .bind(now)
+            .bind(old_version)
+            .fetch_optional(executor)
+            .await?;
 
         if let Some(updated) = u {
             Ok(updated)
@@ -342,20 +400,21 @@ impl UserRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
             UPDATE users
             SET password_hash = $2, updated_at = $3, password_changed_at = $3, password_version = password_version + 1, version = version + 1
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            ",
-        )
-        .bind(user_id.as_str())
-        .bind(password_hash)
-        .bind(now)
-        .fetch_optional(executor)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            RETURNING {USER_RETURNING_COLUMNS}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id.as_str())
+            .bind(password_hash)
+            .bind(now)
+            .fetch_optional(executor)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
         Ok(u)
     }
@@ -366,61 +425,162 @@ impl UserRepository {
         user_id: &UserId,
         email_verified: bool,
     ) -> Result<User> {
-        let u = sqlx::query_as::<_, User>(
+        let sql = format!(
             r"
             UPDATE users
             SET email_verified = $2, updated_at = $3, version = version + 1
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            ",
-        )
-        .bind(user_id.as_str())
-        .bind(email_verified)
-        .bind(Utc::now())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            RETURNING {USER_RETURNING_COLUMNS}
+            "
+        );
+        let u = sqlx::query_as::<_, User>(&sql)
+            .bind(user_id.as_str())
+            .bind(email_verified)
+            .bind(Utc::now())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
         Ok(u)
     }
 
-    /// Update user status (Active/Pending/Banned)
-    pub async fn update_status(
+    /// Globally ban a user without changing lifecycle status.
+    pub async fn ban(
         &self,
         user_id: &UserId,
-        status: crate::models::UserStatus,
+        banned_by: Option<&UserId>,
+        reason: Option<String>,
     ) -> Result<User> {
-        let u = sqlx::query_as::<_, User>(
+        self.insert_ban_with_executor(user_id, banned_by, reason, &self.pool)
+            .await?;
+        self.get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))
+    }
+
+    /// Insert a global ban record using a provided executor.
+    pub async fn insert_ban_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        banned_by: Option<&UserId>,
+        reason: Option<String>,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let now = Utc::now();
+        let inserted = sqlx::query(
             r"
-            UPDATE users
-            SET status = $2, updated_at = $3, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
+            INSERT INTO user_bans (id, user_id, banned_by, reason, starts_at)
+            SELECT $1, u.id, $3, $4, $5
+            FROM users u
+            WHERE u.id = $2 AND u.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_bans ub
+                  WHERE ub.user_id = u.id
+                    AND ub.revoked_at IS NULL
+                    AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+              )
+            ",
+        )
+        .bind(crate::models::generate_id())
+        .bind(user_id.as_str())
+        .bind(banned_by.map(UserId::as_str))
+        .bind(reason)
+        .bind(now)
+        .execute(executor)
+        .await?;
+
+        if inserted.rows_affected() == 0 {
+            return Err(Error::NotFound(format!(
+                "User {} not found or already banned",
+                user_id.as_str()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Clear a global user ban without changing lifecycle status.
+    pub async fn unban(&self, user_id: &UserId) -> Result<User> {
+        let result = sqlx::query(
+            r"
+            UPDATE user_bans ub
+            SET revoked_at = $2
+            FROM users u
+            WHERE ub.user_id = u.id
+              AND u.id = $1
+              AND u.deleted_at IS NULL
+              AND ub.revoked_at IS NULL
+              AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
             ",
         )
         .bind(user_id.as_str())
-        .bind(status)
         .bind(Utc::now())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(Error::NotFound(format!(
+                "User {} not found or not banned",
+                user_id.as_str()
+            )));
+        }
+
+        let u = self
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
         Ok(u)
+    }
+
+    /// Check whether a user has an active global ban.
+    pub async fn is_banned(&self, user_id: &UserId) -> Result<bool> {
+        let is_banned = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1 FROM user_bans ub
+                JOIN users u ON u.id = ub.user_id
+                WHERE u.id = $1
+                  AND u.deleted_at IS NULL
+                  AND ub.revoked_at IS NULL
+                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+            )
+            ",
+        )
+        .bind(user_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(is_banned)
     }
 
     /// Build the shared WHERE clause conditions for user list queries.
     fn build_user_list_conditions(query: &UserListQuery) -> WhereClauseBuilder {
         let mut wb = WhereClauseBuilder::new();
-        wb.push_literal("deleted_at IS NULL");
+        wb.push_literal("u.deleted_at IS NULL");
 
         if query.search.is_some() {
-            wb.push_param("(username ILIKE ${idx} OR email ILIKE ${idx})");
-        }
-        if query.status.is_some() {
-            wb.push_param("status = ${idx}");
+            wb.push_param("(u.username ILIKE ${idx} OR u.email ILIKE ${idx})");
         }
         if query.role.is_some() {
-            wb.push_param("role = ${idx}");
+            wb.push_param("u.role = ${idx}");
+        }
+        match query.status {
+            Some(crate::models::UserStatus::Active) => {
+                wb.push_literal(ACTIVE_USER_BAN_NOT_EXISTS_SQL);
+            }
+            Some(crate::models::UserStatus::Banned) => {
+                wb.push_literal(ACTIVE_USER_BAN_EXISTS_SQL);
+            }
+            None => {}
+        }
+        match query.is_banned {
+            Some(true) => wb.push_literal(ACTIVE_USER_BAN_EXISTS_SQL),
+            Some(false) => wb.push_literal(ACTIVE_USER_BAN_NOT_EXISTS_SQL),
+            None => {}
         }
 
         wb
@@ -431,9 +591,6 @@ impl UserRepository {
         match query.sort_by {
             UserListSortBy::Username => format!("username {direction}, id {direction}"),
             UserListSortBy::Email => format!("email {direction} NULLS LAST, id {direction}"),
-            UserListSortBy::Status => {
-                format!("status {direction}, created_at {direction}, id {direction}")
-            }
             UserListSortBy::Role => {
                 format!("role {direction}, created_at {direction}, id {direction}")
             }
@@ -447,7 +604,6 @@ impl UserRepository {
     fn bind_user_filters<'q, O>(
         mut qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
         search_pattern: Option<&'q String>,
-        status_enum: Option<&'q crate::models::UserStatus>,
         role_enum: Option<&'q crate::models::UserRole>,
     ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
     where
@@ -455,9 +611,6 @@ impl UserRepository {
     {
         if let Some(pattern) = search_pattern {
             qb = qb.bind(pattern);
-        }
-        if let Some(status) = status_enum {
-            qb = qb.bind(status);
         }
         if let Some(role) = role_enum {
             qb = qb.bind(role);
@@ -476,15 +629,12 @@ impl UserRepository {
 
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
-        let count_sql = format!("SELECT COUNT(*) as count FROM users WHERE {count_where}");
+        let count_sql = format!("SELECT COUNT(*) as count FROM users u WHERE {count_where}");
 
         // We need to use query_scalar which returns a different type, so bind manually
         let mut count_qb = sqlx::query_scalar::<_, i64>(&count_sql);
         if let Some(ref pattern) = search_pattern {
             count_qb = count_qb.bind(pattern);
-        }
-        if let Some(ref status) = &query.status {
-            count_qb = count_qb.bind(status);
         }
         if let Some(ref role) = &query.role {
             count_qb = count_qb.bind(role);
@@ -496,8 +646,8 @@ impl UserRepository {
         let order_by = Self::build_order_by(query);
         let list_sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
-            FROM users
+            SELECT {USER_SELECT_COLUMNS}
+            FROM users u
             WHERE {list_where}
             ORDER BY {order_by}
             LIMIT $1 OFFSET $2
@@ -508,12 +658,8 @@ impl UserRepository {
         let list_qb = sqlx::query_as::<_, User>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let list_qb = Self::bind_user_filters(
-            list_qb,
-            search_pattern.as_ref(),
-            query.status.as_ref(),
-            query.role.as_ref(),
-        );
+        let list_qb =
+            Self::bind_user_filters(list_qb, search_pattern.as_ref(), query.role.as_ref());
         let users: Vec<User> = list_qb.fetch_all(&self.pool).await?;
 
         Ok((users, count))
@@ -545,20 +691,17 @@ impl UserRepository {
             .fetch_one(&self.pool)
             .await?;
 
-        let mut list_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT id, username, email, password_hash, signup_method, role, status, created_at, \
-             updated_at, password_changed_at, password_version, version, deleted_at, \
-             email_verified \
-             FROM users WHERE deleted_at IS NULL AND role IN (",
-        );
+        let mut list_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+            "SELECT {USER_SELECT_COLUMNS} FROM users u WHERE u.deleted_at IS NULL AND u.role IN ("
+        ));
         list_qb.push_bind(crate::models::UserRole::Root);
         list_qb.push(", ");
         list_qb.push_bind(crate::models::UserRole::Admin);
         list_qb.push(")");
         if let Some(pattern) = &search_pattern {
-            list_qb.push(" AND (username ILIKE ");
+            list_qb.push(" AND (u.username ILIKE ");
             list_qb.push_bind(pattern.clone());
-            list_qb.push(" OR email ILIKE ");
+            list_qb.push(" OR u.email ILIKE ");
             list_qb.push_bind(pattern.clone());
             list_qb.push(")");
         }
@@ -620,6 +763,7 @@ mod tests {
             search: None,
             status: None,
             role: None,
+            is_banned: None,
             pagination: crate::models::PageParams::default(),
             sort_by: crate::models::UserListSortBy::CreatedAt,
             sort_direction: crate::models::SortDirection::Desc,
@@ -627,7 +771,7 @@ mod tests {
         let wb = UserRepository::build_user_list_conditions(&query);
 
         let (sql, next_idx) = wb.build(1);
-        assert_eq!(sql, "deleted_at IS NULL");
+        assert_eq!(sql, "u.deleted_at IS NULL");
         assert_eq!(next_idx, 1); // no params consumed
         assert_eq!(wb.param_count(), 0);
     }
@@ -638,6 +782,7 @@ mod tests {
             search: Some("alice".to_string()),
             status: None,
             role: None,
+            is_banned: None,
             pagination: crate::models::PageParams::default(),
             sort_by: crate::models::UserListSortBy::CreatedAt,
             sort_direction: crate::models::SortDirection::Desc,
@@ -652,28 +797,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_user_list_conditions_with_status() {
-        let query = UserListQuery {
-            search: None,
-            status: Some(crate::models::UserStatus::Active),
-            role: None,
-            pagination: crate::models::PageParams::default(),
-            sort_by: crate::models::UserListSortBy::CreatedAt,
-            sort_direction: crate::models::SortDirection::Desc,
-        };
-        let wb = UserRepository::build_user_list_conditions(&query);
-
-        assert_eq!(wb.param_count(), 1);
-        let (sql, _) = wb.build(1);
-        assert!(sql.contains("status = $1"));
-    }
-
-    #[test]
     fn test_build_user_list_conditions_with_role() {
         let query = UserListQuery {
             search: None,
             status: None,
             role: Some(crate::models::UserRole::Admin),
+            is_banned: None,
             pagination: crate::models::PageParams::default(),
             sort_by: crate::models::UserListSortBy::CreatedAt,
             sort_direction: crate::models::SortDirection::Desc,
@@ -686,33 +815,69 @@ mod tests {
     }
 
     #[test]
+    fn test_build_user_list_conditions_with_active_status_filters_out_bans() {
+        let query = UserListQuery {
+            search: None,
+            status: Some(crate::models::UserStatus::Active),
+            role: None,
+            is_banned: None,
+            pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+        let (sql, _) = wb.build(1);
+
+        assert!(sql.contains("NOT EXISTS"));
+        assert!(sql.contains("user_bans"));
+    }
+
+    #[test]
+    fn test_build_user_list_conditions_with_banned_status_requires_active_ban() {
+        let query = UserListQuery {
+            search: None,
+            status: Some(crate::models::UserStatus::Banned),
+            role: None,
+            is_banned: None,
+            pagination: crate::models::PageParams::default(),
+            sort_by: crate::models::UserListSortBy::CreatedAt,
+            sort_direction: crate::models::SortDirection::Desc,
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+        let (sql, _) = wb.build(1);
+
+        assert!(sql.contains("EXISTS"));
+        assert!(!sql.contains("NOT EXISTS"));
+        assert!(sql.contains("user_bans"));
+    }
+
+    #[test]
     fn test_build_user_list_conditions_all_filters() {
         let query = UserListQuery {
             search: Some("bob".to_string()),
-            status: Some(crate::models::UserStatus::Active),
+            status: None,
             role: Some(crate::models::UserRole::User),
+            is_banned: None,
             pagination: crate::models::PageParams::default(),
             sort_by: crate::models::UserListSortBy::CreatedAt,
             sort_direction: crate::models::SortDirection::Desc,
         };
         let wb = UserRepository::build_user_list_conditions(&query);
 
-        assert_eq!(wb.param_count(), 3);
+        assert_eq!(wb.param_count(), 2);
 
         // Count query: params start at $1
         let (sql, next) = wb.build(1);
         assert!(sql.contains("deleted_at IS NULL"));
         assert!(sql.contains("username ILIKE $1"));
-        assert!(sql.contains("status = $2"));
-        assert!(sql.contains("role = $3"));
-        assert_eq!(next, 4);
+        assert!(sql.contains("role = $2"));
+        assert_eq!(next, 3);
 
         // List query: params start at $3 (after LIMIT/OFFSET)
         let (sql, next) = wb.build(3);
         assert!(sql.contains("username ILIKE $3"));
-        assert!(sql.contains("status = $4"));
-        assert!(sql.contains("role = $5"));
-        assert_eq!(next, 6);
+        assert!(sql.contains("role = $4"));
+        assert_eq!(next, 5);
     }
 
     #[test]
@@ -721,6 +886,7 @@ mod tests {
             search: None,
             status: None,
             role: None,
+            is_banned: None,
             pagination: crate::models::PageParams::default(),
             sort_by: crate::models::UserListSortBy::Username,
             sort_direction: crate::models::SortDirection::Asc,
@@ -738,6 +904,7 @@ mod tests {
             search: None,
             status: None,
             role: None,
+            is_banned: None,
             sort_by: crate::models::UserListSortBy::Username,
             sort_direction: crate::models::SortDirection::Asc,
             pagination: crate::models::PageParams::default(),

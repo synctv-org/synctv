@@ -83,12 +83,6 @@ pub(super) const fn user_role_to_proto(role: synctv_core::models::UserRole) -> i
 pub(crate) const fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
     match status {
         synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
-        synctv_core::models::UserStatus::Pending => {
-            synctv_proto::common::UserStatus::Pending as i32
-        }
-        synctv_core::models::UserStatus::Rejected => {
-            synctv_proto::common::UserStatus::Rejected as i32
-        }
         synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
     }
 }
@@ -97,15 +91,6 @@ pub(crate) const fn member_status_to_proto(status: synctv_core::models::MemberSt
     match status {
         synctv_core::models::MemberStatus::Active => {
             synctv_proto::common::MemberStatus::Active as i32
-        }
-        synctv_core::models::MemberStatus::Pending => {
-            synctv_proto::common::MemberStatus::Pending as i32
-        }
-        synctv_core::models::MemberStatus::Rejected => {
-            synctv_proto::common::MemberStatus::Rejected as i32
-        }
-        synctv_core::models::MemberStatus::Banned => {
-            synctv_proto::common::MemberStatus::Banned as i32
         }
         synctv_core::models::MemberStatus::Left => synctv_proto::common::MemberStatus::Left as i32,
     }
@@ -302,6 +287,7 @@ pub(crate) fn user_to_proto(user: &synctv_core::models::User) -> crate::proto::c
         status: user_status_to_proto(user.status),
         created_at: user.created_at.timestamp(),
         email_verified: user.email_verified,
+        is_banned: user.is_banned,
     }
 }
 
@@ -484,6 +470,9 @@ pub(super) fn room_member_to_proto(
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
+        is_banned: member.is_banned,
+        banned_at: member.banned_at.map_or(0, |value| value.timestamp()),
+        banned_reason: member.banned_reason.clone().unwrap_or_default(),
     }
 }
 
@@ -1311,6 +1300,7 @@ mod tests {
             created_by: UserId::from_string("user_proto".to_string()),
             status: synctv_core::models::RoomStatus::Active,
             is_banned: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,

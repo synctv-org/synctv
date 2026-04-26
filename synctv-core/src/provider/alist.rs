@@ -395,10 +395,14 @@ impl AlistProvider {
             .await
             .map_err(ProviderError::from)?;
 
-        let total = list_resp.total;
         let content = list_resp
             .content
             .into_iter()
+            .filter(|item| match req.scope {
+                1 => item.is_dir,
+                2 => !item.is_dir,
+                _ => true,
+            })
             .map(|item| FsSearchContent {
                 parent: req.parent.clone(),
                 name: item.name,
@@ -406,9 +410,12 @@ impl AlistProvider {
                 size: item.size,
                 r#type: item.r#type,
             })
-            .collect();
+            .collect::<Vec<_>>();
 
-        Ok(FsSearchResp { content, total })
+        Ok(FsSearchResp {
+            total: u64::try_from(content.len()).unwrap_or(u64::MAX),
+            content,
+        })
     }
 
     /// Get Alist user info
@@ -1959,7 +1966,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fs_search_falls_back_to_unfiltered_list_when_upstream_search_is_unavailable() {
+    async fn test_fs_search_falls_back_to_list_when_upstream_search_is_unavailable() {
         let default_clients = ProviderClientManager::new();
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(FakeAlistSearchUnavailableClient),
@@ -1976,7 +1983,7 @@ mod tests {
                     token: "token".to_string(),
                     parent: "/local".to_string(),
                     keywords: "does-not-exist".to_string(),
-                    scope: 1,
+                    scope: 0,
                     page: 2,
                     per_page: 10,
                     password: String::new(),
@@ -1991,6 +1998,56 @@ mod tests {
         assert_eq!(response.content[0].parent, "/local");
         assert_eq!(response.content[0].name, "video.mp4");
         assert_eq!(response.content[1].name, "folder");
+    }
+
+    #[tokio::test]
+    async fn test_fs_search_fallback_preserves_scope_filter() {
+        let default_clients = ProviderClientManager::new();
+        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
+            Arc::new(FakeAlistSearchUnavailableClient),
+            default_clients.local_bilibili_client(),
+            default_clients.local_emby_client(),
+        ));
+        let provider =
+            AlistProvider::with_client_manager(fake_provider_instance_manager(), client_manager);
+
+        let files = provider
+            .fs_search(
+                synctv_media_providers::grpc::alist::FsSearchReq {
+                    host: "http://alist.example.test".to_string(),
+                    token: "token".to_string(),
+                    parent: "/local".to_string(),
+                    keywords: "does-not-exist".to_string(),
+                    scope: 2,
+                    page: 2,
+                    per_page: 10,
+                    password: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect("search unavailable should fall back to listing files only");
+        assert_eq!(files.total, 1);
+        assert_eq!(files.content[0].name, "video.mp4");
+
+        let directories = provider
+            .fs_search(
+                synctv_media_providers::grpc::alist::FsSearchReq {
+                    host: "http://alist.example.test".to_string(),
+                    token: "token".to_string(),
+                    parent: "/local".to_string(),
+                    keywords: "does-not-exist".to_string(),
+                    scope: 1,
+                    page: 2,
+                    per_page: 10,
+                    password: String::new(),
+                },
+                None,
+            )
+            .await
+            .expect("search unavailable should fall back to listing directories only");
+        assert_eq!(directories.total, 1);
+        assert_eq!(directories.content[0].name, "folder");
     }
 
     #[tokio::test]

@@ -1,12 +1,13 @@
 use synctv_proto::client::{
-    AddMediaRequest, CheckRoomRequest, CreateWebSocketTicketRequest, DeleteEntriesRequest,
-    DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest, EditMediaRequest,
-    ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
+    AddMediaRequest, ApproveRoomJoinReviewRequest, CheckRoomRequest, CreateWebSocketTicketRequest,
+    DeleteEntriesRequest, DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest,
+    EditMediaRequest, ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
     GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
     GetRoomMembersRequest, GetRoomRequest, ListMyRoomsRequest, ListNotificationsRequest,
-    ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomStreamsRequest, MarkAsReadRequest,
-    MoveMediaRequest, MovePlaylistRequest, OAuth2ProviderInstancePathRequest,
-    OAuth2ProviderTypePathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
+    ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomJoinReviewsRequest,
+    ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest, MovePlaylistRequest,
+    OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest, RejectRoomJoinReviewRequest,
+    RoomJoinReviewPathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
     RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
     StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
     UpdatePlaybackRequest, UpdatePlaylistRequest, WebSocketConnectRequest,
@@ -130,6 +131,65 @@ fn test_room_member_target_path_request_rejects_invalid_user_id() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("user_id"), "{message}");
+}
+
+#[test]
+fn test_room_join_review_path_request_rejects_invalid_request_id() {
+    let request = RoomJoinReviewPathRequest {
+        room_id: "AbC123xYz890".to_string(),
+        request_id: "bad-request".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("request_id"), "{message}");
+}
+
+#[test]
+fn test_list_room_join_reviews_request_accepts_default_pagination_and_pending_status() {
+    let request = ListRoomJoinReviewsRequest {
+        page: 0,
+        page_size: 0,
+        status: synctv_proto::common::ReviewStatus::Pending as i32,
+        user_id: String::new(),
+    };
+
+    synctv_proto::validate(&request).expect("default pagination should be valid");
+}
+
+#[test]
+fn test_list_room_join_reviews_request_rejects_invalid_page_size() {
+    let request = ListRoomJoinReviewsRequest {
+        page: 1,
+        page_size: 101,
+        status: synctv_proto::common::ReviewStatus::Pending as i32,
+        user_id: String::new(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("page_size"), "{message}");
+}
+
+#[test]
+fn test_approve_room_join_review_request_requires_valid_request_id() {
+    let request = ApproveRoomJoinReviewRequest {
+        request_id: "bad-request".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("request_id"), "{message}");
+}
+
+#[test]
+fn test_reject_room_join_review_request_allows_reason_without_target_user_id() {
+    let request = RejectRoomJoinReviewRequest {
+        request_id: "AbC123xYz890".to_string(),
+        reason: "not eligible".to_string(),
+    };
+
+    synctv_proto::validate(&request).expect("request-id based rejection should be valid");
 }
 
 #[test]
@@ -438,6 +498,7 @@ fn test_get_room_members_request_rejects_too_long_search() {
         search: "a".repeat(101),
         role: None,
         status: None,
+        is_banned: None,
         sort_by: synctv_proto::client::RoomMemberListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
     };

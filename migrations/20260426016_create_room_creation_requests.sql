@@ -1,0 +1,25 @@
+CREATE TABLE IF NOT EXISTS room_creation_requests (
+    id CHAR(12) PRIMARY KEY,
+    requested_by CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    name VARCHAR(100) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    password_hash TEXT,
+    settings_payload JSONB,
+    status SMALLINT NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TIMESTAMPTZ,
+    reviewed_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
+    rejection_reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_creation_requests_requested_by
+    ON room_creation_requests(requested_by, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_room_creation_requests_status_requested
+    ON room_creation_requests(status, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_room_creation_requests_reviewed_by
+    ON room_creation_requests(reviewed_by)
+    WHERE reviewed_by IS NOT NULL;
+
+COMMENT ON TABLE room_creation_requests IS 'Room creation approval workflow records';

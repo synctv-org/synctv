@@ -984,10 +984,10 @@ mod tests {
     #[test]
     fn version_mismatch_error_includes_rebuild_guidance() {
         let message = describe_migration_error(&sqlx::migrate::MigrateError::VersionMismatch(
-            20_240_101_000_004,
+            20_260_426_004,
         ));
 
-        assert!(message.contains("20240101000004"));
+        assert!(message.contains("20260426004"));
         assert!(message.contains("recreate the database or Docker volumes"));
         assert!(message.contains("forward-only corrective migration"));
     }

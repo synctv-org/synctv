@@ -105,6 +105,7 @@ mod tests {
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
             email_verified: true,
+            is_banned: false,
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
@@ -160,6 +161,9 @@ mod tests {
             admin_removed_permissions: 0x00,
             joined_at: 1_700_000_500,
             is_online: true,
+            is_banned: false,
+            banned_at: 0,
+            banned_reason: String::new(),
         };
         let bytes = member.encode_to_vec();
         let decoded = crate::common::RoomMember::decode(bytes.as_slice()).unwrap();
@@ -387,6 +391,7 @@ mod tests {
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
             email_verified: true,
+            is_banned: false,
         };
         let json = serde_json::to_string(&user).unwrap();
         let decoded: crate::client::User = serde_json::from_str(&json).unwrap();
@@ -577,6 +582,10 @@ mod tests {
             status: crate::common::UserStatus::Active.into(),
             created_at: 1_700_000_000,
             updated_at: 1_700_001_000,
+            is_banned: false,
+            banned_at: 0,
+            banned_by: String::new(),
+            banned_reason: String::new(),
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::admin::AdminUser::decode(bytes.as_slice()).unwrap();
@@ -1241,6 +1250,7 @@ mod tests {
             search: String::new(),
             role: Some(99),
             status: Some(99),
+            is_banned: None,
             sort_by: 99,
             sort_direction: 99,
         };
@@ -1284,6 +1294,7 @@ mod tests {
             search: String::new(),
             role: Some(crate::common::RoomMemberRole::Member as i32),
             status: Some(crate::common::MemberStatus::Active as i32),
+            is_banned: Some(false),
             sort_by: crate::client::RoomMemberListSortBy::Unspecified as i32,
             sort_direction: crate::client::SortDirection::Unspecified as i32,
         })
@@ -1377,6 +1388,7 @@ mod tests {
             status: 99,
             role: 99,
             search: String::new(),
+            is_banned: None,
             sort_by: 99,
             sort_direction: 99,
         };
@@ -1407,6 +1419,7 @@ mod tests {
             search: String::new(),
             role: 99,
             status: 99,
+            is_banned: None,
             sort_by: 99,
             sort_direction: 99,
         };
@@ -1462,6 +1475,7 @@ mod tests {
             status: crate::common::UserStatus::Unspecified as i32,
             role: crate::common::UserRole::Unspecified as i32,
             search: "admin".into(),
+            is_banned: Some(false),
             sort_by: crate::admin::UserListSortBy::Unspecified as i32,
             sort_direction: crate::admin::SortDirection::Unspecified as i32,
         })
@@ -1498,6 +1512,7 @@ mod tests {
             search: String::new(),
             role: crate::common::RoomMemberRole::Member as i32,
             status: crate::common::MemberStatus::Active as i32,
+            is_banned: Some(false),
             sort_by: crate::admin::RoomMemberListSortBy::Unspecified as i32,
             sort_direction: crate::admin::SortDirection::Unspecified as i32,
         })

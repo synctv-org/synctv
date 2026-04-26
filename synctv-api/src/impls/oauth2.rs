@@ -454,8 +454,6 @@ fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
 
     let proto_status = match user.status {
         UserStatus::Active => ProtoUserStatus::Active,
-        UserStatus::Pending => ProtoUserStatus::Pending,
-        UserStatus::Rejected => ProtoUserStatus::Rejected,
         UserStatus::Banned => ProtoUserStatus::Banned,
     };
 
@@ -541,6 +539,10 @@ mod tests {
             password_hash: "$argon2id$v=19$m=16384,t=3,p=1$random$hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: SignupMethod::OAuth2,
             email_verified: false,
             created_at: now,

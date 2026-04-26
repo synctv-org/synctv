@@ -20,8 +20,8 @@ use crate::proto::client::{
     auth_service_server::AuthService, email_service_server::EmailService,
     public_service_server::PublicService, room_service_server::RoomService,
     user_service_server::UserService, AddMediaBatchRequest, AddMediaBatchResponse, AddMediaRequest,
-    AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveMemberRequest,
-    ApproveMemberResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
+    AddMediaResponse, AddMemberRequest, AddMemberResponse, ApproveRoomJoinReviewRequest,
+    ApproveRoomJoinReviewResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
     CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
     ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
@@ -36,11 +36,12 @@ use crate::proto::client::{
     GetRoomSettingsResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
     ListMyRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
-    ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
-    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
-    RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    RejectMemberRequest, RejectMemberResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
+    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MoveMediaRequest,
+    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, RefreshTokenRequest,
+    RefreshTokenResponse, RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest,
+    RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
     RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
     ResetRoomSettingsResponse, SendVerificationEmailRequest, SendVerificationEmailResponse,
     ServerMessage, SetPasswordRequest, SetPasswordResponse, SetRoomPasswordRequest,
@@ -717,10 +718,10 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn approve_member(
+    async fn list_room_join_reviews(
         &self,
-        request: Request<ApproveMemberRequest>,
-    ) -> Result<Response<ApproveMemberResponse>, Status> {
+        request: Request<ListRoomJoinReviewsRequest>,
+    ) -> Result<Response<ListRoomJoinReviewsResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -728,10 +729,14 @@ impl RoomService for ClientServiceImpl {
         let response = executor
             .execute_user_endpoint(
                 &metadata,
-                EndpointRateLimitCategory::Write,
+                EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .approve_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .list_room_join_reviews(
+                            authenticated.user_id.as_str(),
+                            room_id.as_str(),
+                            req,
+                        )
                         .await
                 },
             )
@@ -740,10 +745,10 @@ impl RoomService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn reject_member(
+    async fn approve_room_join_review(
         &self,
-        request: Request<RejectMemberRequest>,
-    ) -> Result<Response<RejectMemberResponse>, Status> {
+        request: Request<ApproveRoomJoinReviewRequest>,
+    ) -> Result<Response<ApproveRoomJoinReviewResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -754,7 +759,38 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .reject_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .approve_room_join_review(
+                            authenticated.user_id.as_str(),
+                            room_id.as_str(),
+                            req,
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn reject_room_join_review(
+        &self,
+        request: Request<RejectRoomJoinReviewRequest>,
+    ) -> Result<Response<RejectRoomJoinReviewResponse>, Status> {
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .reject_room_join_review(
+                            authenticated.user_id.as_str(),
+                            room_id.as_str(),
+                            req,
+                        )
                         .await
                 },
             )

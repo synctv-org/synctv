@@ -362,14 +362,7 @@ impl EmailApiImpl {
             });
         };
 
-        if user.is_deleted()
-            || matches!(
-                user.status,
-                synctv_core::models::UserStatus::Banned
-                    | synctv_core::models::UserStatus::Pending
-                    | synctv_core::models::UserStatus::Rejected
-            )
-        {
+        if user.is_deleted() || matches!(user.status, synctv_core::models::UserStatus::Banned) {
             let delay_ms = rand::random_range(100u64..500u64);
             Self::sleep_with_control(std::time::Duration::from_millis(delay_ms), control).await?;
             return Ok(RequestEmailLoginResult {
@@ -512,14 +505,7 @@ impl EmailApiImpl {
             ));
         }
 
-        if user.is_deleted()
-            || matches!(
-                user.status,
-                synctv_core::models::UserStatus::Banned
-                    | synctv_core::models::UserStatus::Pending
-                    | synctv_core::models::UserStatus::Rejected
-            )
-        {
+        if user.is_deleted() || matches!(user.status, synctv_core::models::UserStatus::Banned) {
             return Err(ApiError::Authentication(
                 "Authentication failed".to_string(),
             ));
@@ -571,6 +557,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             email_verified: true,
             signup_method: SignupMethod::Email,
             created_at: now,

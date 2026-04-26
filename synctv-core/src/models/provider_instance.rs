@@ -185,7 +185,7 @@ pub struct UserProviderCredential {
 impl UserProviderCredential {
     const BILIBILI_SCOPE: &'static str = "bilibili";
 
-    /// Generate a shared 12-character credential ID compatible with
+    /// Generate a shared 12-character credential ID for
     /// `user_media_provider_credentials.id`.
     #[must_use]
     pub fn new_id() -> String {

@@ -35,6 +35,10 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         version: 0,
         deleted_at: None,
         email_verified: true,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
     let user_repo = UserRepository::new(pool.clone());
     user_repo
@@ -75,6 +79,7 @@ fn make_room(creator_id: UserId) -> Room {
         created_by: creator_id,
         status: synctv_core::models::RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

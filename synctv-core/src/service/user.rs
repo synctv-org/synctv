@@ -8,7 +8,7 @@ use crate::{
     cache::{CacheInvalidationRuntime, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
-    models::{MediaId, PlaylistId, RoomId, SignupMethod, User, UserId, UserStatus},
+    models::{MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserId, UserStatus},
     repository::{RoomMemberRepository, UserOAuthProviderRepository, UserRepository},
     service::auth::{BruteForceProtectionService, JwtService, TokenBlacklistStore, TokenType},
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
@@ -21,6 +21,15 @@ const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
+}
+
+#[derive(Debug)]
+struct PendingRegistrationRequest {
+    id: UserId,
+    username: String,
+    email: Option<String>,
+    password_hash: String,
+    signup_method: SignupMethod,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -561,8 +570,38 @@ impl UserService {
             .await?
             .rows_affected();
 
-        let room_member_bans_cleared =
-            sqlx::query("UPDATE room_members SET banned_by = NULL WHERE banned_by = $1")
+        let mut room_member_bans_cleared =
+            sqlx::query("UPDATE room_member_bans SET banned_by = NULL WHERE banned_by = $1")
+                .bind(user_id.as_str())
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+        room_member_bans_cleared +=
+            sqlx::query("UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1")
+                .bind(user_id.as_str())
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+        room_member_bans_cleared +=
+            sqlx::query("UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1")
+                .bind(user_id.as_str())
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+        room_member_bans_cleared +=
+            sqlx::query("UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1")
+                .bind(user_id.as_str())
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+        room_member_bans_cleared +=
+            sqlx::query("UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1")
+                .bind(user_id.as_str())
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+        room_member_bans_cleared +=
+            sqlx::query("UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1")
                 .bind(user_id.as_str())
                 .execute(&mut **tx)
                 .await?
@@ -790,21 +829,186 @@ impl UserService {
         };
     }
 
+    async fn has_pending_registration_request(
+        &self,
+        username: &str,
+        email: Option<&str>,
+    ) -> Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM user_registration_requests
+                WHERE reviewed_at IS NULL
+                  AND (username = $1 OR ($2::TEXT IS NOT NULL AND email = $2))
+            )
+            ",
+        )
+        .bind(username)
+        .bind(email)
+        .fetch_one(self.repository.pool())
+        .await?;
+
+        Ok(exists)
+    }
+
+    async fn create_registration_request(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        password_hash: &str,
+        signup_method: SignupMethod,
+    ) -> Result<User> {
+        let request_id = UserId::new();
+        sqlx::query(
+            r"
+            INSERT INTO user_registration_requests (
+                id, username, email, password_hash, signup_method, status, requested_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(username)
+        .bind(email)
+        .bind(password_hash)
+        .bind(signup_method)
+        .bind(ReviewStatus::Pending.as_i16())
+        .execute(self.repository.pool())
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
+                Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                )
+            }
+            _ => Error::Database(e),
+        })?;
+
+        let mut user = User::new_with_status(
+            username.to_string(),
+            email.map(ToOwned::to_owned),
+            String::new(),
+            signup_method,
+            UserStatus::Active,
+        );
+        user.id = request_id;
+        Ok(user)
+    }
+
+    async fn load_pending_registration_request_for_update(
+        request_id: &UserId,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Option<PendingRegistrationRequest>> {
+        let row = sqlx::query(
+            r"
+            SELECT id, username, email, password_hash, signup_method
+            FROM user_registration_requests
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $2
+            FOR UPDATE
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(ReviewStatus::Pending.as_i16())
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        row.map(|row| {
+            let signup_method_i16: i16 = row.try_get("signup_method")?;
+            let signup_method = SignupMethod::from_i16(signup_method_i16).ok_or_else(|| {
+                sqlx::Error::Decode(format!("Invalid signup_method: {signup_method_i16}").into())
+            })?;
+            Ok(PendingRegistrationRequest {
+                id: row.try_get("id")?,
+                username: row.try_get("username")?,
+                email: row.try_get("email")?,
+                password_hash: row.try_get("password_hash")?,
+                signup_method,
+            })
+        })
+        .transpose()
+        .map_err(Error::Database)
+    }
+
+    pub async fn approve_registration_request(
+        &self,
+        request_id: &UserId,
+        reviewed_by: Option<&UserId>,
+    ) -> Result<User> {
+        let mut tx = self.repository.pool().begin().await?;
+        let request = Self::load_pending_registration_request_for_update(request_id, &mut tx)
+            .await?
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "Pending registration request {} not found",
+                    request_id.as_str()
+                ))
+            })?;
+
+        if self
+            .repository
+            .get_by_username(&request.username)
+            .await?
+            .is_some()
+            || match request.email.as_deref() {
+                Some(email) => self.repository.get_by_email(email).await?.is_some(),
+                None => false,
+            }
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
+        }
+
+        let mut user = User::new(
+            request.username.clone(),
+            request.email.clone(),
+            request.password_hash,
+            request.signup_method,
+        );
+        user.id = request.id;
+        let created = self
+            .repository
+            .create_with_executor(&user, &mut *tx)
+            .await?;
+
+        sqlx::query(
+            r"
+            UPDATE user_registration_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
+            WHERE id = $1
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(ReviewStatus::Approved.as_i16())
+        .bind(reviewed_by.map(UserId::as_str))
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        self.cache_username_best_effort(
+            &created.id,
+            &created.username,
+            "approve_registration_request",
+        )
+        .await;
+        self.notify_user_invalidation(&created.id).await;
+
+        Ok(created)
+    }
+
     /// Validate that a user is allowed to access the system.
     ///
-    /// Checks for banned, pending, or soft-deleted status, and optionally
-    /// email verification. Returns a generic error message to prevent
-    /// user enumeration.
+    /// Checks for banned or soft-deleted accounts, and optionally email
+    /// verification. Returns a generic error message to prevent user
+    /// enumeration.
     ///
     /// This is shared between `login()`, `refresh_token()`, and other
     /// authentication flows to avoid duplicating the same checks.
     fn validate_user_access(&self, user: &User) -> Result<()> {
         // Reject inactive or soft-deleted users with a generic message to prevent enumeration.
-        if user.status == UserStatus::Banned
-            || user.status == UserStatus::Pending
-            || user.status == UserStatus::Rejected
-            || user.deleted_at.is_some()
-        {
+        if user.is_banned || user.status == UserStatus::Banned || user.deleted_at.is_some() {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -967,25 +1171,40 @@ impl UserService {
                 ));
             }
         }
+        if self
+            .has_pending_registration_request(&username, email.as_deref())
+            .await?
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
+        }
 
         // Hash password
         let password_hash = self.password_hasher.hash_password(&password).await?;
 
-        // Set initial status based on email verification config and signup_need_review setting.
-        // Priority: email verification required -> Pending (must verify email first)
-        // Otherwise: signup_need_review -> Pending (admin must approve)
-        // Otherwise: Active (immediate access)
+        // Signup review is an approval workflow, not an account lifecycle state.
+        // Pending registrations live in `user_registration_requests` and do not
+        // create a `users` row until an admin approves them. Email verification
+        // remains an account fact (`email_verified=false`) on an otherwise active
+        // user so verification tokens can reference the user row.
         let signup_need_review = self
             .settings_registry
             .as_ref()
             .and_then(|r| r.signup_need_review.get().ok())
             .unwrap_or(false);
 
-        let initial_status = if self.email_verification_required || signup_need_review {
-            crate::models::UserStatus::Pending
-        } else {
-            crate::models::UserStatus::Active
-        };
+        if signup_need_review {
+            let pending_user = self
+                .create_registration_request(
+                    &username,
+                    email.as_deref(),
+                    &password_hash,
+                    SignupMethod::Email,
+                )
+                .await?;
+            return Ok((pending_user, None, None));
+        }
 
         // Create user with email signup method.
         // The database UNIQUE constraints on username and email will reject
@@ -993,12 +1212,11 @@ impl UserService {
         // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
         // as brute-force failures. A legitimate user trying to register with a
         // common username shouldn't be locked out - they just need to pick another.
-        let user = User::new_with_status(
+        let user = User::new(
             username.clone(),
             email.clone(),
             password_hash,
             SignupMethod::Email,
-            initial_status,
         );
         let created_user = match self.repository.create(&user).await {
             Ok(user) => user,
@@ -1029,10 +1247,9 @@ impl UserService {
         self.cache_username_best_effort(&created_user.id, &username, "register")
             .await;
 
-        // When the user starts as Pending (email verification or signup review required),
-        // do NOT issue tokens. The user must either verify their email or be approved
-        // by an admin before they can authenticate.
-        if initial_status == crate::models::UserStatus::Pending {
+        // When email verification is required, the user row exists so email
+        // tokens can target it, but no session is issued until verification.
+        if self.email_verification_required {
             return Ok((created_user, None, None));
         }
 
@@ -1069,38 +1286,7 @@ impl UserService {
         }
         self.validate_password(&password)?;
         let password_hash = self.password_hasher.hash_password(&password).await?;
-        // OAuth2 and AdminCreated users are pre-authenticated, but still need to respect
-        // signup_need_review. Email/Password registrations go through email-verification
-        // flow (Pending when verification is required).
-        let signup_need_review = self
-            .settings_registry
-            .as_ref()
-            .and_then(|r| r.signup_need_review.get().ok())
-            .unwrap_or(false);
-
-        let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
-                if signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
-                if self.email_verification_required || signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-        };
-        let user = User::new_with_status(
-            username,
-            email,
-            password_hash,
-            signup_method,
-            initial_status,
-        );
+        let user = User::new(username, email, password_hash, signup_method);
         self.repository.create_with_executor(&user, executor).await
     }
 
@@ -1115,7 +1301,7 @@ impl UserService {
         password: String,
         role: Option<crate::models::UserRole>,
     ) -> Result<User> {
-        self.create_user_with_role_and_status(username, email, password, role, None)
+        self.create_user_with_role_and_status(username, email, password, role, None, None)
             .await
     }
 
@@ -1126,6 +1312,7 @@ impl UserService {
         password: String,
         role: Option<crate::models::UserRole>,
         status: Option<crate::models::UserStatus>,
+        banned_by: Option<&UserId>,
     ) -> Result<User> {
         Self::validate_username(&username)?;
         if let Some(ref email) = email {
@@ -1141,7 +1328,37 @@ impl UserService {
         if let Some(status) = status {
             user.status = status;
         }
-        let created_user = self.repository.create(&user).await?;
+        let mut tx = self.repository.pool().begin().await?;
+        let created_user = self
+            .repository
+            .create_with_executor(&user, &mut *tx)
+            .await?;
+        if user.status == crate::models::UserStatus::Banned {
+            sqlx::query(
+                r"
+                INSERT INTO user_bans (id, user_id, banned_by, reason, starts_at)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                ",
+            )
+            .bind(crate::models::generate_id())
+            .bind(created_user.id.as_str())
+            .bind(banned_by.map(UserId::as_str))
+            .bind("created with banned status")
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
+        let created_user = if user.status == crate::models::UserStatus::Banned {
+            self.repository
+                .get_by_id(&created_user.id)
+                .await?
+                .ok_or_else(|| {
+                    Error::NotFound(format!("User {} not found", created_user.id.as_str()))
+                })?
+        } else {
+            created_user
+        };
         self.cache_username_best_effort(
             &created_user.id,
             &username,
@@ -1796,31 +2013,36 @@ impl UserService {
         self.delete_user_with_summary(user_id).await.map(|_| ())
     }
 
+    pub async fn is_user_banned(&self, user_id: &UserId) -> Result<bool> {
+        self.repository.is_banned(user_id).await
+    }
+
+    /// Clear a global user ban without changing the user's account facts.
+    pub async fn unban_user(&self, user_id: &UserId) -> Result<User> {
+        let updated = self.repository.unban(user_id).await?;
+        self.notify_user_invalidation(user_id).await;
+        Ok(updated)
+    }
+
     /// Ban a user and remove them from all room memberships in the same transaction.
     ///
-    /// This ensures global account bans and room lifecycle state stay aligned:
-    /// once the user becomes `Banned`, they are also no longer an active member
-    /// of any room, and rooms they own are emptied so existing members are
-    /// forced out of unusable rooms.
+    /// Ban is independent moderation state. The user's lifecycle status is
+    /// preserved so unban does not implicitly approve or reactivate accounts.
     pub async fn ban_user_and_cleanup_memberships(&self, user_id: &UserId) -> Result<User> {
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
-        let mut user = self
-            .repository
+        self.repository
             .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?
             .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
-        if user.status == UserStatus::Banned {
+        if self.repository.is_banned(user_id).await? {
             return Err(Error::InvalidInput("User is already banned".to_string()));
         }
 
-        user.status = UserStatus::Banned;
-        let old_version = user.version;
-        let updated = self
-            .repository
-            .update_with_executor(&user, old_version, &mut *tx)
+        self.repository
+            .insert_ban_with_executor(user_id, None, None, &mut *tx)
             .await?;
 
         let room_member_repo = RoomMemberRepository::new(pool.clone());
@@ -1833,24 +2055,14 @@ impl UserService {
             .await?;
 
         tx.commit().await?;
+        let updated = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
         self.notify_user_invalidation(user_id).await;
 
         Ok(updated)
-    }
-
-    /// Set user status (Active/Pending/Banned).
-    ///
-    /// This method updates the user's account status and invalidates
-    /// relevant caches. Changing status to Banned or Pending will
-    /// prevent the user from logging in or using WebSocket connections.
-    pub async fn set_user_status(
-        &self,
-        user_id: &UserId,
-        status: crate::models::UserStatus,
-    ) -> Result<User> {
-        let user = self.repository.update_status(user_id, status).await?;
-        self.notify_user_invalidation(user_id).await;
-        Ok(user)
     }
 
     // Batch Operations
@@ -1900,7 +2112,7 @@ impl crate::service::ws_ticket::UserValidator for UserService {
     ///
     /// This implementation checks:
     /// - User exists and is not soft-deleted
-    /// - User status is Active (not Pending, Rejected, or Banned)
+    /// - User status is Active and the user is not banned
     ///
     /// Returns the current password version for ticket validation.
     async fn validate_for_ticket(
@@ -1913,8 +2125,8 @@ impl crate::service::ws_ticket::UserValidator for UserService {
             .await?
             .ok_or_else(|| crate::Error::NotFound("User not found".to_string()))?;
 
-        // Check soft-delete
-        if user.is_deleted() {
+        // Check soft-delete and global ban
+        if user.is_deleted() || user.is_banned {
             return Err(crate::Error::Authorization(
                 "Authentication failed".to_string(),
             ));
@@ -1925,9 +2137,7 @@ impl crate::service::ws_ticket::UserValidator for UserService {
             crate::models::UserStatus::Active => {
                 // User is active, continue
             }
-            crate::models::UserStatus::Banned
-            | crate::models::UserStatus::Pending
-            | crate::models::UserStatus::Rejected => {
+            crate::models::UserStatus::Banned => {
                 return Err(crate::Error::Authorization(
                     "Authentication failed".to_string(),
                 ));
@@ -2467,6 +2677,10 @@ mod tests {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         };
 
         // The check in login(): email_verification_required && !email_verified && !is_oauth2
@@ -2502,6 +2716,10 @@ mod tests {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         };
 
         let email_verification_required = true;
@@ -2536,6 +2754,10 @@ mod tests {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         };
 
         let email_verification_required = true;
@@ -2788,89 +3010,36 @@ mod tests {
 
     /// Verify that register_with_executor respects signup_need_review for Email signups.
     ///
-    /// This test mirrors the logic in register_with_executor to verify that when
-    /// signup_need_review is true and signup_method is Email, the initial status
-    /// is Pending (not Active).
+    /// Review-required signup is represented by a review request, not by a user row status.
     #[test]
-    fn test_register_with_executor_respects_signup_need_review_for_email() {
-        // Simulate the logic from register_with_executor
-        let email_verification_required = false;
+    fn test_signup_review_policy_uses_review_request_for_email() {
         let signup_need_review = true;
         let signup_method = SignupMethod::Email;
-
-        let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
-                if email_verification_required || signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-        };
-
-        assert_eq!(
-            initial_status,
-            crate::models::UserStatus::Pending,
-            "Email registration with signup_need_review=true must produce Pending status"
-        );
+        let creates_review_request = signup_need_review
+            && matches!(
+                signup_method,
+                SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown
+            );
+        assert!(creates_review_request);
     }
 
-    /// Verify that OAuth2 signups respect signup_need_review.
+    /// OAuth2 signup creates an active local account after external authentication.
     #[test]
-    fn test_register_with_executor_oauth2_respects_signup_need_review() {
-        let email_verification_required = false;
+    fn test_signup_review_policy_does_not_create_pending_oauth2_user() {
         let signup_need_review = true;
         let signup_method = SignupMethod::OAuth2;
-
-        let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
-                if signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
-                if email_verification_required || signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-        };
-
-        assert_eq!(
-            initial_status,
-            crate::models::UserStatus::Pending,
-            "OAuth2 registration with signup_need_review=true must produce Pending status"
-        );
+        let creates_review_request = signup_need_review
+            && matches!(
+                signup_method,
+                SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown
+            );
+        assert!(!creates_review_request);
     }
 
     /// Verify that Email signups are Active when neither review nor verification is required.
     #[test]
     fn test_register_with_executor_email_active_when_no_review() {
-        let email_verification_required = false;
-        let signup_need_review = false;
-        let signup_method = SignupMethod::Email;
-
-        let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
-                if signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
-                if email_verification_required || signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-        };
-
+        let initial_status = crate::models::UserStatus::Active;
         assert_eq!(
             initial_status,
             crate::models::UserStatus::Active,
@@ -2881,27 +3050,7 @@ mod tests {
     /// Verify that OAuth2 signups are Active when signup_need_review is false.
     #[test]
     fn test_register_with_executor_oauth2_active_when_no_review() {
-        let email_verification_required = false;
-        let signup_need_review = false;
-        let signup_method = SignupMethod::OAuth2;
-
-        let initial_status = match signup_method {
-            SignupMethod::OAuth2 | SignupMethod::AdminCreated => {
-                if signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
-                if email_verification_required || signup_need_review {
-                    crate::models::UserStatus::Pending
-                } else {
-                    crate::models::UserStatus::Active
-                }
-            }
-        };
-
+        let initial_status = crate::models::UserStatus::Active;
         assert_eq!(
             initial_status,
             crate::models::UserStatus::Active,

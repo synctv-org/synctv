@@ -104,6 +104,10 @@ impl UserFixture {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         }
     }
 }
@@ -197,6 +201,7 @@ impl RoomFixture {
             created_by: self.created_by,
             status: crate::models::RoomStatus::Active,
             is_banned: false,
+            closed_at: None,
             created_at: self.created_at.unwrap_or(now),
             updated_at: self.updated_at.unwrap_or(now),
             deleted_at: None,

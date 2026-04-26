@@ -9,8 +9,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::RequireApproval, MemberStatus, PermissionBits, RoomRole, RoomSettings,
-        RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        room_settings::RequireApproval, MemberStatus, PermissionBits, ReviewStatus, RoomRole,
+        RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository, SettingsRepository,
@@ -18,7 +18,6 @@ use synctv_core::{
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        member::AddMemberOptions,
         AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
         RemoteProviderManager, RoomService, SettingsRegistry, SettingsService, UserService,
     },
@@ -34,6 +33,10 @@ fn make_user(username: &str, role: UserRole, status: UserStatus) -> User {
         password_hash: "hash".to_string(),
         role,
         status,
+        is_banned: status == UserStatus::Banned,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: now,
@@ -121,21 +124,9 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     )
 }
 
-fn default_member_list_request() -> synctv_proto::client::GetRoomMembersRequest {
-    synctv_proto::client::GetRoomMembersRequest {
-        page: 1,
-        page_size: 20,
-        search: String::new(),
-        role: None,
-        status: None,
-        sort_by: 0,
-        sort_direction: 0,
-    }
-}
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_member_rejects_non_active_user_statuses() {
+async fn test_add_member_rejects_banned_user_status() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -151,28 +142,20 @@ async fn test_add_member_rejects_non_active_user_statuses() {
         ))
         .await
         .unwrap();
-    let pending_user = user_repo
-        .create(&make_user(
-            "status_pending_target",
-            UserRole::User,
-            UserStatus::Pending,
-        ))
-        .await
-        .unwrap();
     let banned_user = user_repo
         .create(&make_user(
             "status_banned_target",
             UserRole::User,
-            UserStatus::Banned,
+            UserStatus::Active,
         ))
         .await
         .unwrap();
-    let rejected_user = user_repo
-        .create(&make_user(
-            "status_rejected_target",
-            UserRole::User,
-            UserStatus::Rejected,
-        ))
+    user_repo
+        .ban(
+            &banned_user.id,
+            Some(&owner.id),
+            Some("membership guard coverage".to_string()),
+        )
         .await
         .unwrap();
 
@@ -187,29 +170,23 @@ async fn test_add_member_rejects_non_active_user_statuses() {
         .await
         .unwrap();
 
-    for (label, target, expected_status) in [
-        ("pending", &pending_user, "pending"),
-        ("banned", &banned_user, "banned"),
-        ("rejected", &rejected_user, "rejected"),
-    ] {
-        let error = client_api
-            .add_member(
-                owner.id.as_str(),
-                room.id.as_str(),
-                synctv_proto::client::AddMemberRequest {
-                    user_id: target.id.as_str().to_string(),
-                    role: synctv_proto::common::RoomMemberRole::Member as i32,
-                    notify: false,
-                },
-            )
-            .await
-            .expect_err("non-active target user must be rejected");
+    let error = client_api
+        .add_member(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_proto::client::AddMemberRequest {
+                user_id: banned_user.id.as_str().to_string(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                notify: false,
+            },
+        )
+        .await
+        .expect_err("banned target user must be rejected");
 
-        assert!(
-            matches!(error, ApiError::Authorization(ref message) if message.contains(expected_status)),
-            "{label} user should be rejected with status-aware message, got: {error:?}"
-        );
-    }
+    assert!(
+        matches!(error, ApiError::Authorization(ref message) if message.contains("banned")),
+        "banned user should be rejected with status-aware message, got: {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -284,6 +261,14 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .join_room(room.id.clone(), pending_target.id.clone(), None)
         .await
         .unwrap();
+    let pending_request_id: String = sqlx::query_scalar(
+        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
+    )
+    .bind(room.id.as_str())
+    .bind(pending_target.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     room_service
         .add_member(
             room.id.clone(),
@@ -296,27 +281,29 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .unwrap();
 
     let pending_list_error = client_api
-        .get_room_members(
+        .list_room_join_reviews(
             moderator.id.as_str(),
             room.id.as_str(),
-            synctv_proto::client::GetRoomMembersRequest {
-                status: Some(synctv_proto::common::MemberStatus::Pending as i32),
-                ..default_member_list_request()
+            synctv_proto::client::ListRoomJoinReviewsRequest {
+                page: 1,
+                page_size: 20,
+                status: synctv_proto::common::ReviewStatus::Pending as i32,
+                user_id: String::new(),
             },
         )
         .await
         .expect_err("non-moderator should not inspect pending queue");
     assert!(
-        matches!(pending_list_error, ApiError::Authorization(ref message) if message.contains("requires room moderation permissions")),
+        matches!(pending_list_error, ApiError::Authorization(ref message) if message.contains("Permission denied")),
         "pending-member listing must require moderation permission, got: {pending_list_error:?}"
     );
 
     let approve_error = client_api
-        .approve_member(
+        .approve_room_join_review(
             moderator.id.as_str(),
             room.id.as_str(),
-            synctv_proto::client::ApproveMemberRequest {
-                user_id: pending_target.id.as_str().to_string(),
+            synctv_proto::client::ApproveRoomJoinReviewRequest {
+                request_id: pending_request_id.clone(),
             },
         )
         .await
@@ -343,33 +330,35 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .unwrap();
 
     let pending_response = client_api
-        .get_room_members(
+        .list_room_join_reviews(
             moderator.id.as_str(),
             room.id.as_str(),
-            synctv_proto::client::GetRoomMembersRequest {
-                status: Some(synctv_proto::common::MemberStatus::Pending as i32),
-                ..default_member_list_request()
+            synctv_proto::client::ListRoomJoinReviewsRequest {
+                page: 1,
+                page_size: 20,
+                status: synctv_proto::common::ReviewStatus::Pending as i32,
+                user_id: String::new(),
             },
         )
         .await
         .unwrap();
     assert_eq!(pending_response.total, 1);
-    assert_eq!(pending_response.members.len(), 1);
+    assert_eq!(pending_response.reviews.len(), 1);
     assert_eq!(
-        pending_response.members[0].user_id,
+        pending_response.reviews[0].user_id,
         pending_target.id.as_str()
     );
     assert_eq!(
-        pending_response.members[0].status,
-        synctv_proto::common::MemberStatus::Pending as i32
+        pending_response.reviews[0].status,
+        synctv_proto::common::ReviewStatus::Pending as i32
     );
 
     let approved = client_api
-        .approve_member(
+        .approve_room_join_review(
             moderator.id.as_str(),
             room.id.as_str(),
-            synctv_proto::client::ApproveMemberRequest {
-                user_id: pending_target.id.as_str().to_string(),
+            synctv_proto::client::ApproveRoomJoinReviewRequest {
+                request_id: pending_request_id,
             },
         )
         .await
@@ -788,11 +777,11 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .unwrap();
 
     room_repo
-        .update_status(&pending_room.id, RoomStatus::Pending)
+        .update_status(&pending_room.id, RoomStatus::Closed)
         .await
         .unwrap();
     room_repo
-        .update_status(&rejected_room.id, RoomStatus::Rejected)
+        .update_status(&rejected_room.id, RoomStatus::Closed)
         .await
         .unwrap();
     room_repo
@@ -808,11 +797,25 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .join_room(joined_room.id.clone(), actor.id.clone(), None)
         .await
         .unwrap();
+    let actor_join_request_id = sqlx::query_scalar::<_, String>(
+        r"
+        SELECT id
+        FROM room_join_requests
+        WHERE room_id = $1
+          AND user_id = $2
+          AND reviewed_at IS NULL
+        ",
+    )
+    .bind(joined_room.id.as_str())
+    .bind(actor.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     room_service
-        .approve_member(
+        .approve_join_request(
             joined_room.id.clone(),
             external_owner.id.clone(),
-            actor.id.clone(),
+            actor_join_request_id.as_str(),
         )
         .await
         .unwrap();
@@ -827,13 +830,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .await
         .unwrap();
     room_service
-        .member_service()
-        .add_member_with_options(
-            joined_room.id.clone(),
-            pending_peer.id.clone(),
-            RoomRole::Member,
-            AddMemberOptions::new().with_initial_status(MemberStatus::Pending),
-        )
+        .join_room(joined_room.id.clone(), pending_peer.id.clone(), None)
         .await
         .unwrap();
     room_service
@@ -889,7 +886,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
                 page: 1,
                 page_size: 20,
                 search: "Matrix".to_string(),
-                status: synctv_proto::common::RoomStatus::Pending as i32,
+                status: synctv_proto::common::RoomStatus::Closed as i32,
                 is_banned: None,
                 relation: synctv_proto::client::MyRoomRelation::Created as i32,
                 sort_by: synctv_proto::client::MyRoomListSortBy::Name as i32,
@@ -898,11 +895,15 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         )
         .await
         .unwrap();
-    assert_eq!(pending_only.total, 1);
-    assert_eq!(
-        pending_only.rooms[0].room.as_ref().unwrap().id,
-        pending_room.id.as_str()
-    );
+    assert_eq!(pending_only.total, 3);
+    let closed_room_ids: Vec<&str> = pending_only
+        .rooms
+        .iter()
+        .map(|room| room.room.as_ref().unwrap().id.as_str())
+        .collect();
+    assert!(closed_room_ids.contains(&pending_room.id.as_str()));
+    assert!(closed_room_ids.contains(&rejected_room.id.as_str()));
+    assert!(closed_room_ids.contains(&closed_room.id.as_str()));
 
     let banned_only = client_api
         .list_my_rooms(
@@ -976,8 +977,8 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
     let joined_members = member_repo.list_by_room_all(&joined_room.id).await.unwrap();
     assert_eq!(
         joined_members.len(),
-        5,
-        "fixture should contain 5 membership rows"
+        4,
+        "fixture should contain 4 membership rows"
     );
     assert_eq!(
         joined_members
@@ -1022,14 +1023,22 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         ))
         .await
         .unwrap();
-    let pending_user = user_repo
-        .create(&make_user(
-            "user_matrix_pending",
-            UserRole::User,
-            UserStatus::Pending,
-        ))
-        .await
-        .unwrap();
+    let pending_registration_id = UserId::new();
+    sqlx::query(
+        r"
+        INSERT INTO user_registration_requests (id, username, email, password_hash, signup_method, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ",
+    )
+    .bind(pending_registration_id.as_str())
+    .bind("user_matrix_pending")
+    .bind("user_matrix_pending@test.com")
+    .bind("hash")
+    .bind(SignupMethod::Email)
+    .bind(ReviewStatus::Pending.as_i16())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let admin_ban_error = admin_api
         .ban_user(
@@ -1066,6 +1075,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         banned_regular.status,
         synctv_proto::common::UserStatus::Banned as i32
     );
+    assert!(banned_regular.is_banned);
 
     let unbanned_regular = admin_api
         .unban_user(
@@ -1083,11 +1093,12 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         unbanned_regular.status,
         synctv_proto::common::UserStatus::Active as i32
     );
+    assert!(!unbanned_regular.is_banned);
 
     let approved_pending = admin_api
-        .approve_user(
-            synctv_proto::admin::ApproveUserRequest {
-                user_id: pending_user.id.as_str().to_string(),
+        .approve_user_registration_review(
+            synctv_proto::admin::ApproveUserRegistrationReviewRequest {
+                request_id: pending_registration_id.as_str().to_string(),
             },
             &root.id,
             &RequestContext::default(),
@@ -1102,9 +1113,9 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     );
 
     let approve_active_error = admin_api
-        .approve_user(
-            synctv_proto::admin::ApproveUserRequest {
-                user_id: regular_user.id.as_str().to_string(),
+        .approve_user_registration_review(
+            synctv_proto::admin::ApproveUserRegistrationReviewRequest {
+                request_id: regular_user.id.as_str().to_string(),
             },
             &root.id,
             &RequestContext::default(),
@@ -1112,8 +1123,8 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         .await
         .expect_err("active user must not be approved again");
     assert!(
-        matches!(approve_active_error, ApiError::InvalidInput(ref message) if message.contains("not pending approval")),
-        "approve_user should reject non-pending targets, got: {approve_active_error:?}"
+        matches!(approve_active_error, ApiError::NotFound(ref message) if message.contains("Pending registration request")),
+        "approve review should reject non-pending targets, got: {approve_active_error:?}"
     );
 }
 

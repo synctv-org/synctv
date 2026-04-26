@@ -1335,6 +1335,47 @@ impl PlaybackService {
         .await
     }
 
+    async fn update_state_with_expected_version<F>(
+        &self,
+        room_id: RoomId,
+        expected_version: i64,
+        update_fn: F,
+    ) -> Result<RoomPlaybackState>
+    where
+        F: Fn(&mut RoomPlaybackState),
+    {
+        let mut state = match self.playback_repo.get(&room_id).await? {
+            Some(s) => s,
+            None => self.playback_repo.create_or_get(&room_id).await?,
+        };
+
+        if state.version != expected_version {
+            return Err(Error::OptimisticLockConflict);
+        }
+
+        update_fn(&mut state);
+        let updated_state = self.playback_repo.update(&state).await?;
+
+        let cache_key = room_id.as_str().to_string();
+        self.playback_cache.invalidate(&cache_key).await;
+
+        let l2_cache = self.playback_l2_cache();
+        if let Some(l2_cache) = l2_cache {
+            if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to update playback state in L2 cache"
+                );
+            }
+        }
+
+        self.broadcast_invalidation_with_retry(&room_id, &updated_state, "update_state")
+            .await;
+
+        Ok(updated_state)
+    }
+
     /// Reset playback to initial state
     pub async fn reset(&self, room_id: RoomId, user_id: UserId) -> Result<RoomPlaybackState> {
         self.reset_internal(room_id, user_id, false).await
@@ -1679,42 +1720,36 @@ impl PlaybackService {
             validate_playback_speed_value(s)?;
         }
 
-        // CAS check: when the caller provides an expected version, verify that
-        // the current DB version matches before entering the retry loop. This
-        // surfaces stale-state errors to the caller instead of silently retrying.
-        if let Some(expected) = expected_version {
-            let current = self.playback_repo.get(&room_id).await?;
-            let current_version = current.map_or(0, |s| s.version);
-            if current_version != expected {
-                return Err(Error::OptimisticLockConflict);
+        let apply_update = |state: &mut RoomPlaybackState| {
+            // Snapshot the computed playback position before changing is_playing
+            // or speed, just like set_playing() and change_speed() do individually.
+            // Without this, pausing or changing speed via update_multiple would
+            // store the wrong position.
+            let needs_snapshot = matches!(playing, Some(false)) || speed.is_some();
+            if needs_snapshot && current_time.is_none() {
+                // Only snapshot if the caller didn't provide an explicit position
+                state.current_time = state.computed_current_time();
             }
-        }
 
-        let state = self
-            .update_state(room_id.clone(), |state| {
-                // Snapshot the computed playback position before changing is_playing
-                // or speed, just like set_playing() and change_speed() do individually.
-                // Without this, pausing or changing speed via update_multiple would
-                // store the wrong position.
-                let needs_snapshot = matches!(playing, Some(false)) || speed.is_some();
-                if needs_snapshot && current_time.is_none() {
-                    // Only snapshot if the caller didn't provide an explicit position
-                    state.current_time = state.computed_current_time();
-                }
+            if let Some(p) = playing {
+                state.is_playing = p;
+            }
+            if let Some(ct) = current_time {
+                state.current_time = ct;
+            }
+            if let Some(s) = speed {
+                state.speed = s;
+            }
+            state.updated_at = chrono::Utc::now();
+            // version is incremented by the SQL UPDATE, not here
+        };
 
-                if let Some(p) = playing {
-                    state.is_playing = p;
-                }
-                if let Some(ct) = current_time {
-                    state.current_time = ct;
-                }
-                if let Some(s) = speed {
-                    state.speed = s;
-                }
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            })
-            .await?;
+        let state = if let Some(expected) = expected_version {
+            self.update_state_with_expected_version(room_id.clone(), expected, apply_update)
+                .await?
+        } else {
+            self.update_state(room_id.clone(), apply_update).await?
+        };
 
         // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state);

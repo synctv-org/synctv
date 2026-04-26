@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus};
-use synctv_core::repository::RoomRepository;
+use synctv_core::repository::{RoomRepository, UserRepository};
 use synctv_core::service::{
     cleanup::{CleanupConfig, CleanupService},
     AlwaysLeader, LeaderCheck,
@@ -204,13 +204,12 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     .expect("Failed to soft-delete owned room");
 
     sqlx::query(
-        "INSERT INTO room_members (room_id, user_id, role, status, joined_at, left_at, version)
-         VALUES ($1, $2, $3, $4, $5, $6, 0)",
+        "INSERT INTO room_members (room_id, user_id, role, joined_at, left_at, version)
+         VALUES ($1, $2, $3, $4, $5, 0)",
     )
     .bind(surviving_room.id.as_str())
     .bind(deleted_user.id.as_str())
     .bind(3_i16)
-    .bind(5_i16)
     .bind(forty_days_ago)
     .bind(forty_days_ago)
     .execute(&pool)
@@ -286,26 +285,15 @@ async fn create_test_user(pool: &PgPool) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
-    sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash, role, status, email_verified, created_at, updated_at, password_changed_at, password_version, version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
-    )
-    .bind(user.id.as_str())
-    .bind(&user.username)
-    .bind(&user.email)
-    .bind(&user.password_hash)
-    .bind(user.role as i16)
-    .bind(user.status as i16)
-    .bind(user.email_verified)
-    .bind(user.created_at)
-    .bind(user.updated_at)
-    .bind(user.password_changed_at)
-    .bind(user.password_version)
-    .bind(user.version)
-    .execute(pool)
-    .await
-    .expect("Failed to create test user");
-    user
+    UserRepository::new(pool.clone())
+        .create(&user)
+        .await
+        .expect("Failed to create test user")
 }
 
 /// Helper to create a test room with optional custom timestamps
@@ -318,6 +306,7 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
         created_by,
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: now,
         updated_at: updated_at.unwrap_or(now),
         deleted_at: None,
@@ -396,7 +385,7 @@ async fn test_room_ttl_old_room_is_expired() {
 
     // Verify room is soft-deleted (need to query directly since get_by_id filters deleted_at)
     let found: Option<Room> = sqlx::query_as(
-        "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
+        "SELECT id, name, description, created_by, closed_at, false AS is_banned, created_at, updated_at, deleted_at, version, last_activity_at
          FROM rooms WHERE id = $1"
     )
     .bind(room.id.as_str())

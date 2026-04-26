@@ -7,21 +7,17 @@ use super::permission::{PermissionBits, Role as RoomRole};
 use super::query::SortDirection;
 use super::room::RoomStatus;
 
-/// Member status in room (independent of role)
+/// Derived member lifecycle.
+///
+/// The canonical database state is `room_members.left_at`: `NULL` means active,
+/// non-`NULL` means the user is no longer an active member. Join approval lives
+/// in `room_join_requests`; moderation bans live in `room_member_bans`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum MemberStatus {
-    /// Active member
     #[default]
     Active,
-    /// Pending approval (if room requires approval)
-    Pending,
-    /// Join request or invitation was explicitly rejected
-    Rejected,
-    /// Banned from room
-    Banned,
-    /// Left the room (soft-deleted membership)
     Left,
 }
 
@@ -30,9 +26,6 @@ impl MemberStatus {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Pending => "pending",
-            Self::Rejected => "rejected",
-            Self::Banned => "banned",
             Self::Left => "left",
         }
     }
@@ -40,21 +33,6 @@ impl MemberStatus {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         matches!(self, Self::Active)
-    }
-
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
-    }
-
-    #[must_use]
-    pub const fn is_rejected(&self) -> bool {
-        matches!(self, Self::Rejected)
-    }
-
-    #[must_use]
-    pub const fn is_banned(&self) -> bool {
-        matches!(self, Self::Banned)
     }
 
     #[must_use]
@@ -69,9 +47,6 @@ impl FromStr for MemberStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "active" => Ok(Self::Active),
-            "pending" => Ok(Self::Pending),
-            "rejected" => Ok(Self::Rejected),
-            "banned" => Ok(Self::Banned),
             "left" => Ok(Self::Left),
             _ => Err(format!("Unknown member status: {s}")),
         }
@@ -81,45 +56,6 @@ impl FromStr for MemberStatus {
 impl std::fmt::Display for MemberStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
-    }
-}
-
-// Database mapping: MemberStatus -> SMALLINT (1=active, 2=pending, 3=rejected, 4=banned, 5=left)
-impl sqlx::Type<sqlx::Postgres> for MemberStatus {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for MemberStatus {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let val: i16 = match self {
-            Self::Active => 1,
-            Self::Pending => 2,
-            Self::Rejected => 3,
-            Self::Banned => 4,
-            Self::Left => 5,
-        };
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MemberStatus {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        match val {
-            1 => Ok(Self::Active),
-            2 => Ok(Self::Pending),
-            3 => Ok(Self::Rejected),
-            4 => Ok(Self::Banned),
-            5 => Ok(Self::Left),
-            _ => Err(format!("Invalid MemberStatus value: {val}").into()),
-        }
     }
 }
 
@@ -139,7 +75,7 @@ impl RoomMemberListSortBy {
         match self {
             Self::Username => "u.username",
             Self::Role => "rm.role",
-            Self::Status => "rm.status",
+            Self::Status => "rm.left_at",
             Self::JoinedAt => "rm.joined_at",
         }
     }
@@ -177,6 +113,8 @@ pub struct RoomMemberListQuery {
     pub search: Option<String>,
     pub role: Option<RoomRole>,
     pub status: Option<MemberStatus>,
+    #[serde(default)]
+    pub is_banned: Option<bool>,
     pub is_online: Option<bool>,
     #[serde(default)]
     pub sort_by: RoomMemberListSortBy,
@@ -191,6 +129,7 @@ impl Default for RoomMemberListQuery {
             search: None,
             role: None,
             status: None,
+            is_banned: None,
             is_online: None,
             sort_by: RoomMemberListSortBy::JoinedAt,
             sort_direction: SortDirection::Asc,
@@ -295,8 +234,7 @@ pub struct RoomMember {
 
     /// Room role (permission level)
     pub role: RoomRole,
-
-    /// Member status (account state)
+    #[serde(skip)]
     pub status: MemberStatus,
 
     /// Allow/Deny permission pattern for member role
@@ -315,32 +253,47 @@ pub struct RoomMember {
 
     /// Version for optimistic locking
     pub version: i64,
-
-    /// Banned info
+    #[serde(skip)]
     pub banned_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
     pub banned_by: Option<UserId>,
+    #[serde(skip)]
     pub banned_reason: Option<String>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
     fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
         use sqlx::Row;
-        let banned_by: Option<String> = row.try_get("banned_by")?;
+        let left_at: Option<DateTime<Utc>> = row.try_get("left_at")?;
+        let banned_at = row
+            .try_get::<Option<DateTime<Utc>>, _>("banned_at")
+            .unwrap_or(None);
+        let banned_by = row
+            .try_get::<Option<UserId>, _>("banned_by")
+            .unwrap_or(None);
+        let banned_reason = row
+            .try_get::<Option<String>, _>("banned_reason")
+            .unwrap_or(None);
+        let status = if left_at.is_some() {
+            MemberStatus::Left
+        } else {
+            MemberStatus::Active
+        };
         Ok(Self {
             room_id: row.try_get("room_id")?,
             user_id: row.try_get("user_id")?,
             role: row.try_get("role")?,
-            status: row.try_get("status")?,
+            status,
             added_permissions: permission_bits_from_row(row, "added_permissions")?,
             removed_permissions: permission_bits_from_row(row, "removed_permissions")?,
             admin_added_permissions: permission_bits_from_row(row, "admin_added_permissions")?,
             admin_removed_permissions: permission_bits_from_row(row, "admin_removed_permissions")?,
             joined_at: row.try_get("joined_at")?,
-            left_at: row.try_get("left_at")?,
+            left_at,
             version: row.try_get("version")?,
-            banned_at: row.try_get("banned_at")?,
-            banned_by: banned_by.map(UserId::from_string),
-            banned_reason: row.try_get("banned_reason")?,
+            banned_at,
+            banned_by,
+            banned_reason,
         })
     }
 }
@@ -376,7 +329,16 @@ impl RoomMember {
 
     #[must_use]
     pub const fn is_active(&self) -> bool {
-        self.status.is_active() && self.left_at.is_none()
+        self.left_at.is_none()
+    }
+
+    #[must_use]
+    pub const fn status(&self) -> MemberStatus {
+        if self.left_at.is_some() {
+            MemberStatus::Left
+        } else {
+            MemberStatus::Active
+        }
     }
 
     /// Calculate effective permissions using Allow/Deny pattern
@@ -424,7 +386,10 @@ impl RoomMember {
     /// Check if member has a specific permission (considers both status and effective permissions)
     #[must_use]
     pub const fn has_permission(&self, permission: u64, role_default: PermissionBits) -> bool {
-        if !self.status.is_active() {
+        if self.left_at.is_some()
+            || !matches!(self.status, MemberStatus::Active)
+            || self.is_banned()
+        {
             return false;
         }
 
@@ -436,37 +401,24 @@ impl RoomMember {
         self.left_at = Some(Utc::now());
     }
 
-    pub fn reject(&mut self) {
-        self.status = MemberStatus::Rejected;
-        self.left_at = Some(Utc::now());
-        self.banned_at = None;
-        self.banned_by = None;
-        self.banned_reason = None;
-    }
-
-    /// Ban this member from the room
-    ///
-    /// Sets `left_at` to satisfy the DB constraint requiring `left_at IS NOT NULL`
-    /// when `status = Banned`. A banned member is effectively no longer active in
-    /// the room, so `left_at` records when the ban took effect.
     pub fn ban(&mut self, banned_by: UserId, reason: Option<String>) {
         let now = Utc::now();
-        self.status = MemberStatus::Banned;
+        self.status = MemberStatus::Left;
         self.left_at = Some(now);
         self.banned_at = Some(now);
         self.banned_by = Some(banned_by);
         self.banned_reason = reason;
     }
 
-    /// Unban this member
-    ///
-    /// Clears `left_at` since the member is now active again.
     pub fn unban(&mut self) {
-        self.status = MemberStatus::Active;
-        self.left_at = None;
         self.banned_at = None;
         self.banned_by = None;
         self.banned_reason = None;
+    }
+
+    #[must_use]
+    pub const fn is_banned(&self) -> bool {
+        self.banned_at.is_some()
     }
 
     /// Set added permissions (Allow pattern)
@@ -500,10 +452,12 @@ pub struct RoomMemberWithUser {
     pub admin_added_permissions: u64,
     pub admin_removed_permissions: u64,
     pub joined_at: DateTime<Utc>,
+    pub left_at: Option<DateTime<Utc>>,
     pub is_online: bool,
     /// Whether the member is still active (has not left the room).
     /// Distinct from `is_online` which tracks WebSocket connection status.
     pub is_active: bool,
+    pub is_banned: bool,
     pub banned_at: Option<DateTime<Utc>>,
     pub banned_reason: Option<String>,
 }
@@ -526,9 +480,9 @@ impl RoomMemberWithUser {
             admin_added_permissions: self.admin_added_permissions,
             admin_removed_permissions: self.admin_removed_permissions,
             joined_at: self.joined_at,
-            left_at: None,
+            left_at: self.left_at,
             version: 0,
-            banned_at: self.banned_at,
+            banned_at: None,
             banned_by: None,
             banned_reason: self.banned_reason.clone(),
         };
@@ -600,10 +554,7 @@ mod tests {
     #[test]
     fn test_member_status() {
         assert!(MemberStatus::Active.is_active());
-        assert!(!MemberStatus::Active.is_banned());
-        assert!(MemberStatus::Banned.is_banned());
-        assert!(MemberStatus::Pending.is_pending());
-        assert!(MemberStatus::Rejected.is_rejected());
+        assert!(MemberStatus::Left.is_left());
     }
 
     #[test]
@@ -616,15 +567,11 @@ mod tests {
         assert!(!left_member.is_active());
 
         let mut banned_member = test_member(RoomRole::Member);
-        banned_member.status = MemberStatus::Banned;
+        banned_member.ban(UserId("banner".to_string()), None);
         assert!(!banned_member.is_active());
-
-        let mut rejected_member = test_member(RoomRole::Member);
-        rejected_member.reject();
-        assert!(!rejected_member.is_active());
     }
 
-    // ─── C1: ban() must set left_at ──────────────────────────────────
+    // ─── C1: ban() must set independent ban state ────────────────────
 
     #[test]
     fn test_ban_sets_left_at() {
@@ -637,18 +584,19 @@ mod tests {
         let banner = UserId("banner".to_string());
         member.ban(banner.clone(), Some("bad behavior".to_string()));
 
-        assert_eq!(member.status, MemberStatus::Banned);
+        assert_eq!(member.status, MemberStatus::Left);
         assert!(
             member.left_at.is_some(),
-            "ban() must set left_at to satisfy DB constraint (left_at IS NOT NULL when status=Banned)"
+            "ban() must set left_at because the active member is forced to leave"
         );
+        assert!(member.is_banned());
         assert!(member.banned_at.is_some());
         assert_eq!(member.banned_by, Some(banner));
         assert_eq!(member.banned_reason, Some("bad behavior".to_string()));
     }
 
     #[test]
-    fn test_unban_clears_left_at() {
+    fn test_unban_preserves_lifecycle_state() {
         let mut member = test_member(RoomRole::Member);
         let banner = UserId("banner".to_string());
         member.ban(banner, None);
@@ -656,11 +604,12 @@ mod tests {
 
         member.unban();
 
-        assert_eq!(member.status, MemberStatus::Active);
+        assert_eq!(member.status, MemberStatus::Left);
         assert!(
-            member.left_at.is_none(),
-            "unban() must clear left_at since user is active again"
+            member.left_at.is_some(),
+            "unban() must not implicitly rejoin a previously banned member"
         );
+        assert!(!member.is_banned());
         assert!(member.banned_at.is_none());
         assert!(member.banned_by.is_none());
         assert!(member.banned_reason.is_none());
@@ -692,21 +641,6 @@ mod tests {
             member.left_at.is_some(),
             "leave() must set left_at timestamp"
         );
-    }
-
-    #[test]
-    fn test_reject_sets_status_and_left_at_without_ban_metadata() {
-        let mut member = test_member(RoomRole::Member);
-        let banner = UserId("banner".to_string());
-        member.ban(banner, Some("bad behavior".to_string()));
-
-        member.reject();
-
-        assert_eq!(member.status, MemberStatus::Rejected);
-        assert!(member.left_at.is_some());
-        assert!(member.banned_at.is_none());
-        assert!(member.banned_by.is_none());
-        assert!(member.banned_reason.is_none());
     }
 
     #[test]

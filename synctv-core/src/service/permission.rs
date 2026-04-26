@@ -960,7 +960,7 @@ impl PermissionService {
 mod tests {
     use super::*;
     use crate::models::permission::Role as RoomRole;
-    use crate::models::{room_settings::*, MemberStatus, RoomMember};
+    use crate::models::{room_settings::*, RoomMember};
 
     // Helper to create a PermissionService using tokio runtime for PgPool
     // Note: This function should NOT be called from within an async context
@@ -1203,16 +1203,19 @@ mod tests {
     #[test]
     fn test_banned_member_has_no_permissions() {
         let mut member = make_member(RoomRole::Admin);
-        member.status = MemberStatus::Banned;
+        member.ban(
+            crate::models::UserId::from_string("banner".to_string()),
+            None,
+        );
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
         assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
     }
 
     #[test]
-    fn test_pending_member_has_no_permissions() {
+    fn test_left_member_has_no_permissions() {
         let mut member = make_member(RoomRole::Member);
-        member.status = MemberStatus::Pending;
+        member.leave();
         let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
     }
@@ -1386,7 +1389,10 @@ mod tests {
     fn test_banned_creator_has_no_permissions_via_has_permission() {
         // RoomMember::has_permission checks status first
         let mut member = make_member(RoomRole::Creator);
-        member.status = MemberStatus::Banned;
+        member.ban(
+            crate::models::UserId::from_string("banner".to_string()),
+            None,
+        );
         let role_default = PermissionBits(PermissionBits::ALL);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
     }
@@ -1394,7 +1400,10 @@ mod tests {
     #[test]
     fn test_banned_guest_has_no_permissions() {
         let mut member = make_member(RoomRole::Guest);
-        member.status = MemberStatus::Banned;
+        member.ban(
+            crate::models::UserId::from_string("banner".to_string()),
+            None,
+        );
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
     }

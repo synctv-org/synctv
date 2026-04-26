@@ -50,44 +50,26 @@ fn test_user_role_from_str_case_insensitive() {
 #[test]
 fn test_user_status_can_login() {
     assert!(UserStatus::Active.can_login());
-    assert!(!UserStatus::Pending.can_login());
-    assert!(!UserStatus::Rejected.can_login());
     assert!(!UserStatus::Banned.can_login());
 }
 
 #[test]
 fn test_user_status_can_create_room() {
     assert!(UserStatus::Active.can_create_room());
-    assert!(!UserStatus::Pending.can_create_room());
-    assert!(!UserStatus::Rejected.can_create_room());
     assert!(!UserStatus::Banned.can_create_room());
 }
 
 #[test]
 fn test_user_status_predicates() {
     assert!(UserStatus::Active.is_active());
-    assert!(!UserStatus::Active.is_pending());
     assert!(!UserStatus::Active.is_banned());
-
-    assert!(!UserStatus::Pending.is_active());
-    assert!(UserStatus::Pending.is_pending());
-    assert!(!UserStatus::Pending.is_rejected());
-
-    assert!(!UserStatus::Rejected.is_active());
-    assert!(UserStatus::Rejected.is_rejected());
-
     assert!(!UserStatus::Banned.is_active());
     assert!(UserStatus::Banned.is_banned());
 }
 
 #[test]
 fn test_user_status_from_str_roundtrip() {
-    for status in [
-        UserStatus::Active,
-        UserStatus::Pending,
-        UserStatus::Rejected,
-        UserStatus::Banned,
-    ] {
+    for status in [UserStatus::Active, UserStatus::Banned] {
         let s = status.as_str();
         let parsed: UserStatus = s.parse().unwrap();
         assert_eq!(parsed, status);
@@ -153,12 +135,8 @@ fn test_user_can_create_room_role_and_status_interaction() {
     assert!(!user.can_create_room(false));
     assert!(user.can_create_room(true));
 
-    // Banned user: never can create rooms
-    user.status = UserStatus::Banned;
-    assert!(!user.can_create_room(true));
-
-    // Pending admin: cannot create rooms (status blocks it)
-    let user = make_user(UserRole::Admin, UserStatus::Pending, SignupMethod::Email);
+    // Banned admin: cannot create rooms (status blocks it)
+    let user = make_user(UserRole::Admin, UserStatus::Banned, SignupMethod::Email);
     assert!(!user.can_create_room(true));
 }
 
@@ -213,22 +191,9 @@ fn test_user_role_predicates() {
 #[test]
 fn test_room_status_predicates() {
     assert!(RoomStatus::Active.is_active());
-    assert!(!RoomStatus::Active.is_pending());
     assert!(!RoomStatus::Active.is_closed());
 
-    assert!(!RoomStatus::Pending.is_active());
-    assert!(RoomStatus::Pending.is_pending());
-    assert!(!RoomStatus::Pending.is_rejected());
-    assert!(!RoomStatus::Pending.is_closed());
-
-    assert!(!RoomStatus::Rejected.is_active());
-    assert!(!RoomStatus::Rejected.is_pending());
-    assert!(RoomStatus::Rejected.is_rejected());
-    assert!(!RoomStatus::Rejected.is_closed());
-
     assert!(!RoomStatus::Closed.is_active());
-    assert!(!RoomStatus::Closed.is_pending());
-    assert!(!RoomStatus::Closed.is_rejected());
     assert!(RoomStatus::Closed.is_closed());
 }
 

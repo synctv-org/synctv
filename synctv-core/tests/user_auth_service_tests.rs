@@ -462,10 +462,8 @@ async fn test_refresh_token_banned_user_rejected() {
         panic!("Expected tokens");
     };
 
-    // Ban the user via raw SQL (status column is SMALLINT: 3=Banned)
-    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
-        .bind(user.id.as_str())
-        .execute(&pool)
+    UserRepository::new(pool.clone())
+        .ban(&user.id, None, Some("test ban".to_string()))
         .await
         .expect("Failed to ban user");
 
@@ -619,10 +617,8 @@ async fn test_login_banned_user_rejected() {
         .await
         .expect("Registration should succeed");
 
-    // Ban (status column is SMALLINT: 3=Banned)
-    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
-        .bind(user.id.as_str())
-        .execute(&pool)
+    UserRepository::new(pool.clone())
+        .ban(&user.id, None, Some("test ban".to_string()))
         .await
         .expect("Failed to ban user");
 
@@ -637,11 +633,11 @@ async fn test_login_banned_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_login_pending_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let mut service = create_user_service(pool.clone());
+    service.set_email_verification_required(true);
 
-    // Register
     let username = format!("pending_login_{}", synctv_common::snanoid!(6));
-    let (user, _, _) = service
+    let (_user, access, refresh) = service
         .register(
             username.clone(),
             Some(format!(
@@ -654,18 +650,21 @@ async fn test_login_pending_user_rejected() {
         .await
         .expect("Registration should succeed");
 
-    // Set pending status (status column is SMALLINT: 2=Pending)
-    sqlx::query("UPDATE users SET status = 2 WHERE id = $1")
-        .bind(user.id.as_str())
-        .execute(&pool)
-        .await
-        .expect("Failed to set pending status");
+    assert!(
+        access.is_none() && refresh.is_none(),
+        "Registration awaiting verification/review must not issue tokens"
+    );
 
     let result = service
         .login(username, "StrongPass1".to_string(), None)
         .await;
-    assert!(result.is_err(), "Pending user should not be able to login");
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    assert!(
+        matches!(
+            result,
+            Err(Error::EmailNotVerified | Error::Authentication(_))
+        ),
+        "Pending registration should not be able to login before activation"
+    );
 }
 
 #[tokio::test]
@@ -688,11 +687,34 @@ async fn test_login_rejected_user_rejected() {
         .await
         .expect("Registration should succeed");
 
-    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
-        .bind(user.id.as_str())
-        .execute(&pool)
+    sqlx::query(
+        r"
+        INSERT INTO user_registration_requests (
+            id, username, email, password_hash, signup_method, status,
+            requested_at, reviewed_at, rejection_reason
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $7)
+        ",
+    )
+    .bind(synctv_core::models::generate_id())
+    .bind(format!("rejected_request_{}", synctv_common::snanoid!(6)))
+    .bind(Option::<String>::None)
+    .bind("not-used")
+    .bind(user.signup_method)
+    .bind(synctv_core::models::ReviewStatus::Rejected.as_i16())
+    .bind("rejected by test")
+    .execute(&pool)
+    .await
+    .expect("Failed to create rejected registration request");
+
+    UserRepository::new(pool.clone())
+        .ban(
+            &user.id,
+            None,
+            Some("rejected account cannot login".to_string()),
+        )
         .await
-        .expect("Failed to set rejected status");
+        .expect("Failed to disable rejected test user");
 
     let result = service
         .login(username, "StrongPass1".to_string(), None)
@@ -941,14 +963,6 @@ async fn test_login_email_verification_no_account_enumeration() {
         .await
         .expect("Setting password should succeed");
 
-    // Set OAuth2 user status to Active (they start as Pending)
-    // This simulates an admin-approved OAuth2 user or one that bypasses review
-    sqlx::query("UPDATE users SET status = 1 WHERE id = $1") // 1 = Active
-        .bind(oauth_user.id.as_str())
-        .execute(&pool)
-        .await
-        .expect("Failed to set active status");
-
     // Email user with unverified email should be blocked
     let email_result = service
         .login(email_user, "StrongPass1".to_string(), None)
@@ -999,13 +1013,6 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .set_password(&oauth_user.id, "StrongPass1")
         .await
         .expect("Setting password should succeed");
-
-    // Set OAuth2 user status to Active (they start as Pending)
-    sqlx::query("UPDATE users SET status = 1 WHERE id = $1") // 1 = Active
-        .bind(oauth_user.id.as_str())
-        .execute(&pool)
-        .await
-        .expect("Failed to set active status");
 
     // Both should be able to login when verification is not required
     let email_result = service
@@ -1506,6 +1513,52 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
         .expect("Created admin user must be durable in the database");
     assert_eq!(persisted.id, created.id);
     assert_eq!(persisted.role, synctv_core::models::UserRole::Admin);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_user_with_initial_banned_status_persists_ban_record() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+    let reviewer = service
+        .create_user_with_role_and_status(
+            format!("initial_banned_reviewer_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "initial_banned_reviewer_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            Some(synctv_core::models::UserRole::Admin),
+            Some(synctv_core::models::UserStatus::Active),
+            None,
+        )
+        .await
+        .expect("reviewer should be created");
+
+    let created = service
+        .create_user_with_role_and_status(
+            format!("initial_banned_{}", synctv_common::snanoid!(6)),
+            Some(format!(
+                "initial_banned_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            Some(synctv_core::models::UserRole::User),
+            Some(synctv_core::models::UserStatus::Banned),
+            Some(&reviewer.id),
+        )
+        .await
+        .expect("admin-created banned user should be created");
+
+    assert_eq!(created.status, synctv_core::models::UserStatus::Banned);
+    assert!(created.is_banned);
+
+    let persisted = service
+        .get_user(&created.id)
+        .await
+        .expect("created user should be durable");
+    assert_eq!(persisted.status, synctv_core::models::UserStatus::Banned);
+    assert_eq!(persisted.banned_by.as_ref(), Some(&reviewer.id));
 }
 
 #[tokio::test]

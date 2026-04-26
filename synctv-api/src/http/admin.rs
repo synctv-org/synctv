@@ -49,6 +49,36 @@ pub fn create_admin_router() -> Router<AppState> {
     Router::new()
         // System stats
         .route("/stats", get(get_system_stats))
+        // Review workflow
+        .route(
+            "/reviews/user-registrations",
+            get(list_user_registration_reviews),
+        )
+        .route(
+            "/reviews/user-registrations/approve",
+            post(approve_user_registration_review),
+        )
+        .route(
+            "/reviews/user-registrations/reject",
+            post(reject_user_registration_review),
+        )
+        .route("/reviews/room-creations", get(list_room_creation_reviews))
+        .route(
+            "/reviews/room-creations/approve",
+            post(approve_room_creation_review),
+        )
+        .route(
+            "/reviews/room-creations/reject",
+            post(reject_room_creation_review),
+        )
+        .route("/reviews/room-joins", get(list_room_join_reviews))
+        .route(
+            "/reviews/room-joins/approve",
+            post(approve_room_join_review),
+        )
+        .route("/reviews/room-joins/reject", post(reject_room_join_review))
+        // Moderation bans
+        .route("/bans", get(list_ban_records))
         // Settings
         .route("/settings", get(get_settings).post(set_settings))
         .route("/settings/{group}", get(get_settings_group))
@@ -62,7 +92,6 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/users/{user_id}/username", post(set_user_username))
         .route("/users/{user_id}/ban", post(ban_user))
         .route("/users/{user_id}/unban", post(unban_user))
-        .route("/users/{user_id}/approve", post(approve_user))
         .route("/users/{user_id}/rooms", get(get_user_rooms))
         // Batch user operations
         .route("/users/batch/ban", post(batch_ban_users))
@@ -74,7 +103,6 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/rooms/{room_id}/members", get(get_room_members))
         .route("/rooms/{room_id}/ban", post(ban_room))
         .route("/rooms/{room_id}/unban", post(unban_room))
-        .route("/rooms/{room_id}/approve", post(approve_room))
         .route(
             "/rooms/{room_id}/settings",
             get(get_room_settings).post(set_room_settings),
@@ -89,6 +117,304 @@ pub fn create_admin_router() -> Router<AppState> {
         // Admin management (root only)
         .route("/admins", get(list_admins))
         .route("/admins/{user_id}", post(add_admin).delete(remove_admin))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/reviews/user-registrations",
+        tag = "Admin",
+        params(admin::ListUserRegistrationReviewsRequest),
+        responses(
+            (status = 200, description = "User registration reviews", body = admin::ListUserRegistrationReviewsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_user_registration_reviews(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListUserRegistrationReviewsRequest>,
+) -> AppResult<Json<admin::ListUserRegistrationReviewsResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.list_user_registration_reviews(req, &validated.user_id)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/user-registrations/approve",
+        tag = "Admin",
+        request_body = admin::ApproveUserRegistrationReviewRequest,
+        responses(
+            (status = 200, description = "User registration review approved", body = admin::ApproveUserRegistrationReviewResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn approve_user_registration_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::ApproveUserRegistrationReviewRequest>,
+) -> AppResult<Json<admin::ApproveUserRegistrationReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.approve_user_registration_review(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/user-registrations/reject",
+        tag = "Admin",
+        request_body = admin::RejectUserRegistrationReviewRequest,
+        responses(
+            (status = 200, description = "User registration review rejected", body = admin::RejectUserRegistrationReviewResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn reject_user_registration_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::RejectUserRegistrationReviewRequest>,
+) -> AppResult<Json<admin::RejectUserRegistrationReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.reject_user_registration_review(req, &validated.user_id)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/reviews/room-creations",
+        tag = "Admin",
+        params(admin::ListRoomCreationReviewsRequest),
+        responses((status = 200, description = "Room creation reviews", body = admin::ListRoomCreationReviewsResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_room_creation_reviews(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListRoomCreationReviewsRequest>,
+) -> AppResult<Json<admin::ListRoomCreationReviewsResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.list_room_creation_reviews(req, &validated.user_id)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/room-creations/approve",
+        tag = "Admin",
+        request_body = admin::ApproveRoomCreationReviewRequest,
+        responses((status = 200, description = "Room creation review approved", body = admin::ApproveRoomCreationReviewResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn approve_room_creation_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::ApproveRoomCreationReviewRequest>,
+) -> AppResult<Json<admin::ApproveRoomCreationReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.approve_room_creation_review(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/room-creations/reject",
+        tag = "Admin",
+        request_body = admin::RejectRoomCreationReviewRequest,
+        responses((status = 200, description = "Room creation review rejected", body = admin::RejectRoomCreationReviewResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn reject_room_creation_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::RejectRoomCreationReviewRequest>,
+) -> AppResult<Json<admin::RejectRoomCreationReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.reject_room_creation_review(req, &validated.user_id)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/reviews/room-joins",
+        tag = "Admin",
+        params(admin::ListRoomJoinReviewsRequest),
+        responses((status = 200, description = "Room join reviews", body = admin::ListRoomJoinReviewsResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_room_join_reviews(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListRoomJoinReviewsRequest>,
+) -> AppResult<Json<admin::ListRoomJoinReviewsResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.list_room_join_reviews(req, &validated.user_id).await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/room-joins/approve",
+        tag = "Admin",
+        request_body = admin::ApproveRoomJoinReviewRequest,
+        responses((status = 200, description = "Room join review approved", body = admin::ApproveRoomJoinReviewResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn approve_room_join_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::ApproveRoomJoinReviewRequest>,
+) -> AppResult<Json<admin::ApproveRoomJoinReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.approve_room_join_review(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reviews/room-joins/reject",
+        tag = "Admin",
+        request_body = admin::RejectRoomJoinReviewRequest,
+        responses((status = 200, description = "Room join review rejected", body = admin::RejectRoomJoinReviewResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn reject_room_join_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::RejectRoomJoinReviewRequest>,
+) -> AppResult<Json<admin::RejectRoomJoinReviewResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.reject_room_join_review(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/bans",
+        tag = "Admin",
+        params(admin::ListBanRecordsRequest),
+        responses(
+            (status = 200, description = "Ban records", body = admin::ListBanRecordsResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_ban_records(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ValidatedQuery(req): ValidatedQuery<admin::ListBanRecordsRequest>,
+) -> AppResult<Json<admin::ListBanRecordsResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move { api.list_ban_records(req, &validated.user_id).await },
+    )
+    .await?;
+    Ok(Json(resp))
 }
 
 // System Stats
@@ -559,37 +885,6 @@ pub(crate) async fn unban_user(
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
-        post,
-        path = "/api/admin/users/{user_id}/approve",
-        tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
-        responses(
-            (status = 200, description = "User approved", body = admin::ApproveUserResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn approve_user(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::ApproveUserRequest>,
-) -> AppResult<Json<admin::ApproveUserResponse>> {
-    let resp = execute_admin_endpoint(
-        &state,
-        request_meta,
-        require_admin_api,
-        move |api, validated, rctx| async move {
-            api.approve_user(req, &validated.user_id, &rctx).await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
         get,
         path = "/api/admin/users/{user_id}/rooms",
         tag = "Admin",
@@ -933,37 +1228,6 @@ pub(crate) async fn unban_room(
             },
         )
         .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        post,
-        path = "/api/admin/rooms/{room_id}/approve",
-        tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
-        responses(
-            (status = 200, description = "Room approved", body = admin::ApproveRoomResponse),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn approve_room(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(req): Path<admin::ApproveRoomRequest>,
-) -> AppResult<Json<admin::ApproveRoomResponse>> {
-    let resp = execute_admin_endpoint(
-        &state,
-        request_meta,
-        require_admin_api,
-        move |api, validated, rctx| async move {
-            api.approve_room(req, &validated.user_id, &rctx).await
-        },
-    )
-    .await?;
     Ok(Json(resp))
 }
 

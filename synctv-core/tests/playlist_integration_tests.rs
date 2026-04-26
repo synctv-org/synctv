@@ -29,6 +29,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -41,6 +45,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         created_by: owner.clone(),
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: now,
         updated_at: now,
         deleted_at: None,

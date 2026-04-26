@@ -323,7 +323,7 @@ pub struct BindInfo {
     pub created_at: i64,
 }
 /// QR login status enum
-/// Values match synctv-media-providers QRCodeStatus for compatibility
+/// Wire values mirror synctv-media-providers QRCodeStatus.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

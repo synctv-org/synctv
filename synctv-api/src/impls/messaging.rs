@@ -19,9 +19,7 @@ use synctv_cluster::sync::ClusterEvent;
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{
-        MemberStatus, PermissionBits, RoomId, RoomPlaybackState, RoomStatus, UserId, UserStatus,
-    },
+    models::{PermissionBits, RoomId, RoomPlaybackState, RoomStatus, UserId, UserStatus},
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
     },
@@ -383,7 +381,7 @@ impl CachedMembership {
         match member {
             Some(m) => Self {
                 is_member: true,
-                is_banned: m.status == MemberStatus::Banned,
+                is_banned: m.is_banned(),
             },
             None => Self {
                 is_member: false,
@@ -867,7 +865,7 @@ impl StreamMessageHandler {
                 )
         })?;
 
-        if user.status == UserStatus::Banned || user.status == UserStatus::Pending {
+        if user.status == UserStatus::Banned {
             return Ok(Some(
                 "User is no longer allowed to use real-time messaging".to_string(),
             ));
@@ -1745,6 +1743,9 @@ impl StreamMessageHandler {
                     admin_removed_permissions: admin_removed,
                     joined_at: chrono::Utc::now().timestamp(),
                     is_online: true,
+                    is_banned: false,
+                    banned_at: 0,
+                    banned_reason: String::new(),
                 }),
             })),
         }
@@ -2804,6 +2805,7 @@ impl StreamMessageHandler {
             search: watch.search.clone(),
             role: watch.role,
             status: watch.status,
+            is_banned: None,
             sort_by: watch.sort_by,
             sort_direction: watch.sort_direction,
         };
@@ -4141,6 +4143,9 @@ fn cluster_event_to_server_messages(
                     admin_removed_permissions: admin_removed_permissions.0,
                     joined_at: joined_at.timestamp(),
                     is_online: true,
+                    is_banned: false,
+                    banned_at: 0,
+                    banned_reason: String::new(),
                 }),
             })),
         }],
@@ -4542,9 +4547,9 @@ async fn probe_realtime_membership_access_with_room(
                 .get_member(&room.id, user_id)
                 .await?
             {
-                Some(member) if member.status == synctv_core::models::MemberStatus::Banned => Ok(
-                    RealtimeMembershipAccess::Denied("User is banned from this room".to_string()),
-                ),
+                Some(member) if member.is_banned() => Ok(RealtimeMembershipAccess::Denied(
+                    "User is banned from this room".to_string(),
+                )),
                 Some(_) | None => Ok(RealtimeMembershipAccess::Denied(message)),
             }
         }
@@ -4722,6 +4727,7 @@ mod tests {
     use synctv_core::repository::NotificationRepository;
     use synctv_core::repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
+        UserRepository,
     };
     use synctv_core::service::auth::JwtService;
     use synctv_core::service::user_notification::NotificationCreatedEvent;
@@ -7493,6 +7499,9 @@ mod tests {
                         admin_removed_permissions: 0,
                         joined_at: 1,
                         is_online: true,
+                        is_banned: false,
+                        banned_at: 0,
+                        banned_reason: String::new(),
                     }],
                     total: 1,
                     version: "members-v1".to_string(),
@@ -7708,6 +7717,9 @@ mod tests {
                 admin_removed_permissions: 0,
                 joined_at: 2,
                 is_online: false,
+                is_banned: false,
+                banned_at: 0,
+                banned_reason: String::new(),
             }],
             total: 1,
             version: "members-v2".to_string(),
@@ -7826,6 +7838,9 @@ mod tests {
                 admin_removed_permissions: 0,
                 joined_at: 1,
                 is_online: true,
+                is_banned: false,
+                banned_at: 0,
+                banned_reason: String::new(),
             }],
             total: 1,
             version: "members-v2".to_string(),
@@ -8963,13 +8978,13 @@ mod tests {
     #[test]
     fn test_cached_membership_from_member_banned() {
         // Verify CachedMembership correctly identifies banned users
-        use synctv_core::models::{MemberStatus, RoomMember, RoomRole};
+        use synctv_core::models::{RoomMember, RoomRole};
 
         let member = RoomMember {
             room_id: room_id(),
             user_id: user_id(),
             role: RoomRole::Member,
-            status: MemberStatus::Banned,
+            status: synctv_core::models::MemberStatus::Left,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,
@@ -9678,14 +9693,8 @@ mod tests {
             .await
             .expect("register should succeed before final admission");
 
-        let mut updated_owner = user_service
-            .get_user(&owner.id)
-            .await
-            .expect("owner should still exist");
-        let old_version = updated_owner.version;
-        updated_owner.status = UserStatus::Banned;
-        user_service
-            .update_user(&updated_owner, old_version)
+        UserRepository::new(pool.clone())
+            .ban(&owner.id, None, Some("messaging test".to_string()))
             .await
             .expect("banning room owner should succeed");
 
@@ -9772,7 +9781,7 @@ mod tests {
             .expect("register should succeed before final admission");
 
         user_service
-            .set_user_status(&member.id, UserStatus::Banned)
+            .ban_user_and_cleanup_memberships(&member.id)
             .await
             .expect("banning user should succeed");
 

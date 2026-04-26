@@ -37,6 +37,12 @@ pub struct RoomMember {
     pub joined_at: i64,
     #[prost(bool, tag = "11")]
     pub is_online: bool,
+    #[prost(bool, tag = "13")]
+    pub is_banned: bool,
+    #[prost(int64, tag = "14")]
+    pub banned_at: i64,
+    #[prost(string, tag = "15")]
+    pub banned_reason: ::prost::alloc::string::String,
 }
 /// Global user role for RBAC
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -74,7 +80,7 @@ impl UserRole {
         }
     }
 }
-/// Account status
+/// Effective account availability. Registration review is represented by ReviewStatus on request APIs.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -83,9 +89,7 @@ impl UserRole {
 pub enum UserStatus {
     Unspecified = 0,
     Active = 1,
-    Pending = 2,
-    Rejected = 3,
-    Banned = 4,
+    Banned = 2,
 }
 impl UserStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -96,8 +100,6 @@ impl UserStatus {
         match self {
             Self::Unspecified => "USER_STATUS_UNSPECIFIED",
             Self::Active => "USER_STATUS_ACTIVE",
-            Self::Pending => "USER_STATUS_PENDING",
-            Self::Rejected => "USER_STATUS_REJECTED",
             Self::Banned => "USER_STATUS_BANNED",
         }
     }
@@ -106,8 +108,6 @@ impl UserStatus {
         match value {
             "USER_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "USER_STATUS_ACTIVE" => Some(Self::Active),
-            "USER_STATUS_PENDING" => Some(Self::Pending),
-            "USER_STATUS_REJECTED" => Some(Self::Rejected),
             "USER_STATUS_BANNED" => Some(Self::Banned),
             _ => None,
         }
@@ -160,10 +160,7 @@ impl RoomMemberRole {
 pub enum MemberStatus {
     Unspecified = 0,
     Active = 1,
-    Pending = 2,
-    Rejected = 3,
-    Banned = 4,
-    Left = 5,
+    Left = 2,
 }
 impl MemberStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -174,9 +171,6 @@ impl MemberStatus {
         match self {
             Self::Unspecified => "MEMBER_STATUS_UNSPECIFIED",
             Self::Active => "MEMBER_STATUS_ACTIVE",
-            Self::Pending => "MEMBER_STATUS_PENDING",
-            Self::Rejected => "MEMBER_STATUS_REJECTED",
-            Self::Banned => "MEMBER_STATUS_BANNED",
             Self::Left => "MEMBER_STATUS_LEFT",
         }
     }
@@ -185,16 +179,12 @@ impl MemberStatus {
         match value {
             "MEMBER_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "MEMBER_STATUS_ACTIVE" => Some(Self::Active),
-            "MEMBER_STATUS_PENDING" => Some(Self::Pending),
-            "MEMBER_STATUS_REJECTED" => Some(Self::Rejected),
-            "MEMBER_STATUS_BANNED" => Some(Self::Banned),
             "MEMBER_STATUS_LEFT" => Some(Self::Left),
             _ => None,
         }
     }
 }
-/// Room lifecycle status (independent of ban state)
-/// Banned state is tracked via is_banned field on Room message
+/// Room lifecycle status. Banned state is tracked via is_banned.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -203,9 +193,7 @@ impl MemberStatus {
 pub enum RoomStatus {
     Unspecified = 0,
     Active = 1,
-    Pending = 2,
-    Rejected = 3,
-    Closed = 4,
+    Closed = 2,
 }
 impl RoomStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -216,8 +204,6 @@ impl RoomStatus {
         match self {
             Self::Unspecified => "ROOM_STATUS_UNSPECIFIED",
             Self::Active => "ROOM_STATUS_ACTIVE",
-            Self::Pending => "ROOM_STATUS_PENDING",
-            Self::Rejected => "ROOM_STATUS_REJECTED",
             Self::Closed => "ROOM_STATUS_CLOSED",
         }
     }
@@ -226,9 +212,43 @@ impl RoomStatus {
         match value {
             "ROOM_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "ROOM_STATUS_ACTIVE" => Some(Self::Active),
-            "ROOM_STATUS_PENDING" => Some(Self::Pending),
-            "ROOM_STATUS_REJECTED" => Some(Self::Rejected),
             "ROOM_STATUS_CLOSED" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+}
+/// Human review workflow status for request resources.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReviewStatus {
+    Unspecified = 0,
+    Pending = 1,
+    Approved = 2,
+    Rejected = 3,
+}
+impl ReviewStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REVIEW_STATUS_UNSPECIFIED",
+            Self::Pending => "REVIEW_STATUS_PENDING",
+            Self::Approved => "REVIEW_STATUS_APPROVED",
+            Self::Rejected => "REVIEW_STATUS_REJECTED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REVIEW_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "REVIEW_STATUS_PENDING" => Some(Self::Pending),
+            "REVIEW_STATUS_APPROVED" => Some(Self::Approved),
+            "REVIEW_STATUS_REJECTED" => Some(Self::Rejected),
             _ => None,
         }
     }

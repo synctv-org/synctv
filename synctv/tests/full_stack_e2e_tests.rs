@@ -2824,76 +2824,68 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
 
-    let pending_username = format!("cli_pending_user_{suffix}");
-    let pending_email = format!("cli-pending-{suffix}@example.com");
-    let pending_password = "CliPendingPass12345!";
+    let lifecycle_username = format!("cli_lifecycle_user_{suffix}");
+    let lifecycle_email = format!("cli-lifecycle-{suffix}@example.com");
+    let lifecycle_password = "CliLifecyclePass12345!";
     let rotated_password = "CliPendingPass67890!";
     let renamed_username = format!("cli_renamed_user_{suffix}");
     let room_name = format!("CLI User Lifecycle Room {suffix}");
 
-    let created_pending = create_cli_user(
+    let created_lifecycle_user = create_cli_user(
         &server,
-        &pending_username,
-        &pending_email,
-        pending_password,
-        Some("pending"),
-        "user create pending",
+        &lifecycle_username,
+        &lifecycle_email,
+        lifecycle_password,
+        Some("active"),
+        "user create active",
     )
     .await;
-    let pending_user_id = created_pending["user"]["id"]
+    let lifecycle_user_id = created_lifecycle_user["user"]["id"]
         .as_str()
-        .expect("pending user create should include user.id")
+        .expect("user create should include user.id")
         .to_string();
-    assert_eq!(created_pending["user"]["username"], pending_username);
     assert_eq!(
-        created_pending["user"]["status"].as_i64(),
-        Some(synctv_proto::common::UserStatus::Pending as i64)
+        created_lifecycle_user["user"]["username"],
+        lifecycle_username
+    );
+    assert_eq!(
+        created_lifecycle_user["user"]["status"].as_i64(),
+        Some(synctv_proto::common::UserStatus::Active as i64)
     );
 
-    let pending_list = run_synctv_remote_cli_json(
+    let active_list = run_synctv_remote_cli_json(
         &server,
         &[
             "user",
             "list",
             "--status",
-            "pending",
+            "active",
             "--search",
-            &pending_username,
+            &lifecycle_username,
         ],
-        "user list pending",
+        "user list active",
     )
     .await;
     assert!(
-        pending_list["users"]
+        active_list["users"]
             .as_array()
             .expect("user list should return users array")
             .iter()
-            .any(|user| user["id"] == pending_user_id),
-        "pending user should appear in filtered list: {pending_list}"
+            .any(|user| user["id"] == lifecycle_user_id),
+        "active user should appear in filtered list: {active_list}"
     );
 
-    let fetched_pending = run_synctv_remote_cli_json(
+    let fetched_user = run_synctv_remote_cli_json(
         &server,
-        &["user", "get", &pending_username],
+        &["user", "get", &lifecycle_username],
         "user get by username",
     )
     .await;
-    assert_eq!(fetched_pending["user"]["id"], pending_user_id);
-    assert_eq!(fetched_pending["user"]["email"], pending_email);
-
-    let approved_pending = run_synctv_remote_cli_json(
-        &server,
-        &["user", "approve", "--user-id", &pending_user_id],
-        "user approve by id",
-    )
-    .await;
-    assert_eq!(
-        approved_pending["user"]["status"].as_i64(),
-        Some(synctv_proto::common::UserStatus::Active as i64)
-    );
+    assert_eq!(fetched_user["user"]["id"], lifecycle_user_id);
+    assert_eq!(fetched_user["user"]["email"], lifecycle_email);
 
     let active_login_token =
-        login_http_ok_token(&server, &pending_username, pending_password).await;
+        login_http_ok_token(&server, &lifecycle_username, lifecycle_password).await;
     assert!(
         !active_login_token.is_empty(),
         "approved user should receive an access token"
@@ -2905,7 +2897,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
             "user",
             "set-password",
             "--user-id",
-            &pending_user_id,
+            &lifecycle_user_id,
             "--password",
             rotated_password,
             "--reason",
@@ -2916,7 +2908,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     .await;
     assert_eq!(password_rotated["success"], true);
 
-    let old_password_login = login_http(&server, &pending_username, pending_password).await;
+    let old_password_login = login_http(&server, &lifecycle_username, lifecycle_password).await;
     assert_eq!(
         old_password_login.status(),
         StatusCode::UNAUTHORIZED,
@@ -2929,17 +2921,17 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
             "user",
             "set-username",
             "--user-id",
-            &pending_user_id,
+            &lifecycle_user_id,
             "--username",
             &renamed_username,
         ],
         "user set-username by id",
     )
     .await;
-    assert_eq!(renamed_user["user"]["id"], pending_user_id);
+    assert_eq!(renamed_user["user"]["id"], lifecycle_user_id);
     assert_eq!(renamed_user["user"]["username"], renamed_username);
 
-    let old_username_login = login_http(&server, &pending_username, rotated_password).await;
+    let old_username_login = login_http(&server, &lifecycle_username, rotated_password).await;
     assert_eq!(
         old_username_login.status(),
         StatusCode::UNAUTHORIZED,
@@ -2984,7 +2976,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
     let related_rooms = run_synctv_remote_cli_json(
         &server,
-        &["user", "rooms", "--user-id", &pending_user_id],
+        &["user", "rooms", "--user-id", &lifecycle_user_id],
         "user rooms by id",
     )
     .await;
@@ -3263,7 +3255,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
         true
     );
 
-    let pending_room = run_synctv_remote_cli_json(
+    let review_room = run_synctv_remote_cli_json(
         &server,
         &[
             "room",
@@ -3274,53 +3266,22 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             "--description",
             "room created during CLI room lifecycle coverage",
         ],
-        "create pending room",
+        "create room requiring review",
     )
     .await;
-    let room_id = pending_room["room"]["id"]
+    let room_id = review_room["room"]["id"]
         .as_str()
-        .expect("pending room should include room.id")
+        .expect("review room response should include room.id")
         .to_string();
     assert_eq!(
-        pending_room["room"]["status"].as_i64(),
-        Some(synctv_proto::common::RoomStatus::Pending as i64)
-    );
-
-    let pending_rooms = run_synctv_remote_cli_json(
-        &server,
-        &[
-            "room",
-            "list",
-            "--status",
-            "pending",
-            "--creator",
-            &owner_username,
-            "--search",
-            &pending_room_name,
-        ],
-        "list pending rooms",
-    )
-    .await;
-    assert!(
-        pending_rooms["rooms"]
-            .as_array()
-            .expect("room list should contain rooms array")
-            .iter()
-            .any(|room| room["id"] == room_id),
-        "pending room should appear in filtered list: {pending_rooms}"
-    );
-
-    let pending_room_get =
-        run_synctv_remote_cli_json(&server, &["room", "get", &room_id], "get pending room").await;
-    assert_eq!(
-        pending_room_get["room"]["status"].as_i64(),
-        Some(synctv_proto::common::RoomStatus::Pending as i64)
+        review_room["room"]["status"].as_i64(),
+        Some(synctv_proto::common::RoomStatus::Active as i64)
     );
 
     let approved_room = run_synctv_remote_cli_json(
         &server,
-        &["room", "approve", &room_id],
-        "approve pending room",
+        &["review", "room-creation", "approve", &room_id],
+        "approve room creation request",
     )
     .await;
     assert_eq!(
@@ -3479,7 +3440,8 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             "list",
             &room_id,
             "--status",
-            "banned",
+            "left",
+            "--is-banned",
             "--search",
             &subject_username,
         ],
@@ -4239,7 +4201,6 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     let suffix = unique_test_suffix();
 
     let owner_username = format!("cli_actor_owner_{suffix}");
-    let pending_username = format!("cli_actor_pending_{suffix}");
     let banned_username = format!("cli_actor_banned_{suffix}");
     let outsider_username = format!("cli_actor_outsider_{suffix}");
 
@@ -4270,34 +4231,6 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         "create banned actor",
     )
     .await;
-    create_cli_user(
-        &server,
-        &pending_username,
-        &format!("cli-actor-pending-{suffix}@example.com"),
-        "CliActorPendingPass12345!",
-        Some("pending"),
-        "create pending actor",
-    )
-    .await;
-
-    let pending_create_error = run_synctv_remote_cli_failure(
-        &server,
-        &[
-            "room",
-            "create",
-            &format!("CLI Pending Actor Room {suffix}"),
-            "--username",
-            &pending_username,
-        ],
-        "pending actor create room",
-    )
-    .await;
-    assert!(
-        pending_create_error.contains("is pending")
-            && pending_create_error.contains("cannot perform this operation"),
-        "pending actor create room should fail with explicit state message, got: {pending_create_error}"
-    );
-
     let banned_create_error = run_synctv_remote_cli_failure(
         &server,
         &[
@@ -4732,7 +4665,8 @@ async fn full_stack_cli_provider_create_rejects_unsupported_provider_type() {
         String::from_utf8_lossy(&provider_add.stderr),
     );
     assert!(
-        String::from_utf8_lossy(&provider_add.stderr).contains("unsupported remote provider"),
+        String::from_utf8_lossy(&provider_add.stderr)
+            .contains("unsupported provider 'custom_local'"),
         "stderr should explain unsupported provider type: {}",
         String::from_utf8_lossy(&provider_add.stderr)
     );

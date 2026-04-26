@@ -211,7 +211,7 @@ pub struct BindInfo {
     pub created_at: i64,
 }
 /// QR login status enum
-/// Values match synctv-media-providers QRCodeStatus for compatibility
+/// Wire values mirror synctv-media-providers QRCodeStatus.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

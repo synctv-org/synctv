@@ -798,6 +798,10 @@ mod tests {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         }
     }
 

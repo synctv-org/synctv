@@ -202,9 +202,13 @@ pub struct QrcodeData {
 /// Video page info response
 #[derive(Debug, Clone, Deserialize)]
 pub struct VideoPageInfoResp {
-    pub data: VideoPageData,
+    #[serde(default)]
+    pub data: Option<VideoPageData>,
+    #[serde(default)]
     pub message: String,
+    #[serde(default)]
     pub code: i32,
+    #[serde(default)]
     pub ttl: i32,
 }
 

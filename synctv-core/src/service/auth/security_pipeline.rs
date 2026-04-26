@@ -194,9 +194,8 @@ impl SecurityPipeline {
 
         if let Some(cache) = &self.user_cache {
             if let Ok(Some(cached)) = cache.get(&user_id).await {
-                if cached.status() == UserStatus::Banned
-                    || cached.status() == UserStatus::Pending
-                    || cached.status() == UserStatus::Rejected
+                if cached.is_banned()
+                    || cached.status() == UserStatus::Banned
                     || cached.is_deleted()
                     || claims.pv < cached.password_version()
                 {
@@ -234,11 +233,8 @@ impl SecurityPipeline {
             ));
         }
 
-        if user.is_deleted()
-            || user.status == UserStatus::Banned
-            || user.status == UserStatus::Pending
-            || user.status == UserStatus::Rejected
-        {
+        let is_banned = self.user_service.is_user_banned(&user_id).await?;
+        if user.is_deleted() || is_banned {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -248,14 +244,15 @@ impl SecurityPipeline {
         // Populate the cache after a successful DB lookup so future requests
         // for this user are served from the cache.
         if let Some(cache) = &self.user_cache {
-            let cached_user = crate::cache::user_cache::CachedUser::with_updated_at(
+            let cached_user = crate::cache::user_cache::CachedUser::with_security_state(
                 user.id.as_str().to_string(),
                 user.username.clone(),
                 user.role,
-                user.status,
+                UserStatus::Active,
                 user.created_at,
                 user.updated_at,
                 user.password_version,
+                is_banned,
                 user.is_deleted(),
             );
             // Best-effort: log but do not fail the request if the cache write errors.

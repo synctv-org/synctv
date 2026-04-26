@@ -8,30 +8,35 @@ use tonic::{Request, Response, Status};
 
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
 use crate::proto::{
-    management_service_server::ManagementService, AddAdminRequest, AddDirectUrlMediaRequest,
-    AddMediaRequest, AddMemberRequest, AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest,
-    AlistLoginRequest, AlistLogoutRequest, AlistSearchRequest, ApproveMemberRequest,
-    ApproveRoomRequest, ApproveUserRequest, BanMemberRequest, BanRoomRequest, BanUserRequest,
-    BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
-    BilibiliCheckQrRequest, BilibiliGetBindsRequest, BilibiliGetCaptchaRequest,
-    BilibiliGetUserInfoRequest, BilibiliLoginQrRequest, BilibiliLoginSmsRequest,
-    BilibiliLogoutRequest, BilibiliParseRequest, BilibiliSendSmsRequest, CreatePlaylistRequest,
-    CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
-    DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
-    EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest, EmbyLogoutRequest,
-    GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-    GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest, GetStreamInfoRequest,
-    GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
-    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-    ListMediaRequest, ListPlaylistsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-    ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, RejectMemberRequest,
-    RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus, SendTestEmailRequest,
-    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-    StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
-    UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest, UpdatePlaylistRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-    UpdateUserPasswordRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
-    UserRole, UserStatus,
+    management_service_server::ManagementService, AddAdminRequest, AddAlistMediaRequest,
+    AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest, AddBilibiliVideoMediaRequest,
+    AddDirectUrlMediaRequest, AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest,
+    AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
+    AlistLogoutRequest, AlistSearchRequest, ApproveRoomCreationReviewRequest,
+    ApproveRoomJoinReviewRequest, ApproveUserRegistrationReviewRequest, BanMemberRequest,
+    BanRoomRequest, BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest,
+    BatchDeleteRoomsRequest, BatchDeleteUsersRequest, BilibiliCheckQrRequest,
+    BilibiliGetBindsRequest, BilibiliGetCaptchaRequest, BilibiliGetUserInfoRequest,
+    BilibiliLoginQrRequest, BilibiliLoginSmsRequest, BilibiliLogoutRequest, BilibiliParseRequest,
+    BilibiliSendSmsRequest, CreateAlistPlaylistRequest, CreateEmbyPlaylistRequest,
+    CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
+    DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
+    EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
+    EmbyLogoutRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
+    GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
+    GetStreamInfoRequest, GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest,
+    KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
+    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
+    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
+    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
+    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
+    UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
+    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
+    UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
 };
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
@@ -258,10 +263,7 @@ impl ManagementServiceImpl {
         }
     }
 
-    async fn resolve_client_actor_user_id(
-        &self,
-        actor: Option<UserRef>,
-    ) -> Result<String, Status> {
+    async fn resolve_client_actor_user_id(&self, actor: Option<UserRef>) -> Result<String, Status> {
         let actor_user_id = self.resolve_required_user_ref(actor, "actor").await?;
         let user = self
             .user_service
@@ -280,6 +282,156 @@ impl ManagementServiceImpl {
         let actor_user_id = self.resolve_client_actor_user_id(actor).await?;
         let request = Self::required_nested_request(request, "request")?;
         Ok((actor_user_id, request))
+    }
+
+    fn merge_json_object_patch(
+        base: &mut serde_json::Value,
+        patch: serde_json::Value,
+    ) -> Result<(), Status> {
+        if !patch.is_object() {
+            return Err(Status::invalid_argument(
+                "settings_json must be a JSON object patch",
+            ));
+        }
+
+        Self::merge_json_value(base, patch);
+        Ok(())
+    }
+
+    fn merge_json_value(base: &mut serde_json::Value, patch: serde_json::Value) {
+        match (base, patch) {
+            (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
+                for (key, patch_value) in patch_map {
+                    match base_map.get_mut(&key) {
+                        Some(base_value) => Self::merge_json_value(base_value, patch_value),
+                        None => {
+                            base_map.insert(key, patch_value);
+                        }
+                    }
+                }
+            }
+            (base_slot, patch_value) => {
+                *base_slot = patch_value;
+            }
+        }
+    }
+
+    fn encode_source_config(provider: &str, value: &serde_json::Value) -> Result<Vec<u8>, Status> {
+        serde_json::to_vec(&value).map_err(|error| {
+            tracing::error!(provider, error = %error, "failed to encode provider source config");
+            Status::internal("failed to encode provider source config")
+        })
+    }
+
+    fn trimmed_required(field_name: &str, value: &str) -> Result<String, Status> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{field_name} must not be empty"
+            )));
+        }
+        Ok(trimmed.to_string())
+    }
+
+    fn alist_source_config(server_id: &str, path: &str, password: &str) -> Result<Vec<u8>, Status> {
+        let mut source_config = serde_json::Map::new();
+        source_config.insert(
+            "server_id".to_string(),
+            serde_json::Value::String(Self::trimmed_required("server_id", server_id)?),
+        );
+        source_config.insert(
+            "path".to_string(),
+            serde_json::Value::String(Self::trimmed_required("path", path)?),
+        );
+        let password = password.trim();
+        if !password.is_empty() {
+            source_config.insert(
+                "password".to_string(),
+                serde_json::Value::String(password.to_string()),
+            );
+        }
+        Self::encode_source_config("alist", &serde_json::Value::Object(source_config))
+    }
+
+    fn emby_source_config(server_id: &str, item_id: &str) -> Result<Vec<u8>, Status> {
+        Self::encode_source_config(
+            "emby",
+            &serde_json::json!({
+                "server_id": Self::trimmed_required("server_id", server_id)?,
+                "item_id": Self::trimmed_required("item_id", item_id)?,
+            }),
+        )
+    }
+
+    fn bilibili_video_source_config(
+        bvid: &str,
+        aid: Option<u64>,
+        cid: u64,
+        shared: bool,
+    ) -> Result<Vec<u8>, Status> {
+        if bvid.trim().is_empty() && aid.is_none() {
+            return Err(Status::invalid_argument("bvid or aid is required"));
+        }
+        if cid == 0 {
+            return Err(Status::invalid_argument("cid must be non-zero"));
+        }
+
+        let mut source_config = serde_json::Map::new();
+        source_config.insert(
+            "type".to_string(),
+            serde_json::Value::String("video".to_string()),
+        );
+        let bvid = bvid.trim();
+        if !bvid.is_empty() {
+            source_config.insert(
+                "bvid".to_string(),
+                serde_json::Value::String(bvid.to_string()),
+            );
+        }
+        if let Some(aid) = aid {
+            source_config.insert("aid".to_string(), serde_json::Value::from(aid));
+        }
+        source_config.insert("cid".to_string(), serde_json::Value::from(cid));
+        if shared {
+            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
+        }
+        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
+    }
+
+    fn bilibili_pgc_source_config(epid: u64, cid: u64, shared: bool) -> Result<Vec<u8>, Status> {
+        if epid == 0 {
+            return Err(Status::invalid_argument("epid must be non-zero"));
+        }
+        if cid == 0 {
+            return Err(Status::invalid_argument("cid must be non-zero"));
+        }
+        let mut source_config = serde_json::Map::new();
+        source_config.insert(
+            "type".to_string(),
+            serde_json::Value::String("pgc".to_string()),
+        );
+        source_config.insert("epid".to_string(), serde_json::Value::from(epid));
+        source_config.insert("cid".to_string(), serde_json::Value::from(cid));
+        if shared {
+            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
+        }
+        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
+    }
+
+    fn bilibili_live_source_config(room_live_id: u64, shared: bool) -> Result<Vec<u8>, Status> {
+        if room_live_id == 0 {
+            return Err(Status::invalid_argument("room_live_id must be non-zero"));
+        }
+        let mut source_config = serde_json::Map::new();
+        source_config.insert(
+            "type".to_string(),
+            serde_json::Value::String("live".to_string()),
+        );
+        source_config.insert("room_id".to_string(), serde_json::Value::from(room_live_id));
+        if shared {
+            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
+        }
+        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
     }
 
     async fn resolve_batch_user_refs(&self, users: Vec<UserRef>) -> BatchUserResolution {
@@ -482,6 +634,7 @@ impl ManagementService for ManagementServiceImpl {
                     }
                     _ => admin_proto::UserListSortBy::CreatedAt as i32,
                 },
+                is_banned: req.is_banned,
                 sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction) {
                     Ok(crate::proto::SortDirection::Asc) => admin_proto::SortDirection::Asc as i32,
                     _ => admin_proto::SortDirection::Desc as i32,
@@ -518,7 +671,11 @@ impl ManagementService for ManagementServiceImpl {
         let user_id = self.resolve_required_user_ref(req.user, "user").await?;
         let response = self
             .admin_api
-            .add_admin(admin_proto::AddAdminRequest { user_id }, &validated.user_id, &ctx)
+            .add_admin(
+                admin_proto::AddAdminRequest { user_id },
+                &validated.user_id,
+                &ctx,
+            )
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))
@@ -655,20 +812,217 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
-    async fn approve_user(
+    async fn list_user_registration_reviews(
         &self,
-        request: Request<ApproveUserRequest>,
-    ) -> Result<Response<admin_proto::ApproveUserResponse>, Status> {
+        request: Request<ListUserRegistrationReviewsRequest>,
+    ) -> Result<Response<admin_proto::ListUserRegistrationReviewsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .list_user_registration_reviews(
+                admin_proto::ListUserRegistrationReviewsRequest {
+                    page: req.page,
+                    page_size: req.page_size,
+                    status: req.status,
+                    search: req.search,
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn approve_user_registration_review(
+        &self,
+        request: Request<ApproveUserRegistrationReviewRequest>,
+    ) -> Result<Response<admin_proto::ApproveUserRegistrationReviewResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
         let response = self
             .admin_api
-            .approve_user(
-                admin_proto::ApproveUserRequest { user_id },
+            .approve_user_registration_review(
+                admin_proto::ApproveUserRegistrationReviewRequest {
+                    request_id: req.request_id,
+                },
                 &validated.user_id,
                 &ctx,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn reject_user_registration_review(
+        &self,
+        request: Request<RejectUserRegistrationReviewRequest>,
+    ) -> Result<Response<admin_proto::RejectUserRegistrationReviewResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .reject_user_registration_review(
+                admin_proto::RejectUserRegistrationReviewRequest {
+                    request_id: req.request_id,
+                    reason: req.reason,
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_room_creation_reviews(
+        &self,
+        request: Request<ListRoomCreationReviewsRequest>,
+    ) -> Result<Response<admin_proto::ListRoomCreationReviewsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .list_room_creation_reviews(
+                admin_proto::ListRoomCreationReviewsRequest {
+                    page: req.page,
+                    page_size: req.page_size,
+                    status: req.status,
+                    requested_by: req.requested_by,
+                    search: req.search,
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn approve_room_creation_review(
+        &self,
+        request: Request<ApproveRoomCreationReviewRequest>,
+    ) -> Result<Response<admin_proto::ApproveRoomCreationReviewResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .approve_room_creation_review(
+                admin_proto::ApproveRoomCreationReviewRequest {
+                    request_id: req.request_id,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn reject_room_creation_review(
+        &self,
+        request: Request<RejectRoomCreationReviewRequest>,
+    ) -> Result<Response<admin_proto::RejectRoomCreationReviewResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .reject_room_creation_review(
+                admin_proto::RejectRoomCreationReviewRequest {
+                    request_id: req.request_id,
+                    reason: req.reason,
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_room_join_reviews(
+        &self,
+        request: Request<ListRoomJoinReviewsRequest>,
+    ) -> Result<Response<admin_proto::ListRoomJoinReviewsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .list_room_join_reviews(
+                admin_proto::ListRoomJoinReviewsRequest {
+                    page: req.page,
+                    page_size: req.page_size,
+                    status: req.status,
+                    room_id: req.room_id,
+                    user_id: req.user_id,
+                },
+                &validated.user_id,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn approve_room_join_review(
+        &self,
+        request: Request<ApproveRoomJoinReviewRequest>,
+    ) -> Result<Response<admin_proto::ApproveRoomJoinReviewResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .approve_room_join_review(
+                admin_proto::ApproveRoomJoinReviewRequest {
+                    request_id: req.request_id,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn reject_room_join_review(
+        &self,
+        request: Request<RejectRoomJoinReviewRequest>,
+    ) -> Result<Response<admin_proto::RejectRoomJoinReviewResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .reject_room_join_review(
+                admin_proto::RejectRoomJoinReviewRequest {
+                    request_id: req.request_id,
+                    reason: req.reason,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn list_ban_records(
+        &self,
+        request: Request<ListBanRecordsRequest>,
+    ) -> Result<Response<admin_proto::ListBanRecordsResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .admin_api
+            .list_ban_records(
+                admin_proto::ListBanRecordsRequest {
+                    page: req.page,
+                    page_size: req.page_size,
+                    target_type: req.target_type,
+                    active: req.active,
+                    user_id: req.user_id,
+                    room_id: req.room_id,
+                },
+                &validated.user_id,
             )
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -861,6 +1215,23 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let settings = if req.settings_json.is_empty() {
+            Vec::new()
+        } else {
+            let patch = serde_json::from_slice(&req.settings_json).map_err(|error| {
+                Status::invalid_argument(format!("Invalid settings JSON: {error}"))
+            })?;
+            let mut merged = serde_json::to_value(synctv_core::models::RoomSettings::default())
+                .map_err(|error| {
+                    tracing::error!(error = %error, "failed to encode default room settings");
+                    Status::internal("failed to encode default room settings")
+                })?;
+            Self::merge_json_object_patch(&mut merged, patch)?;
+            serde_json::to_vec(&merged).map_err(|error| {
+                tracing::error!(error = %error, "failed to encode room settings");
+                Status::internal("failed to encode room settings")
+            })?
+        };
         let response = self
             .client_api
             .create_room(
@@ -868,7 +1239,7 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::CreateRoomRequest {
                     name: req.name,
                     password: req.password,
-                    settings: req.settings_json,
+                    settings,
                     description: req.description,
                 },
             )
@@ -883,7 +1254,9 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::ListRoomsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let creator_id = self.resolve_optional_user_ref(req.creator, "creator").await?;
+        let creator_id = self
+            .resolve_optional_user_ref(req.creator, "creator")
+            .await?;
         let response = self
             .admin_api
             .list_rooms(admin_proto::ListRoomsRequest {
@@ -946,6 +1319,7 @@ impl ManagementService for ManagementServiceImpl {
                 search: req.search,
                 role: req.role,
                 status: req.status,
+                is_banned: req.is_banned,
                 sort_by: match crate::proto::RoomMemberListSortBy::try_from(req.sort_by) {
                     Ok(crate::proto::RoomMemberListSortBy::Username) => {
                         admin_proto::RoomMemberListSortBy::Username as i32
@@ -994,57 +1368,6 @@ impl ManagementService for ManagementServiceImpl {
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(client_proto::AddMemberResponse {
             member: response.member,
-        }))
-    }
-
-    async fn approve_member(
-        &self,
-        request: Request<ApproveMemberRequest>,
-    ) -> Result<Response<client_proto::ApproveMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
-        let response = self
-            .admin_api
-            .approve_member(
-                admin_proto::ApproveMemberRequest {
-                    room_id: req.room_id,
-                    user_id,
-                },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::ApproveMemberResponse {
-            member: response.member,
-        }))
-    }
-
-    async fn reject_member(
-        &self,
-        request: Request<RejectMemberRequest>,
-    ) -> Result<Response<client_proto::RejectMemberResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
-        let response = self
-            .admin_api
-            .reject_member(
-                admin_proto::RejectMemberRequest {
-                    room_id: req.room_id,
-                    user_id,
-                    reason: req.reason,
-                },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::RejectMemberResponse {
-            success: response.success,
         }))
     }
 
@@ -1178,12 +1501,33 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
+        let current = self
+            .admin_api
+            .get_room_settings(admin_proto::GetRoomSettingsRequest {
+                room_id: req.room_id.clone(),
+            })
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        let mut settings = if current.settings.is_empty() {
+            serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_slice(&current.settings).map_err(|error| {
+                Status::internal(format!("stored room settings are invalid: {error}"))
+            })?
+        };
+        let patch = serde_json::from_slice(&req.settings_json)
+            .map_err(|error| Status::invalid_argument(format!("Invalid settings JSON: {error}")))?;
+        Self::merge_json_object_patch(&mut settings, patch)?;
+        let settings_json = serde_json::to_vec(&settings).map_err(|error| {
+            tracing::error!(error = %error, "failed to encode room settings");
+            Status::internal("failed to encode room settings")
+        })?;
         let response = self
             .admin_api
             .update_room_settings(
                 admin_proto::UpdateRoomSettingsRequest {
                     room_id: req.room_id,
-                    settings: req.settings_json,
+                    settings: settings_json,
                 },
                 &validated.user_id,
             )
@@ -1313,27 +1657,6 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .delete_room(
                 admin_proto::DeleteRoomRequest {
-                    room_id: req.room_id,
-                },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
-    }
-
-    async fn approve_room(
-        &self,
-        request: Request<ApproveRoomRequest>,
-    ) -> Result<Response<admin_proto::ApproveRoomResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let response = self
-            .admin_api
-            .approve_room(
-                admin_proto::ApproveRoomRequest {
                     room_id: req.room_id,
                 },
                 &validated.user_id,
@@ -1479,7 +1802,8 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let actor_user_id = UserId::from_string(self.resolve_client_actor_user_id(req.actor).await?);
+        let actor_user_id =
+            UserId::from_string(self.resolve_client_actor_user_id(req.actor).await?);
         let response = self
             .admin_api
             .create_publish_key_for_actor(
@@ -1605,6 +1929,60 @@ impl ManagementService for ManagementServiceImpl {
                     parent_id: req.parent_id,
                     source_provider: req.source_provider,
                     source_config: req.source_config_json,
+                    provider_instance_name: req.provider_instance_name,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn create_alist_playlist(
+        &self,
+        request: Request<CreateAlistPlaylistRequest>,
+    ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .create_playlist(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::CreatePlaylistRequest {
+                    name: req.name,
+                    parent_id: req.parent_id,
+                    source_provider: "alist".to_string(),
+                    source_config: Self::alist_source_config(
+                        &req.server_id,
+                        &req.path,
+                        &req.password,
+                    )?,
+                    provider_instance_name: req.provider_instance_name,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn create_emby_playlist(
+        &self,
+        request: Request<CreateEmbyPlaylistRequest>,
+    ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .create_playlist(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::CreatePlaylistRequest {
+                    name: req.name,
+                    parent_id: req.parent_id,
+                    source_provider: "emby".to_string(),
+                    source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -1759,6 +2137,137 @@ impl ManagementService for ManagementServiceImpl {
                             tracing::error!(error = %error, "failed to encode media source config");
                             Status::internal("failed to encode media source config")
                         })?,
+                    title: req.title,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn add_alist_media(
+        &self,
+        request: Request<AddAlistMediaRequest>,
+    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .add_media(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::AddMediaRequest {
+                    playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    provider: "alist".to_string(),
+                    provider_instance_name: req.provider_instance_name,
+                    source_config: Self::alist_source_config(
+                        &req.server_id,
+                        &req.path,
+                        &req.password,
+                    )?,
+                    title: req.title,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn add_emby_media(
+        &self,
+        request: Request<AddEmbyMediaRequest>,
+    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .add_media(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::AddMediaRequest {
+                    playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    provider: "emby".to_string(),
+                    provider_instance_name: req.provider_instance_name,
+                    source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
+                    title: req.title,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn add_bilibili_video_media(
+        &self,
+        request: Request<AddBilibiliVideoMediaRequest>,
+    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .add_media(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::AddMediaRequest {
+                    playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    provider: "bilibili".to_string(),
+                    provider_instance_name: req.provider_instance_name,
+                    source_config: Self::bilibili_video_source_config(
+                        &req.bvid, req.aid, req.cid, req.shared,
+                    )?,
+                    title: req.title,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn add_bilibili_pgc_media(
+        &self,
+        request: Request<AddBilibiliPgcMediaRequest>,
+    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .add_media(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::AddMediaRequest {
+                    playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    provider: "bilibili".to_string(),
+                    provider_instance_name: req.provider_instance_name,
+                    source_config: Self::bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
+                    title: req.title,
+                },
+            )
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn add_bilibili_live_media(
+        &self,
+        request: Request<AddBilibiliLiveMediaRequest>,
+    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let response = self
+            .client_api
+            .add_media(
+                &actor_user_id,
+                &req.room_id,
+                client_proto::AddMediaRequest {
+                    playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
+                    provider: "bilibili".to_string(),
+                    provider_instance_name: req.provider_instance_name,
+                    source_config: Self::bilibili_live_source_config(req.room_live_id, req.shared)?,
                     title: req.title,
                 },
             )
@@ -2563,8 +3072,6 @@ fn map_user_role(role: i32) -> i32 {
 fn map_user_status(status: i32) -> i32 {
     match UserStatus::try_from(status).unwrap_or(UserStatus::Unspecified) {
         UserStatus::Active => common_proto::UserStatus::Active as i32,
-        UserStatus::Pending => common_proto::UserStatus::Pending as i32,
-        UserStatus::Rejected => common_proto::UserStatus::Rejected as i32,
         UserStatus::Banned => common_proto::UserStatus::Banned as i32,
         UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
     }
@@ -2573,8 +3080,6 @@ fn map_user_status(status: i32) -> i32 {
 fn map_room_status(status: i32) -> i32 {
     match RoomStatus::try_from(status).unwrap_or(RoomStatus::Unspecified) {
         RoomStatus::Active => common_proto::RoomStatus::Active as i32,
-        RoomStatus::Pending => common_proto::RoomStatus::Pending as i32,
-        RoomStatus::Rejected => common_proto::RoomStatus::Rejected as i32,
         RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
         RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
     }
@@ -2589,18 +3094,6 @@ fn validate_client_actor_user(user: &synctv_core::models::User) -> Result<(), St
     }
     match user.status {
         CoreUserStatus::Active => {}
-        CoreUserStatus::Pending => {
-            return Err(Status::permission_denied(format!(
-                "actor user '{}' is pending and cannot perform this operation",
-                user.username
-            )));
-        }
-        CoreUserStatus::Rejected => {
-            return Err(Status::permission_denied(format!(
-                "actor user '{}' is rejected and cannot perform this operation",
-                user.username
-            )));
-        }
         CoreUserStatus::Banned => {
             return Err(Status::permission_denied(format!(
                 "actor user '{}' is banned",
@@ -2678,19 +3171,6 @@ mod tests {
     fn validate_client_actor_user_accepts_active_user() {
         let user = make_actor_user("root", UserStatus::Active);
         validate_client_actor_user(&user).expect("active actor should be accepted");
-    }
-
-    #[test]
-    fn validate_client_actor_user_rejects_pending_user_with_explicit_message() {
-        let user = make_actor_user("root", UserStatus::Pending);
-        let error =
-            validate_client_actor_user(&user).expect_err("pending actor should be rejected");
-
-        assert_eq!(error.code(), tonic::Code::PermissionDenied);
-        assert_eq!(
-            error.message(),
-            "actor user 'root' is pending and cannot perform this operation"
-        );
     }
 
     #[test]

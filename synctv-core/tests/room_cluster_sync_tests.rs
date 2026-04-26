@@ -20,8 +20,8 @@
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{
-        room_settings::MaxMembers, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings,
-        RoomStatus, User, UserId, UserRole, UserStatus,
+        room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{member::MemberService, permission::PermissionService, NotificationService},
@@ -108,6 +108,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -121,6 +125,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         created_by: owner.clone(),
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -855,11 +860,7 @@ async fn test_ban_visible_across_replicas() {
         .expect("Failed to get member")
         .expect("Member should exist");
 
-    assert_eq!(
-        member_b.status,
-        MemberStatus::Banned,
-        "Node B should see member is banned"
-    );
+    assert!(member_b.is_banned(), "Node B should see member is banned");
 }
 
 // Helper Functions

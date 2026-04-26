@@ -80,14 +80,15 @@ pub(crate) fn build_update_playlist_request(
     req: crate::proto::client::UpdatePlaylistRequest,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    if req.name.trim().is_empty() {
+        return Err(ApiError::InvalidInput(
+            "playlist update requires at least one changed field".to_string(),
+        ));
+    }
 
     Ok(CoreSetPlaylistRequest {
         playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id),
-        name: if req.name.is_empty() {
-            None
-        } else {
-            Some(req.name)
-        },
+        name: Some(req.name),
     })
 }
 

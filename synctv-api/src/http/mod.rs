@@ -134,9 +134,7 @@ impl_with_string_field!(
     user_id,
     [
         crate::proto::client::KickMemberRequest,
-        crate::proto::client::UnbanMemberRequest,
-        crate::proto::client::ApproveMemberRequest,
-        crate::proto::client::RejectMemberRequest
+        crate::proto::client::UnbanMemberRequest
     ]
 );
 
@@ -793,12 +791,16 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
             Router::new()
                 .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
                 .route(
-                    "/api/rooms/{room_id}/members/{user_id}/approve",
-                    post(room_extra::approve_member),
+                    "/api/rooms/{room_id}/reviews/joins",
+                    get(room_extra::list_room_join_reviews),
                 )
                 .route(
-                    "/api/rooms/{room_id}/members/{user_id}/reject",
-                    post(room_extra::reject_member),
+                    "/api/rooms/{room_id}/reviews/joins/{request_id}/approve",
+                    post(room_extra::approve_room_join_review),
+                )
+                .route(
+                    "/api/rooms/{room_id}/reviews/joins/{request_id}/reject",
+                    post(room_extra::reject_room_join_review),
                 )
                 .route(
                     "/api/rooms/{room_id}/members/{user_id}",
@@ -1103,6 +1105,7 @@ mod tests {
             search: "alice".to_string(),
             role: 0,
             status: 0,
+            is_banned: None,
             sort_by: 0,
             sort_direction: 0,
         }
@@ -1619,15 +1622,16 @@ mod tests {
                 "/api/rooms/room1234_abx/members",
                 Some(r#"{"user_id":"AbC123xYz890","role":1,"notify":true}"#),
             ),
+            ("GET", "/api/rooms/room1234_abx/reviews/joins", None),
             (
                 "POST",
-                "/api/rooms/room1234_abx/members/AbC123xYz890/approve",
+                "/api/rooms/room1234_abx/reviews/joins/AbC123xYz890/approve",
                 None,
             ),
             (
                 "POST",
-                "/api/rooms/room1234_abx/members/AbC123xYz890/reject",
-                Some(r#"{"reason":"no longer eligible"}"#),
+                "/api/rooms/room1234_abx/reviews/joins/AbC123xYz890/reject",
+                Some(r#"{"request_id":"AbC123xYz890","reason":"no longer eligible"}"#),
             ),
         ] {
             let builder = Request::builder().method(method).uri(uri);

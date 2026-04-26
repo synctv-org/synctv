@@ -1435,7 +1435,7 @@ impl MemberService {
         Ok(updated_member)
     }
 
-    /// Set member status (active/pending/rejected/banned)
+    /// Set member lifecycle status.
     pub async fn set_member_status(
         &self,
         room_id: RoomId,
@@ -1444,40 +1444,12 @@ impl MemberService {
         status: MemberStatus,
     ) -> Result<RoomMember> {
         match status {
-            MemberStatus::Banned => {
-                self.ban_member(
-                    room_id.clone(),
-                    admin_id,
-                    target_user_id.clone(),
-                    Some("status updated to banned".to_string()),
-                )
-                .await?;
-
-                return self
-                    .member_repo
-                    .get_any(&room_id, &target_user_id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Internal(
-                            "Banned member missing after successful status update".to_string(),
-                        )
-                    });
-            }
             MemberStatus::Active => {
                 if self.is_banned(&room_id, &target_user_id).await? {
-                    self.unban_member(room_id.clone(), admin_id, target_user_id.clone())
-                        .await?;
-
-                    return self
-                        .member_repo
-                        .get(&room_id, &target_user_id)
-                        .await?
-                        .ok_or_else(|| {
-                            Error::Internal(
-                                "Unbanned member missing after successful status update"
-                                    .to_string(),
-                            )
-                        });
+                    return Err(Error::InvalidInput(
+                        "Use unban_member before changing a banned member lifecycle status"
+                            .to_string(),
+                    ));
                 }
             }
             MemberStatus::Left => {
@@ -1486,15 +1458,9 @@ impl MemberService {
                         .to_string(),
                 ));
             }
-            MemberStatus::Rejected => {
-                return Err(Error::InvalidInput(
-                    "Use reject_member for rejected join requests".to_string(),
-                ));
-            }
-            MemberStatus::Pending => {}
         }
 
-        // Pending/active transitions stay on the approval permission path.
+        // Active lifecycle transitions stay on the approval permission path.
         self.permission_service
             .check_permission_no_cache(&room_id, &admin_id, PermissionBits::APPROVE_MEMBER)
             .await?;

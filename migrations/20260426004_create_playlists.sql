@@ -19,21 +19,24 @@ CREATE TABLE IF NOT EXISTS playlists (
 
     version INTEGER NOT NULL DEFAULT 0,
 
-    CONSTRAINT valid_parent CHECK (parent_id IS NULL OR parent_id != id),
-    CONSTRAINT valid_dynamic_folder CHECK (
+    CONSTRAINT playlists_parent_not_self
+        CHECK (parent_id IS NULL OR parent_id != id),
+    CONSTRAINT playlists_dynamic_source_consistent
+        CHECK (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
-        OR
-        (source_provider IS NULL AND source_config IS NULL)
-    ),
-    CONSTRAINT unique_playlist_id_room UNIQUE (id, room_id)
+        OR (source_provider IS NULL AND source_config IS NULL)
+        ),
+    CONSTRAINT playlists_id_room_unique UNIQUE (id, room_id)
 );
 
-CREATE INDEX idx_playlists_room ON playlists(room_id);
-CREATE INDEX idx_playlists_parent ON playlists(parent_id, position, id);
-CREATE INDEX idx_playlists_tree ON playlists(room_id, parent_id, position, id);
-CREATE INDEX idx_playlists_creator ON playlists(creator_id);
-CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
-CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playlists_room ON playlists(room_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_parent ON playlists(parent_id, position, id);
+CREATE INDEX IF NOT EXISTS idx_playlists_tree ON playlists(room_id, parent_id, position, id);
+CREATE INDEX IF NOT EXISTS idx_playlists_creator ON playlists(creator_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_source_provider
+    ON playlists(source_provider)
+    WHERE source_provider IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_playlists_created_at ON playlists(created_at DESC);
 
 CREATE TRIGGER update_playlists_updated_at
     BEFORE UPDATE ON playlists
@@ -42,12 +45,13 @@ CREATE TRIGGER update_playlists_updated_at
 
 COMMENT ON TABLE playlists IS 'Playlist table supporting top-level and nested static or dynamic folders.';
 COMMENT ON COLUMN playlists.name IS 'Playlist display name. It is not a routing key or unique path segment.';
-COMMENT ON COLUMN playlists.parent_id IS 'Parent playlist ID. NULL means this playlist is directly under the room root.';
+COMMENT ON COLUMN playlists.parent_id IS 'Parent playlist ID';
 COMMENT ON COLUMN playlists.position IS 'Floating-point order position in parent directory';
-COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name (NULL=static folder, non-NULL=dynamic folder, e.g., "alist", "emby")';
-COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (required for dynamic folders)';
-COMMENT ON COLUMN playlists.provider_instance_name IS 'Optional media provider backend instance name. NULL or empty means use the default local instance for source_provider.';
-COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
+COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name';
+COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration';
+COMMENT ON COLUMN playlists.provider_instance_name IS 'Optional media provider instance name';
+COMMENT ON CONSTRAINT playlists_dynamic_source_consistent ON playlists IS
+    'Dynamic playlists have both source provider and config; static playlists have neither';
 COMMENT ON COLUMN playlists.version IS 'Optimistic locking version, incremented on each update';
 
 CREATE OR REPLACE FUNCTION check_playlist_cycle(
@@ -84,7 +88,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION check_playlist_cycle(CHAR, CHAR) IS
-'Check if setting parent_id would create a circular reference. Returns TRUE if cycle detected. Max depth: 50 levels.';
+    'Return TRUE when assigning parent_id would create a playlist cycle';
 
 CREATE OR REPLACE FUNCTION prevent_playlist_cycle()
 RETURNS TRIGGER AS $$
@@ -110,7 +114,7 @@ CREATE TRIGGER trigger_prevent_playlist_cycle
     EXECUTE FUNCTION prevent_playlist_cycle();
 
 COMMENT ON TRIGGER trigger_prevent_playlist_cycle ON playlists IS
-'Prevent circular references in playlist tree. Validates that parent_id does not create a cycle (max depth: 50).';
+    'Prevent circular references in playlist tree';
 
 CREATE OR REPLACE FUNCTION validate_parent_same_room()
 RETURNS TRIGGER AS $$
@@ -146,7 +150,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION validate_parent_same_room() IS
-'Enforce room isolation for playlist parent_id. A playlist cannot have a parent from a different room.';
+    'Enforce room isolation for playlist parent references';
 
 CREATE TRIGGER trigger_validate_parent_same_room
     BEFORE INSERT OR UPDATE OF parent_id, room_id ON playlists
@@ -154,4 +158,4 @@ CREATE TRIGGER trigger_validate_parent_same_room
     EXECUTE FUNCTION validate_parent_same_room();
 
 COMMENT ON TRIGGER trigger_validate_parent_same_room ON playlists IS
-'Prevent cross-room parent_id references. Ensures parent playlist belongs to the same room as child.';
+    'Prevent cross-room parent playlist references';

@@ -1278,7 +1278,9 @@ impl BilibiliClient {
                     });
                 }
 
-                let data = json.data;
+                let data = json
+                    .data
+                    .ok_or_else(|| BilibiliError::Parse("Missing video page data".to_string()))?;
                 let title = data.title;
                 let owner_name = data.owner.name;
 
@@ -1735,19 +1737,19 @@ impl BilibiliClient {
     pub fn match_url(url: &str) -> Result<(String, String), BilibiliError> {
         // Video: BV id
         if let Some(bvid) = Self::extract_bvid(url) {
-            return Ok(("video".to_string(), bvid));
+            return Ok(("bv".to_string(), bvid));
         }
 
         // Bangumi/Anime: ep id or ss id
         if url.contains("/bangumi/play/") {
             if let Some(ep_match) = RE_EPID.captures(url) {
                 if let Some(ep_id) = ep_match.get(1) {
-                    return Ok(("bangumi".to_string(), format!("ep{}", ep_id.as_str())));
+                    return Ok(("ep".to_string(), ep_id.as_str().to_string()));
                 }
             }
             if let Some(ss_match) = RE_SSID.captures(url) {
                 if let Some(ss_id) = ss_match.get(1) {
-                    return Ok(("bangumi".to_string(), format!("ss{}", ss_id.as_str())));
+                    return Ok(("ss".to_string(), ss_id.as_str().to_string()));
                 }
             }
         }
@@ -3499,7 +3501,7 @@ mod tests {
     fn test_match_url_video() {
         let (media_type, id) =
             BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ").unwrap();
-        assert_eq!(media_type, "video");
+        assert_eq!(media_type, "bv");
         assert_eq!(id, "BV1xx411c7XZ");
     }
 
@@ -3507,16 +3509,16 @@ mod tests {
     fn test_match_url_bangumi_ep() {
         let (media_type, id) =
             BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345").unwrap();
-        assert_eq!(media_type, "bangumi");
-        assert_eq!(id, "ep12345");
+        assert_eq!(media_type, "ep");
+        assert_eq!(id, "12345");
     }
 
     #[test]
     fn test_match_url_bangumi_ss() {
         let (media_type, id) =
             BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890").unwrap();
-        assert_eq!(media_type, "bangumi");
-        assert_eq!(id, "ss67890");
+        assert_eq!(media_type, "ss");
+        assert_eq!(id, "67890");
     }
 
     #[test]
@@ -3605,11 +3607,12 @@ mod tests {
             "ttl": 1
         }"#;
         let resp: types::VideoPageInfoResp = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.title, "Test Video");
-        assert_eq!(resp.data.bvid, "BV1xx411c7XZ");
-        assert_eq!(resp.data.aid, 12345);
-        assert_eq!(resp.data.pages.len(), 1);
-        assert_eq!(resp.data.pages[0].duration, 120);
+        let data = resp.data.expect("video page data should deserialize");
+        assert_eq!(data.title, "Test Video");
+        assert_eq!(data.bvid, "BV1xx411c7XZ");
+        assert_eq!(data.aid, 12345);
+        assert_eq!(data.pages.len(), 1);
+        assert_eq!(data.pages[0].duration, 120);
         assert_eq!(resp.code, 0);
     }
 

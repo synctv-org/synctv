@@ -1774,13 +1774,13 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "AddMember"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn approve_member(
+        pub async fn list_room_join_reviews(
             &mut self,
             request: impl tonic::IntoRequest<
-                ::synctv_proto::client::ApproveMemberRequest,
+                ::synctv_proto::client::ListRoomJoinReviewsRequest,
             >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::ApproveMemberResponse>,
+            tonic::Response<::synctv_proto::client::ListRoomJoinReviewsResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1793,18 +1793,22 @@ pub mod room_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/ApproveMember",
+                "/synctv.client.RoomService/ListRoomJoinReviews",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "ApproveMember"));
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "ListRoomJoinReviews"),
+                );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn reject_member(
+        pub async fn approve_room_join_review(
             &mut self,
-            request: impl tonic::IntoRequest<::synctv_proto::client::RejectMemberRequest>,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::ApproveRoomJoinReviewRequest,
+            >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::RejectMemberResponse>,
+            tonic::Response<::synctv_proto::client::ApproveRoomJoinReviewResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1817,11 +1821,41 @@ pub mod room_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/RejectMember",
+                "/synctv.client.RoomService/ApproveRoomJoinReview",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.RoomService", "RejectMember"));
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "ApproveRoomJoinReview"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn reject_room_join_review(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::RejectRoomJoinReviewRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RejectRoomJoinReviewResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.RoomService/RejectRoomJoinReview",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.RoomService", "RejectRoomJoinReview"),
+                );
             self.inner.unary(req, path, codec).await
         }
         pub async fn update_member_permissions(
@@ -2559,18 +2593,25 @@ pub mod room_service_server {
             tonic::Response<::synctv_proto::client::AddMemberResponse>,
             tonic::Status,
         >;
-        async fn approve_member(
+        async fn list_room_join_reviews(
             &self,
-            request: tonic::Request<::synctv_proto::client::ApproveMemberRequest>,
+            request: tonic::Request<::synctv_proto::client::ListRoomJoinReviewsRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::ApproveMemberResponse>,
+            tonic::Response<::synctv_proto::client::ListRoomJoinReviewsResponse>,
             tonic::Status,
         >;
-        async fn reject_member(
+        async fn approve_room_join_review(
             &self,
-            request: tonic::Request<::synctv_proto::client::RejectMemberRequest>,
+            request: tonic::Request<::synctv_proto::client::ApproveRoomJoinReviewRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::RejectMemberResponse>,
+            tonic::Response<::synctv_proto::client::ApproveRoomJoinReviewResponse>,
+            tonic::Status,
+        >;
+        async fn reject_room_join_review(
+            &self,
+            request: tonic::Request<::synctv_proto::client::RejectRoomJoinReviewRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RejectRoomJoinReviewResponse>,
             tonic::Status,
         >;
         async fn update_member_permissions(
@@ -3332,15 +3373,15 @@ pub mod room_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.RoomService/ApproveMember" => {
+                "/synctv.client.RoomService/ListRoomJoinReviews" => {
                     #[allow(non_camel_case_types)]
-                    struct ApproveMemberSvc<T: RoomService>(pub Arc<T>);
+                    struct ListRoomJoinReviewsSvc<T: RoomService>(pub Arc<T>);
                     impl<
                         T: RoomService,
                     > tonic::server::UnaryService<
-                        ::synctv_proto::client::ApproveMemberRequest,
-                    > for ApproveMemberSvc<T> {
-                        type Response = ::synctv_proto::client::ApproveMemberResponse;
+                        ::synctv_proto::client::ListRoomJoinReviewsRequest,
+                    > for ListRoomJoinReviewsSvc<T> {
+                        type Response = ::synctv_proto::client::ListRoomJoinReviewsResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -3348,12 +3389,13 @@ pub mod room_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                ::synctv_proto::client::ApproveMemberRequest,
+                                ::synctv_proto::client::ListRoomJoinReviewsRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RoomService>::approve_member(&inner, request).await
+                                <T as RoomService>::list_room_join_reviews(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3364,7 +3406,7 @@ pub mod room_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = ApproveMemberSvc(inner);
+                        let method = ListRoomJoinReviewsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -3380,15 +3422,15 @@ pub mod room_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.RoomService/RejectMember" => {
+                "/synctv.client.RoomService/ApproveRoomJoinReview" => {
                     #[allow(non_camel_case_types)]
-                    struct RejectMemberSvc<T: RoomService>(pub Arc<T>);
+                    struct ApproveRoomJoinReviewSvc<T: RoomService>(pub Arc<T>);
                     impl<
                         T: RoomService,
                     > tonic::server::UnaryService<
-                        ::synctv_proto::client::RejectMemberRequest,
-                    > for RejectMemberSvc<T> {
-                        type Response = ::synctv_proto::client::RejectMemberResponse;
+                        ::synctv_proto::client::ApproveRoomJoinReviewRequest,
+                    > for ApproveRoomJoinReviewSvc<T> {
+                        type Response = ::synctv_proto::client::ApproveRoomJoinReviewResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -3396,12 +3438,16 @@ pub mod room_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                ::synctv_proto::client::RejectMemberRequest,
+                                ::synctv_proto::client::ApproveRoomJoinReviewRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RoomService>::reject_member(&inner, request).await
+                                <T as RoomService>::approve_room_join_review(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3412,7 +3458,56 @@ pub mod room_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = RejectMemberSvc(inner);
+                        let method = ApproveRoomJoinReviewSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.RoomService/RejectRoomJoinReview" => {
+                    #[allow(non_camel_case_types)]
+                    struct RejectRoomJoinReviewSvc<T: RoomService>(pub Arc<T>);
+                    impl<
+                        T: RoomService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::RejectRoomJoinReviewRequest,
+                    > for RejectRoomJoinReviewSvc<T> {
+                        type Response = ::synctv_proto::client::RejectRoomJoinReviewResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::RejectRoomJoinReviewRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RoomService>::reject_room_join_review(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RejectRoomJoinReviewSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -31,6 +31,10 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: now,
@@ -225,10 +229,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .create(&make_media(&room.id, &creator.id, "unavailable-media", 2))
         .await
         .unwrap();
-    user_repo
-        .update_status(&creator.id, UserStatus::Banned)
-        .await
-        .unwrap();
+    user_repo.ban(&creator.id, None, None).await.unwrap();
 
     let response = client_api
         .list_playlist_items(
@@ -336,10 +337,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .create(&make_media(&room.id, &creator.id, "unavailable-media", 0))
         .await
         .unwrap();
-    user_repo
-        .update_status(&creator.id, UserStatus::Banned)
-        .await
-        .unwrap();
+    user_repo.ban(&creator.id, None, None).await.unwrap();
 
     let page_one = client_api
         .list_playlist_items(
@@ -487,10 +485,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         ))
         .await
         .unwrap();
-    user_repo
-        .update_status(&creator.id, UserStatus::Banned)
-        .await
-        .unwrap();
+    user_repo.ban(&creator.id, None, None).await.unwrap();
 
     let response = client_api
         .list_playlists(
@@ -536,10 +531,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         ..
     } = &fixture;
 
-    user_repo
-        .update_status(&owner.id, UserStatus::Banned)
-        .await
-        .unwrap();
+    user_repo.ban(&owner.id, None, None).await.unwrap();
 
     let list_response = client_api
         .list_rooms(synctv_api::proto::client::ListRoomsRequest {

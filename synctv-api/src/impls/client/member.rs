@@ -3,7 +3,8 @@
 use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
-use synctv_core::models::{PermissionBits, UserId};
+use sqlx::Row;
+use synctv_core::models::{PermissionBits, ReviewStatus, UserId};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
@@ -34,7 +35,160 @@ pub(crate) fn compute_room_members_response_version(
     hex_encode(hasher.finalize())
 }
 
+fn review_status_i32_to_i16(value: i32) -> i16 {
+    if value == synctv_proto::common::ReviewStatus::Unspecified as i32 {
+        ReviewStatus::Pending.as_i16()
+    } else {
+        i16::try_from(value).unwrap_or_else(|_| ReviewStatus::Pending.as_i16())
+    }
+}
+
+fn page_i32_to_usize(value: i32) -> usize {
+    usize::try_from(value.max(1)).unwrap_or(1)
+}
+
+fn page_size_i32_to_usize(value: i32) -> usize {
+    usize::try_from(if value <= 0 { 50 } else { value.min(100) }).unwrap_or(50)
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn room_join_review_row_to_proto(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
+    let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
+    let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
+    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
+    let status: i16 = row.try_get("status")?;
+    Ok(crate::proto::client::RoomJoinReview {
+        id: row.try_get("id")?,
+        room_id: row.try_get("room_id")?,
+        user_id: row.try_get("user_id")?,
+        username: row.try_get("username")?,
+        requested_role: row.try_get("requested_role")?,
+        status: i32::from(status),
+        requested_at: requested_at.timestamp(),
+        reviewed_at: reviewed_at.map_or(0, |timestamp| timestamp.timestamp()),
+        reviewed_by: reviewed_by.unwrap_or_default(),
+        rejection_reason: rejection_reason.unwrap_or_default(),
+    })
+}
+
 impl ClientApiImpl {
+    async fn require_member_review_permission(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+        user_id: &UserId,
+    ) -> Result<(), ApiError> {
+        self.room_service
+            .check_membership(room_id, user_id)
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let permissions = self
+            .room_service
+            .permission_service()
+            .get_user_permissions_no_cache(room_id, user_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if permissions.has(PermissionBits::APPROVE_MEMBER) {
+            Ok(())
+        } else {
+            Err(ApiError::Authorization(
+                "Forbidden: Permission denied".to_string(),
+            ))
+        }
+    }
+
+    async fn load_room_join_review(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+        request_id: &str,
+    ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
+        let row = sqlx::query(
+            r"
+            SELECT rjr.id, rjr.room_id, rjr.user_id, COALESCE(u.username, '') AS username,
+                   COALESCE(rjr.requested_role, 0)::int4 AS requested_role, rjr.status,
+                   rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.id = $1 AND rjr.room_id = $2
+            ",
+        )
+        .bind(request_id)
+        .bind(room_id.as_str())
+        .fetch_optional(self.user_service.pool())
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?;
+        room_join_review_row_to_proto(&row)
+    }
+
+    pub async fn list_room_join_reviews(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        req: crate::proto::client::ListRoomJoinReviewsRequest,
+    ) -> Result<crate::proto::client::ListRoomJoinReviewsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = Self::parse_room_id(room_id)?;
+        self.require_member_review_permission(&rid, &uid).await?;
+
+        let page = page_i32_to_usize(req.page);
+        let page_size = page_size_i32_to_usize(req.page_size);
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let status = review_status_i32_to_i16(req.status);
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM room_join_requests
+            WHERE room_id = $1
+              AND status = $2
+              AND ($3 = '' OR user_id = $3)
+            ",
+        )
+        .bind(rid.as_str())
+        .bind(status)
+        .bind(req.user_id.as_str())
+        .fetch_one(self.user_service.pool())
+        .await?;
+
+        let rows = sqlx::query(
+            r"
+            SELECT rjr.id, rjr.room_id, rjr.user_id, COALESCE(u.username, '') AS username,
+                   COALESCE(rjr.requested_role, 0)::int4 AS requested_role, rjr.status,
+                   rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.room_id = $1
+              AND rjr.status = $2
+              AND ($3 = '' OR rjr.user_id = $3)
+            ORDER BY rjr.requested_at DESC, rjr.id DESC
+            LIMIT $4 OFFSET $5
+            ",
+        )
+        .bind(rid.as_str())
+        .bind(status)
+        .bind(req.user_id.as_str())
+        .bind(usize_to_i64_saturating(page_size))
+        .bind(usize_to_i64_saturating(offset))
+        .fetch_all(self.user_service.pool())
+        .await?;
+        let reviews = rows
+            .iter()
+            .map(room_join_review_row_to_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::proto::client::ListRoomJoinReviewsResponse {
+            reviews,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
+        })
+    }
+
     /// Get room members with pagination (E8 fix).
     ///
     /// Uses `get_room_members_paginated` to avoid loading ALL members into memory,
@@ -94,15 +248,6 @@ impl ClientApiImpl {
             Some(synctv_proto::common::MemberStatus::Active) => {
                 Some(synctv_core::models::MemberStatus::Active)
             }
-            Some(synctv_proto::common::MemberStatus::Pending) => {
-                Some(synctv_core::models::MemberStatus::Pending)
-            }
-            Some(synctv_proto::common::MemberStatus::Rejected) => {
-                Some(synctv_core::models::MemberStatus::Rejected)
-            }
-            Some(synctv_proto::common::MemberStatus::Banned) => {
-                Some(synctv_core::models::MemberStatus::Banned)
-            }
             Some(synctv_proto::common::MemberStatus::Left) => {
                 Some(synctv_core::models::MemberStatus::Left)
             }
@@ -137,6 +282,7 @@ impl ClientApiImpl {
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             status,
+            is_banned: req.is_banned,
             is_online: None,
             sort_by: match crate::proto::client::RoomMemberListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::client::RoomMemberListSortBy::Username) => {
@@ -226,8 +372,8 @@ impl ClientApiImpl {
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
+            room_id: member.room_id.clone(),
+            user_id: member.user_id.clone(),
             username,
             role: member.role,
             status: member.status,
@@ -236,8 +382,10 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
+            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
+            is_banned: member.is_banned(),
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,
         };
@@ -256,26 +404,24 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn approve_member(
+    pub async fn approve_room_join_review(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::ApproveMemberRequest,
-    ) -> Result<crate::proto::client::ApproveMemberResponse, ApiError> {
+        req: crate::proto::client::ApproveRoomJoinReviewRequest,
+    ) -> Result<crate::proto::client::ApproveRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::ApproveMemberRequest {
-            user_id: target_user_id,
-        } = req;
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
-
+        self.require_member_review_permission(&rid, &uid).await?;
+        let request_id = req.request_id;
         let changed_by = uid.clone();
         let member = self
             .room_service
-            .approve_member(rid.clone(), uid, target_uid.clone())
+            .approve_join_request(rid.clone(), uid, request_id.as_str())
             .await
             .map_err(ApiError::from)?;
+        let target_uid = member.user_id.clone();
         self.membership_event_fanout
             .publish_permission_changed(&rid, &target_uid, &changed_by, None)
             .await?;
@@ -290,8 +436,8 @@ impl ClientApiImpl {
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
+            room_id: member.room_id.clone(),
+            user_id: member.user_id.clone(),
             username,
             role: member.role,
             status: member.status,
@@ -300,8 +446,10 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
+            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
+            is_banned: member.is_banned(),
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,
         };
@@ -315,30 +463,29 @@ impl ClientApiImpl {
             .permission_service()
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
-        Ok(crate::proto::client::ApproveMemberResponse {
+        Ok(crate::proto::client::ApproveRoomJoinReviewResponse {
+            review: Some(self.load_room_join_review(&rid, &request_id).await?),
             member: Some(room_member_to_proto(&member_with_user, role_default)),
         })
     }
 
-    pub async fn reject_member(
+    pub async fn reject_room_join_review(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::RejectMemberRequest,
-    ) -> Result<crate::proto::client::RejectMemberResponse, ApiError> {
+        req: crate::proto::client::RejectRoomJoinReviewRequest,
+    ) -> Result<crate::proto::client::RejectRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::RejectMemberRequest {
-            user_id: target_user_id,
-            reason,
-        } = req;
         let uid = UserId::from_string(user_id.to_string());
         let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
-        let reason = (!reason.trim().is_empty()).then_some(reason.as_str());
+        self.require_member_review_permission(&rid, &uid).await?;
+        let request_id = req.request_id;
+        let reason = (!req.reason.trim().is_empty()).then_some(req.reason.as_str());
 
         let changed_by = uid.clone();
-        self.room_service
-            .reject_member(rid.clone(), uid, target_uid.clone(), reason)
+        let target_uid = self
+            .room_service
+            .reject_join_request(rid.clone(), uid, request_id.as_str(), reason)
             .await
             .map_err(ApiError::from)?;
 
@@ -346,7 +493,10 @@ impl ClientApiImpl {
             .publish_permission_changed(&rid, &target_uid, &changed_by, None)
             .await?;
 
-        Ok(crate::proto::client::RejectMemberResponse { success: true })
+        Ok(crate::proto::client::RejectRoomJoinReviewResponse {
+            review: Some(self.load_room_join_review(&rid, &request_id).await?),
+            success: true,
+        })
     }
 
     pub async fn update_member_permissions(
@@ -492,8 +642,8 @@ impl ClientApiImpl {
             .is_some();
 
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
+            room_id: member.room_id.clone(),
+            user_id: member.user_id.clone(),
             username,
             role: member.role,
             status: member.status,
@@ -502,8 +652,10 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
+            left_at: member.left_at,
             is_online,
             is_active: true,
+            is_banned: member.is_banned(),
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,
         };

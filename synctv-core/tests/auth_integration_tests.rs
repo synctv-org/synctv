@@ -172,7 +172,7 @@ async fn scenario_ban_user_invalidates_tokens() {
         .expect("Failed to get user")
         .expect("User should exist");
     user_repo
-        .update_status(&user.id, UserStatus::Banned)
+        .ban(&user.id, None, Some("auth integration test".to_string()))
         .await
         .expect("Failed to ban user");
 

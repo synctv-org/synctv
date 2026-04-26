@@ -32,7 +32,6 @@ service AdminService {
     rpc BanUser(BanUserRequest) returns (BanUserResponse);
     rpc UnbanUser(UnbanUserRequest) returns (UnbanUserResponse);
     rpc GetUserRooms(GetUserRoomsRequest) returns (GetUserRoomsResponse);
-    rpc ApproveUser(ApproveUserRequest) returns (ApproveUserResponse);
 
     // =========================
     // Batch Operations
@@ -54,11 +53,8 @@ service AdminService {
     rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
     rpc BanRoom(BanRoomRequest) returns (BanRoomResponse);
     rpc UnbanRoom(UnbanRoomRequest) returns (UnbanRoomResponse);
-    rpc ApproveRoom(ApproveRoomRequest) returns (ApproveRoomResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
     rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
-    rpc ApproveMember(ApproveMemberRequest) returns (ApproveMemberResponse);
-    rpc RejectMember(RejectMemberRequest) returns (RejectMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
     rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
@@ -81,6 +77,24 @@ service AdminService {
     // =========================
     rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
     rpc KickStream(KickStreamRequest) returns (KickStreamResponse);
+
+    // =========================
+    // Review Workflow
+    // =========================
+    rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (ListUserRegistrationReviewsResponse);
+    rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (ApproveUserRegistrationReviewResponse);
+    rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (RejectUserRegistrationReviewResponse);
+    rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (ListRoomCreationReviewsResponse);
+    rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (ApproveRoomCreationReviewResponse);
+    rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (RejectRoomCreationReviewResponse);
+    rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
+    rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
+    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
+
+    // =========================
+    // Moderation Bans
+    // =========================
+    rpc ListBanRecords(ListBanRecordsRequest) returns (ListBanRecordsResponse);
 }
 
 // =========================
@@ -95,6 +109,10 @@ message AdminUser {
     synctv.common.UserStatus status = 5; // Account status
     int64 created_at = 6;
     int64 updated_at = 7;
+    bool is_banned = 8;
+    int64 banned_at = 9;
+    string banned_by = 10;
+    string banned_reason = 11;
 }
 
 message AdminRoom {
@@ -102,7 +120,7 @@ message AdminRoom {
     string name = 2;
     string creator_id = 3;
     string creator_username = 4;
-    synctv.common.RoomStatus status = 5; // Room lifecycle status (Active/Pending/Closed)
+    synctv.common.RoomStatus status = 5; // Room lifecycle status
     bytes settings = 6;
     int32 member_count = 7;
     int64 created_at = 8;
@@ -116,6 +134,69 @@ message AdminRoom {
 message SettingsGroup {
     string name = 1;
     bytes settings = 2; // JSON settings
+}
+
+enum BanTargetType {
+    BAN_TARGET_TYPE_UNSPECIFIED = 0;
+    BAN_TARGET_TYPE_USER = 1;
+    BAN_TARGET_TYPE_ROOM = 2;
+    BAN_TARGET_TYPE_ROOM_MEMBER = 3;
+}
+
+message UserRegistrationReview {
+    string id = 1;
+    string username = 2;
+    string email = 3;
+    int32 signup_method = 4;
+    synctv.common.ReviewStatus status = 5;
+    int64 requested_at = 6;
+    int64 reviewed_at = 7;
+    string reviewed_by = 8;
+    string rejection_reason = 9;
+}
+
+message RoomCreationReview {
+    string id = 1;
+    string requested_by = 2;
+    string requested_by_username = 3;
+    string name = 4;
+    string description = 5;
+    synctv.common.ReviewStatus status = 6;
+    int64 requested_at = 7;
+    int64 reviewed_at = 8;
+    string reviewed_by = 9;
+    string rejection_reason = 10;
+}
+
+message RoomJoinReview {
+    string id = 1;
+    string room_id = 2;
+    string room_name = 3;
+    string user_id = 4;
+    string username = 5;
+    synctv.common.RoomMemberRole requested_role = 6;
+    synctv.common.ReviewStatus status = 7;
+    int64 requested_at = 8;
+    int64 reviewed_at = 9;
+    string reviewed_by = 10;
+    string rejection_reason = 11;
+}
+
+message BanRecord {
+    string id = 1;
+    BanTargetType target_type = 2;
+    string user_id = 3;
+    string username = 4;
+    string room_id = 5;
+    string room_name = 6;
+    string banned_by = 7;
+    string banned_by_username = 8;
+    string reason = 9;
+    int64 starts_at = 10;
+    int64 ends_at = 11;
+    int64 revoked_at = 12;
+    string revoked_by = 13;
+    bool is_active = 14;
 }
 
 // =========================
@@ -146,7 +227,7 @@ message UpdateSettingsRequest {
 }
 
 message UpdateSettingsResponse {
-    // Empty response - success is indicated by no error
+    SettingsGroup group = 1;
 }
 
 message SendTestEmailRequest {
@@ -219,6 +300,7 @@ message ListUsersRequest {
     }]; // Search by username or email
     UserListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+    optional bool is_banned = 8;
 }
 
 message ListUsersResponse {
@@ -385,15 +467,156 @@ enum ActiveStreamListSortBy {
     ACTIVE_STREAM_LIST_SORT_BY_NODE_ID = 5;
 }
 
-message ApproveUserRequest {
-    string user_id = 1 [(buf.validate.field).string = {
+message ListUserRegistrationReviewsRequest {
+    option (buf.validate.message).cel = {
+        id: "admin.list_user_registration_reviews.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "admin.list_user_registration_reviews.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+    string search = 4 [(buf.validate.field).string.max_len = 100];
+}
+
+message ListUserRegistrationReviewsResponse {
+    repeated UserRegistrationReview reviews = 1;
+    int32 total = 2;
+}
+
+message ApproveUserRegistrationReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
         len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
-message ApproveUserResponse {
-    AdminUser user = 1;
+message ApproveUserRegistrationReviewResponse {
+    UserRegistrationReview review = 1;
+    AdminUser user = 2;
+}
+
+message RejectUserRegistrationReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+    string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message RejectUserRegistrationReviewResponse {
+    UserRegistrationReview review = 1;
+    bool success = 2;
+}
+
+message ListRoomCreationReviewsRequest {
+    option (buf.validate.message).cel = {
+        id: "admin.list_room_creation_reviews.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "admin.list_room_creation_reviews.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+    string requested_by = 4 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+    string search = 5 [(buf.validate.field).string.max_len = 100];
+}
+
+message ListRoomCreationReviewsResponse {
+    repeated RoomCreationReview reviews = 1;
+    int32 total = 2;
+}
+
+message ApproveRoomCreationReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+}
+
+message ApproveRoomCreationReviewResponse {
+    RoomCreationReview review = 1;
+    AdminRoom room = 2;
+}
+
+message RejectRoomCreationReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+    string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message RejectRoomCreationReviewResponse {
+    RoomCreationReview review = 1;
+    bool success = 2;
+}
+
+message ListRoomJoinReviewsRequest {
+    option (buf.validate.message).cel = {
+        id: "admin.list_room_join_reviews.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "admin.list_room_join_reviews.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+    string room_id = 4 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+    string user_id = 5 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+}
+
+message ListRoomJoinReviewsResponse {
+    repeated RoomJoinReview reviews = 1;
+    int32 total = 2;
+}
+
+message ApproveRoomJoinReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+}
+
+message ApproveRoomJoinReviewResponse {
+    RoomJoinReview review = 1;
+    synctv.common.RoomMember member = 2;
+}
+
+message RejectRoomJoinReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+    string reason = 2 [(buf.validate.field).string.max_len = 500];
+}
+
+message RejectRoomJoinReviewResponse {
+    RoomJoinReview review = 1;
+    bool success = 2;
 }
 
 // =========================
@@ -532,17 +755,6 @@ message UnbanRoomResponse {
     AdminRoom room = 1;
 }
 
-message ApproveRoomRequest {
-    string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-}
-
-message ApproveRoomResponse {
-    AdminRoom room = 1;
-}
-
 message GetRoomMembersRequest {
     string room_id = 1 [(buf.validate.field).string = {
         len: 12,
@@ -567,6 +779,7 @@ message GetRoomMembersRequest {
     synctv.common.MemberStatus status = 6 [(buf.validate.field).enum.defined_only = true];
     RoomMemberListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+    optional bool is_banned = 9;
 }
 
 message GetRoomMembersResponse {
@@ -589,37 +802,6 @@ message AddMemberRequest {
 
 message AddMemberResponse {
     synctv.common.RoomMember member = 1;
-}
-
-message ApproveMemberRequest {
-    string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-    string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-}
-
-message ApproveMemberResponse {
-    synctv.common.RoomMember member = 1;
-}
-
-message RejectMemberRequest {
-    string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-    string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
-        pattern: "^[A-Za-z0-9]+$"
-    }];
-    string reason = 3 [(buf.validate.field).string.max_len = 500];
-}
-
-message RejectMemberResponse {
-    bool success = 1;
 }
 
 message UpdateMemberPermissionsRequest {
@@ -890,6 +1072,36 @@ message BatchBanRoomsResponse {
     repeated BatchResultItem results = 1; // Per-room results
     int32 succeeded = 2;                   // Count of successful operations
     int32 failed = 3;                      // Count of failed operations
+}
+
+message ListBanRecordsRequest {
+    option (buf.validate.message).cel = {
+        id: "admin.list_ban_records.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "admin.list_ban_records.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+    int32 page = 1;
+    int32 page_size = 2;
+    BanTargetType target_type = 3 [(buf.validate.field).enum.defined_only = true];
+    optional bool active = 4;
+    string user_id = 5 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+    string room_id = 6 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+}
+
+message ListBanRecordsResponse {
+    repeated BanRecord bans = 1;
+    int32 total = 2;
 }
 
 // Batch delete rooms request

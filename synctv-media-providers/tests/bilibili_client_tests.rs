@@ -19,7 +19,7 @@ fn test_match_url_bvid_with_query_params() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7mD?p=2&vd_source=abc")
             .unwrap();
-    assert_eq!(media_type, "video");
+    assert_eq!(media_type, "bv");
     assert_eq!(id, "BV1xx411c7mD");
 }
 
@@ -27,7 +27,7 @@ fn test_match_url_bvid_with_query_params() {
 fn test_match_url_bvid_mobile() {
     let (media_type, id) =
         BilibiliClient::match_url("https://m.bilibili.com/video/BV1xx411c7mD").unwrap();
-    assert_eq!(media_type, "video");
+    assert_eq!(media_type, "bv");
     assert_eq!(id, "BV1xx411c7mD");
 }
 
@@ -43,16 +43,16 @@ fn test_match_url_live_room_direct() {
 fn test_match_url_bangumi_ep_long_id() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep999999999").unwrap();
-    assert_eq!(media_type, "bangumi");
-    assert_eq!(id, "ep999999999");
+    assert_eq!(media_type, "ep");
+    assert_eq!(id, "999999999");
 }
 
 #[test]
 fn test_match_url_bangumi_ss_long_id() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss888888").unwrap();
-    assert_eq!(media_type, "bangumi");
-    assert_eq!(id, "ss888888");
+    assert_eq!(media_type, "ss");
+    assert_eq!(id, "888888");
 }
 
 // extract_bvid / extract_epid / is_short_link
@@ -237,14 +237,15 @@ fn test_video_page_info_resp_deserialize() {
     });
     let resp: VideoPageInfoResp = serde_json::from_value(json).unwrap();
     assert_eq!(resp.code, 0);
-    assert_eq!(resp.data.title, "Test Video");
-    assert_eq!(resp.data.bvid, "BV1xx411c7mD");
-    assert_eq!(resp.data.aid, 170_001);
-    assert_eq!(resp.data.cid, 279_786);
-    assert_eq!(resp.data.owner.name, "TestUser");
-    assert_eq!(resp.data.pages.len(), 1);
-    assert_eq!(resp.data.pages[0].part, "Part 1");
-    assert_eq!(resp.data.pages[0].duration, 300);
+    let data = resp.data.expect("successful video page response has data");
+    assert_eq!(data.title, "Test Video");
+    assert_eq!(data.bvid, "BV1xx411c7mD");
+    assert_eq!(data.aid, 170_001);
+    assert_eq!(data.cid, 279_786);
+    assert_eq!(data.owner.name, "TestUser");
+    assert_eq!(data.pages.len(), 1);
+    assert_eq!(data.pages[0].part, "Part 1");
+    assert_eq!(data.pages[0].duration, 300);
 }
 
 #[test]
@@ -540,8 +541,9 @@ fn test_video_page_info_with_ugc_season() {
         }
     });
     let resp: VideoPageInfoResp = serde_json::from_value(json).unwrap();
-    assert!(resp.data.ugc_season.is_some());
-    let ugc = resp.data.ugc_season.unwrap();
+    let data = resp.data.expect("successful UGC season response has data");
+    assert!(data.ugc_season.is_some());
+    let ugc = data.ugc_season.unwrap();
     assert_eq!(ugc.title, "My UGC Season");
     assert_eq!(ugc.sections.len(), 1);
     assert_eq!(ugc.sections[0].episodes.len(), 1);

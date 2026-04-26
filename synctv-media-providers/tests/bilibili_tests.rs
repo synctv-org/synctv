@@ -11,7 +11,7 @@ use synctv_media_providers::BilibiliClient;
 fn test_match_url_bvid_standard() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7mD").unwrap();
-    assert_eq!(media_type, "video");
+    assert_eq!(media_type, "bv");
     assert_eq!(id, "BV1xx411c7mD");
 }
 
@@ -19,16 +19,16 @@ fn test_match_url_bvid_standard() {
 fn test_match_url_bangumi_ep() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep123456").unwrap();
-    assert_eq!(media_type, "bangumi");
-    assert_eq!(id, "ep123456");
+    assert_eq!(media_type, "ep");
+    assert_eq!(id, "123456");
 }
 
 #[test]
 fn test_match_url_bangumi_ss() {
     let (media_type, id) =
         BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss654321").unwrap();
-    assert_eq!(media_type, "bangumi");
-    assert_eq!(id, "ss654321");
+    assert_eq!(media_type, "ss");
+    assert_eq!(id, "654321");
 }
 
 #[test]

@@ -9,21 +9,27 @@ use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin::{
-    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse, ApproveMemberRequest,
-    ApproveMemberResponse, ApproveRoomRequest, ApproveRoomResponse, ApproveUserRequest,
-    ApproveUserResponse, BanMemberRequest, BanMemberResponse, BanRoomRequest, BanRoomResponse,
-    BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
-    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
-    BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
-    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
-    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
-    GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
-    GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
-    GetSystemStatsResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
-    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
-    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
-    ListAdminsResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest, ListUsersResponse,
-    RejectMemberRequest, RejectMemberResponse, RemoveAdminRequest, RemoveAdminResponse,
+    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
+    ApproveRoomCreationReviewRequest, ApproveRoomCreationReviewResponse,
+    ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
+    ApproveUserRegistrationReviewRequest, ApproveUserRegistrationReviewResponse, BanMemberRequest,
+    BanMemberResponse, BanRoomRequest, BanRoomResponse, BanUserRequest, BanUserResponse,
+    BatchBanRoomsRequest, BatchBanRoomsResponse, BatchBanUsersRequest, BatchBanUsersResponse,
+    BatchDeleteRoomsRequest, BatchDeleteRoomsResponse, BatchDeleteUsersRequest,
+    BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse, DeleteRoomRequest,
+    DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse, GetRoomMembersRequest,
+    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
+    GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
+    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserRequest,
+    GetUserResponse, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
+    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
+    ListBanRecordsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
+    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
+    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
+    ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
+    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
+    RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
     SendTestEmailResponse, UnbanMemberRequest, UnbanMemberResponse, UnbanRoomRequest,
     UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateMemberPermissionsRequest,
@@ -344,16 +350,6 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    async fn approve_user(
-        &self,
-        request: Request<ApproveUserRequest>,
-    ) -> Result<Response<ApproveUserResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.approve_user(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
     // Batch Operations
 
     async fn batch_ban_users(
@@ -493,16 +489,6 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    async fn approve_room(
-        &self,
-        request: Request<ApproveRoomRequest>,
-    ) -> Result<Response<ApproveRoomResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.approve_room(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
     async fn get_room_members(
         &self,
         request: Request<GetRoomMembersRequest>,
@@ -519,26 +505,6 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddMemberResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.add_member(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
-    async fn approve_member(
-        &self,
-        request: Request<ApproveMemberRequest>,
-    ) -> Result<Response<ApproveMemberResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.approve_member(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
-    async fn reject_member(
-        &self,
-        request: Request<RejectMemberRequest>,
-    ) -> Result<Response<RejectMemberResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.reject_member(req, &validated.user_id, &ctx).await
         })
         .await
     }
@@ -680,6 +646,114 @@ impl AdminService for AdminServiceImpl {
             api.kick_stream(req, &validated.user_id, &ctx)
                 .await
                 .map(|()| KickStreamResponse {})
+        })
+        .await
+    }
+
+    async fn list_user_registration_reviews(
+        &self,
+        request: Request<ListUserRegistrationReviewsRequest>,
+    ) -> Result<Response<ListUserRegistrationReviewsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.list_user_registration_reviews(req, &validated.user_id)
+                .await
+        })
+        .await
+    }
+
+    async fn approve_user_registration_review(
+        &self,
+        request: Request<ApproveUserRegistrationReviewRequest>,
+    ) -> Result<Response<ApproveUserRegistrationReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_user_registration_review(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn reject_user_registration_review(
+        &self,
+        request: Request<RejectUserRegistrationReviewRequest>,
+    ) -> Result<Response<RejectUserRegistrationReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.reject_user_registration_review(req, &validated.user_id)
+                .await
+        })
+        .await
+    }
+
+    async fn list_room_creation_reviews(
+        &self,
+        request: Request<ListRoomCreationReviewsRequest>,
+    ) -> Result<Response<ListRoomCreationReviewsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.list_room_creation_reviews(req, &validated.user_id)
+                .await
+        })
+        .await
+    }
+
+    async fn approve_room_creation_review(
+        &self,
+        request: Request<ApproveRoomCreationReviewRequest>,
+    ) -> Result<Response<ApproveRoomCreationReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_room_creation_review(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn reject_room_creation_review(
+        &self,
+        request: Request<RejectRoomCreationReviewRequest>,
+    ) -> Result<Response<RejectRoomCreationReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.reject_room_creation_review(req, &validated.user_id)
+                .await
+        })
+        .await
+    }
+
+    async fn list_room_join_reviews(
+        &self,
+        request: Request<ListRoomJoinReviewsRequest>,
+    ) -> Result<Response<ListRoomJoinReviewsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.list_room_join_reviews(req, &validated.user_id).await
+        })
+        .await
+    }
+
+    async fn approve_room_join_review(
+        &self,
+        request: Request<ApproveRoomJoinReviewRequest>,
+    ) -> Result<Response<ApproveRoomJoinReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.approve_room_join_review(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn reject_room_join_review(
+        &self,
+        request: Request<RejectRoomJoinReviewRequest>,
+    ) -> Result<Response<RejectRoomJoinReviewResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.reject_room_join_review(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn list_ban_records(
+        &self,
+        request: Request<ListBanRecordsRequest>,
+    ) -> Result<Response<ListBanRecordsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.list_ban_records(req, &validated.user_id).await
         })
         .await
     }

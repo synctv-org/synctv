@@ -52,7 +52,7 @@ message CheckQRRequest {
 }
 
 // QR login status enum
-// Values match synctv-media-providers QRCodeStatus for compatibility
+// Wire values mirror synctv-media-providers QRCodeStatus.
 enum QRLoginStatus {
   QR_LOGIN_STATUS_UNSPECIFIED = 0;
   QR_LOGIN_STATUS_EXPIRED = 1;

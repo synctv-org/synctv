@@ -72,6 +72,73 @@ impl std::fmt::Display for UserRole {
     }
 }
 
+/// Effective account status.
+///
+/// This is not stored on `users`; it is derived from active records in
+/// `user_bans`. Registration approval/rejection belongs to
+/// `user_registration_requests`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+#[repr(i16)]
+pub enum UserStatus {
+    #[default]
+    Active = 1,
+    Banned = 2,
+}
+
+impl UserStatus {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Banned => "banned",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    #[must_use]
+    pub const fn is_banned(&self) -> bool {
+        matches!(self, Self::Banned)
+    }
+
+    #[must_use]
+    pub const fn can_login(&self) -> bool {
+        self.is_active()
+    }
+
+    #[must_use]
+    pub const fn can_create_room(&self) -> bool {
+        self.is_active()
+    }
+
+    #[must_use]
+    pub const fn can_join_room(&self) -> bool {
+        self.is_active()
+    }
+}
+
+impl FromStr for UserStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "banned" => Ok(Self::Banned),
+            _ => Err(format!("Unknown user status: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for UserStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // Database mapping: UserRole -> SMALLINT (1=root, 2=admin, 3=user)
 impl sqlx::Type<sqlx::Postgres> for UserRole {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
@@ -103,144 +170,6 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserRole {
             2 => Ok(Self::Admin),
             3 => Ok(Self::User),
             _ => Err(format!("Invalid UserRole value: {val}").into()),
-        }
-    }
-}
-
-/// User account status (design document 06: role and status separation)
-///
-/// This represents the user's ACCOUNT state, independent of their role.
-/// A user can be Active/Pending/Banned regardless of their Role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[repr(i16)]
-pub enum UserStatus {
-    /// Normal active state
-    /// - Can login and use all features
-    Active = 1,
-
-    /// Pending approval
-    /// - Can login but cannot create or join rooms
-    Pending = 2,
-
-    /// Rejected during signup or review
-    /// - Cannot login
-    /// - May be re-approved later without implying abuse
-    Rejected = 3,
-
-    /// Banned state
-    /// - Cannot login
-    /// - All operations forbidden
-    Banned = 4,
-}
-
-impl UserStatus {
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Pending => "pending",
-            Self::Rejected => "rejected",
-            Self::Banned => "banned",
-        }
-    }
-
-    /// Check if user can login with this status
-    ///
-    /// Only `Active` users can login. `Pending` users must verify their email first (or await
-    /// admin approval), and `Banned` users are permanently blocked. This is consistent with the
-    /// security pipeline which rejects `Pending` users at token validation time.
-    #[must_use]
-    pub const fn can_login(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
-    /// Check if user can create rooms with this status
-    #[must_use]
-    pub const fn can_create_room(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
-    /// Check if user can join rooms with this status
-    #[must_use]
-    pub const fn can_join_room(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
-    #[must_use]
-    pub const fn is_active(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
-    }
-
-    #[must_use]
-    pub const fn is_rejected(&self) -> bool {
-        matches!(self, Self::Rejected)
-    }
-
-    #[must_use]
-    pub const fn is_banned(&self) -> bool {
-        matches!(self, Self::Banned)
-    }
-}
-
-impl FromStr for UserStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "active" => Ok(Self::Active),
-            "pending" => Ok(Self::Pending),
-            "rejected" => Ok(Self::Rejected),
-            "banned" => Ok(Self::Banned),
-            _ => Err(format!("Unknown user status: {s}")),
-        }
-    }
-}
-
-impl std::fmt::Display for UserStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-// Database mapping: UserStatus -> SMALLINT (1=active, 2=pending, 3=rejected, 4=banned)
-impl sqlx::Type<sqlx::Postgres> for UserStatus {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for UserStatus {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let val: i16 = match self {
-            Self::Active => 1,
-            Self::Pending => 2,
-            Self::Rejected => 3,
-            Self::Banned => 4,
-        };
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserStatus {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        match val {
-            1 => Ok(Self::Active),
-            2 => Ok(Self::Pending),
-            3 => Ok(Self::Rejected),
-            4 => Ok(Self::Banned),
-            _ => Err(format!("Invalid UserStatus value: {val}").into()),
         }
     }
 }
@@ -339,7 +268,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: UserId,
     pub username: String,
@@ -350,8 +279,20 @@ pub struct User {
     /// User RBAC role (global access level) - SEPARATE from status
     pub role: UserRole,
 
-    /// User status (account state) - SEPARATE from role
+    #[serde(skip)]
     pub status: UserStatus,
+
+    #[serde(skip)]
+    pub is_banned: bool,
+
+    #[serde(skip)]
+    pub banned_at: Option<DateTime<Utc>>,
+
+    #[serde(skip)]
+    pub banned_by: Option<UserId>,
+
+    #[serde(skip)]
+    pub banned_reason: Option<String>,
 
     pub signup_method: SignupMethod,
     pub email_verified: bool, // Whether email has been verified
@@ -367,6 +308,48 @@ pub struct User {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let is_banned = row.try_get("is_banned").unwrap_or(false);
+        let banned_at = row
+            .try_get::<Option<DateTime<Utc>>, _>("banned_at")
+            .unwrap_or(None);
+        let banned_by = row
+            .try_get::<Option<UserId>, _>("banned_by")
+            .unwrap_or(None);
+        let banned_reason = row
+            .try_get::<Option<String>, _>("banned_reason")
+            .unwrap_or(None);
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            username: row.try_get("username")?,
+            email: row.try_get("email")?,
+            password_hash: row.try_get("password_hash")?,
+            role: row.try_get("role")?,
+            status: if is_banned {
+                UserStatus::Banned
+            } else {
+                UserStatus::Active
+            },
+            is_banned,
+            banned_at,
+            banned_by,
+            banned_reason,
+            signup_method: row.try_get("signup_method")?,
+            email_verified: row.try_get("email_verified")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            password_changed_at: row.try_get("password_changed_at")?,
+            password_version: row.try_get("password_version")?,
+            version: row.try_get("version")?,
+            deleted_at: row.try_get("deleted_at")?,
+        })
+    }
+}
+
 impl User {
     #[must_use]
     pub fn new(
@@ -375,27 +358,6 @@ impl User {
         password_hash: String,
         signup_method: SignupMethod,
     ) -> Self {
-        Self::new_with_status(
-            username,
-            email,
-            password_hash,
-            signup_method,
-            UserStatus::Pending,
-        )
-    }
-
-    /// Create a new user with an explicit initial status.
-    ///
-    /// Use this when the caller needs to control whether the user starts as `Active`
-    /// (email verification disabled) or `Pending` (email verification required).
-    #[must_use]
-    pub fn new_with_status(
-        username: String,
-        email: Option<String>,
-        password_hash: String,
-        signup_method: SignupMethod,
-        initial_status: UserStatus,
-    ) -> Self {
         let now = Utc::now();
         Self {
             id: UserId::new(),
@@ -403,7 +365,11 @@ impl User {
             email,
             password_hash,
             role: UserRole::User, // Default role
-            status: initial_status,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method,
             email_verified: false, // Default to not verified
             created_at: now,
@@ -413,6 +379,19 @@ impl User {
             version: 0,
             deleted_at: None,
         }
+    }
+
+    #[must_use]
+    pub fn new_with_status(
+        username: String,
+        email: Option<String>,
+        password_hash: String,
+        signup_method: SignupMethod,
+        initial_status: UserStatus,
+    ) -> Self {
+        let mut user = Self::new(username, email, password_hash, signup_method);
+        user.status = initial_status;
+        user
     }
 
     #[must_use]
@@ -439,13 +418,13 @@ impl User {
     /// Check if user can login (checks status, not role)
     #[must_use]
     pub const fn can_login(&self) -> bool {
-        self.status.can_login()
+        self.deleted_at.is_none() && !self.is_banned && self.status.is_active()
     }
 
     /// Check if user can create rooms (checks both role and status)
     #[must_use]
     pub const fn can_create_room(&self, allow_user: bool) -> bool {
-        if !self.status.can_create_room() {
+        if self.deleted_at.is_some() || self.is_banned || !self.status.is_active() {
             return false;
         }
 
@@ -458,7 +437,7 @@ impl User {
     /// Check if user can join rooms (checks status)
     #[must_use]
     pub const fn can_join_room(&self) -> bool {
-        self.status.can_join_room()
+        self.deleted_at.is_none() && !self.is_banned && self.status.is_active()
     }
 
     /// Check if this user has a usable password for authentication.
@@ -529,7 +508,6 @@ pub struct UpdateUserRequest {
 pub enum UserListSortBy {
     Username,
     Email,
-    Status,
     Role,
     UpdatedAt,
     #[default]
@@ -542,7 +520,6 @@ impl UserListSortBy {
         match self {
             Self::Username => "username",
             Self::Email => "email",
-            Self::Status => "status",
             Self::Role => "role",
             Self::UpdatedAt => "updated_at",
             Self::CreatedAt => "created_at",
@@ -557,7 +534,6 @@ impl FromStr for UserListSortBy {
         match raw.trim().to_ascii_lowercase().as_str() {
             "username" => Ok(Self::Username),
             "email" => Ok(Self::Email),
-            "status" => Ok(Self::Status),
             "role" => Ok(Self::Role),
             "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
             "created_at" | "createdat" => Ok(Self::CreatedAt),
@@ -571,7 +547,6 @@ impl std::fmt::Display for UserListSortBy {
         let value = match self {
             Self::Username => "username",
             Self::Email => "email",
-            Self::Status => "status",
             Self::Role => "role",
             Self::UpdatedAt => "updated_at",
             Self::CreatedAt => "created_at",
@@ -584,8 +559,11 @@ impl std::fmt::Display for UserListSortBy {
 pub struct UserListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
+    #[serde(default)]
     pub status: Option<UserStatus>,
     pub role: Option<UserRole>,
+    #[serde(default)]
+    pub is_banned: Option<bool>,
     #[serde(default)]
     pub sort_by: UserListSortBy,
     #[serde(default)]
@@ -608,7 +586,6 @@ mod tests {
             email: Some("test@example.com".to_string()),
             password_hash: password_hash.to_string(),
             role: UserRole::User,
-            status: UserStatus::Active,
             signup_method,
             email_verified: true,
             created_at: now,
@@ -617,6 +594,11 @@ mod tests {
             password_version,
             version: 0,
             deleted_at: None,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         }
     }
 

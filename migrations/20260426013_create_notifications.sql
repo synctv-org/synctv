@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     is_read BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id, created_at)  -- Partition key must be in PK
+    PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
 CREATE TABLE IF NOT EXISTS notifications_default PARTITION OF notifications DEFAULT;
@@ -113,7 +113,7 @@ DECLARE
     cutoff_date DATE;
     cutoff_name TEXT;
     partition_record RECORD;
-    dropped JSON := '[]'::JSON;
+    dropped JSONB := '[]'::JSONB;
     drop_count INTEGER := 0;
 BEGIN
     cutoff_date := DATE_TRUNC('month', CURRENT_DATE) - (retain_months || ' months')::INTERVAL;
@@ -130,7 +130,9 @@ BEGIN
         ORDER BY tablename
     LOOP
         EXECUTE format('DROP TABLE IF EXISTS %I', partition_record.tablename);
-        dropped := dropped || json_build_object('partition', partition_record.tablename);
+        dropped := dropped || jsonb_build_array(
+            jsonb_build_object('partition', partition_record.tablename)
+        );
         drop_count := drop_count + 1;
 
         RAISE NOTICE 'Dropped notification partition: %', partition_record.tablename;
@@ -147,7 +149,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION drop_old_notification_partitions(INTEGER) IS
-'Drop notification partitions older than N months. Parameter: months to retain (default: 6)';
+    'Drop notification partitions older than the configured retention window';
 
 CREATE OR REPLACE FUNCTION cleanup_old_notifications(
     read_retention_days INTEGER DEFAULT 30,
@@ -177,14 +179,15 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION cleanup_old_notifications(INTEGER, INTEGER) IS
-'Delete old notifications: read notifications after read_retention_days (default 30), all notifications after max_retention_days (default 90)';
+    'Delete old notifications by read and maximum retention windows';
 
 SELECT create_notification_partitions(3) AS initial_partitions;
 
-COMMENT ON TABLE notifications IS 'User notifications partitioned by month (RANGE on created_at). Use drop_old_notification_partitions() for O(1) retention.';
+COMMENT ON TABLE notifications IS 'User notifications partitioned by month';
 COMMENT ON COLUMN notifications.type IS 'Notification type';
 COMMENT ON COLUMN notifications.data IS 'Additional metadata in JSON format';
+
 CREATE TRIGGER trigger_update_notifications_updated_at
-BEFORE UPDATE ON notifications
-FOR EACH ROW
-EXECUTE FUNCTION update_updated_at_column();
+    BEFORE UPDATE ON notifications
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();

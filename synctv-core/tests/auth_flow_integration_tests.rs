@@ -34,7 +34,7 @@ async fn test_complete_registration_flow() {
         email: Some(email.clone()),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::Pending,
+        status: UserStatus::Active,
         email_verified: false,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
@@ -43,17 +43,20 @@ async fn test_complete_registration_flow() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     let created_user = user_repo
         .create(&user)
         .await
         .expect("Failed to create user");
-    assert_eq!(created_user.status, UserStatus::Pending);
+    assert_eq!(created_user.status, UserStatus::Active);
     assert!(!created_user.email_verified);
 
     let mut verified_user = created_user.clone();
-    verified_user.status = UserStatus::Active;
     verified_user.email_verified = true;
 
     let old_version = verified_user.version;
@@ -122,6 +125,10 @@ async fn test_login_with_wrong_password() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     user_repo
@@ -161,7 +168,7 @@ async fn test_login_unverified_user_rejected() {
         email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::Pending,
+        status: UserStatus::Active,
         email_verified: false,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
@@ -170,6 +177,10 @@ async fn test_login_unverified_user_rejected() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     user_repo
@@ -185,7 +196,7 @@ async fn test_login_unverified_user_rejected() {
         .expect("User not found");
 
     // Check status
-    assert_eq!(fetched_user.status, UserStatus::Pending);
+    assert_eq!(fetched_user.status, UserStatus::Active);
     assert!(!fetched_user.email_verified);
 
     // Application should reject login for unverified users
@@ -252,6 +263,10 @@ async fn test_password_change_invalidates_tokens() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     let created_user = user_repo
@@ -333,6 +348,10 @@ async fn test_concurrent_login_attempts() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     let created_user = user_repo
@@ -395,7 +414,7 @@ async fn test_banned_user_login_rejected() {
         email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::Banned,
+        status: UserStatus::Active,
         email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
@@ -404,12 +423,20 @@ async fn test_banned_user_login_rejected() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
-    user_repo
+    let created_user = user_repo
         .create(&user)
         .await
         .expect("Failed to create user");
+    user_repo
+        .ban(&created_user.id, None, Some("auth flow test".to_string()))
+        .await
+        .expect("Failed to ban user");
 
     // Fetch user
     let fetched_user = user_repo
@@ -418,8 +445,8 @@ async fn test_banned_user_login_rejected() {
         .expect("Failed to fetch user")
         .expect("User not found");
 
-    // Check status
     assert_eq!(fetched_user.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&fetched_user.id).await.unwrap());
 
     // Application should reject login for banned users
     // (Enforced in service layer)
@@ -452,6 +479,10 @@ async fn test_username_case_insensitive_login() {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
 
     user_repo

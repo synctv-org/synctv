@@ -14,8 +14,14 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 }
 
 pub type AddMemberBody = crate::proto::client::AddMemberRequest;
-pub type RejectMemberBody = crate::proto::client::RejectMemberRequest;
 pub type BanMemberBody = crate::proto::client::BanMemberRequest;
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RejectRoomJoinReviewBody {
+    #[serde(default)]
+    pub reason: String,
+}
 
 /// Add a member to a room.
 #[cfg_attr(
@@ -65,46 +71,41 @@ pub async fn add_member(
     Ok(Json(resp))
 }
 
-/// Approve a pending member.
+/// List room join reviews.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
-        post,
-        path = "/api/rooms/{room_id}/members/{user_id}/approve",
+        get,
+        path = "/api/rooms/{room_id}/reviews/joins",
         tag = "Room Member",
-        params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
-        ),
+        params(("room_id" = String, Path, description = "Room ID"), crate::proto::client::ListRoomJoinReviewsRequest),
         responses(
-            (status = 200, description = "Member approved", body = crate::proto::client::ApproveMemberResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Pending member not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Room join reviews", body = crate::proto::client::ListRoomJoinReviewsResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
         ),
-        security(
-            ("bearer_auth" = [])
-        )
+        security(("bearer_auth" = []))
     )
 )]
-pub async fn approve_member(
+pub async fn list_room_join_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-) -> AppResult<Json<crate::proto::client::ApproveMemberResponse>> {
+    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    crate::http::validation::ValidatedQuery(req): crate::http::validation::ValidatedQuery<
+        crate::proto::client::ListRoomJoinReviewsRequest,
+    >,
+) -> AppResult<Json<crate::proto::client::ListRoomJoinReviewsResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
-    let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::ApproveMemberRequest::default().with_user_id(user_id);
+    let crate::proto::client::RoomPathRequest { room_id } = path;
     let request_meta = request_metadata(request_meta);
     let client_api = state.client_api.clone();
     let resp = state
         .client_api
         .execute_user_endpoint(
             &request_meta,
-            EndpointRateLimitCategory::Write,
+            EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 client_api
-                    .approve_member(authenticated.user_id.as_str(), &room_id, req)
+                    .list_room_join_reviews(authenticated.user_id.as_str(), &room_id, req)
                     .await
             },
         )
@@ -113,39 +114,37 @@ pub async fn approve_member(
     Ok(Json(resp))
 }
 
-/// Reject a pending member.
+/// Approve a room join review.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/members/{user_id}/reject",
+        path = "/api/rooms/{room_id}/reviews/joins/{request_id}/approve",
         tag = "Room Member",
         params(
             ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("request_id" = String, Path, description = "Review request ID")
         ),
-        request_body = crate::proto::client::RejectMemberRequest,
         responses(
-            (status = 200, description = "Member rejected", body = crate::proto::client::RejectMemberResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 200, description = "Room join review approved", body = crate::proto::client::ApproveRoomJoinReviewResponse),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
             (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Pending member not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 404, description = "Review not found", body = crate::openapi::ErrorResponseDoc)
         ),
-        security(
-            ("bearer_auth" = [])
-        )
+        security(("bearer_auth" = []))
     )
 )]
-pub async fn reject_member(
+pub async fn approve_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-    Json(req): Json<RejectMemberBody>,
-) -> AppResult<Json<crate::proto::client::RejectMemberResponse>> {
+    Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
+) -> AppResult<Json<crate::proto::client::ApproveRoomJoinReviewResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
-    let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = req.with_user_id(user_id);
+    let crate::proto::client::RoomJoinReviewPathRequest {
+        room_id,
+        request_id,
+    } = path;
+    let req = crate::proto::client::ApproveRoomJoinReviewRequest { request_id };
     let request_meta = request_metadata(request_meta);
     let client_api = state.client_api.clone();
     let resp = state
@@ -155,7 +154,62 @@ pub async fn reject_member(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .reject_member(authenticated.user_id.as_str(), &room_id, req)
+                    .approve_room_join_review(authenticated.user_id.as_str(), &room_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)?;
+    Ok(Json(resp))
+}
+
+/// Reject a room join review.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/reviews/joins/{request_id}/reject",
+        tag = "Room Member",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("request_id" = String, Path, description = "Review request ID")
+        ),
+        request_body = RejectRoomJoinReviewBody,
+        responses(
+            (status = 200, description = "Room join review rejected", body = crate::proto::client::RejectRoomJoinReviewResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Review not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn reject_room_join_review(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
+    Json(req): Json<RejectRoomJoinReviewBody>,
+) -> AppResult<Json<crate::proto::client::RejectRoomJoinReviewResponse>> {
+    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
+    let crate::proto::client::RoomJoinReviewPathRequest {
+        room_id,
+        request_id,
+    } = path;
+    let req = crate::proto::client::RejectRoomJoinReviewRequest {
+        request_id,
+        reason: req.reason,
+    };
+    let request_meta = request_metadata(request_meta);
+    let client_api = state.client_api.clone();
+    let resp = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .reject_room_join_review(authenticated.user_id.as_str(), &room_id, req)
                     .await
             },
         )
@@ -361,6 +415,8 @@ pub async fn unban_member(
 
 #[cfg(test)]
 mod tests {
+    use super::RejectRoomJoinReviewBody;
+
     #[test]
     fn test_room_member_target_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::RoomMemberTargetPathRequest =
@@ -372,12 +428,10 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_member_request_deserializes_reason_field() {
-        let req: crate::proto::client::RejectMemberRequest =
-            serde_json::from_str(r#"{"user_id":"AbC123xYz890","reason":"denied"}"#)
-                .expect("deserialize reject request");
+    fn test_reject_room_join_review_body_deserializes_reason_field() {
+        let req: RejectRoomJoinReviewBody = serde_json::from_str(r#"{"reason":"denied"}"#)
+            .expect("deserialize reject room join review body");
 
-        assert_eq!(req.user_id, "AbC123xYz890");
         assert_eq!(req.reason, "denied");
     }
 }

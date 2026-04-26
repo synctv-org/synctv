@@ -9,6 +9,7 @@ pub mod playback;
 pub mod playlist;
 pub mod provider_instance;
 pub mod query;
+pub mod review;
 pub mod room;
 pub mod room_member;
 pub mod room_settings;
@@ -41,6 +42,7 @@ pub use provider_instance::{
     UserProviderCredential,
 };
 pub use query::SortDirection;
+pub use review::ReviewStatus;
 pub use room::{
     AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomListQuery, RoomListSortBy,
     RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,

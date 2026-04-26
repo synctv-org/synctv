@@ -104,12 +104,6 @@ fn build_my_room_list_query(
             Ok(synctv_proto::common::RoomStatus::Active) => {
                 Some(synctv_core::models::RoomStatus::Active)
             }
-            Ok(synctv_proto::common::RoomStatus::Pending) => {
-                Some(synctv_core::models::RoomStatus::Pending)
-            }
-            Ok(synctv_proto::common::RoomStatus::Rejected) => {
-                Some(synctv_core::models::RoomStatus::Rejected)
-            }
             Ok(synctv_proto::common::RoomStatus::Closed) => {
                 Some(synctv_core::models::RoomStatus::Closed)
             }
@@ -531,6 +525,7 @@ impl ClientApiImpl {
             self.room_service.permission_service(),
         );
 
+        let requires_approval = proto_members.is_empty();
         Ok(crate::proto::client::JoinRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
@@ -540,7 +535,7 @@ impl ClientApiImpl {
             members: proto_members,
             playback_state,
             membership_status: member_status_to_proto(member.status),
-            requires_approval: member.status.is_pending(),
+            requires_approval,
         })
     }
 

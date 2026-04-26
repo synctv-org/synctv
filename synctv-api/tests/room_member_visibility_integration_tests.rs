@@ -28,6 +28,10 @@ fn make_user(username: &str) -> User {
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         email_verified: true,
         signup_method: SignupMethod::Email,
         created_at: now,
@@ -136,6 +140,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
                 search: String::new(),
                 role: None,
                 status: None,
+                is_banned: None,
                 sort_by: 0,
                 sort_direction: 0,
             },
@@ -214,6 +219,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
                 search: String::new(),
                 role: None,
                 status: None,
+                is_banned: None,
                 sort_by: 0,
                 sort_direction: 0,
             },
@@ -235,26 +241,41 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
     );
 
     let err = client_api
-        .get_room_members(
+        .list_room_join_reviews(
             observer.id.as_str(),
             room.id.as_str(),
-            synctv_proto::client::GetRoomMembersRequest {
+            synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 20,
-                search: String::new(),
-                role: None,
-                status: Some(synctv_proto::common::MemberStatus::Pending as i32),
-                sort_by: 0,
-                sort_direction: 0,
+                status: synctv_proto::common::ReviewStatus::Pending as i32,
+                user_id: String::new(),
             },
         )
         .await
         .unwrap_err();
 
     assert!(
-        matches!(err, synctv_api::impls::ApiError::Authorization(ref msg) if msg.contains("requires room moderation permissions")),
-        "non-moderators must not query pending members explicitly, got: {err:?}"
+        matches!(err, synctv_api::impls::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
+        "non-moderators must not list room join reviews, got: {err:?}"
     );
+
+    let reviews = client_api
+        .list_room_join_reviews(
+            owner.id.as_str(),
+            room.id.as_str(),
+            synctv_proto::client::ListRoomJoinReviewsRequest {
+                page: 1,
+                page_size: 20,
+                status: synctv_proto::common::ReviewStatus::Pending as i32,
+                user_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reviews.total, 1);
+    assert_eq!(reviews.reviews.len(), 1);
+    assert_eq!(reviews.reviews[0].user_id, pending_user.id.as_str());
 }
 
 #[tokio::test]
@@ -308,6 +329,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         search: String::new(),
         role: None,
         status: None,
+        is_banned: None,
         sort_by: 0,
         sort_direction: 0,
     };

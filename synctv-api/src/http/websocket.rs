@@ -1353,7 +1353,7 @@ mod tests {
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
-        models::{RoomId, UserId, UserStatus},
+        models::{RoomId, UserId},
         service::{
             auth::{BruteForceProtection, JwtService},
             InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult,
@@ -1938,14 +1938,8 @@ mod tests {
             .await
             .expect("member should join room");
 
-        let mut updated_owner = user_service
-            .get_user(&owner.id)
-            .await
-            .expect("owner should exist");
-        let old_version = updated_owner.version;
-        updated_owner.status = UserStatus::Banned;
-        user_service
-            .update_user(&updated_owner, old_version)
+        synctv_core::repository::UserRepository::new(pool.clone())
+            .ban(&owner.id, None, Some("websocket test".to_string()))
             .await
             .expect("banning owner should succeed");
 

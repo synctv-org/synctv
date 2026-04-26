@@ -6,13 +6,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     message_type SMALLINT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at),
-    CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE RESTRICT
 ) PARTITION BY RANGE (created_at);
 
 COMMENT ON TABLE chat_messages IS 'Persistent chat messages (partitioned by day, retention configurable)';
 COMMENT ON COLUMN chat_messages.id IS '12-character base62 ID';
-COMMENT ON COLUMN chat_messages.content IS 'Message content (HTML sanitized)';
+COMMENT ON COLUMN chat_messages.content IS 'Message content';
 
 CREATE OR REPLACE FUNCTION create_chat_message_partition(
     partition_date DATE DEFAULT CURRENT_DATE
@@ -102,7 +101,7 @@ DECLARE
     cutoff_date DATE;
     cutoff_name TEXT;
     partition_record RECORD;
-    dropped JSON := '[]'::JSON;
+    dropped JSONB := '[]'::JSONB;
     drop_count INTEGER := 0;
 BEGIN
     cutoff_date := CURRENT_DATE - (keep_days || ' days')::INTERVAL;
@@ -118,7 +117,9 @@ BEGIN
         ORDER BY tablename
     LOOP
         EXECUTE format('DROP TABLE IF EXISTS %I', partition_record.tablename);
-        dropped := dropped || json_build_object('partition', partition_record.tablename);
+        dropped := dropped || jsonb_build_array(
+            jsonb_build_object('partition', partition_record.tablename)
+        );
         drop_count := drop_count + 1;
 
         RAISE NOTICE 'Dropped chat partition: %', partition_record.tablename;
@@ -144,7 +145,7 @@ DECLARE
     partition_date DATE;
     expected_name TEXT;
     expected_partitions TEXT[] := ARRAY[]::TEXT[];
-    missing_partitions JSON := '[]'::JSON;
+    missing_partitions JSONB := '[]'::JSONB;
     total_partitions INTEGER := 0;
     total_size BIGINT := 0;
     partition_record RECORD;
@@ -163,9 +164,11 @@ BEGIN
             SELECT 1 FROM pg_tables
             WHERE schemaname = 'public' AND tablename = expected_name
         ) THEN
-            missing_partitions := missing_partitions || json_build_object(
-                'partition_name', expected_name,
-                'status', 'missing'
+            missing_partitions := missing_partitions || jsonb_build_array(
+                jsonb_build_object(
+                    'partition_name', expected_name,
+                    'status', 'missing'
+                )
             );
         END IF;
     END LOOP;
@@ -189,9 +192,9 @@ BEGIN
         'total_partitions', total_partitions,
         'total_size_mb', ROUND(total_size::NUMERIC / 1024 / 1024, 2),
         'missing_partitions', missing_partitions,
-        'missing_count', json_array_length(missing_partitions),
+        'missing_count', jsonb_array_length(missing_partitions),
         'health_status', CASE
-            WHEN json_array_length(missing_partitions) = 0 THEN 'healthy'
+            WHEN jsonb_array_length(missing_partitions) = 0 THEN 'healthy'
             ELSE 'warning'
         END
     );
@@ -199,7 +202,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION check_chat_message_partitions(INTEGER) IS
-'Check health of chat message partitions (daily granularity). Parameter: days ahead to check (default: 30)';
+    'Check health of chat message partitions';
 
 CREATE TABLE IF NOT EXISTS chat_messages_default PARTITION OF chat_messages DEFAULT;
 CREATE INDEX IF NOT EXISTS chat_messages_default_idx_room_pagination

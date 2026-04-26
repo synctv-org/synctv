@@ -105,6 +105,10 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
         version: 0,
         deleted_at: None,
         email_verified: true,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     };
     user_repo
         .create(&user)
@@ -122,6 +126,7 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         created_by: creator_id.clone(),
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -247,10 +252,8 @@ async fn rtmp_auth_test_banned_user_validation() {
 
     // Ban the user
     let user_repo = UserRepository::new(pool.clone());
-    let mut banned_user = user.clone();
-    banned_user.status = UserStatus::Banned;
     user_repo
-        .update(&banned_user, banned_user.version)
+        .ban(&user.id, None, Some("rtmp auth test".to_string()))
         .await
         .expect("Failed to ban user");
 
@@ -268,6 +271,7 @@ async fn rtmp_auth_test_banned_user_validation() {
         .expect("Failed to load user");
 
     assert_eq!(updated_user.status, UserStatus::Banned);
+    assert!(user_repo.is_banned(&user.id).await.unwrap());
 }
 
 // Test 4: Deleted users validation
@@ -320,13 +324,12 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "room_user", UserRole::User).await;
-    let mut room = create_test_room(&pool, user.id.clone(), "Test Room").await;
+    let room = create_test_room(&pool, user.id.clone(), "Test Room").await;
 
     // Ban the room
-    room.is_banned = true;
     let room_repo = RoomRepository::new(pool.clone());
     room_repo
-        .update(&room, room.version)
+        .update_ban_status(&room.id, true)
         .await
         .expect("Failed to ban room");
 
@@ -352,23 +355,22 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
     );
 }
 
-// Test 6: Pending room affects operations
+// Test 6: Closed room lifecycle is persisted
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn rtmp_auth_test_pending_room_rejects_operations() {
+async fn rtmp_auth_test_closed_room_lifecycle_is_persisted() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "pending_user", UserRole::User).await;
-    let mut room = create_test_room(&pool, user.id.clone(), "Pending Room").await;
+    let mut room = create_test_room(&pool, user.id.clone(), "Closed Room").await;
 
-    // Set room to pending status
-    room.status = RoomStatus::Pending;
+    room.close();
     let room_repo = RoomRepository::new(pool.clone());
     room_repo
         .update(&room, room.version)
         .await
-        .expect("Failed to set room to pending");
+        .expect("Failed to close room");
 
     // Reload and verify
     let reloaded_room = room_repo
@@ -379,18 +381,18 @@ async fn rtmp_auth_test_pending_room_rejects_operations() {
 
     assert_eq!(
         reloaded_room.status,
-        RoomStatus::Pending,
-        "Room should be pending"
+        RoomStatus::Closed,
+        "Room should be closed"
     );
 
-    // Room service should return pending status
+    // Room service should return closed lifecycle status
     let room_service = create_room_service(pool.clone());
     let loaded_room = room_service
         .get_room(&room.id)
         .await
         .expect("Failed to load room via service");
 
-    assert_eq!(loaded_room.status, RoomStatus::Pending);
+    assert_eq!(loaded_room.status, RoomStatus::Closed);
 }
 
 // Test 7: Cross-replica user→stream mapping (per-user Redis key)

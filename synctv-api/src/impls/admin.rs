@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use rayon::prelude::*;
+use sqlx::Row;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use synctv_core::models::{
@@ -136,7 +137,7 @@ async fn load_room_creator_status(
 ) -> Result<UserStatus, ApiError> {
     match user_service.get_user(&room.created_by).await {
         Ok(user) => Ok(user.status),
-        Err(synctv_core::Error::NotFound(_)) => Ok(UserStatus::Rejected),
+        Err(synctv_core::Error::NotFound(_)) => Ok(UserStatus::Banned),
         Err(error) => Err(ApiError::from(error)),
     }
 }
@@ -220,11 +221,7 @@ pub async fn validate_admin_auth(
         AdminApiImpl::map_admin_auth_user_lookup_error(e)
     })?;
 
-    if user.is_deleted()
-        || user.status == UserStatus::Banned
-        || user.status == UserStatus::Pending
-        || user.status == UserStatus::Rejected
-    {
+    if user.is_deleted() || user.is_banned || user.status == UserStatus::Banned {
         tracing::debug!(
             user_id = %user_id.as_str(),
             status = ?user.status,
@@ -286,6 +283,107 @@ pub struct AdminApiImpl {
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
+fn optional_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
+    value.map_or(0, |timestamp| timestamp.timestamp())
+}
+
+fn user_registration_review_row_to_proto(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::proto::admin::UserRegistrationReview, ApiError> {
+    let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
+    let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
+    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
+    let status: i16 = row.try_get("status")?;
+
+    Ok(crate::proto::admin::UserRegistrationReview {
+        id: row.try_get("id")?,
+        username: row.try_get("username")?,
+        email: row.try_get("email")?,
+        signup_method: row.try_get::<i16, _>("signup_method").map(i32::from)?,
+        status: i32::from(status),
+        requested_at: requested_at.timestamp(),
+        reviewed_at: optional_timestamp(reviewed_at),
+        reviewed_by: reviewed_by.unwrap_or_default(),
+        rejection_reason: rejection_reason.unwrap_or_default(),
+    })
+}
+
+fn room_creation_review_row_to_proto(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::proto::admin::RoomCreationReview, ApiError> {
+    let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
+    let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
+    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
+    let status: i16 = row.try_get("status")?;
+
+    Ok(crate::proto::admin::RoomCreationReview {
+        id: row.try_get("id")?,
+        requested_by: row.try_get("requested_by")?,
+        requested_by_username: row.try_get("requested_by_username")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        status: i32::from(status),
+        requested_at: requested_at.timestamp(),
+        reviewed_at: optional_timestamp(reviewed_at),
+        reviewed_by: reviewed_by.unwrap_or_default(),
+        rejection_reason: rejection_reason.unwrap_or_default(),
+    })
+}
+
+fn room_join_review_row_to_proto(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::proto::admin::RoomJoinReview, ApiError> {
+    let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
+    let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
+    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
+    let status: i16 = row.try_get("status")?;
+    let requested_role: i32 = row.try_get("requested_role")?;
+
+    Ok(crate::proto::admin::RoomJoinReview {
+        id: row.try_get("id")?,
+        room_id: row.try_get("room_id")?,
+        room_name: row.try_get("room_name")?,
+        user_id: row.try_get("user_id")?,
+        username: row.try_get("username")?,
+        requested_role,
+        status: i32::from(status),
+        requested_at: requested_at.timestamp(),
+        reviewed_at: optional_timestamp(reviewed_at),
+        reviewed_by: reviewed_by.unwrap_or_default(),
+        rejection_reason: rejection_reason.unwrap_or_default(),
+    })
+}
+
+fn ban_row_to_proto(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::proto::admin::BanRecord, ApiError> {
+    let starts_at: chrono::DateTime<chrono::Utc> = row.try_get("starts_at")?;
+    let ends_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("ends_at")?;
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("revoked_at")?;
+    let target_type: i32 = row.try_get("target_type")?;
+    let is_active: bool = row.try_get("is_active")?;
+
+    Ok(crate::proto::admin::BanRecord {
+        id: row.try_get("id")?,
+        target_type,
+        user_id: row.try_get("user_id")?,
+        username: row.try_get("username")?,
+        room_id: row.try_get("room_id")?,
+        room_name: row.try_get("room_name")?,
+        banned_by: row.try_get("banned_by")?,
+        banned_by_username: row.try_get("banned_by_username")?,
+        reason: row.try_get("reason")?,
+        starts_at: starts_at.timestamp(),
+        ends_at: optional_timestamp(ends_at),
+        revoked_at: optional_timestamp(revoked_at),
+        revoked_by: row.try_get("revoked_by")?,
+        is_active,
+    })
 }
 
 fn map_client_sort_direction(sort_direction: i32) -> CoreSortDirection {
@@ -579,7 +677,7 @@ impl AdminApiImpl {
             ));
         }
 
-        if user.status == UserStatus::Banned {
+        if user.is_banned {
             return Err(ApiError::InvalidInput("User is already banned".to_string()));
         }
 
@@ -1348,12 +1446,6 @@ impl AdminApiImpl {
                     Ok(synctv_proto::common::RoomStatus::Active) => {
                         synctv_core::models::RoomStatus::Active
                     }
-                    Ok(synctv_proto::common::RoomStatus::Pending) => {
-                        synctv_core::models::RoomStatus::Pending
-                    }
-                    Ok(synctv_proto::common::RoomStatus::Rejected) => {
-                        synctv_core::models::RoomStatus::Rejected
-                    }
                     Ok(synctv_proto::common::RoomStatus::Closed) => {
                         synctv_core::models::RoomStatus::Closed
                     }
@@ -1440,7 +1532,7 @@ impl AdminApiImpl {
                 let creator_status = creator_status_map
                     .get(&r.created_by)
                     .copied()
-                    .unwrap_or(UserStatus::Rejected);
+                    .unwrap_or(UserStatus::Banned);
                 let settings = room_settings_map.get(r.id.as_str());
                 admin_room_to_proto(&r, settings, member_count, creator_username, creator_status)
             })
@@ -1648,15 +1740,6 @@ impl AdminApiImpl {
             Ok(synctv_proto::common::MemberStatus::Active) => {
                 Some(synctv_core::models::MemberStatus::Active)
             }
-            Ok(synctv_proto::common::MemberStatus::Pending) => {
-                Some(synctv_core::models::MemberStatus::Pending)
-            }
-            Ok(synctv_proto::common::MemberStatus::Rejected) => {
-                Some(synctv_core::models::MemberStatus::Rejected)
-            }
-            Ok(synctv_proto::common::MemberStatus::Banned) => {
-                Some(synctv_core::models::MemberStatus::Banned)
-            }
             Ok(synctv_proto::common::MemberStatus::Left) => {
                 Some(synctv_core::models::MemberStatus::Left)
             }
@@ -1670,6 +1753,7 @@ impl AdminApiImpl {
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             status,
+            is_banned: req.is_banned,
             is_online: None,
             sort_by: match crate::proto::admin::RoomMemberListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::admin::RoomMemberListSortBy::Username) => {
@@ -1754,8 +1838,8 @@ impl AdminApiImpl {
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
+            room_id: member.room_id.clone(),
+            user_id: member.user_id.clone(),
             username,
             role: member.role,
             status: member.status,
@@ -1764,8 +1848,10 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
+            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
+            is_banned: member.is_banned(),
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,
         };
@@ -1790,29 +1876,29 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn approve_member(
+    async fn approve_room_join_request(
         &self,
-        req: crate::proto::admin::ApproveMemberRequest,
+        room_id: &str,
+        request_id: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::ApproveMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::admin::ApproveMemberRequest { room_id, user_id } = req;
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id.to_string());
         let changed_by = admin_user_id.clone();
 
         let member = self
             .room_service
-            .admin_approve_member(
+            .admin_approve_join_request(
                 rid.clone(),
                 admin_user_id.clone(),
+                (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
-                target_uid.clone(),
+                request_id,
             )
             .await
             .map_err(ApiError::from)?;
+        let target_uid = member.user_id.clone();
 
         self.membership_event_fanout
             .publish_permission_changed(&rid, &target_uid, &changed_by, None)
@@ -1828,8 +1914,8 @@ impl AdminApiImpl {
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
+            room_id: member.room_id.clone(),
+            user_id: member.user_id.clone(),
             username,
             role: member.role,
             status: member.status,
@@ -1838,8 +1924,10 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
+            left_at: member.left_at,
             is_online,
             is_active: member.status.is_active(),
+            is_banned: member.is_banned(),
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,
         };
@@ -1851,42 +1939,38 @@ impl AdminApiImpl {
             Some(target_uid.as_str().to_string()),
             serde_json::json!({
                 "room_id": rid.as_str(),
-                "old_status": "pending",
-                "new_status": "active",
+                "request_id": request_id,
+                "previous_review_status": "pending",
+                "new_review_status": "approved",
             }),
             ctx,
         )
         .await;
 
-        Ok(crate::proto::admin::ApproveMemberResponse {
-            member: Some(admin_room_member_to_proto(&member_with_user)),
-        })
+        Ok(admin_room_member_to_proto(&member_with_user))
     }
 
-    pub async fn reject_member(
+    async fn reject_room_join_request(
         &self,
-        req: crate::proto::admin::RejectMemberRequest,
+        room_id: &str,
+        request_id: &str,
+        reason: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::RejectMemberResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let crate::proto::admin::RejectMemberRequest {
-            room_id,
-            user_id,
-            reason,
-        } = req;
+    ) -> Result<bool, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
-        let reason_for_service = (!reason.trim().is_empty()).then_some(reason.as_str());
+        let rid = crate::impls::proto_validated_room_id(room_id.to_string());
+        let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
         let changed_by = admin_user_id.clone();
 
-        self.room_service
-            .admin_reject_member(
+        let target_uid = self
+            .room_service
+            .admin_reject_join_request(
                 rid.clone(),
                 admin_user_id.clone(),
+                (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
-                target_uid.clone(),
+                request_id,
                 reason_for_service,
             )
             .await
@@ -1903,15 +1987,16 @@ impl AdminApiImpl {
             Some(target_uid.as_str().to_string()),
             serde_json::json!({
                 "room_id": rid.as_str(),
-                "old_status": "pending",
-                "new_status": "rejected",
+                "request_id": request_id,
+                "previous_review_status": "pending",
+                "new_review_status": "rejected",
                 "reason": reason,
             }),
             ctx,
         )
         .await;
 
-        Ok(crate::proto::admin::RejectMemberResponse { success: true })
+        Ok(true)
     }
 
     pub async fn update_member_permissions(
@@ -1937,6 +2022,16 @@ impl AdminApiImpl {
         } else {
             Some(proto_role_to_room_role(role)?)
         };
+        if role.is_none()
+            && added_permissions == 0
+            && removed_permissions == 0
+            && admin_added_permissions == 0
+            && admin_removed_permissions == 0
+        {
+            return Err(ApiError::InvalidInput(
+                "member permission update requires at least one changed field".to_string(),
+            ));
+        }
         let permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -1980,8 +2075,8 @@ impl AdminApiImpl {
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: updated_member.room_id,
-            user_id: updated_member.user_id,
+            room_id: updated_member.room_id.clone(),
+            user_id: updated_member.user_id.clone(),
             username,
             role: updated_member.role,
             status: updated_member.status,
@@ -1990,8 +2085,10 @@ impl AdminApiImpl {
             admin_added_permissions: updated_member.admin_added_permissions,
             admin_removed_permissions: updated_member.admin_removed_permissions,
             joined_at: updated_member.joined_at,
+            left_at: updated_member.left_at,
             is_online,
             is_active: true,
+            is_banned: updated_member.is_banned(),
             banned_at: updated_member.banned_at,
             banned_reason: updated_member.banned_reason,
         };
@@ -2039,6 +2136,11 @@ impl AdminApiImpl {
                 admin_removed_permissions: member_with_user.admin_removed_permissions,
                 joined_at: member_with_user.joined_at.timestamp(),
                 is_online: member_with_user.is_online,
+                is_banned: member_with_user.is_banned,
+                banned_at: member_with_user
+                    .banned_at
+                    .map_or(0, |value| value.timestamp()),
+                banned_reason: member_with_user.banned_reason.clone().unwrap_or_default(),
             }),
         })
     }
@@ -2256,12 +2358,6 @@ impl AdminApiImpl {
             Ok(synctv_proto::common::UserStatus::Active) => {
                 Some(synctv_core::models::UserStatus::Active)
             }
-            Ok(synctv_proto::common::UserStatus::Pending) => {
-                Some(synctv_core::models::UserStatus::Pending)
-            }
-            Ok(synctv_proto::common::UserStatus::Rejected) => {
-                Some(synctv_core::models::UserStatus::Rejected)
-            }
             Ok(synctv_proto::common::UserStatus::Banned) => {
                 Some(synctv_core::models::UserStatus::Banned)
             }
@@ -2286,7 +2382,7 @@ impl AdminApiImpl {
                 synctv_core::models::UserListSortBy::Email
             }
             Ok(crate::proto::admin::UserListSortBy::Status) => {
-                synctv_core::models::UserListSortBy::Status
+                synctv_core::models::UserListSortBy::CreatedAt
             }
             Ok(crate::proto::admin::UserListSortBy::Role) => {
                 synctv_core::models::UserListSortBy::Role
@@ -2310,6 +2406,7 @@ impl AdminApiImpl {
             search,
             status,
             role,
+            is_banned: req.is_banned,
             sort_by,
             sort_direction,
         };
@@ -2588,7 +2685,14 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(crate::proto::admin::UpdateSettingsResponse {})
+        let group = Self::project_settings_groups(self.effective_settings_by_key()?)?
+            .into_iter()
+            .find(|group| group.name == group_name)
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Settings group '{group_name}' not found"))
+            })?;
+
+        Ok(crate::proto::admin::UpdateSettingsResponse { group: Some(group) })
     }
 
     fn map_send_test_email_result(
@@ -2668,8 +2772,6 @@ impl AdminApiImpl {
             Some(
                 match synctv_proto::common::UserStatus::try_from(req.status) {
                     Ok(synctv_proto::common::UserStatus::Active) => UserStatus::Active,
-                    Ok(synctv_proto::common::UserStatus::Pending) => UserStatus::Pending,
-                    Ok(synctv_proto::common::UserStatus::Rejected) => UserStatus::Rejected,
                     Ok(synctv_proto::common::UserStatus::Banned) => UserStatus::Banned,
                     _ => {
                         return Err(ApiError::InvalidInput(
@@ -2682,6 +2784,9 @@ impl AdminApiImpl {
 
         // Delegate to UserService which handles validation, hashing, creation,
         // and username cache population atomically.
+        let initial_banned_by = (target_status == Some(UserStatus::Banned)
+            && admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+            .then_some(admin_user_id);
         let user = self
             .user_service
             .create_user_with_role_and_status(
@@ -2690,6 +2795,7 @@ impl AdminApiImpl {
                 req.password,
                 target_role,
                 target_status,
+                initial_banned_by,
             )
             .await
             .map_err(ApiError::from)?;
@@ -2873,21 +2979,19 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id);
-        let mut user = self
+        let user = self
             .user_service
             .get_user(&uid)
             .await
             .map_err(ApiError::from)?;
 
-        if user.status != UserStatus::Banned {
+        if !user.is_banned {
             return Err(ApiError::InvalidInput("User is not banned".to_string()));
         }
 
-        let old_version = user.version;
-        user.status = UserStatus::Active;
         let updated = self
             .user_service
-            .update_user(&user, old_version)
+            .unban_user(&uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -2910,31 +3014,513 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn approve_user(
+    async fn load_user_registration_review(
         &self,
-        req: crate::proto::admin::ApproveUserRequest,
+        request_id: &str,
+    ) -> Result<crate::proto::admin::UserRegistrationReview, ApiError> {
+        let row = sqlx::query(
+            r"
+            SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
+                   requested_at, reviewed_at, reviewed_by, rejection_reason
+            FROM user_registration_requests
+            WHERE id = $1
+            ",
+        )
+        .bind(request_id)
+        .fetch_optional(self.user_service.pool())
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
+        user_registration_review_row_to_proto(&row)
+    }
+
+    async fn load_room_creation_review(
+        &self,
+        request_id: &str,
+    ) -> Result<crate::proto::admin::RoomCreationReview, ApiError> {
+        let row = sqlx::query(
+            r"
+            SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
+                   rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
+                   rcr.reviewed_by, rcr.rejection_reason
+            FROM room_creation_requests rcr
+            LEFT JOIN users u ON u.id = rcr.requested_by
+            WHERE rcr.id = $1
+            ",
+        )
+        .bind(request_id)
+        .fetch_optional(self.user_service.pool())
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
+        room_creation_review_row_to_proto(&row)
+    }
+
+    async fn load_room_join_review(
+        &self,
+        request_id: &str,
+    ) -> Result<crate::proto::admin::RoomJoinReview, ApiError> {
+        let row = sqlx::query(
+            r"
+            SELECT rjr.id, rjr.room_id, COALESCE(r.name, '') AS room_name, rjr.user_id,
+                   COALESCE(u.username, '') AS username, COALESCE(rjr.requested_role, 0)::int4 AS requested_role,
+                   rjr.status, rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN rooms r ON r.id = rjr.room_id
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.id = $1
+            ",
+        )
+        .bind(request_id)
+        .fetch_optional(self.user_service.pool())
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
+        room_join_review_row_to_proto(&row)
+    }
+
+    async fn load_join_review_target(
+        &self,
+        request_id: &str,
+    ) -> Result<(RoomId, UserId), ApiError> {
+        let row = sqlx::query("SELECT room_id, user_id FROM room_join_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_optional(self.user_service.pool())
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
+
+        let room_id: String = row.try_get("room_id")?;
+        let user_id: String = row.try_get("user_id")?;
+        Ok((
+            crate::impls::proto_validated_room_id(room_id),
+            crate::impls::proto_validated_user_id(user_id),
+        ))
+    }
+
+    pub async fn list_user_registration_reviews(
+        &self,
+        req: crate::proto::admin::ListUserRegistrationReviewsRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::ListUserRegistrationReviewsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let page = page_i32_to_usize(req.page);
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
+            synctv_proto::common::ReviewStatus::Pending as i32
+        } else {
+            req.status
+        };
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM user_registration_requests
+            WHERE status = $1
+              AND ($2 = '' OR username ILIKE ('%' || $2 || '%') OR COALESCE(email, '') ILIKE ('%' || $2 || '%'))
+            ",
+        )
+        .bind(status)
+        .bind(req.search.as_str())
+        .fetch_one(self.user_service.pool())
+        .await?;
+
+        let rows = sqlx::query(
+            r"
+            SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
+                   requested_at, reviewed_at, reviewed_by, rejection_reason
+            FROM user_registration_requests
+            WHERE status = $1
+              AND ($2 = '' OR username ILIKE ('%' || $2 || '%') OR COALESCE(email, '') ILIKE ('%' || $2 || '%'))
+            ORDER BY requested_at DESC, id DESC
+            LIMIT $3 OFFSET $4
+            ",
+        )
+        .bind(status)
+        .bind(req.search.as_str())
+        .bind(usize_to_i64_saturating(page_size))
+        .bind(usize_to_i64_saturating(offset))
+        .fetch_all(self.user_service.pool())
+        .await?;
+        let reviews = rows
+            .iter()
+            .map(user_registration_review_row_to_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::proto::admin::ListUserRegistrationReviewsResponse {
+            reviews,
+            total: i64_to_i32_saturating(total),
+        })
+    }
+
+    pub async fn approve_user_registration_review(
+        &self,
+        req: crate::proto::admin::ApproveUserRegistrationReviewRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::ApproveUserResponse, ApiError> {
+    ) -> Result<crate::proto::admin::ApproveUserRegistrationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
-        let mut user = self
-            .user_service
-            .get_user(&uid)
-            .await
-            .map_err(ApiError::from)?;
+        let request_id = req.request_id.clone();
+        let user = self
+            .approve_user_registration_request(&request_id, admin_user_id, ctx)
+            .await?;
+        Ok(crate::proto::admin::ApproveUserRegistrationReviewResponse {
+            review: Some(self.load_user_registration_review(&request_id).await?),
+            user: Some(user),
+        })
+    }
 
-        if user.status != UserStatus::Pending {
-            return Err(ApiError::InvalidInput(
-                "User is not pending approval".to_string(),
-            ));
+    pub async fn reject_user_registration_review(
+        &self,
+        req: crate::proto::admin::RejectUserRegistrationReviewRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::RejectUserRegistrationReviewResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let request_id = req.request_id.clone();
+        let reviewed_by =
+            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+        let result = sqlx::query(
+            r"
+            UPDATE user_registration_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $5
+            ",
+        )
+        .bind(request_id.as_str())
+        .bind(synctv_core::models::ReviewStatus::Rejected.as_i16())
+        .bind(reviewed_by.map(UserId::as_str))
+        .bind(req.reason.as_str())
+        .bind(synctv_core::models::ReviewStatus::Pending.as_i16())
+        .execute(self.user_service.pool())
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(ApiError::NotFound("Pending review not found".to_string()));
         }
 
-        let old_version = user.version;
-        user.status = UserStatus::Active;
+        Ok(crate::proto::admin::RejectUserRegistrationReviewResponse {
+            review: Some(self.load_user_registration_review(&request_id).await?),
+            success: true,
+        })
+    }
+
+    pub async fn list_room_creation_reviews(
+        &self,
+        req: crate::proto::admin::ListRoomCreationReviewsRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::ListRoomCreationReviewsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let page = page_i32_to_usize(req.page);
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
+            synctv_proto::common::ReviewStatus::Pending as i32
+        } else {
+            req.status
+        };
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM room_creation_requests
+            WHERE status = $1
+              AND ($2 = '' OR requested_by = $2)
+              AND ($3 = '' OR name ILIKE ('%' || $3 || '%') OR description ILIKE ('%' || $3 || '%'))
+            ",
+        )
+        .bind(status)
+        .bind(req.requested_by.as_str())
+        .bind(req.search.as_str())
+        .fetch_one(self.user_service.pool())
+        .await?;
+
+        let rows = sqlx::query(
+            r"
+            SELECT rcr.id, rcr.requested_by, COALESCE(u.username, '') AS requested_by_username,
+                   rcr.name, rcr.description, rcr.status, rcr.requested_at, rcr.reviewed_at,
+                   rcr.reviewed_by, rcr.rejection_reason
+            FROM room_creation_requests rcr
+            LEFT JOIN users u ON u.id = rcr.requested_by
+            WHERE rcr.status = $1
+              AND ($2 = '' OR rcr.requested_by = $2)
+              AND ($3 = '' OR rcr.name ILIKE ('%' || $3 || '%') OR rcr.description ILIKE ('%' || $3 || '%'))
+            ORDER BY rcr.requested_at DESC, rcr.id DESC
+            LIMIT $4 OFFSET $5
+            ",
+        )
+        .bind(status)
+        .bind(req.requested_by.as_str())
+        .bind(req.search.as_str())
+        .bind(usize_to_i64_saturating(page_size))
+        .bind(usize_to_i64_saturating(offset))
+        .fetch_all(self.user_service.pool())
+        .await?;
+        let reviews = rows
+            .iter()
+            .map(room_creation_review_row_to_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::proto::admin::ListRoomCreationReviewsResponse {
+            reviews,
+            total: i64_to_i32_saturating(total),
+        })
+    }
+
+    pub async fn approve_room_creation_review(
+        &self,
+        req: crate::proto::admin::ApproveRoomCreationReviewRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::ApproveRoomCreationReviewResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let request_id = req.request_id.clone();
+        let room = self
+            .approve_room_creation_request(&request_id, admin_user_id, ctx)
+            .await?;
+        Ok(crate::proto::admin::ApproveRoomCreationReviewResponse {
+            review: Some(self.load_room_creation_review(&request_id).await?),
+            room: Some(room),
+        })
+    }
+
+    pub async fn reject_room_creation_review(
+        &self,
+        req: crate::proto::admin::RejectRoomCreationReviewRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::RejectRoomCreationReviewResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let request_id = req.request_id.clone();
+        let reviewed_by =
+            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+        self.room_service
+            .reject_room(
+                crate::impls::proto_validated_room_id(request_id.clone()),
+                reviewed_by,
+                normalize_non_empty_filter(&req.reason),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::admin::RejectRoomCreationReviewResponse {
+            review: Some(self.load_room_creation_review(&request_id).await?),
+            success: true,
+        })
+    }
+
+    pub async fn list_room_join_reviews(
+        &self,
+        req: crate::proto::admin::ListRoomJoinReviewsRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::ListRoomJoinReviewsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let page = page_i32_to_usize(req.page);
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
+        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
+            synctv_proto::common::ReviewStatus::Pending as i32
+        } else {
+            req.status
+        };
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM room_join_requests
+            WHERE status = $1
+              AND ($2 = '' OR room_id = $2)
+              AND ($3 = '' OR user_id = $3)
+            ",
+        )
+        .bind(status)
+        .bind(req.room_id.as_str())
+        .bind(req.user_id.as_str())
+        .fetch_one(self.user_service.pool())
+        .await?;
+
+        let rows = sqlx::query(
+            r"
+            SELECT rjr.id, rjr.room_id, COALESCE(r.name, '') AS room_name, rjr.user_id,
+                   COALESCE(u.username, '') AS username, COALESCE(rjr.requested_role, 0)::int4 AS requested_role,
+                   rjr.status, rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
+            FROM room_join_requests rjr
+            LEFT JOIN rooms r ON r.id = rjr.room_id
+            LEFT JOIN users u ON u.id = rjr.user_id
+            WHERE rjr.status = $1
+              AND ($2 = '' OR rjr.room_id = $2)
+              AND ($3 = '' OR rjr.user_id = $3)
+            ORDER BY rjr.requested_at DESC, rjr.id DESC
+            LIMIT $4 OFFSET $5
+            ",
+        )
+        .bind(status)
+        .bind(req.room_id.as_str())
+        .bind(req.user_id.as_str())
+        .bind(usize_to_i64_saturating(page_size))
+        .bind(usize_to_i64_saturating(offset))
+        .fetch_all(self.user_service.pool())
+        .await?;
+        let reviews = rows
+            .iter()
+            .map(room_join_review_row_to_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::proto::admin::ListRoomJoinReviewsResponse {
+            reviews,
+            total: i64_to_i32_saturating(total),
+        })
+    }
+
+    pub async fn approve_room_join_review(
+        &self,
+        req: crate::proto::admin::ApproveRoomJoinReviewRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::ApproveRoomJoinReviewResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let request_id = req.request_id.clone();
+        let (room_id, _) = self.load_join_review_target(&request_id).await?;
+        let member = self
+            .approve_room_join_request(room_id.as_str(), request_id.as_str(), admin_user_id, ctx)
+            .await?;
+        Ok(crate::proto::admin::ApproveRoomJoinReviewResponse {
+            review: Some(self.load_room_join_review(&request_id).await?),
+            member: Some(member),
+        })
+    }
+
+    pub async fn reject_room_join_review(
+        &self,
+        req: crate::proto::admin::RejectRoomJoinReviewRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::RejectRoomJoinReviewResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let request_id = req.request_id.clone();
+        let (room_id, _) = self.load_join_review_target(&request_id).await?;
+        self.reject_room_join_request(
+            room_id.as_str(),
+            request_id.as_str(),
+            req.reason.as_str(),
+            admin_user_id,
+            ctx,
+        )
+        .await?;
+        Ok(crate::proto::admin::RejectRoomJoinReviewResponse {
+            review: Some(self.load_room_join_review(&request_id).await?),
+            success: true,
+        })
+    }
+
+    pub async fn list_ban_records(
+        &self,
+        req: crate::proto::admin::ListBanRecordsRequest,
+        admin_user_id: &UserId,
+    ) -> Result<crate::proto::admin::ListBanRecordsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_admin_actor(admin_user_id).await?;
+        let page = page_i32_to_usize(req.page);
+        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
+
+        let pool = self.user_service.pool();
+        let total = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*) FROM (
+                SELECT 1::int4 AS target_type, user_id, ''::text AS room_id,
+                       revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM user_bans
+                UNION ALL
+                SELECT 2::int4 AS target_type, ''::text AS user_id, room_id,
+                       revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM room_bans
+                UNION ALL
+                SELECT 3::int4 AS target_type, user_id, room_id,
+                       revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM room_member_bans
+            ) bans
+            WHERE ($1 = 0 OR target_type = $1)
+              AND ($2::bool IS NULL OR is_active = $2)
+              AND ($3 = '' OR user_id = $3)
+              AND ($4 = '' OR room_id = $4)
+            ",
+        )
+        .bind(req.target_type)
+        .bind(req.active)
+        .bind(req.user_id.as_str())
+        .bind(req.room_id.as_str())
+        .fetch_one(pool)
+        .await?;
+
+        let rows = sqlx::query(
+            r"
+            SELECT * FROM (
+                SELECT ub.id, 1::int4 AS target_type, ub.user_id, COALESCE(u.username, '') AS username,
+                       ''::text AS room_id, ''::text AS room_name, COALESCE(ub.banned_by, '') AS banned_by,
+                       COALESCE(actor.username, '') AS banned_by_username, COALESCE(ub.reason, '') AS reason,
+                       ub.starts_at, ub.ends_at, ub.revoked_at, COALESCE(ub.revoked_by, '') AS revoked_by,
+                       ub.revoked_at IS NULL AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM user_bans ub
+                LEFT JOIN users u ON u.id = ub.user_id
+                LEFT JOIN users actor ON actor.id = ub.banned_by
+                UNION ALL
+                SELECT rb.id, 2::int4 AS target_type, ''::text AS user_id, ''::text AS username,
+                       rb.room_id, COALESCE(r.name, '') AS room_name, COALESCE(rb.banned_by, '') AS banned_by,
+                       COALESCE(actor.username, '') AS banned_by_username, COALESCE(rb.reason, '') AS reason,
+                       rb.starts_at, rb.ends_at, rb.revoked_at, COALESCE(rb.revoked_by, '') AS revoked_by,
+                       rb.revoked_at IS NULL AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM room_bans rb
+                LEFT JOIN rooms r ON r.id = rb.room_id
+                LEFT JOIN users actor ON actor.id = rb.banned_by
+                UNION ALL
+                SELECT rmb.id, 3::int4 AS target_type, rmb.user_id, COALESCE(u.username, '') AS username,
+                       rmb.room_id, COALESCE(r.name, '') AS room_name, COALESCE(rmb.banned_by, '') AS banned_by,
+                       COALESCE(actor.username, '') AS banned_by_username, COALESCE(rmb.reason, '') AS reason,
+                       rmb.starts_at, rmb.ends_at, rmb.revoked_at, COALESCE(rmb.revoked_by, '') AS revoked_by,
+                       rmb.revoked_at IS NULL AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP) AS is_active
+                FROM room_member_bans rmb
+                LEFT JOIN users u ON u.id = rmb.user_id
+                LEFT JOIN rooms r ON r.id = rmb.room_id
+                LEFT JOIN users actor ON actor.id = rmb.banned_by
+            ) bans
+            WHERE ($1 = 0 OR target_type = $1)
+              AND ($2::bool IS NULL OR is_active = $2)
+              AND ($3 = '' OR user_id = $3)
+              AND ($4 = '' OR room_id = $4)
+            ORDER BY starts_at DESC, id DESC
+            LIMIT $5 OFFSET $6
+            ",
+        )
+        .bind(req.target_type)
+        .bind(req.active)
+        .bind(req.user_id.as_str())
+        .bind(req.room_id.as_str())
+        .bind(usize_to_i64_saturating(page_size))
+        .bind(usize_to_i64_saturating(offset))
+        .fetch_all(pool)
+        .await?;
+
+        let bans = rows
+            .iter()
+            .map(ban_row_to_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::proto::admin::ListBanRecordsResponse {
+            bans,
+            total: i64_to_i32_saturating(total),
+        })
+    }
+
+    async fn approve_user_registration_request(
+        &self,
+        request_id: &str,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::AdminUser, ApiError> {
+        let request_id = crate::impls::proto_validated_user_id(request_id.to_string());
+        self.require_admin_actor(admin_user_id).await?;
+        let persisted_reviewed_by =
+            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let updated = self
             .user_service
-            .update_user(&user, old_version)
+            .approve_registration_request(&request_id, persisted_reviewed_by)
             .await
             .map_err(ApiError::from)?;
 
@@ -2943,19 +3529,19 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserApproved,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(updated.id.as_str().to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "request_id": request_id.as_str(),
+                "target_user_id": updated.id.as_str(),
                 "target_username": updated.username,
-                "previous_status": "pending",
+                "previous_review_status": "pending",
+                "new_review_status": "approved",
             }),
             ctx,
         )
         .await;
 
-        Ok(crate::proto::admin::ApproveUserResponse {
-            user: Some(admin_user_to_proto(&updated)),
-        })
+        Ok(admin_user_to_proto(&updated))
     }
 
     pub async fn get_user_rooms(
@@ -2970,12 +3556,6 @@ impl AdminApiImpl {
         let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
             Ok(synctv_proto::common::RoomStatus::Active) => {
                 Some(synctv_core::models::RoomStatus::Active)
-            }
-            Ok(synctv_proto::common::RoomStatus::Pending) => {
-                Some(synctv_core::models::RoomStatus::Pending)
-            }
-            Ok(synctv_proto::common::RoomStatus::Rejected) => {
-                Some(synctv_core::models::RoomStatus::Rejected)
             }
             Ok(synctv_proto::common::RoomStatus::Closed) => {
                 Some(synctv_core::models::RoomStatus::Closed)
@@ -3048,7 +3628,7 @@ impl AdminApiImpl {
                 let creator_status = creator_status_map
                     .get(&room.created_by)
                     .copied()
-                    .unwrap_or(UserStatus::Rejected);
+                    .unwrap_or(UserStatus::Banned);
                 let settings = room_settings_map.get(room.id.as_str());
                 admin_room_to_proto(
                     room,
@@ -3162,17 +3742,19 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn approve_room(
+    async fn approve_room_creation_request(
         &self,
-        req: crate::proto::admin::ApproveRoomRequest,
+        request_id: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::admin::ApproveRoomResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+    ) -> Result<crate::proto::admin::AdminRoom, ApiError> {
+        let request_id = crate::impls::proto_validated_room_id(request_id.to_string());
+        self.require_admin_actor(admin_user_id).await?;
+        let persisted_reviewed_by =
+            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let room = self
             .room_service
-            .approve_room(&rid)
+            .approve_pending_room(request_id.clone(), persisted_reviewed_by)
             .await
             .map_err(ApiError::from)?;
 
@@ -3181,18 +3763,17 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomApproved,
             synctv_core::service::AuditTargetType::Room,
-            Some(rid.as_str().to_string()),
+            Some(room.id.as_str().to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "request_id": request_id.as_str(),
+                "room_id": room.id.as_str(),
                 "room_name": room.name,
             }),
             ctx,
         )
         .await;
 
-        Ok(crate::proto::admin::ApproveRoomResponse {
-            room: Some(self.load_admin_room_proto(&room, None).await?),
-        })
+        self.load_admin_room_proto(&room, None).await
     }
 
     pub async fn get_room_settings(
@@ -3426,7 +4007,7 @@ impl AdminApiImpl {
                     synctv_core::models::UserListSortBy::Email
                 }
                 Ok(crate::proto::admin::UserListSortBy::Status) => {
-                    synctv_core::models::UserListSortBy::Status
+                    synctv_core::models::UserListSortBy::CreatedAt
                 }
                 Ok(crate::proto::admin::UserListSortBy::Role) => {
                     synctv_core::models::UserListSortBy::Role
@@ -3636,6 +4217,17 @@ impl AdminApiImpl {
             admin_user_id = %admin_user_id.as_str(),
             "Admin kicking stream"
         );
+
+        if !infrastructure
+            .registry()
+            .is_stream_active(&room_id, &media_id)
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to check active stream: {error}"))
+            })?
+        {
+            return Err(ApiError::NotFound("Active stream not found".to_string()));
+        }
 
         infrastructure
             .kick_stream(&room_id, &media_id)
@@ -5407,6 +5999,9 @@ fn admin_room_member_to_proto(
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
+        is_banned: member.is_banned,
+        banned_at: member.banned_at.map_or(0, |value| value.timestamp()),
+        banned_reason: member.banned_reason.clone().unwrap_or_default(),
     }
 }
 
@@ -5419,12 +6014,6 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
 
     let status = match user.status {
         synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
-        synctv_core::models::UserStatus::Pending => {
-            synctv_proto::common::UserStatus::Pending as i32
-        }
-        synctv_core::models::UserStatus::Rejected => {
-            synctv_proto::common::UserStatus::Rejected as i32
-        }
         synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
     };
 
@@ -5436,6 +6025,14 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
         status,
         created_at: user.created_at.timestamp(),
         updated_at: user.updated_at.timestamp(),
+        is_banned: user.is_banned,
+        banned_at: user.banned_at.map_or(0, |value| value.timestamp()),
+        banned_by: user
+            .banned_by
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        banned_reason: user.banned_reason.clone().unwrap_or_default(),
     }
 }
 
@@ -5693,18 +6290,22 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_validate_admin_auth_rejects_rejected_user() {
+    async fn test_validate_admin_auth_rejects_banned_user() {
         let (_postgres, pool) = create_test_pool().await;
         let user_service = make_user_service(pool.clone());
         let user_repo = UserRepository::new(pool);
 
-        let rejected_admin = synctv_core::models::User {
+        let banned_admin = synctv_core::models::User {
             id: UserId::new(),
-            username: "rejected_admin_auth".to_string(),
-            email: Some("rejected_admin_auth@example.com".to_string()),
+            username: "banned_admin_auth".to_string(),
+            email: Some("banned_admin_auth@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::Admin,
-            status: UserStatus::Rejected,
+            status: UserStatus::Banned,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -5715,18 +6316,22 @@ mod tests {
             version: 0,
         };
         user_repo
-            .create(&rejected_admin)
+            .create(&banned_admin)
             .await
-            .expect("create rejected admin");
+            .expect("create banned admin");
+        user_repo
+            .ban(&banned_admin.id, None, Some("admin auth test".to_string()))
+            .await
+            .expect("ban admin");
 
-        let err = validate_admin_auth(&user_service, rejected_admin.id.clone(), 0, 0)
+        let err = validate_admin_auth(&user_service, banned_admin.id.clone(), 0, 0)
             .await
             .err()
-            .expect("rejected admin must not pass admin auth");
+            .expect("banned admin must not pass admin auth");
 
         assert!(
             matches!(err, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
-            "rejected admin auth must fail with generic authentication error, got: {err:?}"
+            "banned admin auth must fail with generic authentication error, got: {err:?}"
         );
     }
 
@@ -5929,6 +6534,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -5945,6 +6554,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -5961,6 +6574,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6036,6 +6653,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6052,6 +6673,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6068,6 +6693,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6138,6 +6767,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6154,6 +6787,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6170,6 +6807,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6258,6 +6899,7 @@ mod tests {
             created_by: created_by.clone(),
             status: RoomStatus::Active,
             is_banned: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -6275,6 +6917,7 @@ mod tests {
             created_by: UserId::from_string("creator_1".to_string()),
             status,
             is_banned: false,
+            closed_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -6322,7 +6965,7 @@ mod tests {
 
     #[test]
     fn test_admin_room_to_proto_different_statuses() {
-        for status in [RoomStatus::Active, RoomStatus::Pending, RoomStatus::Closed] {
+        for status in [RoomStatus::Active, RoomStatus::Closed] {
             let room = make_test_room(status);
             let proto = admin_room_to_proto(&room, None, None, None, UserStatus::Active);
             assert_eq!(
@@ -6334,16 +6977,16 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_load_room_creator_status_maps_true_missing_creator_to_rejected() {
+    async fn test_load_room_creator_status_maps_missing_creator_to_banned() {
         let (_postgres, pool) = create_test_pool().await;
         let user_service = make_user_service(pool.clone());
         let room = make_test_room(RoomStatus::Active);
 
         let status = load_room_creator_status(&user_service, &room)
             .await
-            .expect("missing creator should map to rejected");
+            .expect("missing creator should map to unavailable status");
 
-        assert_eq!(status, UserStatus::Rejected);
+        assert_eq!(status, UserStatus::Banned);
         pool.close().await;
     }
 
@@ -6496,6 +7139,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role,
             status,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -6529,10 +7176,6 @@ mod tests {
             (
                 UserStatus::Active,
                 synctv_proto::common::UserStatus::Active as i32,
-            ),
-            (
-                UserStatus::Pending,
-                synctv_proto::common::UserStatus::Pending as i32,
             ),
             (
                 UserStatus::Banned,
@@ -6623,8 +7266,10 @@ mod tests {
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
             joined_at: chrono::Utc::now(),
+            left_at: None,
             is_online: false,
             is_active: true,
+            is_banned: false,
             banned_at: None,
             banned_reason: None,
         }
@@ -6677,6 +7322,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::Root,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: now,
@@ -6693,6 +7342,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::Admin,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: now,
@@ -6709,6 +7362,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::User,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: now,
@@ -6777,6 +7434,7 @@ mod tests {
                 search: "a".repeat(101),
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
                 status: synctv_proto::common::MemberStatus::Unspecified as i32,
+                is_banned: None,
                 sort_by: crate::proto::admin::RoomMemberListSortBy::Unspecified as i32,
                 sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
             })
@@ -6791,6 +7449,7 @@ mod tests {
                 status: synctv_proto::common::UserStatus::Unspecified as i32,
                 role: synctv_proto::common::UserRole::Unspecified as i32,
                 search: "a".repeat(101),
+                is_banned: None,
                 sort_by: crate::proto::admin::UserListSortBy::Unspecified as i32,
                 sort_direction: crate::proto::admin::SortDirection::Unspecified as i32,
             })
@@ -6859,6 +7518,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: now,
@@ -6939,6 +7602,10 @@ mod tests {
                     password_hash: "hash".to_string(),
                     role,
                     status: UserStatus::Active,
+                    is_banned: false,
+                    banned_at: None,
+                    banned_by: None,
+                    banned_reason: None,
                     signup_method: synctv_core::models::SignupMethod::Email,
                     email_verified: true,
                     created_at: now,
@@ -6983,6 +7650,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: now,
@@ -6999,6 +7670,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: now,
@@ -7280,6 +7955,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7296,6 +7975,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7349,6 +8032,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7404,6 +8091,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7420,6 +8111,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7443,6 +8138,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::User,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: chrono::Utc::now(),
@@ -7462,6 +8161,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::User,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: chrono::Utc::now(),
@@ -7544,6 +8247,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7560,6 +8267,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7659,6 +8370,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7675,6 +8390,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7698,6 +8417,10 @@ mod tests {
                 password_hash: "hash".to_string(),
                 role: UserRole::User,
                 status: UserStatus::Active,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
                 signup_method: synctv_core::models::SignupMethod::Email,
                 email_verified: true,
                 created_at: chrono::Utc::now(),
@@ -7778,6 +8501,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7794,6 +8521,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7810,6 +8541,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7913,6 +8648,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7929,6 +8668,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -7945,6 +8688,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8029,6 +8776,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8045,6 +8796,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8129,6 +8884,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8145,6 +8904,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8161,6 +8924,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8267,6 +9034,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8283,6 +9054,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8380,6 +9155,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8396,6 +9175,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8412,6 +9195,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8482,6 +9269,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8498,6 +9289,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8514,6 +9309,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8572,6 +9371,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8588,6 +9391,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8604,6 +9411,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8641,7 +9452,8 @@ mod tests {
             .await
             .expect("persisted member query should succeed")
             .expect("banned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Banned);
+        assert_eq!(persisted.status, MemberStatus::Left);
+        assert!(persisted.is_banned());
         assert_eq!(persisted.banned_reason.as_deref(), Some("policy"));
         assert_eq!(persisted.banned_by.as_ref(), Some(&global_admin.id));
     }
@@ -8669,6 +9481,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8685,6 +9501,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8701,6 +9521,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8770,6 +9594,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8786,6 +9614,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8802,6 +9634,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8864,6 +9700,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8880,6 +9720,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8896,6 +9740,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8938,14 +9786,13 @@ mod tests {
             .expect("global admin should unban member without being in the room");
         assert!(response.success);
 
-        let persisted = admin_api
-            .room_service
-            .member_service()
-            .get_member(&room.id, &target.id)
+        let member_repo = RoomMemberRepository::new(pool.clone());
+        let persisted = member_repo
+            .get_any(&room.id, &target.id)
             .await
             .expect("persisted member query should succeed")
             .expect("unbanned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Active);
+        assert_eq!(persisted.status, MemberStatus::Left);
         assert!(persisted.banned_reason.is_none());
         assert!(persisted.banned_by.is_none());
     }
@@ -8966,6 +9813,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -8982,6 +9833,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9016,7 +9871,8 @@ mod tests {
             .await
             .expect("persisted member query should succeed")
             .expect("banned member row should remain");
-        assert_eq!(persisted.status, MemberStatus::Banned);
+        assert_eq!(persisted.status, MemberStatus::Left);
+        assert!(persisted.is_banned());
         assert!(
             persisted.banned_by.is_none(),
             "local management actor must not be written to banned_by foreign key"
@@ -9042,6 +9898,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9058,6 +9918,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9124,6 +9988,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9140,6 +10008,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9239,6 +10111,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9255,6 +10131,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9325,6 +10205,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9341,6 +10225,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9409,6 +10297,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9425,6 +10317,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9502,6 +10398,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9518,6 +10418,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9596,6 +10500,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9612,6 +10520,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9697,6 +10609,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9713,6 +10629,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9821,6 +10741,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9929,6 +10853,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -9945,6 +10873,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10032,6 +10964,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10048,6 +10984,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10120,6 +11060,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10136,6 +11080,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10199,6 +11147,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10215,6 +11167,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10293,6 +11249,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10309,6 +11269,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10392,6 +11356,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10408,6 +11376,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10564,6 +11536,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10580,6 +11556,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10650,6 +11630,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10723,6 +11707,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10798,6 +11786,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10895,6 +11887,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -10985,6 +11981,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11063,6 +12063,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11145,6 +12149,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11236,6 +12244,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11365,6 +12377,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11430,6 +12446,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11497,6 +12517,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11513,6 +12537,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11589,6 +12617,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11605,6 +12637,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11686,6 +12722,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11702,6 +12742,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11795,6 +12839,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11811,6 +12859,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11898,6 +12950,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11914,6 +12970,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -11997,6 +13057,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12107,6 +13171,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12123,6 +13191,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12191,6 +13263,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12207,6 +13283,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12288,6 +13368,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
@@ -12345,6 +13429,10 @@ mod tests {
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
             signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),

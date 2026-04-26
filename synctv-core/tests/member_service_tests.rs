@@ -92,6 +92,10 @@ fn make_user(username: &str) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -388,17 +392,13 @@ async fn test_ban_sets_status_and_banned_at() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        member.status,
-        MemberStatus::Banned,
-        "Member should be banned"
-    );
+    assert_eq!(member.status, MemberStatus::Left, "Member should be banned");
     assert!(member.banned_at.is_some(), "banned_at should be set");
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_unban_clears_status() {
+async fn test_unban_clears_ban_metadata_without_rejoining_member() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -437,7 +437,8 @@ async fn test_unban_clears_status() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert_eq!(member.status, MemberStatus::Left);
+    assert!(member.is_banned());
 
     // Unban
     member_service
@@ -445,20 +446,25 @@ async fn test_unban_clears_status() {
         .await
         .unwrap();
 
-    // Verify unbanned (get works now since unban clears left_at)
+    // Unban only revokes moderation state. It must not silently rejoin a
+    // user who was removed from the active member set by the ban.
     let member = member_repo
-        .get(&room.id, &target.id)
+        .get_any(&room.id, &target.id)
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(
-        member.status,
-        MemberStatus::Banned,
-        "Member should no longer be banned"
-    );
+    assert_eq!(member.status, MemberStatus::Left);
     assert!(
         member.banned_at.is_none(),
         "banned_at should be cleared after unban"
+    );
+    assert!(
+        member_repo
+            .get(&room.id, &target.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "unban must not restore active membership"
     );
 }
 
@@ -517,14 +523,15 @@ async fn test_admin_ban_member_can_ban_departed_member() {
         .await
         .unwrap()
         .expect("departed member row should still exist");
-    assert_eq!(persisted.status, MemberStatus::Banned);
+    assert_eq!(persisted.status, MemberStatus::Left);
+    assert!(persisted.is_banned());
     assert_eq!(persisted.banned_by.as_ref(), Some(&creator.id));
     assert_eq!(persisted.banned_reason.as_deref(), Some("prevent rejoin"));
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_status_banned_preserves_ban_semantics() {
+async fn test_ban_member_preserves_ban_semantics() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -557,12 +564,7 @@ async fn test_set_member_status_banned_preserves_ban_semantics() {
 
     let member_service = room_service.member_service();
     member_service
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Banned,
-        )
+        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
         .await
         .unwrap();
 
@@ -571,15 +573,13 @@ async fn test_set_member_status_banned_preserves_ban_semantics() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert_eq!(member.status, MemberStatus::Left);
+    assert!(member.is_banned());
     assert!(
         member.left_at.is_some(),
-        "setting status to Banned must also evict the member from the active set"
+        "ban must evict the member from the active set"
     );
-    assert!(
-        member.banned_at.is_some(),
-        "setting status to Banned must record ban metadata"
-    );
+    assert!(member.banned_at.is_some(), "ban must record ban metadata");
 }
 
 #[tokio::test]
@@ -620,12 +620,12 @@ async fn test_set_member_status_can_set_member_pending_and_approve_back_to_activ
             room.id.clone(),
             creator.id.clone(),
             target.id.clone(),
-            MemberStatus::Pending,
+            MemberStatus::Active,
         )
         .await
         .unwrap();
 
-    assert_eq!(pending.status, MemberStatus::Pending);
+    assert_eq!(pending.status, MemberStatus::Active);
 
     let active = room_service
         .member_service()
@@ -643,7 +643,7 @@ async fn test_set_member_status_can_set_member_pending_and_approve_back_to_activ
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_member_status_rejects_specialized_left_and_rejected_transitions() {
+async fn test_set_member_status_rejects_specialized_left_transition() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -674,20 +674,6 @@ async fn test_set_member_status_rejects_specialized_left_and_rejected_transition
         .unwrap();
 
     let member_service = room_service.member_service();
-
-    let reject_err = member_service
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Rejected,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(reject_err, Error::InvalidInput(ref msg) if msg.contains("Use reject_member")),
-        "Rejected must stay on the dedicated approval path, got: {reject_err}"
-    );
 
     let left_err = member_service
         .set_member_status(
@@ -931,7 +917,8 @@ async fn test_ban_broadcasts_kick_event_with_reason() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert_eq!(member.status, MemberStatus::Left);
+    assert!(member.is_banned());
 }
 
 #[tokio::test]
@@ -993,7 +980,8 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(member.status, MemberStatus::Banned);
+    assert_eq!(member.status, MemberStatus::Left);
+    assert!(member.is_banned());
 
     // Without event_broadcaster, the operation should complete quickly (no 100ms delay)
     // This test documents the expected behavior: the delay is only added when
@@ -1131,19 +1119,14 @@ async fn test_set_member_status_banned_broadcasts_disconnect_event() {
     member_service.set_event_broadcaster(broadcaster.clone());
 
     member_service
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Banned,
-        )
+        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
         .await
         .unwrap();
 
     assert_eq!(
         broadcaster.kick_from_room_count(),
         1,
-        "banning via set_member_status must also disconnect active sessions across replicas"
+        "banning a member must disconnect active sessions across replicas"
     );
 }
 

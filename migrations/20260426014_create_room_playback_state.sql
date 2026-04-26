@@ -8,6 +8,10 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT room_playback_state_current_time_non_negative
+        CHECK ("current_time" >= 0),
+    CONSTRAINT room_playback_state_speed_positive
+        CHECK (speed > 0),
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)
@@ -18,41 +22,19 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
         ON DELETE RESTRICT
 );
 
-CREATE INDEX idx_room_playback_state_media_id ON room_playback_state(playing_media_id);
-CREATE INDEX idx_room_playback_state_playlist_id ON room_playback_state(playing_playlist_id);
-CREATE INDEX idx_room_playback_state_updated_at ON room_playback_state(updated_at);
+CREATE INDEX IF NOT EXISTS idx_room_playback_state_media_id ON room_playback_state(playing_media_id);
+CREATE INDEX IF NOT EXISTS idx_room_playback_state_playlist_id ON room_playback_state(playing_playlist_id);
+CREATE INDEX IF NOT EXISTS idx_room_playback_state_updated_at ON room_playback_state(updated_at);
 
 CREATE TRIGGER update_room_playback_state_updated_at
     BEFORE UPDATE ON room_playback_state
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-ALTER TABLE room_playback_state ADD CONSTRAINT playback_current_time_check
-    CHECK ("current_time" >= 0);
-ALTER TABLE room_playback_state ADD CONSTRAINT playback_speed_check
-    CHECK (speed > 0 AND speed <= 16.0);
-ALTER TABLE room_playback_state ADD CONSTRAINT playback_target_mode_check
-    CHECK (
-        (
-            playing_media_id IS NULL
-            AND playing_playlist_id IS NULL
-            AND octet_length(target) = 0
-        )
-        OR (
-            playing_media_id IS NOT NULL
-            AND playing_playlist_id IS NULL
-            AND octet_length(target) = 0
-        )
-        OR (
-            playing_media_id IS NULL
-            AND playing_playlist_id IS NOT NULL
-            AND octet_length(target) > 0
-        )
-    );
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';
 COMMENT ON COLUMN room_playback_state.playing_media_id IS 'Currently playing media item';
 COMMENT ON COLUMN room_playback_state.playing_playlist_id IS 'Currently playing playlist';
 COMMENT ON COLUMN room_playback_state.target IS 'Opaque provider-facing playback target payload; empty for static media or cleared state';
 COMMENT ON COLUMN room_playback_state."current_time" IS 'Playback position in seconds';
-COMMENT ON COLUMN room_playback_state.speed IS 'Playback speed (0.5, 1.0, 1.5, 2.0, etc.)';
+COMMENT ON COLUMN room_playback_state.speed IS 'Playback speed';
 COMMENT ON COLUMN room_playback_state.version IS 'Optimistic locking version';

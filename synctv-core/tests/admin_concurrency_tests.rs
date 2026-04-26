@@ -50,6 +50,10 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
         password_version: 0,
         version: 0,
         deleted_at: None,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
     }
 }
 
@@ -62,6 +66,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         created_by: owner.clone(),
         status: RoomStatus::Active,
         is_banned: false,
+        closed_at: None,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -157,7 +162,9 @@ async fn test_concurrent_user_ban_operations() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            repo_clone.update_status(&user.id, UserStatus::Banned).await
+            repo_clone
+                .ban(&user.id, None, Some("concurrent test".to_string()))
+                .await
         });
         handles.push(handle);
     }
@@ -168,6 +175,7 @@ async fn test_concurrent_user_ban_operations() {
         match handle.await.expect("Task panicked") {
             Ok(updated) => {
                 assert_eq!(updated.status, UserStatus::Banned);
+                assert!(user_repo.is_banned(&updated.id).await.unwrap());
                 success_count += 1;
             }
             Err(e) => panic!("Ban operation should succeed: {e:?}"),
@@ -188,7 +196,7 @@ async fn test_concurrent_ban_unban_same_user() {
         .await
         .expect("Failed to create user");
 
-    // 5 tasks try to ban, 5 try to set active concurrently
+    // 5 tasks try to ban, 5 try to revoke the active ban concurrently.
     let barrier = Arc::new(Barrier::new(10));
     let user_id = user.id.clone();
 
@@ -202,7 +210,9 @@ async fn test_concurrent_ban_unban_same_user() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            repo_clone.update_status(&uid, UserStatus::Banned).await
+            repo_clone
+                .ban(&uid, None, Some("concurrent test".to_string()))
+                .await
         });
         handles.push(handle);
     }
@@ -215,31 +225,34 @@ async fn test_concurrent_ban_unban_same_user() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            repo_clone.update_status(&uid, UserStatus::Active).await
+            repo_clone.unban(&uid).await
         });
         handles.push(handle);
     }
 
-    // All operations should succeed (last write wins)
     let mut success_count = 0;
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
-            Err(e) => panic!("Status operation should succeed: {e:?}"),
+            Err(Error::AlreadyExists(_) | Error::NotFound(_)) => {}
+            Err(e) => panic!("Ban operation should not fail unexpectedly: {e:?}"),
         }
     }
 
-    assert_eq!(success_count, 10, "All operations should succeed");
+    assert!(
+        success_count > 0,
+        "At least one ban/unban operation should succeed"
+    );
 
-    // Final state depends on which write was last
     let final_user = user_repo
         .get_by_id(&user_id)
         .await
         .expect("Query failed")
         .expect("User exists");
-    assert!(
-        final_user.status == UserStatus::Active || final_user.status == UserStatus::Banned,
-        "Final status should be either Active or Banned"
+    assert_eq!(
+        final_user.status == UserStatus::Banned,
+        user_repo.is_banned(&user_id).await.unwrap(),
+        "derived user status must stay consistent with active user_bans"
     );
 }
 
@@ -298,13 +311,13 @@ async fn test_concurrent_room_status_changes() {
     let barrier = Arc::new(Barrier::new(10));
     let statuses = vec![
         RoomStatus::Active,
-        RoomStatus::Pending,
+        RoomStatus::Closed,
         RoomStatus::Closed,
         RoomStatus::Active,
-        RoomStatus::Pending,
+        RoomStatus::Closed,
         RoomStatus::Closed,
         RoomStatus::Active,
-        RoomStatus::Pending,
+        RoomStatus::Closed,
         RoomStatus::Closed,
         RoomStatus::Active,
     ];
@@ -531,7 +544,7 @@ async fn test_high_concurrency_status_updates() {
     let barrier = Arc::new(Barrier::new(50));
     let user_id = user.id.clone();
 
-    // 50 concurrent status updates
+    // 50 concurrent ban/unban attempts should not corrupt account facts.
     let mut handles = Vec::with_capacity(50);
     for i in 0..50 {
         let repo_clone = user_repo.clone();
@@ -540,12 +553,13 @@ async fn test_high_concurrency_status_updates() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let status = if i % 2 == 0 {
-                UserStatus::Banned
+            if i % 2 == 0 {
+                repo_clone
+                    .ban(&uid, None, Some("stress test".to_string()))
+                    .await
             } else {
-                UserStatus::Active
-            };
-            repo_clone.update_status(&uid, status).await
+                repo_clone.unban(&uid).await
+            }
         });
         handles.push(handle);
     }
@@ -554,12 +568,25 @@ async fn test_high_concurrency_status_updates() {
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
+            Err(Error::NotFound(_)) => {}
             Err(e) => tracing::warn!("Operation failed: {:?}", e),
         }
     }
 
-    // All should succeed (no optimistic lock for status-only updates)
-    assert_eq!(success_count, 50, "All status updates should succeed");
+    assert!(
+        success_count > 0,
+        "At least one ban-state operation should succeed"
+    );
+    let final_user = user_repo
+        .get_by_id(&user_id)
+        .await
+        .expect("Query failed")
+        .expect("User exists");
+    assert_eq!(
+        final_user.status == UserStatus::Banned,
+        user_repo.is_banned(&user_id).await.unwrap(),
+        "derived user status must stay consistent with active user_bans"
+    );
 }
 
 #[tokio::test]

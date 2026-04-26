@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use crate::{
-    models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId, UserStatus},
+    models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId},
     Result,
 };
 
@@ -99,8 +99,6 @@ impl MediaRepository {
         playlist_id: Option<&PlaylistId>,
         query: &MediaListQuery,
     ) {
-        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
-
         builder.push(" FROM media m LEFT JOIN users u ON m.creator_id = u.id AND u.deleted_at IS NULL WHERE m.room_id = ");
         builder.push_bind(room_id.as_str().to_owned());
         match playlist_id {
@@ -134,14 +132,24 @@ impl MediaRepository {
         }
         match query.availability {
             Some(true) => {
-                builder.push(" AND (m.creator_id IS NULL OR (u.id IS NOT NULL AND u.status = ");
-                builder.push_bind(ACTIVE_STATUS_SQL);
-                builder.push("))");
+                builder.push(
+                    " AND (m.creator_id IS NULL OR (u.id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM user_bans ub
+                    WHERE ub.user_id = u.id
+                      AND ub.revoked_at IS NULL
+                      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                )))",
+                );
             }
             Some(false) => {
-                builder.push(" AND m.creator_id IS NOT NULL AND (u.id IS NULL OR u.status <> ");
-                builder.push_bind(ACTIVE_STATUS_SQL);
-                builder.push(")");
+                builder.push(
+                    " AND m.creator_id IS NOT NULL AND (u.id IS NULL OR EXISTS (
+                    SELECT 1 FROM user_bans ub
+                    WHERE ub.user_id = u.id
+                      AND ub.revoked_at IS NULL
+                      AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ))",
+                );
             }
             None => {}
         }
@@ -170,19 +178,18 @@ impl MediaRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<MediaListItem>> {
-        const ACTIVE_STATUS_SQL: i16 = UserStatus::Active as i16;
-
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.position,
                     m.source_provider, m.source_config, NULLIF(m.provider_instance_name, '') AS provider_instance_name,
                     m.added_at, m.updated_at, m.version,
                     CASE
                       WHEN m.creator_id IS NULL THEN TRUE
-                      WHEN u.id IS NOT NULL AND u.status = ",
-        );
-        builder.push_bind(ACTIVE_STATUS_SQL);
-        builder.push(
-            " THEN TRUE
+                      WHEN u.id IS NOT NULL AND NOT EXISTS (
+                          SELECT 1 FROM user_bans ub
+                          WHERE ub.user_id = u.id
+                            AND ub.revoked_at IS NULL
+                            AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                      ) THEN TRUE
                       ELSE FALSE
                     END AS is_available",
         );
@@ -1469,11 +1476,17 @@ impl MediaRepository {
               ON m.creator_id = u.id
              AND u.deleted_at IS NULL
             WHERE m.playlist_id = $1
-              AND (m.creator_id IS NULL OR u.status = $2)
+              AND (m.creator_id IS NULL OR (
+                  u.id IS NOT NULL AND NOT EXISTS (
+                      SELECT 1 FROM user_bans ub
+                      WHERE ub.user_id = u.id
+                        AND ub.revoked_at IS NULL
+                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                  )
+              ))
             ",
         )
         .bind(playlist_id.as_str())
-        .bind(UserStatus::Active)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1542,12 +1555,18 @@ impl MediaRepository {
               ON m.creator_id = u.id
              AND u.deleted_at IS NULL
             WHERE m.playlist_id = ANY($1)
-              AND (m.creator_id IS NULL OR u.status = $2)
+              AND (m.creator_id IS NULL OR (
+                  u.id IS NOT NULL AND NOT EXISTS (
+                      SELECT 1 FROM user_bans ub
+                      WHERE ub.user_id = u.id
+                        AND ub.revoked_at IS NULL
+                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                  )
+              ))
             GROUP BY m.playlist_id
             ",
         )
         .bind(playlist_ids)
-        .bind(UserStatus::Active)
         .fetch_all(&self.pool)
         .await?;
 

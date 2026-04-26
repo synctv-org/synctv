@@ -762,6 +762,10 @@ async fn test_cache_invalidation_after_commit() {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         })
         .await
         .expect("Failed to create user");
@@ -779,6 +783,7 @@ async fn test_cache_invalidation_after_commit() {
             deleted_at: None,
             is_banned: false,
             status: synctv_core::models::RoomStatus::Active,
+            closed_at: None,
             last_activity_at: chrono::Utc::now(),
         })
         .await
@@ -923,6 +928,10 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
             password_version: 0,
             version: 0,
             deleted_at: None,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
         })
         .await
         .expect("Failed to create user");
@@ -940,6 +949,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
             deleted_at: None,
             is_banned: false,
             status: synctv_core::models::RoomStatus::Active,
+            closed_at: None,
             last_activity_at: chrono::Utc::now(),
         })
         .await

@@ -55,8 +55,9 @@ service RoomService {
     rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
     rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
-    rpc ApproveMember(ApproveMemberRequest) returns (ApproveMemberResponse);
-    rpc RejectMember(RejectMemberRequest) returns (RejectMemberResponse);
+    rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
+    rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
+    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
     rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
@@ -147,6 +148,7 @@ message User {
     synctv.common.UserStatus status = 5; // Account status
     int64 created_at = 6;
     bool email_verified = 7; // Whether email has been verified
+    bool is_banned = 8;
 }
 
 // Public user view - safe to return in any context (room member lists, chat, etc.).
@@ -162,7 +164,7 @@ message Room {
     string id = 1;
     string name = 2;
     string created_by = 3;
-    synctv.common.RoomStatus status = 4; // Room lifecycle status (Active/Pending/Closed)
+    synctv.common.RoomStatus status = 4; // Room lifecycle status
     bytes settings = 5; // JSON settings
     int64 created_at = 6;
     int32 member_count = 7;
@@ -580,6 +582,7 @@ message GetRoomMembersRequest {
     optional synctv.common.MemberStatus status = 5 [(buf.validate.field).enum.defined_only = true];
     RoomMemberListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
     SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
+    optional bool is_banned = 8;
 }
 
 message GetRoomMembersResponse {
@@ -634,27 +637,67 @@ message AddMemberResponse {
     synctv.common.RoomMember member = 1;
 }
 
-message ApproveMemberRequest {
-    string user_id = 1 [(buf.validate.field).string = {
+message RoomJoinReview {
+    string id = 1;
+    string room_id = 2;
+    string user_id = 3;
+    string username = 4;
+    synctv.common.RoomMemberRole requested_role = 5;
+    synctv.common.ReviewStatus status = 6;
+    int64 requested_at = 7;
+    int64 reviewed_at = 8;
+    string reviewed_by = 9;
+    string rejection_reason = 10;
+}
+
+message ListRoomJoinReviewsRequest {
+    option (buf.validate.message).cel = {
+        id: "client.list_room_join_reviews.page"
+        message: "page must be 0 (use default) or at least 1"
+        expression: "this.page == 0 || this.page >= 1"
+    };
+    option (buf.validate.message).cel = {
+        id: "client.list_room_join_reviews.page_size"
+        message: "page_size must be 0 (use default) or between 1 and 100"
+        expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+    };
+    int32 page = 1;
+    int32 page_size = 2;
+    synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+    string user_id = 4 [(buf.validate.field).string = {
+        max_len: 12,
+        pattern: "^$|^[A-Za-z0-9]+$"
+    }];
+}
+
+message ListRoomJoinReviewsResponse {
+    repeated RoomJoinReview reviews = 1;
+    int32 total = 2;
+}
+
+message ApproveRoomJoinReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
         len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
-message ApproveMemberResponse {
-    synctv.common.RoomMember member = 1;
+message ApproveRoomJoinReviewResponse {
+    RoomJoinReview review = 1;
+    synctv.common.RoomMember member = 2;
 }
 
-message RejectMemberRequest {
-    string user_id = 1 [(buf.validate.field).string = {
+message RejectRoomJoinReviewRequest {
+    string request_id = 1 [(buf.validate.field).string = {
         len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2 [(buf.validate.field).string.max_len = 500];
 }
 
-message RejectMemberResponse {
-    bool success = 1;
+message RejectRoomJoinReviewResponse {
+    RoomJoinReview review = 1;
+    bool success = 2;
 }
 
 message UpdateMemberPermissionsRequest {
@@ -1704,6 +1747,17 @@ message RoomMemberTargetPathRequest {
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+}
+
+message RoomJoinReviewPathRequest {
+    string room_id = 1 [(buf.validate.field).string = {
+        len: 12,
+        pattern: "^[A-Za-z0-9]+$"
+    }];
+    string request_id = 2 [(buf.validate.field).string = {
         len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];

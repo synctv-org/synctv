@@ -553,6 +553,10 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         password_hash: "hash".to_string(),
         role,
         status,
+        is_banned: false,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
         signup_method: synctv_core::models::SignupMethod::Email,
         email_verified: true,
         created_at: chrono::Utc::now(),
@@ -675,16 +679,6 @@ fn test_user_to_proto_banned_status() {
 }
 
 #[test]
-fn test_user_to_proto_pending_status() {
-    let user = make_test_user(UserRole::User, UserStatus::Pending);
-    let proto = user_to_proto(&user);
-    assert_eq!(
-        proto.status,
-        synctv_proto::common::UserStatus::Pending as i32
-    );
-}
-
-#[test]
 fn test_user_to_proto_no_email() {
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     user.email = None;
@@ -700,6 +694,7 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         created_by: UserId::from_string("creator_id".to_string()),
         status,
         is_banned: false,
+        closed_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -904,8 +899,10 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: chrono::Utc::now(),
+        left_at: None,
         is_online: true,
         is_active: true,
+        is_banned: false,
         banned_at: None,
         banned_reason: None,
     }

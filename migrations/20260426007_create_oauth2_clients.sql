@@ -8,24 +8,22 @@ CREATE TABLE IF NOT EXISTS oauth2_clients (
     avatar_url TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(provider, provider_user_id)
+
+    CONSTRAINT oauth2_clients_provider_subject_unique
+        UNIQUE(provider, provider_user_id)
 );
 
-CREATE INDEX idx_oauth2_clients_user_id ON oauth2_clients(user_id);
-CREATE INDEX idx_oauth2_clients_provider ON oauth2_clients(provider);
+CREATE INDEX IF NOT EXISTS idx_oauth2_clients_user_id ON oauth2_clients(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth2_clients_provider ON oauth2_clients(provider);
 
 CREATE TRIGGER update_oauth2_clients_updated_at
     BEFORE UPDATE ON oauth2_clients
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
-ALTER TABLE oauth2_clients
-    ADD CONSTRAINT valid_oauth2_provider CHECK (
-        provider IN ('qq', 'github', 'google', 'microsoft', 'discord', 'casdoor', 'logto', 'oidc', 'feishu', 'gitee')
-    );
-
-COMMENT ON TABLE oauth2_clients IS 'OAuth2/OIDC provider mappings (NO TOKENS - only user identity info)';
+COMMENT ON TABLE oauth2_clients IS 'OAuth2/OIDC provider identity mappings';
 COMMENT ON COLUMN oauth2_clients.id IS '12-character base62 ID';
-COMMENT ON COLUMN oauth2_clients.provider IS 'OAuth2 provider (github, google, microsoft, discord, etc.)';
+COMMENT ON COLUMN oauth2_clients.provider IS 'OAuth2/OIDC provider name';
 COMMENT ON COLUMN oauth2_clients.provider_user_id IS 'User ID from OAuth2 provider';
 COMMENT ON COLUMN oauth2_clients.user_id IS 'Reference to local user';
 COMMENT ON COLUMN oauth2_clients.username IS 'Username from OAuth2 provider';

@@ -118,6 +118,20 @@ Absolute paths are always used as-is. Relative `data_dir` from config files is r
 relative to the config file directory; `--data-dir` and `SYNCTV_DATA_DIR` are resolved
 relative to the current working directory.
 
+Secret-like settings can also be loaded from environment file variables, for example
+`SYNCTV_JWT_SECRET_FILE`, `SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE`,
+`SYNCTV_DATABASE_URL_FILE`, and `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`.
+Relative env file paths are resolved from the current working directory.
+
+PostgreSQL and Redis can be configured either by URL or by split fields. For
+PostgreSQL, use `database.url` / `SYNCTV_DATABASE_URL` or
+`database.host`, `database.port`, `database.username`, `database.password`,
+`database.name` with matching `SYNCTV_DATABASE_*` env vars. For Redis, use
+`redis.url` / `SYNCTV_REDIS_URL` or `redis.host`, `redis.port`,
+`redis.username`, `redis.password`, `redis.database` with matching
+`SYNCTV_REDIS_*` env vars. Passwords and URLs support `*_file` config keys and
+`*_FILE` env vars.
+
 On platforms without Unix Domain Socket support, `management.transport: unix` is rejected during
 configuration validation instead of silently falling back.
 
@@ -163,11 +177,26 @@ deployments, set
 `SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true` together with a strong
 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` before first startup.
 
-Remote CLI commands do not load SyncTV config files. Endpoint resolution is:
+Remote CLI commands may load SyncTV config files to resolve the management endpoint
+and management bearer token. Explicit CLI flags still take precedence. Endpoint
+resolution is:
 1. `--endpoint`
 2. `SYNCTV_MANAGEMENT_ENDPOINT`
-3. platform default Unix socket path
-4. default TCP endpoint `http://127.0.0.1:50052`
+3. `management.*` from `--config`, `SYNCTV_CONFIG_PATH`, or an auto-discovered config file
+4. platform default Unix socket path
+5. default TCP endpoint `http://127.0.0.1:50052`
+
+Management authentication resolution is:
+1. `--auth-token`
+2. `--auth-token-file`
+3. `SYNCTV_MANAGEMENT_AUTH_TOKEN`
+4. `SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE`
+5. `management.auth_token` or `management.auth_token_file` from config
+
+When `--endpoint` or `SYNCTV_MANAGEMENT_ENDPOINT` is used, config-file auth is
+only used if a config source is explicitly selected with `--config` or
+`SYNCTV_CONFIG_PATH`. This avoids accidentally sending an auto-discovered local
+management token to an unrelated endpoint.
 
 In containerized deployments, `docker compose exec synctv synctv ...` uses the same default
 Unix socket path inside the container. Use `--endpoint` only when intentionally targeting a

@@ -204,7 +204,7 @@ dotenvy = "0.15.7"
 
 # Configuration
 config = "0.15.22"
-clap = { version = "4.6.1", features = ["derive", "env"] }
+clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.2"
 
 # Utilities

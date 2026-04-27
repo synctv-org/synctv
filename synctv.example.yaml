@@ -10,7 +10,12 @@
 # Environment variables use SYNCTV_ prefix with single underscore separator:
 #   SYNCTV_SERVER_HOST=0.0.0.0
 #   SYNCTV_DATABASE_URL=postgresql://...
+#   SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
 #   SYNCTV_OAUTH2_REDIRECT_SCHEME=https
+#
+# Secret-like settings support two file-based forms:
+#   1. Config file sibling keys: jwt.secret_file, management.auth_token_file, ...
+#   2. Env file variables: SYNCTV_JWT_SECRET_FILE, SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE, ...
 
 server:
   host: "0.0.0.0"
@@ -45,6 +50,7 @@ server:
   # Not required in standalone mode even when Redis is configured.
   # Generate a secret with: openssl rand -hex 32
   # Environment variable: SYNCTV_SERVER_CLUSTER_SECRET
+  # Environment file variable: SYNCTV_SERVER_CLUSTER_SECRET_FILE
   # File-based secret: server.cluster_secret_file: "/run/secrets/cluster_secret"
   cluster_secret: ""
   # Advertise host for cluster node registration (address other nodes use to reach this instance).
@@ -83,6 +89,9 @@ security:
   # AES-256-GCM key used to encrypt sensitive provider credentials.
   # Prefer file-based secrets so keys are not stored inline in config files.
   # Generate with: openssl rand -hex 32
+  # Environment variables:
+  #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+  #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE
   # credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   credential_encryption_key: ""
 
@@ -101,9 +110,11 @@ metrics:
     # Authentication mode for /metrics: bearer_token, basic, kubernetes
     mode: "bearer_token"
     bearer_token: ""
+    # Environment variable: SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE
     # bearer_token_file: "/run/secrets/metrics_bearer_token"
     # basic_username: "metrics"
     # basic_password: ""
+    # Environment variable: SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE
     # basic_password_file: "/run/secrets/metrics_basic_password"
 
 management:
@@ -147,7 +158,20 @@ management:
 # data_dir: "/var/lib/synctv"
 
 database:
+  # Environment variables:
+  #   SYNCTV_DATABASE_URL
+  #   SYNCTV_DATABASE_URL_FILE
+  # Split configuration is also supported:
+  #   SYNCTV_DATABASE_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / NAME
+  # `user` is accepted as a config-file alias for `username`;
+  # SYNCTV_DATABASE_USER is accepted as an env alias for SYNCTV_DATABASE_USERNAME.
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # url_file: "/run/secrets/database_url"
+  # host: "localhost"
+  # port: 5432
+  # username: "synctv"
+  # password_file: "/run/secrets/database_password"
+  # name: "synctv"
   max_connections: 20
   min_connections: 5
   connect_timeout_seconds: 10
@@ -194,8 +218,20 @@ database:
 
 redis:
   # Leave empty to run without Redis in standalone mode.
-  # Environment variable: SYNCTV_REDIS_URL
+  # Environment variables:
+  #   SYNCTV_REDIS_URL
+  #   SYNCTV_REDIS_URL_FILE
+  # Split configuration also supports:
+  #   SYNCTV_REDIS_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / DATABASE
+  # `user` is accepted as a config-file alias for `username`;
+  # SYNCTV_REDIS_USER is accepted as an env alias for SYNCTV_REDIS_USERNAME.
   url: "redis://localhost:6379"
+  # url_file: "/run/secrets/redis_url"
+  # host: "localhost"
+  # port: 6379
+  # username: ""
+  # password_file: "/run/secrets/redis_password"
+  # database: 0
   connect_timeout_seconds: 5
   key_prefix: "synctv:"
 
@@ -220,6 +256,9 @@ redis:
 jwt:
   # REQUIRED in production. Generate with: openssl rand -base64 32
   # Minimum 32 characters with high entropy (at least 16 unique characters).
+  # Environment variables:
+  #   SYNCTV_JWT_SECRET
+  #   SYNCTV_JWT_SECRET_FILE
   secret: ""
   # secret_file is a static config input. Relative paths stay relative to this config file,
   # not data_dir.
@@ -277,7 +316,10 @@ email:
   smtp_host: ""
   smtp_port: 587
   smtp_username: ""
-  smtp_password: "" # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  # Environment variables:
+  #   SYNCTV_EMAIL_SMTP_PASSWORD
+  #   SYNCTV_EMAIL_SMTP_PASSWORD_FILE
+  smtp_password: ""
   # smtp_password_file is a static config input. Relative paths stay relative to this config file.
   # smtp_password_file: "/run/secrets/smtp_password"
   from_email: ""
@@ -355,6 +397,7 @@ bootstrap:
   # REQUIRED for production: set a strong password (>= 12 chars, must contain
   # uppercase, lowercase, and digits). Do NOT use any default value in production.
   # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
+  # Or file-based env: SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE
   # root_password: ""
   # root_password_file: "/run/secrets/bootstrap_root_password"
 
@@ -416,6 +459,7 @@ cluster:
   # after reconnection. In high-throughput scenarios, increase this to avoid
   # trimming events that disconnected nodes still need to catch up on.
   # Default: 10000
+  # Environment variable: SYNCTV_CLUSTER_STREAM_MAX_LENGTH
   stream_max_length: 10000
 
 # ============================================================================

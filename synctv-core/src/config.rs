@@ -244,6 +244,10 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "management.auth_token"
             | "metrics.auth.basic_password"
             | "metrics.auth.bearer_token"
+            | "database.password"
+            | "database.url"
+            | "redis.password"
+            | "redis.url"
             | "jwt.secret"
             | "email.smtp_password"
             | "bootstrap.root_password"
@@ -329,6 +333,24 @@ fn resolve_secret_file_references_in_json_value(
     }
 
     Ok(())
+}
+
+fn normalize_split_database_config_value(value: &mut serde_json::Value) {
+    let Some(database) = value
+        .get_mut("database")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    let has_explicit_url = database.contains_key("url");
+    let has_split_config = ["host", "port", "username", "user", "password", "name"]
+        .iter()
+        .any(|key| database.contains_key(*key));
+
+    if has_split_config && !has_explicit_url {
+        database.insert("url".to_string(), serde_json::Value::String(String::new()));
+    }
 }
 
 pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
@@ -803,6 +825,7 @@ pub struct DatabaseConfig {
     pub url: String,
     pub host: String,
     pub port: u16,
+    #[serde(alias = "user")]
     pub username: String,
     pub password: String,
     pub name: String,
@@ -892,6 +915,7 @@ pub struct RedisConfig {
     pub url: String,
     pub host: String,
     pub port: u16,
+    #[serde(alias = "user")]
     pub username: String,
     pub password: String,
     pub database: i64,
@@ -1417,6 +1441,7 @@ impl Config {
         };
         let config_base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         resolve_secret_file_references_in_json_value(&mut parsed_value, path, "", config_base_dir)?;
+        normalize_split_database_config_value(&mut parsed_value);
         let normalized_contents = serde_json::to_string(&parsed_value)
             .map_err(|error| ConfigError::Message(error.to_string()))?;
         Self::deserialize_config_contents(&normalized_contents, FileFormat::Json)
@@ -1708,6 +1733,18 @@ impl Config {
                 *target = val;
             }
         };
+        let env_override_str_file =
+            |name: &str, key_path: &str, target: &mut String| -> Result<(), ConfigError> {
+                if let Some(path) = get_env(name) {
+                    *target = load_config_string_from_file(
+                        Path::new("<environment>"),
+                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        key_path,
+                        &path,
+                    )?;
+                }
+                Ok(())
+            };
         let env_override_opt_str = |name: &str, target: &mut Option<String>| {
             if let Some(val) = get_env(name) {
                 *target = Some(val);
@@ -1802,6 +1839,11 @@ impl Config {
             "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY",
             &mut self.security.credential_encryption_key,
         );
+        env_override_str_file(
+            "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE",
+            "security.credential_encryption_key",
+            &mut self.security.credential_encryption_key,
+        )?;
 
         env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
@@ -1823,6 +1865,11 @@ impl Config {
             "SYNCTV_SERVER_CLUSTER_SECRET",
             &mut self.server.cluster_secret,
         );
+        env_override_str_file(
+            "SYNCTV_SERVER_CLUSTER_SECRET_FILE",
+            "server.cluster_secret",
+            &mut self.server.cluster_secret,
+        )?;
         env_override_str(
             "SYNCTV_SERVER_ADVERTISE_HOST",
             &mut self.server.advertise_host,
@@ -1856,6 +1903,11 @@ impl Config {
             "SYNCTV_METRICS_AUTH_BEARER_TOKEN",
             &mut self.metrics.auth.bearer_token,
         );
+        env_override_str_file(
+            "SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE",
+            "metrics.auth.bearer_token",
+            &mut self.metrics.auth.bearer_token,
+        )?;
         env_override_str(
             "SYNCTV_METRICS_AUTH_BASIC_USERNAME",
             &mut self.metrics.auth.basic_username,
@@ -1864,6 +1916,11 @@ impl Config {
             "SYNCTV_METRICS_AUTH_BASIC_PASSWORD",
             &mut self.metrics.auth.basic_password,
         );
+        env_override_str_file(
+            "SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE",
+            "metrics.auth.basic_password",
+            &mut self.metrics.auth.basic_password,
+        )?;
         env_override_str(
             "SYNCTV_METRICS_AUTH_KUBERNETES_AUDIENCE",
             &mut self.metrics.auth.kubernetes.audience,
@@ -1895,24 +1952,49 @@ impl Config {
             "SYNCTV_MANAGEMENT_AUTH_TOKEN",
             &mut self.management.auth_token,
         );
-        if let Some(path) = get_env("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE") {
-            self.management.auth_token = load_config_string_from_file(
-                Path::new("<environment>"),
-                &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                "management.auth_token",
-                &path,
-            )?;
-        }
+        env_override_str_file(
+            "SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE",
+            "management.auth_token",
+            &mut self.management.auth_token,
+        )?;
         env_override_bool(
             "SYNCTV_MANAGEMENT_ENABLE_REFLECTION",
             &mut self.management.enable_reflection,
         )?;
 
+        let database_url_from_env = get_env("SYNCTV_DATABASE_URL").is_some()
+            || get_env("SYNCTV_DATABASE_URL_FILE").is_some();
+        let database_split_from_env = [
+            "SYNCTV_DATABASE_HOST",
+            "SYNCTV_DATABASE_PORT",
+            "SYNCTV_DATABASE_USER",
+            "SYNCTV_DATABASE_USERNAME",
+            "SYNCTV_DATABASE_PASSWORD",
+            "SYNCTV_DATABASE_PASSWORD_FILE",
+            "SYNCTV_DATABASE_NAME",
+        ]
+        .iter()
+        .any(|name| get_env(name).is_some());
+        if database_split_from_env && !database_url_from_env {
+            self.database.url.clear();
+        }
+
         env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);
+        env_override_str_file(
+            "SYNCTV_DATABASE_URL_FILE",
+            "database.url",
+            &mut self.database.url,
+        )?;
         env_override_str("SYNCTV_DATABASE_HOST", &mut self.database.host);
         env_override_parse("SYNCTV_DATABASE_PORT", &mut self.database.port)?;
         env_override_str("SYNCTV_DATABASE_USER", &mut self.database.username);
+        env_override_str("SYNCTV_DATABASE_USERNAME", &mut self.database.username);
         env_override_str("SYNCTV_DATABASE_PASSWORD", &mut self.database.password);
+        env_override_str_file(
+            "SYNCTV_DATABASE_PASSWORD_FILE",
+            "database.password",
+            &mut self.database.password,
+        )?;
         env_override_str("SYNCTV_DATABASE_NAME", &mut self.database.name);
         env_override_parse(
             "SYNCTV_DATABASE_MAX_CONNECTIONS",
@@ -1936,10 +2018,17 @@ impl Config {
         )?;
 
         env_override_str("SYNCTV_REDIS_URL", &mut self.redis.url);
+        env_override_str_file("SYNCTV_REDIS_URL_FILE", "redis.url", &mut self.redis.url)?;
         env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
         env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
         env_override_str("SYNCTV_REDIS_USER", &mut self.redis.username);
+        env_override_str("SYNCTV_REDIS_USERNAME", &mut self.redis.username);
         env_override_str("SYNCTV_REDIS_PASSWORD", &mut self.redis.password);
+        env_override_str_file(
+            "SYNCTV_REDIS_PASSWORD_FILE",
+            "redis.password",
+            &mut self.redis.password,
+        )?;
         env_override_parse("SYNCTV_REDIS_DATABASE", &mut self.redis.database)?;
         env_override_parse(
             "SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS",
@@ -1968,6 +2057,7 @@ impl Config {
         );
 
         env_override_str("SYNCTV_JWT_SECRET", &mut self.jwt.secret);
+        env_override_str_file("SYNCTV_JWT_SECRET_FILE", "jwt.secret", &mut self.jwt.secret)?;
         env_override_parse(
             "SYNCTV_JWT_ACCESS_TOKEN_DURATION_HOURS",
             &mut self.jwt.access_token_duration_hours,
@@ -2056,6 +2146,11 @@ impl Config {
         env_override_parse("SYNCTV_EMAIL_SMTP_PORT", &mut self.email.smtp_port)?;
         env_override_str("SYNCTV_EMAIL_SMTP_USERNAME", &mut self.email.smtp_username);
         env_override_str("SYNCTV_EMAIL_SMTP_PASSWORD", &mut self.email.smtp_password);
+        env_override_str_file(
+            "SYNCTV_EMAIL_SMTP_PASSWORD_FILE",
+            "email.smtp_password",
+            &mut self.email.smtp_password,
+        )?;
         env_override_str("SYNCTV_EMAIL_FROM_EMAIL", &mut self.email.from_email);
         env_override_str("SYNCTV_EMAIL_FROM_NAME", &mut self.email.from_name);
         env_override_bool("SYNCTV_EMAIL_USE_TLS", &mut self.email.use_tls)?;
@@ -2155,6 +2250,11 @@ impl Config {
             "SYNCTV_BOOTSTRAP_ROOT_PASSWORD",
             &mut self.bootstrap.root_password,
         );
+        env_override_str_file(
+            "SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE",
+            "bootstrap.root_password",
+            &mut self.bootstrap.root_password,
+        )?;
 
         env_override_bool("SYNCTV_CLUSTER_ENABLED", &mut self.cluster.enabled)?;
         env_override_parse(
@@ -2185,6 +2285,10 @@ impl Config {
         env_override_parse(
             "SYNCTV_CLUSTER_CATCHUP_WINDOW_SECS",
             &mut self.cluster.catchup_window_secs,
+        )?;
+        env_override_parse(
+            "SYNCTV_CLUSTER_STREAM_MAX_LENGTH",
+            &mut self.cluster.stream_max_length,
         )?;
 
         env_override_parse(
@@ -4480,6 +4584,22 @@ jwt:
             "metrics-basic-password\n",
         )
         .expect("metrics password file should be written");
+        std::fs::write(config_dir.join("metrics.bearer"), "metrics-bearer-token\n")
+            .expect("metrics bearer token file should be written");
+        std::fs::write(
+            config_dir.join("database.url"),
+            "postgresql://synctv:secret@db.example.com:5432/synctv\n",
+        )
+        .expect("database url file should be written");
+        std::fs::write(config_dir.join("database.password"), "database-password\n")
+            .expect("database password file should be written");
+        std::fs::write(
+            config_dir.join("redis.url"),
+            "redis://:secret@redis.example.com:6379/0\n",
+        )
+        .expect("redis url file should be written");
+        std::fs::write(config_dir.join("redis.password"), "redis-password\n")
+            .expect("redis password file should be written");
         std::fs::write(
             config_dir.join("smtp.password"),
             "smtp-password-from-file\n",
@@ -4507,7 +4627,14 @@ metrics:
   auth:
     mode: "basic"
     basic_username: "metrics"
+    bearer_token_file: "./metrics.bearer"
     basic_password_file: "./metrics.password"
+database:
+  url_file: "./database.url"
+  password_file: "./database.password"
+redis:
+  url_file: "./redis.url"
+  password_file: "./redis.password"
 jwt:
   secret_file: "./jwt.secret"
 security:
@@ -4538,12 +4665,66 @@ bootstrap:
         assert_eq!(config.server.cluster_secret, "cluster-secret-from-file");
         assert_eq!(config.management.auth_token, "management-token-from-file");
         assert_eq!(config.metrics.auth.basic_password, "metrics-basic-password");
+        assert_eq!(config.metrics.auth.bearer_token, "metrics-bearer-token");
+        assert_eq!(
+            config.database.url,
+            "postgresql://synctv:secret@db.example.com:5432/synctv"
+        );
+        assert_eq!(config.database.password, "database-password");
+        assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
+        assert_eq!(config.redis.password, "redis-password");
         assert_eq!(
             config.security.credential_encryption_key,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
         );
         assert_eq!(config.email.smtp_password, "smtp-password-from-file");
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
+    }
+
+    #[test]
+    fn test_from_file_builds_database_and_redis_urls_from_split_config() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_dir = temp_dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+        std::fs::write(config_dir.join("database.password"), "pg-password\n")
+            .expect("database password file should be written");
+        std::fs::write(config_dir.join("redis.password"), "redis-password\n")
+            .expect("redis password file should be written");
+
+        let config_path = config_dir.join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+database:
+  host: "db.example.com"
+  port: 5433
+  user: "synctv"
+  password_file: "./database.password"
+  name: "synctv_prod"
+redis:
+  host: "redis.example.com"
+  port: 6380
+  user: "cache-user"
+  password_file: "./redis.password"
+  database: 7
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
+            .expect("split database config should load");
+
+        assert!(config.database.url.is_empty());
+        assert_eq!(config.database.username, "synctv");
+        assert_eq!(
+            config.database_url(),
+            "postgresql://synctv:pg-password@db.example.com:5433/synctv_prod"
+        );
+        assert_eq!(config.redis.username, "cache-user");
+        assert_eq!(
+            config.redis_url(),
+            "redis://cache-user:redis-password@redis.example.com:6380/7"
+        );
     }
 
     #[test]
@@ -5335,6 +5516,158 @@ jwt:
         .expect("management auth token file env override should parse");
 
         assert_eq!(config.management.auth_token, "mgmt-file-secret");
+    }
+
+    #[test]
+    fn test_from_env_loads_top_level_secret_file_overrides() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let write_secret = |name: &str, value: &str| -> std::path::PathBuf {
+            let path = temp_dir.path().join(name);
+            std::fs::write(&path, format!("{value}\n")).expect("secret file should be written");
+            path
+        };
+        let jwt_secret = write_secret("jwt.secret", "jwt-secret-from-env-file");
+        let cluster_secret = write_secret("cluster.secret", "cluster-secret-from-env-file");
+        let credential_key = write_secret(
+            "credential.key",
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        );
+        let metrics_bearer = write_secret("metrics.bearer", "metrics-bearer-from-env-file");
+        let metrics_password = write_secret("metrics.password", "metrics-password-from-env-file");
+        let database_url = write_secret(
+            "database.url",
+            "postgresql://synctv:secret@db.example.com:5432/synctv",
+        );
+        let database_password =
+            write_secret("database.password", "database-password-from-env-file");
+        let redis_url = write_secret("redis.url", "redis://:secret@redis.example.com:6379/0");
+        let redis_password = write_secret("redis.password", "redis-password-from-env-file");
+        let smtp_password = write_secret("smtp.password", "smtp-password-from-env-file");
+        let root_password = write_secret("root.password", "RootPassword12345");
+
+        let config = Config::from_env_map(&env_map(&[
+            (
+                "SYNCTV_JWT_SECRET_FILE",
+                jwt_secret.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_SERVER_CLUSTER_SECRET_FILE",
+                cluster_secret.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE",
+                credential_key.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE",
+                metrics_bearer.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE",
+                metrics_password.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_DATABASE_URL_FILE",
+                database_url.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_DATABASE_PASSWORD_FILE",
+                database_password.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_REDIS_URL_FILE",
+                redis_url.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_REDIS_PASSWORD_FILE",
+                redis_password.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_EMAIL_SMTP_PASSWORD_FILE",
+                smtp_password.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE",
+                root_password.to_str().expect("utf-8 path"),
+            ),
+        ]))
+        .expect("secret file env overrides should parse");
+
+        assert_eq!(config.jwt.secret, "jwt-secret-from-env-file");
+        assert_eq!(config.server.cluster_secret, "cluster-secret-from-env-file");
+        assert_eq!(
+            config.security.credential_encryption_key,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        );
+        assert_eq!(
+            config.metrics.auth.bearer_token,
+            "metrics-bearer-from-env-file"
+        );
+        assert_eq!(
+            config.metrics.auth.basic_password,
+            "metrics-password-from-env-file"
+        );
+        assert_eq!(
+            config.database.url,
+            "postgresql://synctv:secret@db.example.com:5432/synctv"
+        );
+        assert_eq!(config.database.password, "database-password-from-env-file");
+        assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
+        assert_eq!(config.redis.password, "redis-password-from-env-file");
+        assert_eq!(config.email.smtp_password, "smtp-password-from-env-file");
+        assert_eq!(config.bootstrap.root_password, "RootPassword12345");
+    }
+
+    #[test]
+    fn test_from_env_overrides_cluster_stream_max_length() {
+        let config =
+            Config::from_env_map(&env_map(&[("SYNCTV_CLUSTER_STREAM_MAX_LENGTH", "25000")]))
+                .expect("cluster stream max length env override should parse");
+
+        assert_eq!(config.cluster.stream_max_length, 25_000);
+    }
+
+    #[test]
+    fn test_from_env_builds_database_and_redis_urls_from_split_config() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let database_password = temp_dir.path().join("database.password");
+        let redis_password = temp_dir.path().join("redis.password");
+        std::fs::write(&database_password, "pg-password\n")
+            .expect("database password file should be written");
+        std::fs::write(&redis_password, "redis-password\n")
+            .expect("redis password file should be written");
+
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_DATABASE_HOST", "db.example.com"),
+            ("SYNCTV_DATABASE_PORT", "5433"),
+            ("SYNCTV_DATABASE_USERNAME", "synctv"),
+            (
+                "SYNCTV_DATABASE_PASSWORD_FILE",
+                database_password.to_str().expect("utf-8 path"),
+            ),
+            ("SYNCTV_DATABASE_NAME", "synctv_prod"),
+            ("SYNCTV_REDIS_HOST", "redis.example.com"),
+            ("SYNCTV_REDIS_PORT", "6380"),
+            ("SYNCTV_REDIS_USERNAME", "cache-user"),
+            (
+                "SYNCTV_REDIS_PASSWORD_FILE",
+                redis_password.to_str().expect("utf-8 path"),
+            ),
+            ("SYNCTV_REDIS_DATABASE", "7"),
+        ]))
+        .expect("split database env config should parse");
+
+        assert!(config.database.url.is_empty());
+        assert_eq!(config.database.username, "synctv");
+        assert_eq!(
+            config.database_url(),
+            "postgresql://synctv:pg-password@db.example.com:5433/synctv_prod"
+        );
+        assert_eq!(config.redis.username, "cache-user");
+        assert_eq!(
+            config.redis_url(),
+            "redis://cache-user:redis-password@redis.example.com:6380/7"
+        );
     }
 
     #[cfg(not(unix))]

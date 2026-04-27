@@ -99,8 +99,27 @@ pub struct GlobalConfigArgs {
     pub verbose: u8,
 
     /// SyncTV management endpoint (`unix:///path` or `http://host:port`)
-    #[arg(long, global = true, env = "SYNCTV_MANAGEMENT_ENDPOINT")]
+    #[arg(long, global = true)]
     pub endpoint: Option<String>,
+
+    /// Management bearer token for remote management commands.
+    #[arg(
+        long = "auth-token",
+        alias = "management-auth-token",
+        global = true,
+        conflicts_with = "auth_token_file"
+    )]
+    pub auth_token: Option<String>,
+
+    /// Read the management bearer token for remote management commands from a file.
+    #[arg(
+        long = "auth-token-file",
+        alias = "management-auth-token-file",
+        value_name = "PATH",
+        global = true,
+        conflicts_with = "auth_token"
+    )]
+    pub auth_token_file: Option<PathBuf>,
 }
 
 impl GlobalConfigArgs {
@@ -124,6 +143,14 @@ impl GlobalConfigArgs {
             no_dotenv: self.no_dotenv || parent.no_dotenv,
             verbose: self.verbose.max(parent.verbose),
             endpoint: self.endpoint.clone().or_else(|| parent.endpoint.clone()),
+            auth_token: self
+                .auth_token
+                .clone()
+                .or_else(|| parent.auth_token.clone()),
+            auth_token_file: self
+                .auth_token_file
+                .clone()
+                .or_else(|| parent.auth_token_file.clone()),
         }
     }
 }
@@ -180,7 +207,7 @@ impl RemoteCliContext {
     fn new(args: &RemoteAccessArgs) -> Self {
         Self {
             config: CliConfigContext::new(args.global.clone()),
-            explicit_endpoint: resolve_remote_endpoint(args.global.endpoint.as_deref()),
+            explicit_endpoint: resolve_remote_endpoint(&args.global),
             resolved_config_endpoint: Arc::new(OnceLock::new()),
         }
     }
@@ -834,23 +861,6 @@ pub struct RemoteAccessArgs {
     #[command(flatten)]
     pub global: GlobalConfigArgs,
 
-    /// Management bearer token for this command
-    #[arg(
-        long = "auth-token",
-        alias = "management-auth-token",
-        conflicts_with = "auth_token_file"
-    )]
-    pub auth_token: Option<String>,
-
-    /// Read the management bearer token from a file
-    #[arg(
-        long = "auth-token-file",
-        alias = "management-auth-token-file",
-        value_name = "PATH",
-        conflicts_with = "auth_token"
-    )]
-    pub auth_token_file: Option<PathBuf>,
-
     /// Output format for management command results
     #[arg(long, short = 'o', value_enum, default_value_t = RemoteOutputFormat::Human)]
     pub output: RemoteOutputFormat,
@@ -860,8 +870,9 @@ impl RemoteAccessArgs {
     fn connection_options(&self, endpoint: Option<String>) -> AdminConnectionOptions {
         AdminConnectionOptions {
             endpoint,
-            auth_token: self.auth_token.clone(),
+            auth_token: self.global.auth_token.clone(),
             auth_token_file: self
+                .global
                 .auth_token_file
                 .as_ref()
                 .map(|path| path.display().to_string()),
@@ -6175,8 +6186,13 @@ fn format_management_status_error(
     anyhow!(rendered)
 }
 
-fn resolve_remote_endpoint(cli_endpoint: Option<&str>) -> Option<String> {
-    cli_endpoint
+fn resolve_remote_endpoint(global: &GlobalConfigArgs) -> Option<String> {
+    global
+        .endpoint
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| std::env::var("SYNCTV_MANAGEMENT_ENDPOINT").ok())
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -8483,6 +8499,43 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn acquire_env_test_lock() -> MutexGuard<'static, ()> {
+        static ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl Into<String>) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value.into());
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     struct TimeZoneGuard {
         previous: String,
     }
@@ -8641,7 +8694,18 @@ mod tests {
         match cli.command {
             Commands::User(UserCommand {
                 command: UserSubcommand::List(args),
-            }) => assert_eq!(args.remote.auth_token.as_deref(), Some("token-123")),
+            }) => assert_eq!(args.remote.global.auth_token.as_deref(), Some("token-123")),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_global_management_auth_token_before_subcommand() {
+        let cli = Cli::parse_from(["synctv", "--auth-token", "token-123", "user", "list"]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::List(args),
+            }) => assert_eq!(args.remote.global.auth_token.as_deref(), Some("token-123")),
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
@@ -8659,7 +8723,27 @@ mod tests {
             Commands::User(UserCommand {
                 command: UserSubcommand::List(args),
             }) => assert_eq!(
-                args.remote.auth_token_file.as_deref(),
+                args.remote.global.auth_token_file.as_deref(),
+                Some(std::path::Path::new("/run/secrets/management_auth_token"))
+            ),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_global_management_auth_token_file_before_subcommand() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "--auth-token-file",
+            "/run/secrets/management_auth_token",
+            "user",
+            "list",
+        ]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::List(args),
+            }) => assert_eq!(
+                args.remote.global.auth_token_file.as_deref(),
                 Some(std::path::Path::new("/run/secrets/management_auth_token"))
             ),
             other => panic!("unexpected command parsed: {other:?}"),
@@ -12840,24 +12924,57 @@ mod tests {
 
     #[test]
     fn resolve_remote_endpoint_returns_none_when_cli_endpoint_is_absent() {
-        let endpoint = resolve_remote_endpoint(None);
+        let _env_lock = acquire_env_test_lock();
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_ENDPOINT");
+        let endpoint = resolve_remote_endpoint(&GlobalConfigArgs::default());
 
         assert_eq!(endpoint, None);
     }
 
     #[test]
     fn resolve_remote_endpoint_preserves_explicit_unix_socket_endpoint() {
+        let _env_lock = acquire_env_test_lock();
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_ENDPOINT");
         let raw = format!("unix://{}", default_management_unix_socket_path().display());
-        let endpoint = resolve_remote_endpoint(Some(&raw));
+        let endpoint = resolve_remote_endpoint(&GlobalConfigArgs {
+            endpoint: Some(raw.clone()),
+            ..GlobalConfigArgs::default()
+        });
 
         assert_eq!(endpoint.as_deref(), Some(raw.as_str()));
     }
 
     #[test]
     fn resolve_remote_endpoint_preserves_explicit_tcp_endpoint() {
-        let endpoint = resolve_remote_endpoint(Some("http://192.0.2.10:50099"));
+        let _env_lock = acquire_env_test_lock();
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_ENDPOINT");
+        let endpoint = resolve_remote_endpoint(&GlobalConfigArgs {
+            endpoint: Some("http://192.0.2.10:50099".to_string()),
+            ..GlobalConfigArgs::default()
+        });
 
         assert_eq!(endpoint.as_deref(), Some("http://192.0.2.10:50099"));
+    }
+
+    #[test]
+    fn resolve_remote_endpoint_reads_environment_without_clap_env_feature() {
+        let _env_lock = acquire_env_test_lock();
+        let _env_guard = EnvVarGuard::set("SYNCTV_MANAGEMENT_ENDPOINT", "http://127.0.0.1:59052");
+        let endpoint = resolve_remote_endpoint(&GlobalConfigArgs::default());
+
+        assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:59052"));
+    }
+
+    #[test]
+    fn resolve_remote_endpoint_prefers_cli_over_environment() {
+        let _env_lock = acquire_env_test_lock();
+        let _env_guard = EnvVarGuard::set("SYNCTV_MANAGEMENT_ENDPOINT", "http://127.0.0.1:59052");
+        let endpoint = resolve_remote_endpoint(&GlobalConfigArgs {
+            endpoint: Some("http://127.0.0.1:59053".to_string()),
+            ..GlobalConfigArgs::default()
+        });
+
+        assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:59053"));
     }
 
     #[test]
@@ -12883,9 +13000,9 @@ management:
                 no_dotenv: true,
                 verbose: 0,
                 endpoint: None,
+                auth_token: None,
+                auth_token_file: None,
             },
-            auth_token: None,
-            auth_token_file: None,
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);
@@ -12922,9 +13039,9 @@ management:
                 no_dotenv: true,
                 verbose: 0,
                 endpoint: Some("http://127.0.0.1:50052".to_string()),
+                auth_token: None,
+                auth_token_file: None,
             },
-            auth_token: None,
-            auth_token_file: None,
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);

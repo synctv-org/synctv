@@ -157,13 +157,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
     }
 
     if let Some(path) = options.auth_token_file.as_deref() {
-        let token = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read management auth token file {path}"))?;
-        let token = token.trim();
-        if token.is_empty() {
-            bail!("management auth token file {path} is empty");
-        }
-        return Ok(Some(token.to_string()));
+        return read_management_auth_token_file(path, "--auth-token-file").map(Some);
     }
 
     let explicit_endpoint = options
@@ -181,6 +175,13 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
                 return Ok(Some(token.to_string()));
             }
         }
+        if let Ok(path) = std::env::var("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE") {
+            let path = path.trim();
+            if !path.is_empty() {
+                return read_management_auth_token_file(path, "SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE")
+                    .map(Some);
+            }
+        }
 
         if !options.allow_config_auth_for_explicit_endpoint {
             return Ok(None);
@@ -191,6 +192,13 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
         let token = token.trim();
         if !token.is_empty() {
             return Ok(Some(token.to_string()));
+        }
+    }
+    if let Ok(path) = std::env::var("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return read_management_auth_token_file(path, "SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE")
+                .map(Some);
         }
     }
 
@@ -214,6 +222,17 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
     } else {
         Ok(Some(token.to_string()))
     }
+}
+
+fn read_management_auth_token_file(path: &str, source: &str) -> Result<String> {
+    let token = std::fs::read_to_string(path).with_context(|| {
+        format!("failed to read management auth token file from {source}: {path}")
+    })?;
+    let token = token.trim();
+    if token.is_empty() {
+        bail!("management auth token file from {source} is empty: {path}");
+    }
+    Ok(token.to_string())
 }
 
 fn resolve_candidate_endpoints(options: &AdminConnectionOptions) -> Result<Vec<String>> {
@@ -1168,6 +1187,7 @@ mod tests {
     fn resolve_management_auth_token_reads_explicit_cli_token_file() {
         let _env_lock = process_env_test_lock().blocking_lock();
         let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let _env_file_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE");
         let dir = tempdir().expect("temp dir should be created");
         let token_path = dir.path().join("management.token");
         std::fs::write(&token_path, "file-token\n").expect("token file should be written");
@@ -1186,6 +1206,33 @@ mod tests {
         .expect("explicit CLI token file should resolve");
 
         assert_eq!(token.as_deref(), Some("file-token"));
+    }
+
+    #[test]
+    fn resolve_management_auth_token_reads_env_token_file_for_explicit_endpoint() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let dir = tempdir().expect("temp dir should be created");
+        let token_path = dir.path().join("management.token");
+        std::fs::write(&token_path, "env-file-token\n").expect("token file should be written");
+        let token_path = token_path.to_string_lossy().to_string();
+        let _env_file_guard =
+            EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE", token_path.as_str());
+
+        let token = resolve_management_auth_token(&AdminConnectionOptions {
+            endpoint: Some("http://127.0.0.1:50052".to_string()),
+            auth_token: None,
+            auth_token_file: None,
+            config_path: None,
+            data_dir: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .expect("env token file should resolve in explicit endpoint mode");
+
+        assert_eq!(token.as_deref(), Some("env-file-token"));
     }
 
     #[cfg(unix)]
